@@ -1,0 +1,16 @@
+{
+  "name": "unai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Uai - universal memory system (memory kernel). Built by moe-next agents from prd.md.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.0"
+  }
+}

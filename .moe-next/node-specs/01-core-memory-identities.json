@@ -1,0 +1,7 @@
+{
+  "nodeRef": "node-uai-core-identities",
+  "title": "Uai memory kernel slice 1: the five core identities as TypeScript types with invariant tests",
+  "instructions": "Read D:/projexts/UnAI/prd.md sections 3 and 4 (\"Identity is never a hash\" and \"Core memory identities\"). In src/kernel/identities.ts define the five identity levels as TypeScript types and constructors: FrameType (roles, identity strategy, allowed predicates, temporal behavior, valid modality transitions, merge/split policy), FrameInstance (surrogate frame_instance_id - NEVER derived from participants), BeliefSlot (frame instance + predicate + context space + modality + qualifiers; the slot EXCLUDES the value), Proposition (one exact normalized candidate value within a slot, surrogate proposition_id), and Claim (a source assertion supporting/contradicting a proposition; claims stay distinct even when they refer to the same proposition). Surrogate ids must be opaque, branded string types minted by a function that takes no content input (section 3 invariant: identity is never a hash). Write src/kernel/identities.test.ts proving: two frame instances with identical participants and amount are distinct; two propositions with different values in one slot share the slot key; two claims about one proposition keep distinct claim ids; a surrogate id cannot be re-derived from the object's fields. Keep the slice small and complete: only these five types, their constructors, and the tests. pnpm test must exit 0.",
+  "test": "pnpm test",
+  "workspace": "D:/projexts/UnAI"
+}
