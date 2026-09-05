@@ -13,7 +13,11 @@
 // not live. After boot, a read of such a work item shows no holder.
 //
 // Liveness is decided by the store's own session records, never by the claim:
-// a claim cannot vouch for its own holder.
+// a claim cannot vouch for its own holder. That is also why the claim's own
+// lease horizon (`ClaimRecord.expiresAt`) is inert at boot: it is recorded for
+// the holder's benefit, but only the holder SESSION decides whether the claim
+// survives. A live holder keeps its work item untouched — same holder, same
+// expiry, same version — however old the claim itself looks.
 
 // ---------------------------------------------------------------------------
 // Identifiers and records
@@ -38,6 +42,11 @@ export interface ClaimRecord {
   readonly holderSessionId: SessionId;
   /** ISO instant the claim was taken. */
   readonly claimedAt: string;
+  /**
+   * ISO instant the claim lease lapses. Boot never reads it — see the module
+   * note: liveness is the holder session's, not the claim's.
+   */
+  readonly expiresAt: string;
 }
 
 export interface WorkItemRecord {
@@ -103,6 +112,7 @@ function sealClaim(claim: ClaimRecord): ClaimRecord {
     workItemId: claim.workItemId,
     holderSessionId: claim.holderSessionId,
     claimedAt: claim.claimedAt,
+    expiresAt: claim.expiresAt,
   });
 }
 
@@ -157,9 +167,14 @@ export function createMemoryBackend(
 // The store
 // ---------------------------------------------------------------------------
 
+/** How long a freshly taken claim lease runs when the caller names no horizon. */
+export const DEFAULT_CLAIM_LEASE_MS = 15 * 60 * 1000;
+
 export interface ClaimStoreOptions {
   /** Injectable so liveness and timestamps are testable without waiting. */
   readonly clock?: () => Date;
+  /** Lease length for claims taken without an explicit `expiresAt`. */
+  readonly claimLeaseMs?: number;
 }
 
 export interface ClaimStore {
@@ -174,7 +189,11 @@ export interface ClaimStore {
   isSessionLive(sessionId: SessionId): boolean;
 
   /** Takes the claim. Refuses if a live session already holds the item. */
-  claim(workItemId: WorkItemId, holderSessionId: SessionId): WorkItemRecord;
+  claim(
+    workItemId: WorkItemId,
+    holderSessionId: SessionId,
+    options?: { readonly expiresAt?: string },
+  ): WorkItemRecord;
   /** Drops the holder. A work item with no holder is left as it is. */
   release(workItemId: WorkItemId, reason?: ReleaseReason): WorkItemRecord;
 
@@ -202,7 +221,10 @@ export function openClaimStore(
   options: ClaimStoreOptions = {},
 ): ClaimStore {
   const clock = options.clock ?? (() => new Date());
+  const claimLeaseMs = options.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
   const now = () => clock().toISOString();
+  const leaseHorizon = () =>
+    new Date(clock().getTime() + claimLeaseMs).toISOString();
 
   const commit = (next: StoreState): void => backend.write(next);
 
@@ -261,7 +283,7 @@ export function openClaimStore(
       return Date.parse(session.expiresAt) > clock().getTime();
     },
 
-    claim(workItemId, holderSessionId) {
+    claim(workItemId, holderSessionId, claimOptions = {}) {
       const current = findWorkItem(workItemId);
       if (
         current.holder !== null &&
@@ -281,7 +303,12 @@ export function openClaimStore(
       return upsertWorkItem({
         workItemId,
         version: taken.version + 1,
-        holder: { workItemId, holderSessionId, claimedAt: now() },
+        holder: {
+          workItemId,
+          holderSessionId,
+          claimedAt: now(),
+          expiresAt: claimOptions.expiresAt ?? leaseHorizon(),
+        },
       });
     },
 
