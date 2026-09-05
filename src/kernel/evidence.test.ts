@@ -105,6 +105,58 @@ describe("evidence record (PRD 11.1)", () => {
     expect(later?.contentHash).toBe(ingested.contentHash);
     expect(later).toEqual(ingested);
   });
+
+  it("crit-stored-record-is-frozen: a deduplicated re-ingest hands back a frozen record", () => {
+    const ledger = createEvidenceLedger();
+    const first = ledger.ingest(message());
+    const deduped = ledger.ingest(message());
+    const keyed = ledger.ingest(message({ idempotencyKey: "client-req-1" }));
+    const replayed = ledger.ingest(
+      message({ idempotencyKey: "client-req-1", content: { text: "retried payload" } }),
+    );
+
+    for (const repeat of [deduped, keyed, replayed]) {
+      expect(repeat.evidenceId).toBe(first.evidenceId);
+      expect(Object.isFrozen(repeat)).toBe(true);
+      expect(Object.isFrozen(repeat.allowedPurposes)).toBe(true);
+      expect(() => {
+        (repeat as unknown as { observedAt: string }).observedAt = "1999-01-01T00:00:00Z";
+      }).toThrow(TypeError);
+    }
+
+    // Every listed record is frozen too, and the array itself cannot grow.
+    const listed = ledger.listEvidence(SCOPE_A);
+    expect(Object.isFrozen(listed)).toBe(true);
+    expect(listed.every((r) => Object.isFrozen(r))).toBe(true);
+
+    expect(ledger.getEvidence(first.evidenceId)).toEqual(first);
+  });
+
+  it("crit-stored-record-is-frozen: attaching anchors leaves the stored record unmutated", () => {
+    const ledger = createEvidenceLedger();
+    const evidence = ledger.ingest(message());
+    const snapshot = { ...evidence };
+
+    ledger.addSourceAnchor({
+      evidenceId: evidence.evidenceId,
+      anchorKind: "MESSAGE_SPAN",
+      anchor: { start: 0, end: 15 },
+      normalizedText: "I paid him back",
+    });
+    ledger.addSourceAnchor({
+      evidenceId: evidence.evidenceId,
+      anchorKind: "JSON_PATH",
+      anchor: { path: "$.text" },
+    });
+
+    const afterAnchors = ledger.getEvidence(evidence.evidenceId);
+    expect(afterAnchors).toBe(evidence);
+    expect(Object.isFrozen(afterAnchors)).toBe(true);
+    expect({ ...(afterAnchors as EvidenceRecord) }).toEqual(snapshot);
+    // No anchor bookkeeping leaked onto the record itself.
+    expect(Object.keys(afterAnchors as EvidenceRecord).sort()).toEqual(Object.keys(snapshot).sort());
+    expect(ledger.listSourceAnchors(evidence.evidenceId)).toHaveLength(2);
+  });
 });
 
 describe("idempotent ingestion (PRD 33.2 uniqueness tuple)", () => {
