@@ -7,6 +7,7 @@ import {
   type ClaimStoreBackend,
   type SessionRecord,
   type StoreState,
+  type WorkItemId,
   type WorkItemRecord,
 } from "./claims.ts";
 
@@ -35,8 +36,57 @@ function heldWorkItem(holderSessionId: string): WorkItemRecord {
   };
 }
 
+/**
+ * A held work item under its own id. `heldWorkItem` spread over a new
+ * `workItemId` would leave `holder.workItemId` pointing back at the fixture's
+ * item; a whole-store sweep is about many distinct items, so those get records
+ * that are internally consistent.
+ */
+function heldItem(workItemId: string, holderSessionId: string): WorkItemRecord {
+  return {
+    workItemId,
+    version: 1,
+    holder: {
+      workItemId,
+      holderSessionId,
+      claimedAt: "2026-09-05T11:00:00.000Z",
+      expiresAt: "2026-09-05T11:30:00.000Z",
+    },
+  };
+}
+
 function liveSession(sessionId = LIVE_SESSION): SessionRecord {
   return { sessionId, status: "OPEN", expiresAt: "2026-09-05T13:00:00.000Z" };
+}
+
+/** Closed before it could release: dead, however recent. */
+const CLOSED_SESSION = "sess-wrap-closed";
+/** Never closed, just stopped existing and let its lease lapse. */
+const LAPSED_SESSION = "sess-wrap-lapsed";
+
+/**
+ * The three shapes a dead holder comes in. `DEAD_SESSION` is deliberately not
+ * among them: an unrecorded session is dead by absence, so it needs no record.
+ */
+const DEAD_SESSION_RECORDS: readonly SessionRecord[] = [
+  {
+    sessionId: CLOSED_SESSION,
+    status: "CLOSED",
+    expiresAt: "2026-09-05T13:00:00.000Z",
+  },
+  {
+    sessionId: LAPSED_SESSION,
+    status: "OPEN",
+    expiresAt: "2026-09-05T11:59:59.999Z",
+  },
+];
+
+/** Every work item the store still hands back a holder for. */
+function stillHeld(store: ReturnType<typeof openClaimStore>): WorkItemId[] {
+  return store
+    .listWorkItems()
+    .filter((item) => item.holder !== null)
+    .map((item) => item.workItemId);
 }
 
 /** A store already holding a claim, before the wrapper has booted over it. */
@@ -270,6 +320,260 @@ describe("crit-live-held-claim-unchanged", () => {
     expect(store.readWorkItem(WORK_ITEM).holder?.holderSessionId).toBe(
       LIVE_SESSION,
     );
+  });
+});
+
+describe("crit-every-dead-held-claim-released", () => {
+  it("releases all of them in one boot, whatever shape each death took", () => {
+    // One store, three ways of being dead: never recorded, closed, lapsed.
+    // The criterion is falsified by any dead-held claim that still has a
+    // holder afterwards, so that is what is asserted — over the whole store,
+    // not over a list the boot itself chose.
+    const { store } = storeHoldingClaim({
+      sessions: DEAD_SESSION_RECORDS,
+      workItems: [
+        heldItem("wi-unknown-holder", DEAD_SESSION),
+        heldItem("wi-closed-holder", CLOSED_SESSION),
+        heldItem("wi-lapsed-holder", LAPSED_SESSION),
+      ],
+    });
+    expect(stillHeld(store)).toHaveLength(3);
+
+    const report = bootWrapper(store);
+
+    expect(stillHeld(store)).toEqual([]);
+    expect(report.releasedWorkItemIds).toEqual([
+      "wi-unknown-holder",
+      "wi-closed-holder",
+      "wi-lapsed-holder",
+    ]);
+    expect(report.retainedWorkItemIds).toEqual([]);
+  });
+
+  it("leaves no dead-held claim behind in a store full of them", () => {
+    // Scale, in case a sweep only ever reaches the first item or stops at the
+    // first release: eight claims, all dead-held, one boot.
+    const workItems = Array.from({ length: 8 }, (_, i) =>
+      heldItem(`wi-dead-${i}`, DEAD_SESSION),
+    );
+    const { store } = storeHoldingClaim({ workItems });
+
+    const report = bootWrapper(store);
+
+    expect(stillHeld(store)).toEqual([]);
+    expect(report.releasedWorkItemIds).toHaveLength(8);
+    for (const item of workItems) {
+      expect(store.readWorkItem(item.workItemId).holder).toBeNull();
+    }
+  });
+
+  it("audits every release separately, naming each work item and its dead holder", () => {
+    const { store } = storeHoldingClaim({
+      sessions: DEAD_SESSION_RECORDS,
+      workItems: [
+        heldItem("wi-a", DEAD_SESSION),
+        heldItem("wi-b", CLOSED_SESSION),
+        heldItem("wi-c", LAPSED_SESSION),
+      ],
+    });
+
+    bootWrapper(store);
+
+    expect(store.listReleases()).toEqual([
+      {
+        workItemId: "wi-a",
+        holderSessionId: DEAD_SESSION,
+        releasedAt: NOW.toISOString(),
+        reason: "HOLDER_SESSION_NOT_LIVE",
+      },
+      {
+        workItemId: "wi-b",
+        holderSessionId: CLOSED_SESSION,
+        releasedAt: NOW.toISOString(),
+        reason: "HOLDER_SESSION_NOT_LIVE",
+      },
+      {
+        workItemId: "wi-c",
+        holderSessionId: LAPSED_SESSION,
+        releasedAt: NOW.toISOString(),
+        reason: "HOLDER_SESSION_NOT_LIVE",
+      },
+    ]);
+  });
+
+  it("bumps the version of every claim it releases, and of nothing else", () => {
+    const { store } = storeHoldingClaim({
+      workItems: [
+        heldItem("wi-dead-1", DEAD_SESSION),
+        heldItem("wi-dead-2", DEAD_SESSION),
+        { workItemId: "wi-unheld", version: 7, holder: null },
+      ],
+    });
+
+    bootWrapper(store);
+
+    expect(store.readWorkItem("wi-dead-1").version).toBe(2);
+    expect(store.readWorkItem("wi-dead-2").version).toBe(2);
+    expect(store.readWorkItem("wi-unheld").version).toBe(7);
+  });
+
+  it("finishes the store in that one boot: a second boot has nothing left to do", () => {
+    // "A single boot releases all of them" read as a completeness claim — if
+    // the first boot had left work behind, the second would find it.
+    const { store } = storeHoldingClaim({
+      sessions: DEAD_SESSION_RECORDS,
+      workItems: [
+        heldItem("wi-dead-1", DEAD_SESSION),
+        heldItem("wi-dead-2", CLOSED_SESSION),
+        heldItem("wi-dead-3", LAPSED_SESSION),
+      ],
+    });
+
+    bootWrapper(store);
+    const second = bootWrapper(store);
+
+    expect(second).toEqual({ releasedWorkItemIds: [], retainedWorkItemIds: [] });
+    expect(store.listReleases()).toHaveLength(3);
+  });
+
+  it("keeps the whole sweep across a restart over the same backing store", () => {
+    const { backend, store } = storeHoldingClaim({
+      workItems: [
+        heldItem("wi-dead-1", DEAD_SESSION),
+        heldItem("wi-dead-2", DEAD_SESSION),
+      ],
+    });
+
+    bootWrapper(store);
+    const reopened = openClaimStore(backend, { clock });
+
+    expect(stillHeld(reopened)).toEqual([]);
+  });
+});
+
+describe("crit-mixed-store-only-dead-claims-move", () => {
+  it("releases the dead-held claim and leaves the live-held one holding", () => {
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [
+        heldItem("wi-dead", DEAD_SESSION),
+        heldItem("wi-live", LIVE_SESSION),
+      ],
+    });
+    const liveBefore = store.readWorkItem("wi-live");
+
+    const report = bootWrapper(store);
+
+    expect(store.readWorkItem("wi-dead").holder).toBeNull();
+    expect(store.readWorkItem("wi-live")).toEqual(liveBefore);
+    expect(report.releasedWorkItemIds).toEqual(["wi-dead"]);
+    expect(report.retainedWorkItemIds).toEqual(["wi-live"]);
+  });
+
+  it("moves the same one whichever order the store holds them in", () => {
+    // Position must not decide the outcome: a sweep that released whatever it
+    // met first, or stopped once it had spared someone, would part these two.
+    for (const workItems of [
+      [heldItem("wi-dead", DEAD_SESSION), heldItem("wi-live", LIVE_SESSION)],
+      [heldItem("wi-live", LIVE_SESSION), heldItem("wi-dead", DEAD_SESSION)],
+    ]) {
+      const { store } = storeHoldingClaim({
+        sessions: [liveSession()],
+        workItems,
+      });
+
+      bootWrapper(store);
+
+      expect(stillHeld(store)).toEqual(["wi-live"]);
+      expect(store.readWorkItem("wi-live").holder?.holderSessionId).toBe(
+        LIVE_SESSION,
+      );
+    }
+  });
+
+  it("records exactly one release, and it is the dead-held claim's", () => {
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [
+        heldItem("wi-live", LIVE_SESSION),
+        heldItem("wi-dead", DEAD_SESSION),
+      ],
+    });
+
+    bootWrapper(store);
+
+    expect(store.listReleases()).toEqual([
+      {
+        workItemId: "wi-dead",
+        holderSessionId: DEAD_SESSION,
+        releasedAt: NOW.toISOString(),
+        reason: "HOLDER_SESSION_NOT_LIVE",
+      },
+    ]);
+  });
+
+  it("sorts a crowd: every dead-held claim moves, every live-held one stays", () => {
+    // Two live holders, two dead ones, interleaved — the mixed store at the
+    // size where a sweep that confuses the two would show it.
+    const OTHER_LIVE = "sess-wrap-live-2";
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession(), liveSession(OTHER_LIVE), ...DEAD_SESSION_RECORDS],
+      workItems: [
+        heldItem("wi-live-1", LIVE_SESSION),
+        heldItem("wi-dead-1", CLOSED_SESSION),
+        heldItem("wi-live-2", OTHER_LIVE),
+        heldItem("wi-dead-2", LAPSED_SESSION),
+      ],
+    });
+    const before = [
+      store.readWorkItem("wi-live-1"),
+      store.readWorkItem("wi-live-2"),
+    ];
+
+    const report = bootWrapper(store);
+
+    expect(stillHeld(store)).toEqual(["wi-live-1", "wi-live-2"]);
+    expect(report.releasedWorkItemIds).toEqual(["wi-dead-1", "wi-dead-2"]);
+    expect(report.retainedWorkItemIds).toEqual(["wi-live-1", "wi-live-2"]);
+    expect(store.readWorkItem("wi-live-1")).toEqual(before[0]);
+    expect(store.readWorkItem("wi-live-2")).toEqual(before[1]);
+  });
+
+  it("the spared claim still refuses a rival, and the released one is free to take", () => {
+    // What "moves" and "stays" mean to a claimant afterwards.
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [
+        heldItem("wi-dead", DEAD_SESSION),
+        heldItem("wi-live", LIVE_SESSION),
+      ],
+    });
+
+    bootWrapper(store);
+
+    expect(() => store.claim("wi-live", "sess-other")).toThrow(
+      ClaimConflictError,
+    );
+    expect(store.claim("wi-dead", LIVE_SESSION).holder?.holderSessionId).toBe(
+      LIVE_SESSION,
+    );
+  });
+
+  it("keeps both outcomes across a restart over the same backing store", () => {
+    const { backend, store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [
+        heldItem("wi-dead", DEAD_SESSION),
+        heldItem("wi-live", LIVE_SESSION),
+      ],
+    });
+    const liveBefore = store.readWorkItem("wi-live");
+
+    bootWrapper(store);
+    const reopened = openClaimStore(backend, { clock });
+
+    expect(reopened.readWorkItem("wi-dead").holder).toBeNull();
+    expect(reopened.readWorkItem("wi-live")).toEqual(liveBefore);
   });
 });
 
