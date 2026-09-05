@@ -17,6 +17,11 @@ const WORK_ITEM = "node.deliver@boot-releases-a-dead-held-claim";
 const DEAD_SESSION = "sess-wrap-dead";
 const LIVE_SESSION = "sess-wrap-live";
 
+/**
+ * A held work item. The claim's own lease is deliberately already lapsed at
+ * NOW: boot must not read it, so this fixture serves the dead-holder cases and
+ * the live-holder cases alike.
+ */
 function heldWorkItem(holderSessionId: string): WorkItemRecord {
   return {
     workItemId: WORK_ITEM,
@@ -25,6 +30,7 @@ function heldWorkItem(holderSessionId: string): WorkItemRecord {
       workItemId: WORK_ITEM,
       holderSessionId,
       claimedAt: "2026-09-05T11:00:00.000Z",
+      expiresAt: "2026-09-05T11:30:00.000Z",
     },
   };
 }
@@ -152,22 +158,122 @@ describe("crit-dead-held-claim-released-at-boot", () => {
   });
 });
 
-describe("boot leaves live holders alone", () => {
-  it("a claim held by a live session survives boot", () => {
+describe("crit-live-held-claim-unchanged", () => {
+  it("leaves the whole record identical: holder, expiry and version", () => {
+    // The criterion read literally: take the record before boot, take it
+    // after, and demand they are the same record. Any difference falsifies it.
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [heldWorkItem(LIVE_SESSION)],
+    });
+    const before = store.readWorkItem(WORK_ITEM);
+
+    bootWrapper(store);
+    const after = store.readWorkItem(WORK_ITEM);
+
+    expect(after).toEqual(before);
+    expect(after.holder?.holderSessionId).toBe(LIVE_SESSION);
+    expect(after.holder?.expiresAt).toBe("2026-09-05T11:30:00.000Z");
+    expect(after.holder?.claimedAt).toBe("2026-09-05T11:00:00.000Z");
+    expect(after.version).toBe(1);
+  });
+
+  it("does not touch the claim even though the claim's own lease has lapsed", () => {
+    // The fixture's claim expired at 11:30 and it is now 12:00. Only the holder
+    // SESSION decides: it is live, so boot has nothing to do here.
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [heldWorkItem(LIVE_SESSION)],
+    });
+    expect(
+      Date.parse(store.readWorkItem(WORK_ITEM).holder!.expiresAt),
+    ).toBeLessThan(NOW.getTime());
+
+    const report = bootWrapper(store);
+
+    expect(report.releasedWorkItemIds).toEqual([]);
+    expect(report.retainedWorkItemIds).toEqual([WORK_ITEM]);
+    expect(store.readWorkItem(WORK_ITEM).holder?.holderSessionId).toBe(
+      LIVE_SESSION,
+    );
+  });
+
+  it("writes no release audit for a live holder", () => {
     const { store } = storeHoldingClaim({
       sessions: [liveSession()],
       workItems: [heldWorkItem(LIVE_SESSION)],
     });
 
-    const report = bootWrapper(store);
+    bootWrapper(store);
 
-    expect(report.releasedWorkItemIds).toEqual([]);
-    expect(store.readWorkItem(WORK_ITEM).holder?.holderSessionId).toBe(
-      LIVE_SESSION,
-    );
     expect(store.listReleases()).toEqual([]);
   });
 
+  it("stays unchanged across repeated boots", () => {
+    // Nothing accumulates: a second boot must not bump the version either.
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [heldWorkItem(LIVE_SESSION)],
+    });
+    const before = store.readWorkItem(WORK_ITEM);
+
+    bootWrapper(store);
+    bootWrapper(store);
+
+    expect(store.readWorkItem(WORK_ITEM)).toEqual(before);
+    expect(store.listReleases()).toEqual([]);
+  });
+
+  it("stays unchanged after a restart over the same backing store", () => {
+    const { backend, store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [heldWorkItem(LIVE_SESSION)],
+    });
+    const before = store.readWorkItem(WORK_ITEM);
+
+    bootWrapper(store);
+    const reopened = openClaimStore(backend, { clock });
+
+    expect(reopened.readWorkItem(WORK_ITEM)).toEqual(before);
+  });
+
+  it("spares the live-held claim in the same boot that releases dead ones", () => {
+    // Discriminating, not indiscriminate: releasing a neighbour must not cost
+    // the live holder its claim.
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [
+        { ...heldWorkItem(DEAD_SESSION), workItemId: "wi-dead" },
+        { ...heldWorkItem(LIVE_SESSION), workItemId: "wi-live" },
+      ],
+    });
+    const before = store.readWorkItem("wi-live");
+
+    bootWrapper(store);
+
+    expect(store.readWorkItem("wi-dead").holder).toBeNull();
+    expect(store.readWorkItem("wi-live")).toEqual(before);
+  });
+
+  it("the retained claim is still the store's answer to a competing claimant", () => {
+    // Unchanged means the claim still does its job: a rival is refused.
+    const { store } = storeHoldingClaim({
+      sessions: [liveSession()],
+      workItems: [heldWorkItem(LIVE_SESSION)],
+    });
+
+    bootWrapper(store);
+
+    expect(() => store.claim(WORK_ITEM, "sess-other")).toThrow(
+      ClaimConflictError,
+    );
+    expect(store.readWorkItem(WORK_ITEM).holder?.holderSessionId).toBe(
+      LIVE_SESSION,
+    );
+  });
+});
+
+describe("boot leaves live holders alone", () => {
   it("booting twice releases nothing the second time", () => {
     const { store } = storeHoldingClaim({
       workItems: [heldWorkItem(DEAD_SESSION)],
@@ -255,7 +361,20 @@ describe("claiming", () => {
       workItemId: WORK_ITEM,
       holderSessionId: LIVE_SESSION,
       claimedAt: NOW.toISOString(),
+      expiresAt: "2026-09-05T12:15:00.000Z",
     });
+  });
+
+  it("honours an explicit lease horizon on the claim", () => {
+    const { store } = storeHoldingClaim({ sessions: [liveSession()] });
+
+    store.claim(WORK_ITEM, LIVE_SESSION, {
+      expiresAt: "2026-09-05T12:05:00.000Z",
+    });
+
+    expect(store.readWorkItem(WORK_ITEM).holder?.expiresAt).toBe(
+      "2026-09-05T12:05:00.000Z",
+    );
   });
 
   it("refuses a work item already held by a live session", () => {
