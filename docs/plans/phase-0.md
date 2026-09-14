@@ -70,3 +70,11 @@ The web consumes only public DTOs. Domain code imports no providers or UI.
    actual verification. Run pnpm test, pnpm typecheck and pnpm validate:registry.
    Keep the required registry check unchanged; report its actual result using
    the sealed ownership map, without manufacturing a descendant release.
+
+## Current handoff
+
+ADR 0008 resolves the previously pending choices; its web, Auth.js, database
+session and device composition steps are implemented with tests. The common
+navigation marks downstream screens unavailable. ADR 0009 is an unimplemented
+proposal rejected by automatic approval review; no role migration was applied.
+Full current operation and verification limits are in docs/foundation.md.

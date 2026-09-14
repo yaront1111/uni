@@ -18,6 +18,8 @@ describe('real PostgreSQL owner isolation', () => {
     await pool.query('INSERT INTO owner_scope_members (owner_scope_id,user_id,role) VALUES ($1,$2,$3),($4,$5,$3)', [a,alice,'OWNER',b,bob]);
     await pool.query('INSERT INTO devices (id,owner_scope_id,user_id,display_name) VALUES ($1,$2,$3,$4),($5,$6,$7,$8)', [randomUUID(),a,alice,'Desktop',randomUUID(),b,bob,'Phone']);
     for (const [owner,actor] of [[a,alice],[b,bob]]) {
+      await pool.query("INSERT INTO auth_identities(owner_scope_id,user_id,issuer,subject) VALUES($1,$2,'https://accounts.google.com',$3)",[owner,actor,actor]);
+      await pool.query("INSERT INTO auth_sessions(owner_scope_id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')",[owner,actor,actor!.replaceAll('-','').repeat(2)]);
       await pool.query("INSERT INTO audit_events (owner_scope_id,actor,purpose,objects_and_fields_accessed,policy_decision,model_or_code_version,result,correlation_id) VALUES ($1,$2,'test','[]','ALLOW','test','SUCCESS',$3)",[owner,actor,randomUUID()]);
     }
   });
@@ -45,7 +47,16 @@ describe('real PostgreSQL owner isolation', () => {
         expect(rows.every(row=>row[key]===a)).toBe(true);
       }
       expect((await c.query('SELECT id FROM users')).rows).toEqual([{id:alice}]);
+      for(const table of ['auth_sessions','auth_identities']){
+        const rows=(await c.query('SELECT owner_scope_id,user_id FROM '+table)).rows;
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a&&row.user_id===alice)).toBe(true);
+      }
     });
+  });
+  it('does not expose session digests to the application role',async()=>{
+    await expect(asOwner(a,alice,c=>c.query('SELECT token_hash FROM auth_sessions').then(()=>{}))).rejects.toMatchObject({code:'42501'});
+    await expect(appPool.query('SELECT unai_private.auth_session($1)',['a'.repeat(64)])).rejects.toMatchObject({code:'42501'});
   });
   it('refuses cross-owner inserts',async()=>{
     await expect(asOwner(a,alice,c=>c.query('INSERT INTO devices (id,owner_scope_id,user_id,display_name) VALUES ($1,$2,$3,$4)',[randomUUID(),b,bob,'Forged']).then(()=>{}))).rejects.toMatchObject({code:'42501'});

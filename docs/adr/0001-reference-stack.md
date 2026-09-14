@@ -16,8 +16,7 @@ not import providers or UI; application composition supplies provider adapters.
 This records the reference stack without introducing a deviation. Existing
 memory-kernel sources and unrelated workspace changes must be preserved.
 
-Authentication method and session model require a separate product decision.
-Design v1 also leaves responsive web delivery on phones unspecified. Neither
-native-mobile scope nor authentication semantics may be invented. The product
-decision was requested before implementation; those flows remain blocked until
-it is answered. This ADR does not approve either unresolved choice.
+The original authentication/session and phone-delivery open choices are resolved
+by operator approval recorded in ADR 0008 before implementation. Google OIDC via
+Auth.js, seven-day absolute PostgreSQL sessions and responsive phone web are
+approved. Native mobile remains deferred.

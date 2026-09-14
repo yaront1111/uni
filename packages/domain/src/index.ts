@@ -20,3 +20,9 @@ export const auditEventSchema = z.strictObject({
 });
 export type AuditEvent = Readonly<z.infer<typeof auditEventSchema>>;
 
+export const registerDeviceSchema=z.strictObject({
+  displayName:z.string().trim().min(1).max(120),kind:z.enum(['DESKTOP','PHONE']),
+});
+export const publicDeviceSchema=registerDeviceSchema.extend({id:z.uuid(),lastSeenAt:z.iso.datetime()});
+export type PublicDevice=z.infer<typeof publicDeviceSchema>;
+

@@ -1,81 +1,147 @@
-# Phase 0 foundation status and operation
+# Phase 0 foundation: implementation and remaining verification
 
-The foundation is partially implemented. It is not a completed Phase 0 delivery.
+Authority: contract-uai-v0 / rev-uai-v0-001, digest
+22027aaaeea527eb7b1d2ae3dab70bfabda8ff13c660bf0e0839356f91fe1339;
+design goal-2cf9472a-d972-4e97-88cf-1734639d9700@v1. All approved
+contract and design pages were read with revision pins. ADR 0008 records the
+operator's delegated authentication and responsive-web choices before code.
+ADR 0001's open-choice blocker is resolved. No native-mobile scope is added.
 
-Latest verification in this delivery: `pnpm test` exits 0 with 166 tests in 15 files;
-`pnpm typecheck` exits 0; `pnpm validate:registry` exits 1 with
-`REGISTRY_RELEASE_MISSING`. Authentication and phone-delivery authority remain
-unresolved. New implementation increments had observed failing tests before code
-was added. The architecture check additionally enforces domain dependency limits.
+## Delivered surfaces and entities
 
-## Authority and scope
+The assigned Sign-in and device registration screen has signed-out, signing-in,
+desktop, phone, expired-session and refused-authentication states. The Next.js
+Pages Router app has responsive styles, labeled forms, keyboard focus, status
+announcements and the common navigation shell. Future surfaces are visibly
+disabled until their owning nodes deliver them; no additional screen is invented.
 
-Authority is approved contract contract-uai-v0 / rev-uai-v0-001 (digest 22027aaaeea527eb7b1d2ae3dab70bfabda8ff13c660bf0e0839356f91fe1339) and design goal-2cf9472a-d972-4e97-88cf-1734639d9700@v1. Existing ADRs 0001 and 0002 preceded this work; ADR 0003 precedes the explicit device owner column.
+Implemented design entities: users, owner_scopes, owner_scope_members, devices,
+and shared audit_events. auth_identities and auth_sessions are authentication
+infrastructure recorded by ADR 0008, not new product screens. The phone and
+desktop resolve the same personal owner scope through issuer/subject identity.
+Owner-sequence allocation remains with uai-overlay-projections (CRT-RYW-01-A);
+this node does not fabricate that downstream behavior or a completed journey.
+Audit log UI and whole-system audit coverage remain with uai-production-operations.
 
-Implemented database entities: users, owner_scopes, owner_scope_members, devices, audit_events. No screen is implemented. Sign-in and device registration remains the only assigned screen. Audit log UI and whole-system audit coverage belong to production-operations.
+The stack includes TypeScript/pnpm, Next.js, Fastify, Zod, PostgreSQL/pgvector,
+Git SQL migrations, the encrypted S3 adapter and OpenTelemetry primitives. Domain
+code is independent of UI/provider packages. Production composition is in
+packages/api/src/platform.ts and apps/web. Mocks and controlled OAuth credentials
+exist only in tests.
 
-The monorepo contains the existing kernel, a shared Zod domain package, a PostgreSQL provider, a Fastify request-boundary package, an encrypted S3 provider and a structural registry loader. Domain imports neither UI nor provider code. The Next.js shell and application composition remain outstanding. The Fastify package requires explicit authentication and authorization ports; it does not ship a fabricated session verifier or public business routes.
+## Authentication and devices
 
-## Local verification
+Google Auth.js requests only openid/email/profile. Google issuer and subject
+identify accounts; matching email never merges accounts. Auth.js verifies OAuth
+state, PKCE and nonce. Production discovery is pinned to Google; the local
+identity server in oauth.test.ts is a test-only override.
 
-Use Node 24, pnpm 11.0.8, OpenSSL and a running Docker engine. Windows TLS tests use Git for Windows' bundled OpenSSL; Linux CI uses `openssl` on PATH:
+The __Host-unai.session cookie is Secure, HttpOnly, SameSite=Lax and Path=/.
+Database storage contains only a SHA-256 digest of its random 256-bit token.
+The database caps expiry at seven days; adapter updateSession cannot extend it.
+Auth.js may refresh the browser cookie expiry, but the server rejects the token
+at its original database deadline. Logout revokes one session, sign-out-all
+revokes all, disabled users lose every session permanently, and device removal
+atomically tombstones the device and revokes associated sessions.
 
-```sh
+The auth login is granted unai_auth, which has only fixed-function EXECUTE grants
+and no direct application-table privileges. The application login is granted
+unai_app, with no ownership, superuser or BYPASSRLS authority. Forced RLS protects
+all seven application tables. Application membership and exact route purpose
+checks run independently of authentication. Session tokens/digests are absent
+from public DTOs and audit payloads.
+
+Device APIs: GET /v1/devices (device.list), POST /v1/devices (device.register),
+POST /v1/devices/{id}/revoke (device.remove), and POST /v1/sessions/revoke-all
+(auth.sign_out_all). Each requires the session cookie, x-owner-scope-id,
+x-purpose and UUID x-correlation-id; writes also require idempotency-key.
+Registration serializes on the session row: retries return its existing device,
+and changed registration input is refused. The same-origin web proxy derives
+owner scope from the verified session and rejects cross-origin writes.
+
+Successful device operations and audit events commit together. Session creation
+and revocation also append real audit rows. Existing transaction commit-tag,
+rollback, closed-capability and pool-reuse protections remain intact. API and
+database telemetry contains bounded identifiers and outcomes, never payloads,
+cookies or raw provider errors. Deployment supplies the OpenTelemetry exporter.
+
+## Run and configure
+
+Prerequisites: Node 24, pnpm 11.0.8, Docker and OpenSSL. The full test command
+starts disposable PostgreSQL/pgvector with temporary storage and test-only
+credentials; it is not the persistent development or production database.
+
+```
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
+pnpm build
 pnpm validate:registry
 ```
 
-The full test command starts an isolated PostgreSQL 17/pgvector container on a random loopback port with ephemeral storage, applies every SQL migration in filename order, runs all tests and stops the container. The committed password is only for this disposable test instance. Never use it for a persistent database. Direct Vitest invocation without the harness fails; security integration tests cannot silently skip.
+For a persistent environment, provision self-managed PostgreSQL/pgvector on an
+encrypted volume with encrypted backups, TLS and a privileged migration owner.
+The existing SECURITY DEFINER functions require that trusted owner to bypass
+forced RLS. Never use its credentials for either runtime login. The prospective
+managed-database role change in ADR 0009 was rejected by automatic approval
+review and was not implemented. Managed RDS compatibility is not established.
 
-The tests use a separate non-superuser, non-BYPASSRLS application login, verify actual unfiltered queries with data for two owners, and exercise cross-owner insert refusal, membership expiry, audit write-once permissions, rollback and pooled-connection context cleanup. Every application table must be classified in packages/postgres/src/ownership.ts. Adding a table requires a migration and fixtures/assertions in isolation.test.ts. The guard rejects unclassified tables, missing owner columns, absent policies and disabled/unforced RLS. It also inspects schemas outside public to prevent evasion by moving tables.
+Run pnpm db:migrate with UNAI_MIGRATION_DATABASE_URL and UNAI_DATABASE_CA_PATH.
+The CLI applies every Git migration, checks immutable migration digests, and
+validates ownership coverage. Create separate LOGIN roles granted only unai_app
+or unai_auth, with credentials supplied through the deployment secret system.
 
-`pnpm validate:registry` invokes the structural registry loader. It checks manifest hashes, bounded YAML without aliases or duplicate keys, required frame/predicate fields, modalities, duplicate IDs and safe local filenames. It currently fails with `REGISTRY_RELEASE_MISSING` because no production `registry/releases/0.1.0/manifest.json` exists. Synthetic contracts live only in tests. Structural lint does not replace corpus, identity, transition or projection-replay validation, and callers must load an immutable Git checkout. The foundation workflow and `pnpm check:phase-exit` include this failing gate; Phase 0 cannot be declared complete.
+Set these application environment variables before starting services:
 
-## Database deployment requirements
+- UNAI_APP_DATABASE_URL and UNAI_AUTH_DATABASE_URL: respective low-privilege URLs;
+  no URL query options that downgrade certificate verification.
+- UNAI_DATABASE_CA_FILE: trusted PostgreSQL CA file for runtime services.
+- NEXTAUTH_URL: canonical HTTPS web origin, including the port when nonstandard.
+- NEXTAUTH_SECRET: secret of at least 32 characters from the secret system.
+- GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET: configured Google OAuth application.
+  Register NEXTAUTH_URL + /api/auth/callback/google as its callback URL.
+- UNAI_WEB_TLS_KEY_FILE and UNAI_WEB_TLS_CERT_FILE: web listener TLS files.
+- UNAI_API_TLS_KEY_FILE and UNAI_API_TLS_CERT_FILE: API listener TLS files.
+- UNAI_API_ORIGIN: HTTPS API origin (default listener port is 3443).
+- UNAI_API_CA_FILE: CA used to verify the API certificate.
+- Optional UNAI_API_PORT, UNAI_API_BIND and UNAI_WEB_BIND; binds default to loopback.
 
-Use `pnpm db:migrate` with `UNAI_MIGRATION_DATABASE_URL` and `UNAI_DATABASE_CA_PATH` set explicitly for the intended deployment. The CLI verifies PostgreSQL TLS, serializes runners with an advisory lock, applies trusted Git SQL in filename order and records each SHA-256 digest atomically in `unai_migrations.applied`. It refuses edited, removed or reordered applied history. Failed DDL and its ledger entry roll back together. The existing outer BEGIN/COMMIT envelope is supported; do not embed additional transaction-control statements in migration bodies. The exact deployment ledger is exempt from owner RLS only while the application role has no schema or table access. All other tables remain subject to the coverage guard.
+Run pnpm start:api and pnpm dev:web in separate terminals for local development;
+use pnpm build followed by pnpm start:web for production. Web and API use actual
+TLS listeners. Forwarded headers cannot turn plaintext into an authorized API
+connection. The deployed hostname must match the configured web origin. Obtain
+trusted certificates for the chosen development hostname; no TLS bypass exists.
 
-0001_foundation.sql creates the NOLOGIN unai_app authorization role. Provision a separate application login through the deployment secrets manager and grant it unai_app; never give it SUPERUSER, BYPASSRLS, table ownership or migration credentials. Do not grant application access to the migration principal. The CLI runs ownership validation after migrations. No migration has been run against an external deployment during this work; all database tests use disposable containers.
+For S3, create a private bucket encrypted with the configured KMS key, deny
+insecure transport and uploads without that key, and grant only the deployment
+identity's necessary permissions. The existing adapter verifies bucket settings
+and each read/write encryption receipt. Its resolver must authorize owner and
+purpose and map public UUIDs to private keys. The evidence-owned resolver remains
+with the later evidence service; the foundation does not manufacture source_items.
+Actual bucket policy, encrypted-volume and backup evidence is not available.
 
-The narrowly scoped SECURITY DEFINER membership function is owned by the privileged migration principal, has a fixed search path and performs no dynamic SQL. It evaluates active membership, user disablement and owner deletion. PostgreSQL RLS independently enforces actor and owner boundaries, while withOwnerTransaction performs an explicit membership check. Actor identity must come from authenticated session verification, never from JSON or an unverified header.
+## Verification and acceptance limits
 
-createDatabasePool requires a CA and verifies the database TLS certificate. SQL request context is transaction-local. Await every operation inside the transaction callback; transaction query and audit capabilities refuse use after callback completion. Returned database errors must be mapped to stable public error codes by API composition, never exposed or logged verbatim.
+Latest observed checks on 2026-09-14: pnpm test passed 186 tests in 20 files;
+pnpm typecheck passed for backend and web; the optimized Next.js build passed.
+New schema/lifecycle, adapter, device-route and screen tests were observed failing
+before their implementations. The controlled OAuth test performs a real HTTP
+token exchange, signed ID-token verification, tampered-state refusal and logout
+against PostgreSQL. Restricted-login and unfiltered cross-owner checks cover the
+new auth tables and deny digest access. These are not a production Google login,
+browser end-to-end acceptance or deployment-encryption receipt.
 
-Production deployment still needs provisioned TLS, encrypted database volumes/backups, an encrypted S3-compatible bucket and encryption evidence. The disposable test database uses local plaintext transport and memory-backed storage; it is not production encryption evidence. CRT-SEC-08-A is not yet satisfied for a deployed application.
+pnpm validate:registry still exits 1 with REGISTRY_RELEASE_MISSING. No configured
+check was skipped or replaced, and no synthetic release was created. This is a
+phase-exit failure. The sealed map assigns CRT-REG-01-A/B, CRT-REG-03-A and
+CRT-OUT-01-A to uai-corpus-registry, which depends on uai-evidence-jobs and
+uai-platform; uai-evidence-jobs depends on uai-platform. Requiring that descendant
+release before foundation phase exit creates an ordering issue for reviewed
+resolution, not an extra foundation deliverable or a waived check.
 
-The Fastify boundary checks the actual socket for TLS and ignores forwarded-protocol claims. Before body parsing it verifies an actor through the injected session verifier, validates `x-owner-scope-id`, `x-purpose` and `x-correlation-id`, and invokes the owner/purpose authorization port. Writes require a bounded `idempotency-key`; endpoint transaction services must still implement durable replay handling. A header alone is not idempotency. Handlers must use `withOwnerTransaction` for independent RLS/application enforcement and audit material operations. Errors use fixed codes, private responses are not cacheable, and logs contain only correlation ID, status and duration. Tests include real certificate-verified HTTPS; no production authentication provider is configured.
-
-The S3 adapter checks bucket default SSE-KMS encryption at initialization and explicitly requests the configured key on uploads. It verifies encryption receipts on reads and writes. Its resolver must authorize actor, owner, purpose and operation against canonical evidence metadata before returning a private storage key. Upload receipts contain only a public UUID; provider errors never expose raw keys. Deployment credentials use the SDK credential chain and must come from the secrets/identity system. Configure a bucket policy that denies insecure transport and incorrect encryption keys. Use the same canonical KMS key identifier in configuration, bucket settings and responses. Evidence-service resolver composition and real bucket verification remain outstanding. SDK mocks occur only in tests; those tests are not encryption-at-rest deployment evidence.
-
-The S3 read lifecycle correction (ADR 0007) closes Node response streams after
-encryption receipt rejection, body-read failure, or successful consumption. Two
-regressions using real Node Readable bodies and test-only SDK stubs failed on
-undestroyed streams before the fix, then passed. The full suite subsequently
-passed 166 tests in 15 files and type checking exited 0 on 2026-09-14. Registry
-validation still exited 1 with REGISTRY_RELEASE_MISSING. This correction adds
-no screen or entity and does not establish deployed encryption evidence.
-
-## Audit and observability
-
-withOwnerTransaction supplies a bounded append-only audit method. Successful material work and its audit receipt should use the same transaction. Rollback removes both. The application role cannot UPDATE, DELETE or TRUNCATE audit_events. Audit references contain public UUIDs and field names, not evidence content or object storage keys; Zod rejects extra properties.
-
-Failed/refused work needs a separately authorized audit transaction after rollback. Callers must explicitly audit material operations; coverage is not automatic. Cross-owner refusals require a product-approved audit ownership policy before API composition.
-
-The PostgreSQL adapter emits OpenTelemetry spans with owner scope, purpose, correlation ID, code version and outcome, plus transaction-duration metrics. The API boundary emits response spans, request-duration metrics and allowlisted structured response records through its log sink. Both exclude error details and payloads. Deployment must supply the OpenTelemetry SDK/exporter and log sink. These primitives do not establish whole-system audit or trace coverage.
-
-The owner transaction adapter now verifies PostgreSQL's COMMIT command tag before
-returning a successful result or emitting success telemetry (ADR 0006, recorded
-before the code change). PostgreSQL can return ROLLBACK without throwing when the
-callback catches an earlier SQL error. That case now raises
-TRANSACTION_NOT_COMMITTED. A real database regression first reproduced the false
-success, then passed after the fix; it also checks audit rollback and reuse of
-the connection for a different owner. This increment adds no entity or screen.
-
-## Product authority needed
-
-Design v1 explicitly leaves sign-in method and session model unspecified, and does not decide whether phones use responsive web. Product authority has been asked for the provider/method, session issuance/expiry/revocation policy and phone delivery choice. No answer was available during this work. No authentication ceremony or native-mobile scope was invented.
-
-Remaining delivery includes the product decision ADR, Next.js shell/common navigation, session-provider/application composition, all sign-in/device states, evidence-service storage authorization composition, verified production database/bucket encryption, the real canonical registry release and semantic/corpus gates. No screen is implemented. Passing the current full test suite does not imply these requirements are implemented.
-
+Assigned criteria remain CRT-NFR-07-A, CRT-OPS-02-A, CRT-SEC-01-A and CRT-SEC-08-A.
+The latter still needs real encrypted database/backup and object-store deployment
+configuration evidence. The reference-stack requirement also mentions the
+PostgreSQL queue owned by uai-evidence-jobs (CRT-NFR-02-A); its absence is not
+represented as implemented here. Node acceptance, phase exit and whole-product
+acceptance are distinct. The daemon's independent verifier remains authoritative.
