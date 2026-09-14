@@ -5,11 +5,15 @@
   "description": "Uai - universal memory system (memory kernel). Built by moe-next agents from prd.md.",
   "type": "module",
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:migrate": "tsx packages/postgres/src/migrate-cli.ts",
+    "validate:registry": "tsx packages/registry/src/validate-cli.ts",
+    "check:phase-exit": "pnpm typecheck && pnpm test && pnpm validate:registry"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.6.0",
     "vitest": "^4.0.0"
   }
