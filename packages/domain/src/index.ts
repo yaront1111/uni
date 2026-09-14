@@ -25,4 +25,5 @@ export const registerDeviceSchema=z.strictObject({
 });
 export const publicDeviceSchema=registerDeviceSchema.extend({id:z.uuid(),lastSeenAt:z.iso.datetime()});
 export type PublicDevice=z.infer<typeof publicDeviceSchema>;
+export {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,type EvidenceInput,type PublicEvidence} from './evidence.js';
 

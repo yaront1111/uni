@@ -59,7 +59,7 @@ it('writes with explicit KMS encryption and returns only the public ID', async (
     expect(resolver).toHaveBeenCalledWith(context, id, 'WRITE');
     expect(commands[1]).toBeInstanceOf(PutObjectCommand);
     expect((commands[1] as PutObjectCommand).input).toMatchObject({ Bucket: configuration.bucket, Key: 'private/raw/object-key',
-      ServerSideEncryption: 'aws:kms', SSEKMSKeyId: configuration.kmsKeyId });
+      ServerSideEncryption: 'aws:kms', SSEKMSKeyId: configuration.kmsKeyId,IfNoneMatch:'*' });
   } finally { store.close(); }
 });
 

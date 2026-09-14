@@ -1,8 +1,8 @@
 import React,{useState} from 'react';
 import {signIn,signOut} from 'next-auth/react';
 import type {PublicDevice} from '@unai/domain';
+import {Navigation} from './Navigation';
 export type AccessState='signed-out'|'signing-in'|'expired'|'refused'|'desktop'|'phone';
-const navigation=['Today','Ask','Commitments','Decisions','Weekly Review','Memory Inspector','Memory Inbox','Permissions'];
 export function Access(props:{state:AccessState;devices:PublicDevice[];registered:boolean;currentDeviceId?:string|null;error?:string}){
   const [state,setState]=useState(props.state),[busy,setBusy]=useState(false),[error,setError]=useState(props.error??'');
   const signedIn=state==='desktop'||state==='phone';
@@ -19,7 +19,7 @@ export function Access(props:{state:AccessState;devices:PublicDevice[];registere
   return <div className="shell">
     <a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    {signedIn&&<nav aria-label="Main navigation"><a href="/" aria-current="page">Devices</a>{navigation.map(label=><span key={label} aria-disabled="true" title="Available when this feature is delivered">{label}</span>)}</nav>}
+    {signedIn&&<Navigation current="devices"/>}
     <main id="content" tabIndex={-1}>
       <p className="eyebrow">YOUR SPACE, ACROSS DEVICES</p>
       <h1>{signedIn?'Your devices':'Welcome to Uai'}</h1>

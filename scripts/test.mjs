@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
+import {startStorageHarness} from './storage-harness.mjs';
 
 const name = 'unai-test-' + randomUUID();
 function docker(args) {
@@ -9,6 +10,7 @@ function docker(args) {
   return result.stdout.trim();
 }
 let created = false;
+let storage;
 try {
   console.log('Starting disposable PostgreSQL/pgvector for the full suite...');
   docker(['run','--detach','--rm','--name',name,'--publish','127.0.0.1::5432',
@@ -23,14 +25,17 @@ try {
     await setTimeout(250);
   }
   if(!ready) throw new Error('Test PostgreSQL did not become ready');
+  console.log('Starting disposable TLS/KMS object storage...');
+  storage=await startStorageHarness();
   const test=spawnSync(process.execPath,['node_modules/vitest/vitest.mjs','run'],{
     stdio:'inherit',
-    env:{...process.env,UNAI_TEST_DATABASE_URL:'postgresql://postgres:unai-test-only@127.0.0.1:'+binding.HostPort+'/unai_test'},
+    env:{...process.env,...storage.env,UNAI_TEST_DATABASE_URL:'postgresql://postgres:unai-test-only@127.0.0.1:'+binding.HostPort+'/unai_test'},
   });
   process.exitCode=test.status ?? 1;
 } catch(error) {
   console.error(error.message); process.exitCode=1;
 } finally {
+  try{storage?.close();}catch(error){console.error('Storage cleanup failed:',error.message);process.exitCode=1;}
   if(created) {
     try { docker(['stop',name]); }
     catch(error) { console.error('Test container cleanup failed:',error.message); process.exitCode=1; }

@@ -7,6 +7,8 @@ const classifiedTables=new Map([
   ['users','id'],['owner_scopes','id'],['owner_scope_members','owner_scope_id'],
   ['devices','owner_scope_id'],['audit_events','owner_scope_id'],
   ['auth_identities','owner_scope_id'],['auth_sessions','owner_scope_id'],
+  ['connectors','owner_scope_id'],['source_items','owner_scope_id'],['source_anchors','owner_scope_id'],
+  ['evidence_ingestion_receipts','owner_scope_id'],
 ]);
 
 export async function assertOwnershipCoverage(pool:Pool):Promise<void>{

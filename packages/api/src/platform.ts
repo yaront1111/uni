@@ -4,9 +4,10 @@ import { resolveSession, sessionToken, revokeSessions } from '@unai/auth';
 import { withOwnerTransaction } from '@unai/postgres';
 import { registerDeviceSchema,publicDeviceSchema } from '@unai/domain';
 import { randomUUID } from 'node:crypto';
+import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
 
-export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls']}){
-  const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all']);
+export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];evidenceObjects?:EvidenceObjects}){
+  const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -24,7 +25,10 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     const expected=request.method==='GET'&&request.routeOptions.url==='/v1/devices'?'device.list':
       request.routeOptions.url==='/v1/devices'?'device.register':
       request.routeOptions.url==='/v1/devices/:id/revoke'?'device.remove':
-      request.routeOptions.url==='/v1/sessions/revoke-all'?'auth.sign_out_all':null;
+      request.routeOptions.url==='/v1/sessions/revoke-all'?'auth.sign_out_all':
+      request.routeOptions.url==='/v1/evidence'?'evidence.ingest':
+      request.routeOptions.url==='/v1/evidence/:id'?'evidence.read':
+      request.routeOptions.url==='/v1/connectors/:id'?'connector.read':null;
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>){
@@ -75,5 +79,6 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     await revokeSessions(options.authPool,sessionToken(request.headers.cookie)!,request.ownerContext!.correlationId,true);
     return {revoked:true};
   });
+  registerEvidenceRoutes(app,deviceWork,options.evidenceObjects);
   return app;
 }

@@ -55,7 +55,7 @@ export async function createEncryptedS3Store(configuration: StorageConfiguration
       const key = await keyFor(context, id, 'WRITE');
       try {
         const result = await client.send(new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: bytes,
-          ContentType: 'application/octet-stream', ServerSideEncryption: 'aws:kms', SSEKMSKeyId: config.kmsKeyId }));
+          ContentType: 'application/octet-stream', ServerSideEncryption: 'aws:kms', SSEKMSKeyId: config.kmsKeyId,IfNoneMatch:'*' }));
         encrypted(result);
         return Object.freeze({ id });
       } catch { throw new Error('STORAGE_OPERATION_FAILED'); }
