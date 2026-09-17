@@ -79,6 +79,10 @@ pnpm build
 pnpm validate:registry
 ```
 
+pnpm validate:registry lints the Git registry release 0.1.0 against its recorded
+content hash. Registry release, tagging and snapshot publication are documented
+in docs/registry.md and ADR 0011.
+
 For a persistent environment, provision self-managed PostgreSQL/pgvector on an
 encrypted volume with encrypted backups, TLS and a privileged migration owner.
 The existing SECURITY DEFINER functions require that trusted owner to bypass

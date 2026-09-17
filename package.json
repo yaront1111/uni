@@ -12,7 +12,8 @@
     "start:web": "pnpm --filter @unai/web start",
     "start:api": "tsx packages/api/src/server.ts",
     "db:migrate": "tsx packages/postgres/src/migrate-cli.ts",
-    "validate:registry": "tsx packages/registry/src/validate-cli.ts",
+    "uai": "tsx packages/registry/src/cli.ts",
+    "validate:registry": "tsx packages/registry/src/cli.ts registry lint",
     "check:phase-exit": "pnpm typecheck && pnpm test && pnpm validate:registry"
   },
   "devDependencies": {

@@ -1,0 +1,3 @@
+# Registry release files are hashed byte-for-byte; never convert line endings.
+registry/releases/** -text
+registry/releases.yaml -text

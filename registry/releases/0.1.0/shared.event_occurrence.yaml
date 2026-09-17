@@ -1,0 +1,121 @@
+kind: FRAME
+id: shared.event_occurrence
+version: 0.1.0
+description: >-
+  Represents an event occurrence. ACTUAL modality records an event that happened;
+  SCHEDULED modality records a planned calendar event, which never implies that
+  it happened. An actual occurrence may REALIZE and RESOLVE a scheduled event or
+  commitment only through a registered transition.
+contextPolicy:
+  allowedKinds: [BASE, QUOTED, TEST]
+  defaultKind: BASE
+  quotedRule: >-
+    No rule in this release creates QUOTED context. Reported events canonicalize
+    into BASE with source attribution. Extractor output cannot select the context kind.
+identityStrategy:
+  kind: SURROGATE
+  matching: >-
+    Surrogate UUIDv7 identity. Prefer the external occurrence or recurrence
+    reference; otherwise latent-cluster matching over time, participants and
+    discourse. Only a CONFIRMED_MATCH reuses an instance for a material accepted update.
+  descriptivePredicates:
+    - shared.event_occurrence.description
+    - shared.event_occurrence.participants
+  newInstanceSignals:
+    - A different recurrence instance creates a separate occurrence.
+    - An actual occurrence is a separate instance from the scheduled event it realizes.
+identityAnchors: [external_occurrence_reference, occurrence_time, actor]
+roles:
+  - id: actor
+    valueType: ENTITY
+    required: false
+    description: Principal actor of the occurrence, when known.
+predicates:
+  - id: shared.event_occurrence.occurrence_time
+    frameType: shared.event_occurrence
+    description: Time or interval at which the event occurred or is scheduled.
+    valueType: TIME_OR_INTERVAL
+    cardinality: FUNCTIONAL
+    required: true
+    normalization: >-
+      ISO 8601 instant with offset or a start/end interval; structured calendar
+      fields are used directly and keep their timezone.
+    allowedModalities: [ACTUAL, SCHEDULED]
+    slotQualifiers: []
+    temporalBehavior: >-
+      A scheduled time past its date produces no occurrence and no resolution
+      without evidence.
+    conflictBehavior: Different times coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: A rescheduled calendar event supersedes through a governed transaction; history is retained.
+    sourceAuthorityPolicy: Structured calendar data is authoritative for SCHEDULED; attendance evidence for ACTUAL.
+    projectionContracts:
+      - schedule_projection.start
+      - schedule_projection.end
+  - id: shared.event_occurrence.participants
+    frameType: shared.event_occurrence
+    description: Participants of the occurrence.
+    valueType: ENTITY
+    cardinality: SET
+    required: false
+    normalization: Resolved entity identifiers; unresolved candidates remain separate entities.
+    allowedModalities: [ACTUAL, SCHEDULED]
+    slotQualifiers: []
+    temporalBehavior: Valid-time bounded.
+    conflictBehavior: Set membership is additive; an explicit removal contests only that member.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Structured attendee data and owner statements may support.
+    projectionContracts:
+      - schedule_projection.participants
+  - id: shared.event_occurrence.description
+    frameType: shared.event_occurrence
+    description: Free-text description of the occurrence.
+    valueType: TEXT
+    cardinality: SET
+    required: false
+    normalization: Unicode NFC, trimmed whitespace; original wording retained on the claim.
+    allowedModalities: [ACTUAL, SCHEDULED]
+    slotQualifiers: []
+    temporalBehavior: Valid-time bounded.
+    conflictBehavior: Distinct descriptions coexist as set members; an explicit correction contests the corrected member only.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Any attributed source may support; description never establishes identity.
+    projectionContracts: []
+  - id: shared.event_occurrence.external_occurrence_reference
+    frameType: shared.event_occurrence
+    description: Connector reference for the event or recurrence instance, when available.
+    valueType: EXTERNAL_REFERENCE
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Connector system identifier plus stable event or recurrence identifier.
+    allowedModalities: [ACTUAL, SCHEDULED]
+    slotQualifiers: []
+    temporalBehavior: Fixed for the instance.
+    conflictBehavior: A different reference is a signal of a separate instance, not a slot conflict to overwrite.
+    supersessionBehavior: Supersession only through a governed Belief Transaction or instance split.
+    sourceAuthorityPolicy: Connector structured data is authoritative.
+    projectionContracts:
+      - schedule_projection.recurrence_instance
+allowedModalities: [ACTUAL, SCHEDULED]
+slotQualifiers: []
+authorityRules:
+  - A SCHEDULED event never becomes ACTUAL without attendance or other occurrence evidence.
+  - Only accepted resolution assertions establish outcome; this frame defines no status predicate.
+  - A calendar cancellation is recorded as a CANCELLED resolution assertion.
+  - Model output may propose but not commit; commits require a Belief Transaction.
+mergePolicy: >-
+  Merge only by explicit user action or confirmed evidence in a governed
+  transaction; both identifiers remain resolvable through lineage and are never reused.
+splitPolicy: >-
+  Split only through a governed transaction; ambiguous claims become CONTESTED or
+  stay with the retired parent, which remains lineage history.
+transitionContracts:
+  - shared.event_occurrence.resolution
+  - shared.event_occurrence.realization
+projectionConsumers:
+  - schedule_projection
+invariants:
+  - Scheduled and actual occurrences are distinct instances.
+  - Realization never rewrites the realized source.
+  - No parallel outcome status predicate.
+acceptanceTests:
+  - PRD §44.7 scheduled meeting, attendance and cancellation

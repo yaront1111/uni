@@ -101,7 +101,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(11);
+    expect(rows.length).toBe(13);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -155,6 +155,23 @@ describe('real PostgreSQL owner isolation', () => {
     await pool.query('CREATE TABLE future_unscoped (id uuid)');
     try {await expect(assertOwnershipCoverage(pool)).rejects.toThrow('OWNERSHIP_COVERAGE_INVALID');}
     finally {await pool.query('DROP TABLE future_unscoped');}
+  });
+
+  it('keeps the global registry snapshot inaccessible to the application', async () => {
+    await expect(appPool.query('SELECT * FROM registry_releases')).rejects.toMatchObject({code:'42501'});
+    await expect(appPool.query('SELECT * FROM registry_contracts')).rejects.toMatchObject({code:'42501'});
+    // Uncommitted on one connection, so parallel test files never observe the weakened grants.
+    const client=await pool.connect();
+    const coverage=()=>assertOwnershipCoverage({query:(sql:string)=>client.query(sql)} as unknown as Pool);
+    try{
+      for(const weaken of ['GRANT SELECT ON registry_contracts TO unai_app','ALTER TABLE registry_releases NO FORCE ROW LEVEL SECURITY',
+        'CREATE POLICY registry_read ON registry_releases TO unai_app USING (true)']){
+        await client.query('BEGIN');
+        await client.query(weaken);
+        await expect(coverage(),weaken).rejects.toThrow('OWNERSHIP_COVERAGE_INVALID');
+        await client.query('ROLLBACK');
+      }
+    } finally {await client.query('ROLLBACK');client.release();}
   });
 
   it('keeps deployment ledger inaccessible to the application', async () => {

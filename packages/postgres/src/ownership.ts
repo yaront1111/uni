@@ -10,6 +10,10 @@ const classifiedTables=new Map([
   ['connectors','owner_scope_id'],['source_items','owner_scope_id'],['source_anchors','owner_scope_id'],
   ['evidence_ingestion_receipts','owner_scope_id'],
 ]);
+/** Global Git registry snapshot (ADR 0011): not owner data, so it must stay
+ * forced-RLS and completely inaccessible to the application role.
+ */
+const globalReferenceTables=new Set(['registry_releases','registry_contracts']);
 
 export async function assertOwnershipCoverage(pool:Pool):Promise<void>{
   const rows=(await pool.query(`SELECT n.nspname AS schema,c.relname,c.relrowsecurity,c.relforcerowsecurity,
@@ -22,7 +26,12 @@ export async function assertOwnershipCoverage(pool:Pool):Promise<void>{
     AND n.nspname NOT LIKE 'pg_toast%' AND n.nspname NOT LIKE 'pg_temp%'`)).rows;
   const ownerTables=rows.filter(row=>!(row.schema==='unai_migrations' && row.relname==='applied'
     && !row.app_schema_access && !row.app_table_access));
-  if(ownerTables.length!==classifiedTables.size || ownerTables.some(row=>
+  const globalTables=ownerTables.filter(row=>row.schema==='public' && globalReferenceTables.has(row.relname));
+  if(globalTables.length!==globalReferenceTables.size || globalTables.some(row=>
+    !row.relrowsecurity || !row.relforcerowsecurity || row.has_policy || row.app_table_access
+  ))throw new Error('OWNERSHIP_COVERAGE_INVALID');
+  const scopedTables=ownerTables.filter(row=>!globalTables.includes(row));
+  if(scopedTables.length!==classifiedTables.size || scopedTables.some(row=>
     row.schema!=='public' || !classifiedTables.has(row.relname) || !row.relrowsecurity ||
     !row.relforcerowsecurity || !row.has_policy || !row.columns.includes(classifiedTables.get(row.relname))
   ))throw new Error('OWNERSHIP_COVERAGE_INVALID');
