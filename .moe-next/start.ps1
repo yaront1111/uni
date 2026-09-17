@@ -70,6 +70,16 @@ if ($Governance) {
   Remove-Item Env:MOE_GOVERNANCE_MAX_DECISIONS -ErrorAction SilentlyContinue
 }
 
+# The verifier's disposable database must match what THIS product's db:migrate needs
+# (packages/postgres/src/migrate-cli.ts): pgvector, a TLS server it can pin, and its own variable
+# names. Without these the verifier spins up plain postgres + DATABASE_URL, migrate-cli refuses
+# MIGRATION_TLS_CONFIGURATION_REQUIRED before its first migration, and every DB-backed node loops
+# to the review ceiling (measured 2026-09-17). Docker Desktop must be running for any of it.
+$env:MOE_VERIFIER_DB_IMAGE = "pgvector/pgvector:pg17"
+$env:MOE_VERIFIER_DB_URL_VARS = "DATABASE_URL,UNAI_MIGRATION_DATABASE_URL"
+$env:MOE_VERIFIER_DB_TLS = "1"
+$env:MOE_VERIFIER_DB_CA_VAR = "UNAI_DATABASE_CA_PATH"
+
 # --operator-stdin enables the pairing channel: this window reads the confirmation label you type
 # in the control room and hands it to the daemon, which mints your OPERATOR session. Without it the
 # daemon only reads pairing input when stdin is a TTY, which it is NOT through the pwsh -> moe.ps1
