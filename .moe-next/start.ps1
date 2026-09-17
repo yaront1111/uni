@@ -70,5 +70,11 @@ if ($Governance) {
   Remove-Item Env:MOE_GOVERNANCE_MAX_DECISIONS -ErrorAction SilentlyContinue
 }
 
-& $moe start $project
+# --operator-stdin enables the pairing channel: this window reads the confirmation label you type
+# in the control room and hands it to the daemon, which mints your OPERATOR session. Without it the
+# daemon only reads pairing input when stdin is a TTY, which it is NOT through the pwsh -> moe.ps1
+# -> node launch chain, so every operator action (Close, Abandon, Allow one more attempt) stays
+# refused OPERATOR_PRINCIPAL_REQUIRED. Pass it explicitly here, because this launcher IS the
+# interactive foreground the pairing flow expects.
+& $moe start $project --operator-stdin
 exit $LASTEXITCODE
