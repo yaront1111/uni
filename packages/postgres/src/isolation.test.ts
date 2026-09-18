@@ -57,6 +57,19 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query("INSERT INTO proposition_fingerprints(id,owner_scope_id,proposition_id,normalization_version,fingerprint,descriptor) VALUES($1,$2,$3,'normalization-1',$4,'{}')",[randomUUID(),owner,proposition,'c'.repeat(64)]);
       await pool.query("INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle) VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL')",[claim,owner,anchor,proposition]);
       await pool.query("INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id) VALUES($1,$2,$3,'creditor',$4,$5)",[randomUUID(),owner,instance,entity,claim]);
+      // The model path: one routed item, one run over it, one accounted call.
+      const triage=randomUUID(),run=randomUUID();
+      await pool.query(`INSERT INTO triage_decisions(id,owner_scope_id,source_item_id,tier0_parsed,tier1_route,routing_reason,cost_budget_microunits)
+        VALUES($1,$2,$3,'{"parserVersion":"tier0-deterministic-0.1.0"}','FULL_EXTRACTION','{"code":"MEMORY_WORTHY_SIGNALS","routerVersion":"tier1-rules-0.1.0"}',20000)`,[triage,owner,source]);
+      await pool.query(`INSERT INTO extraction_runs(id,owner_scope_id,source_item_id,triage_decision_id,run_kind,
+        registry_release_id,normalization_version,entity_resolver_version,temporal_resolver_version,status,
+        model_provider,model_id,prompt_version,cost_microunits,latency_ms,completed_at)
+        VALUES($1,$2,$3,$4,'FULL',$5,'normalization-1','entity-resolver-1','temporal-resolver-1','SUCCEEDED',
+        'anthropic','test-model','surface-frames-0.1.0',1200,340,now())`,[run,owner,source,triage,randomUUID()]);
+      await pool.query(`INSERT INTO model_call_records(id,owner_scope_id,purpose,model_provider,model_id,prompt_version,
+        extraction_run_id,cost_microunits,latency_ms,correlation_id,outcome)
+        VALUES($1,$2,'memory.canonicalize','anthropic','test-model','surface-frames-0.1.0',$3,1200,340,$4,'SUCCEEDED')`,
+        [randomUUID(),owner,run,randomUUID()]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -143,6 +156,38 @@ describe('real PostgreSQL owner isolation', () => {
     await expect(pool.query('UPDATE entities SET id=gen_random_uuid() WHERE owner_scope_id=$1',[a]))
       .rejects.toThrow('CANONICAL_IDENTITY_IMMUTABLE');
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A triage, extraction and model-call queries',async()=>{
+    const modelPathTables=['triage_decisions','extraction_runs','model_call_records'];
+    await asOwner(a,alice,async c=>{
+      for(const table of modelPathTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.extract');
+    await asOwner(b,alice,async c=>{
+      for(const table of modelPathTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.extract');
+    // Purpose-bound like the rest: an unrelated product purpose reads none of it,
+    // and the evidence read sees the route without seeing runs or model calls.
+    await asOwner(a,alice,async c=>{
+      for(const table of ['extraction_runs','model_call_records']) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      expect((await c.query('SELECT owner_scope_id FROM triage_decisions')).rows.length).toBeGreaterThan(0);
+    },'evidence.read');
+    for(const table of modelPathTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.canonicalize'),table).rejects.toMatchObject({code:'42501'});
+    }
+    // A decision and a call record are statements about a moment: neither takes
+    // an update grant, and a closed run may not be reopened or re-versioned.
+    await expect(asOwner(a,alice,c=>c.query("UPDATE triage_decisions SET tier1_route='SOURCE_ONLY'").then(()=>{}),'memory.canonicalize'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,alice,c=>c.query('UPDATE model_call_records SET cost_microunits=0').then(()=>{}),'memory.canonicalize'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(pool.query("UPDATE extraction_runs SET normalization_version='normalization-2' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('EXTRACTION_RUN_IMMUTABLE');
+    await expect(pool.query("UPDATE extraction_runs SET status='FAILED',error_code='X' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('EXTRACTION_RUN_ALREADY_CLOSED');
+  });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
     // assert a belief in, and the owner sees only its own.
@@ -218,7 +263,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(26);
+    expect(rows.length).toBe(29);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

@@ -1,5 +1,6 @@
 import {z} from 'zod';
 import {parsedSourceAnchorSchema} from './sources.js';
+import {publicTriageSchema} from './extraction.js';
 
 export const dataPurposeSchema=z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
 export const sensitivitySchema=z.enum(['NORMAL','PRIVATE','RESTRICTED']);
@@ -24,5 +25,9 @@ export const publicEvidenceSchema=z.strictObject({
   // The deterministic anchors this item carries. Present on a single-item read;
   // omitted from list responses, which return metadata only.
   anchors:z.array(parsedSourceAnchorSchema).optional(),
+  // The Tier-1 route and its reason, once triage has decided one. Null rather
+  // than absent when the item has no triage row: evidence must stay readable
+  // when later processing has not run or has failed (PRD §11.1, §35.1).
+  triage:publicTriageSchema.nullable().optional(),
 });
 export type PublicEvidence=z.infer<typeof publicEvidenceSchema>;

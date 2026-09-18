@@ -14,6 +14,11 @@ import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
  * to notice and undo than a duplicate.
  */
 
+/** The version of the resolution rules below, recorded by anything that depends
+ * on how this service decided -- an extraction run pins it so its entity
+ * resolution stays reproducible (CRT-WRT-08-A). */
+export const ENTITY_RESOLVER_VERSION = 'entity-resolver-1';
+
 /** Alias types that identify one account or mailbox rather than describe a person.
  * An exact, unambiguous match on one of these is the "sufficient evidence" of
  * CRT-MEM-11-B; a name never is. */

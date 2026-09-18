@@ -1,0 +1,28 @@
+{
+  "repository": {"full_name": "example-org/uai-reference"},
+  "issue": {
+    "node_id": "PR_kwDOJ2ci5s5Ky1a4",
+    "number": 418,
+    "title": "Retry the storage receipt check on a slow bucket",
+    "body": "Raises the receipt timeout and adds one regression test.",
+    "user": {"login": "dana-eng"},
+    "created_at": "2026-09-01T08:12:44Z",
+    "pull_request": {}
+  },
+  "comments": [
+    {
+      "node_id": "IC_kwDOJ2ci5s5Xa1b0",
+      "id": 9014455,
+      "body": "CI: build #4182 passed on commit 7f2c1a9. 214 tests, 0 failures. Deployment preview is ready.",
+      "user": {"login": "github-actions[bot]"},
+      "created_at": "2026-09-01T08:19:02Z"
+    },
+    {
+      "node_id": "IC_kwDOJ2ci5s5Xa1b1",
+      "id": 9014456,
+      "body": "CI: nightly workflow completed on commit 7f2c1a9 with no changes to report.",
+      "user": {"login": "github-actions[bot]"},
+      "created_at": "2026-09-01T09:02:31Z"
+    }
+  ]
+}

@@ -38,6 +38,11 @@ export {entityKindSchema,entityLifecycleSchema,entityAliasTypeSchema,entityLinea
   modalitySchema,polaritySchema,claimOriginSchema,claimLifecycleSchema,temporalPrecisionSchema,temporalInterpretationSchema,
   slotDescriptorSchema,propositionDescriptorSchema,slotLookupOutcomeSchema,propositionLookupOutcomeSchema,storedClaimSchema,
   type TemporalInterpretation,type SlotDescriptor,type StoredClaim} from './memory.js';
+export {tier1RouteSchema,tier1SignalSchema,routingReasonSchema,tier0ParseSchema,triageDecisionSchema,publicTriageSchema,
+  extractionRunKindSchema,extractionRunStatusSchema,extractionRunSchema,extractedSpanSchema,extractedClaimSchema,
+  extractionOutputSchema,modelCallOutcomeSchema,modelCallRecordSchema,DEEP_EXTRACTION_ROUTES,
+  type Tier1Route,type Tier1Signal,type RoutingReason,type Tier0Parse,type TriageDecision,
+  type ExtractionRun,type ExtractedClaim,type ExtractionOutput,type ModelCallRecord} from './extraction.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

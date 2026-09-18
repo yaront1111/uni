@@ -4,6 +4,7 @@ import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
 import type {OwnerTransaction} from '@unai/postgres';
 import {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,parseSourcePayload,
   type EvidenceInput,type ParsedSourceAnchor,type ParsedSourceItem} from '@unai/domain';
+import {recordTriageDecision,readTriageDecision,publicTriage} from '@unai/extraction';
 import {createEncryptedS3Store,type StorageConfiguration} from '../../storage/src/index.js';
 import {uuidV7} from '../../../src/kernel/identities.js';
 
@@ -39,13 +40,16 @@ function canonical(value:unknown):string{
   if(value!==null&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+canonical((value as Record<string,unknown>)[key])).join(',')+'}';
   return JSON.stringify(value);
 }
-function publicRow(row:Record<string,any>,anchors?:ParsedSourceAnchor[]){
+function publicRow(row:Record<string,any>,anchors?:ParsedSourceAnchor[],triage?:ReturnType<typeof publicTriage>){
   return publicEvidenceSchema.parse({evidenceId:row.id,ownerScopeId:row.owner_scope_id,connectorId:row.connector_id,
     sourceType:row.source_type,externalId:row.external_id,parentExternalId:row.parent_external_id,actorRef:row.actor_ref,
     occurredAt:row.occurred_at?.toISOString()??null,observedAt:row.observed_at.toISOString(),rawObjectRef:row.raw_object_ref,
     contentHash:row.content_hash,sensitivity:row.sensitivity,allowedPurposes:row.allowed_purposes,
     ingestionVersion:row.ingestion_version,deterministicMetadata:row.deterministic_metadata,ingestionStatus:'STORED',
-    ...(anchors?{anchors}:{})});
+    // The triage route and its reason, null when nothing has routed the item
+    // yet: evidence must stay readable when later processing has not run or has
+    // failed (PRD §11.1, §35.1). The list read carries metadata only.
+    ...(anchors?{anchors}:{}),...(triage===undefined?{}:{triage})});
 }
 const ranks={NORMAL:0,PRIVATE:1,RESTRICTED:2};
 class Refusal extends Error{constructor(readonly status:number,readonly code:string){super(code);}}
@@ -91,8 +95,12 @@ export function registerEvidenceRoutes(app:FastifyInstance,work:Work,objects:Evi
     const row=(await tx.query('SELECT * FROM source_items WHERE id=$1 AND owner_scope_id=$2',[request.params.id,tx.context.ownerScopeId])).rows[0];
     if(!row||!row.allowed_purposes.includes(purpose)||ranks[row.sensitivity as keyof typeof ranks]>ranks[maximum])throw new Refusal(404,'EVIDENCE_NOT_FOUND');
     const anchors=await readAnchors(tx,row.id);
+    // Left join in effect: a missing triage row yields null rather than hiding
+    // the evidence, so a failed or not-yet-run extraction never makes an
+    // ingested item unreadable.
+    const triage=publicTriage(await readTriageDecision(tx,{ownerScopeId:tx.context.ownerScopeId,sourceItemId:row.id}));
     await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'source_items',id:row.id,fields:metadataFields}]});
-    return publicRow(row,anchors);
+    return publicRow(row,anchors,triage);
   }));
   app.get<{Params:{id:string}}>('/v1/connectors/:id',async(request,reply)=>scoped(request,reply,async(tx,purpose,maximum)=>{
     if(!publicEvidenceSchema.shape.evidenceId.safeParse(request.params.id).success)throw new Refusal(400,'CONNECTOR_ID_INVALID');
@@ -128,6 +136,14 @@ async function ingest(tx:OwnerTransaction,input:EvidenceInput,objects:EvidenceOb
       VALUES($1,$2,$3,$4,$5)`,[uuidV7(),tx.context.ownerScopeId,row.id,'raw/'+randomBytes(32).toString('hex'),objects.encryptionKeyRef]);
     await objects.put(tx,row.raw_object_ref,bytes);
   }
+  // Tier-0 parsing and Tier-1 routing are deterministic and model-free, so the
+  // route is recorded in this transaction and every ingested item has one
+  // (ADR 0016 §2, CRT-WRT-07-A). Deep extraction is not done here: it runs on
+  // the durable queue, and evidence is acknowledged before it (PRD §35.1).
+  await recordTriageDecision(tx,{ownerScopeId:tx.context.ownerScopeId,sourceItemId:row.id,
+    sourceType:row.source_type,externalId:row.external_id,parentExternalId:row.parent_external_id,
+    actorRef:input.actorRef,occurredAt:input.occurredAt,content:input.content,
+    deterministicMetadata:input.deterministicMetadata});
   await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'source_items',id:row.id,fields:metadataFields}]});
   return {evidenceId:row.id,ingestionStatus:'STORED',stored:inserted.rowCount===1};
 }

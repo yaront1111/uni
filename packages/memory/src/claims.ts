@@ -24,6 +24,9 @@ const confidence = z.number().min(0).max(1);
 const claimInputSchema = z.strictObject({
   ownerScopeId: z.uuid(),
   sourceAnchorId: z.uuid(),
+  /** The extraction run that produced this claim, for a claim a model read out
+   * of evidence. Null for a claim the owner or a connector stated directly. */
+  extractionRunId: z.uuid().nullable().default(null),
   assertedByEntityId: z.uuid().nullable().default(null),
   propositionId: z.uuid().nullable().default(null),
   candidateFrameTypeId: registryId.nullable().default(null),
@@ -75,11 +78,11 @@ export async function recordClaim(tx: MemoryTransaction, input: ClaimInput): Pro
     throw new MemoryStoreError('CLAIM_PROPOSITION_REQUIRED');
   }
   const claimId = uuidV7();
-  await tx.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,asserted_by_entity_id,proposition_id,
+  await tx.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,extraction_run_id,asserted_by_entity_id,proposition_id,
     candidate_frame_type_id,claim_origin,lifecycle,valid_from,valid_to,extraction_confidence,entity_resolution_confidence,
     temporal_resolution_confidence,instance_resolution_confidence,temporal_interpretation,metadata)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-    [claimId, claim.ownerScopeId, claim.sourceAnchorId, claim.assertedByEntityId, claim.propositionId,
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+    [claimId, claim.ownerScopeId, claim.sourceAnchorId, claim.extractionRunId, claim.assertedByEntityId, claim.propositionId,
       claim.candidateFrameTypeId, claim.claimOrigin, claim.lifecycle, claim.validFrom, claim.validTo,
       claim.extractionConfidence, claim.entityResolutionConfidence, claim.temporalResolutionConfidence,
       claim.instanceResolutionConfidence,

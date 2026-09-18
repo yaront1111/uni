@@ -1,0 +1,26 @@
+{
+  "id": "thread-newsletter-4410",
+  "historyId": "884401",
+  "messages": [
+    {
+      "id": "msg-nl-0001",
+      "threadId": "thread-newsletter-4410",
+      "internalDate": "1788253200000",
+      "labelIds": ["INBOX", "CATEGORY_PROMOTIONS"],
+      "sizeEstimate": 28110,
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Message-Id", "value": "<weekly-2026-09-01@news.example.test>"},
+          {"name": "From", "value": "The Design Weekly <newsletter@news.example.test>"},
+          {"name": "To", "value": "owner@example.test"},
+          {"name": "Subject", "value": "The Design Weekly: 12 kitchen trends, and 30% off through Friday"},
+          {"name": "Date", "value": "Tue, 1 Sep 2026 06:00:00 +0000"},
+          {"name": "List-Unsubscribe", "value": "<https://news.example.test/unsubscribe/abc123>"},
+          {"name": "Precedence", "value": "bulk"}
+        ],
+        "body": {"size": 660, "text": "Twelve kitchen trends our editors loved this week, plus a reader tour of a ILS 14,900 renovation.\n\nMembers save 30% on every guide until Friday.\n\nYou are receiving this email because you subscribed at news.example.test. Unsubscribe at any time."}
+      }
+    }
+  ]
+}

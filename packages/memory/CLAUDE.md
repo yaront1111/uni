@@ -45,6 +45,10 @@ decisions behind it are ADR 0015 and the delivery report is
   only from text that already carried an instant. An unrecognised phrase answers
   `null`; it must not fall back to the reference instant. Adding a phrase means
   adding it with the precision it honestly has (CRT-MEM-07-A).
+- `recordClaim` takes an optional `extractionRunId`, null for a claim the owner
+  or a connector stated directly. Migration 0011 replaced the placeholder
+  `CHECK(extraction_run_id IS NULL)` of ADR 0015 §1 with the composite owner
+  foreign key to `extraction_runs`; no existing claim row was altered.
 - **Confidence stays four values.** `recordClaim` and `readClaim` keep
   extraction, entity-resolution, temporal-resolution and instance-resolution
   confidence apart. Never combine them into one number (CRT-MEM-14-A).

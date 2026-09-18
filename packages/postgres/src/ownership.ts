@@ -16,6 +16,8 @@ const classifiedTables=new Map([
   ['belief_slots','owner_scope_id'],['slot_fingerprints','owner_scope_id'],
   ['propositions','owner_scope_id'],['proposition_fingerprints','owner_scope_id'],
   ['claims','owner_scope_id'],
+  ['triage_decisions','owner_scope_id'],['extraction_runs','owner_scope_id'],
+  ['model_call_records','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a

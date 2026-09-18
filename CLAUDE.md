@@ -60,6 +60,17 @@ Package layering:
 - `@unai/jobs`: PostgreSQL-backed durable queue (leases, bounded attempts, dead letter). `runJobAttempt` uses three separate transactions for claim, handler and outcome. No broker, no Redis.
 - `@unai/registry`: Git-file semantic registry (`registry/releases/<version>/*.yaml`) with lint, release hashing and an immutable database snapshot, exposed through the CLI `pnpm uai registry lint|publish`. Release files are byte-exact (`.gitattributes -text`). Procedure: `docs/registry.md`.
 - `@unai/memory`: canonical identity — the entity service with its under-merge default, the temporal resolver, the belief-slot/proposition store with versioned lookup fingerprints, and the claim store. Pure functions over an `OwnerTransaction` the caller opened; no route, job, projection or belief assessment. Report: `docs/canonical-identity.md`.
+- `@unai/model`: the provider-independent LLM gateway. One `invoke` that validates
+  provider output against the caller's Zod schema before returning it, records
+  `model_call_records` for every call (succeeded, rejected or failed) in its own
+  `model.call` transaction, and enforces a cost ceiling. Adapters for the
+  configured provider live here and nowhere else. Report: `docs/model-path-and-extraction.md`.
+- `@unai/extraction`: triage and bounded extraction. Tier-0 parsing and Tier-1
+  routing are pure and run inside the evidence ingest transaction, so every item
+  has a recorded route; `runExtraction` produces span-anchored claims through the
+  gateway and records an `extraction_runs` row pinned to every version it used.
+  It starts no worker: `createExtractionJobHandler` is the handler for job kind
+  `evidence.extract`.
 - `@unai/api`: `createApiBoundary` (`index.ts`) is the generic Fastify boundary; `createPlatformApi` (`platform.ts`) is the production composition with device, evidence (`evidence.ts`) and ops (`ops.ts`) routes; `server.ts` is the entry point.
 - `apps/web`: Next.js Pages Router. `pages/api/platform/[...path].ts` is a same-origin proxy: it derives owner scope from the verified session, refuses cross-origin writes, maps path to purpose, and calls the API over verified TLS. The browser never talks to the API directly.
 
