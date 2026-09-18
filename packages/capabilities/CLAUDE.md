@@ -37,6 +37,15 @@ tells you.
   and `last_material_update` are the newest *input* time, and `asOf` is a
   parameter. `projection_version` is the one column a rebuild changes, and
   `projectionRowContent` excludes exactly it.
+- **Readers follow lineage** (ADR 0023 §3). A merged frame's slots, roles,
+  resolutions, realizations and allocations are read for its survivor, a
+  merged proposition's claims count for the one it merged into, a claim a split
+  assigned (support row of a SPLIT transaction) counts for the new proposition,
+  and a merged entity reads as its survivor. With no lineage every map is the
+  identity; keep it so, or replay stops equalling what earlier nodes asserted.
+  A full replay removes rows of frames it no longer projects, and
+  `rebuildProjectionsAfterLineageChange` is the merge/split rebuild with one
+  receipt per projection, idempotent per transaction.
 - **A read writes nothing.** `readCommitmentsProjection` and its siblings fold
   the owner's overlay over the persisted rows in memory. They run under
   `projection.read`, which no projection INSERT policy admits.

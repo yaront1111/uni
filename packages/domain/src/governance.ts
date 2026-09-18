@@ -52,6 +52,10 @@ const roleFill = z.strictObject({
   typedValue: z.unknown().optional(),
 });
 
+/** What a MERGE or SPLIT operation retires. */
+export const mergeTargetTypeSchema = z.enum(['frame_instance', 'entity']);
+const partitionKey = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/);
+
 export const beliefOperationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('CREATE_FRAME_INSTANCE'), operationRef,
     frameTypeId: registryId, contextSpaceId: z.uuid().optional(), roles: z.array(roleFill).max(32).optional() }),
@@ -89,8 +93,20 @@ export const beliefOperationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('SUPPRESS'), target: objectRefSchema, targetObjectType: z.enum(['proposition','claim']) }),
   z.strictObject({ kind: z.literal('ARCHIVE'), target: objectRefSchema, targetObjectType: z.enum(['proposition','claim']) }),
   z.strictObject({ kind: z.literal('DELETE'), target: objectRefSchema, targetObjectType: z.enum(['proposition','claim']) }),
-  z.strictObject({ kind: z.literal('MERGE'), target: objectRefSchema, survivor: objectRefSchema }),
-  z.strictObject({ kind: z.literal('SPLIT'), target: objectRefSchema, partitions: z.array(z.string().max(64)).min(2).max(16) }),
+  // Merge and split name the kind of object they retire (PRD §14.1-§14.3). A
+  // frame instance is the default, so a proposal written before entities could be
+  // merged still reads the same way.
+  z.strictObject({ kind: z.literal('MERGE'), target: objectRefSchema, survivor: objectRefSchema,
+    targetObjectType: mergeTargetTypeSchema.optional(), reason: z.string().trim().min(1).max(2048).optional() }),
+  z.strictObject({ kind: z.literal('SPLIT'), target: objectRefSchema, partitions: z.array(partitionKey).min(2).max(16),
+    targetObjectType: mergeTargetTypeSchema.optional(),
+    partitionSpecs: z.array(z.strictObject({
+      partition: partitionKey, canonicalLabel: z.string().trim().min(1).max(512).optional(),
+      roles: z.array(roleFill).max(32).optional(),
+    })).max(16).optional(),
+    claimAssignments: z.array(z.strictObject({ claimId: z.uuid(), partition: partitionKey })).max(256).optional(),
+    aliasAssignments: z.array(z.strictObject({ aliasId: z.uuid(), partition: partitionKey })).max(256).optional(),
+    reason: z.string().trim().min(1).max(2048).optional() }),
 ]);
 export type BeliefOperation = z.infer<typeof beliefOperationSchema>;
 

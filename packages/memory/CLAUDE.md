@@ -30,6 +30,15 @@ here that touches `belief_assessments`, `recordBeliefStateVersion`, appends a
 recorded-time version at a stated knowledge time and names the governed
 transaction it belongs to.
 
+It also owns lineage (`lineage.ts`): the append-only `frame_instance_lineage`,
+`proposition_lineage` and `entity_lineage` writers, governed retirement of a
+frame instance or entity, slot rehoming, and the resolvers that follow a merged
+or split id (`listMergedFrameMembers`, `resolveFrameInstanceSurvivors`,
+`resolveEntitySurvivors`, `resolveIdentity`). Schema:
+`migrations/0018_merge_split_lineage.sql`; decisions: ADR 0023; report:
+`docs/merge-split-lineage.md`. The MERGE and SPLIT operation bodies are
+`@unai/belief`'s, because a merge or split is a belief transaction.
+
 ## Surface and consumers
 
 - Every store takes a `MemoryTransaction` (`src/transaction.ts`) — just `query` —
@@ -132,6 +141,13 @@ transaction it belongs to.
   anything unrecognised, negated or not-yet-actual rather than guessing a code.
 - **Time passage writes nothing.** `sweepElapsedSchedules` reports and returns
   `occurrencesCreated: 0`; never give it an `INSERT` (CRT-OUT-03-A, CRT-OUT-07-A).
+- **An old id is never re-pointed or reused.** Lineage rows are append-only
+  (`LINEAGE_IMMUTABLE`) and the database accepts one only from a MERGE or SPLIT
+  transaction committing in the same database transaction
+  (`LINEAGE_REQUIRES_GOVERNED_TRANSACTION`); a frame instance leaves ACTIVE only
+  under a committing transaction and never returns. Write lineage *before* the
+  retirement so the old id resolves throughout, and never re-point a claim to
+  follow a merge or split: readers follow lineage instead (ADR 0023 §2).
 - Recomputation appends and closes; it never rewrites. `recomputeCanonicalFingerprints`
   inserts the new-version rows before closing the old ones, so no reader is left
   without an index, and the database's `FINGERPRINT_IMMUTABLE` trigger enforces

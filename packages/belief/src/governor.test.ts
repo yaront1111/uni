@@ -584,8 +584,13 @@ describe('the local policy ports', () => {
 
   it('refuses a proposal naming an operation kind this node does not deliver', async () => {
     await expect(proposeBeliefTransaction(runner, request(), proposal([
-      { kind: 'MERGE', target: randomUUID(), survivor: randomUUID() }])))
+      { kind: 'ARCHIVE', target: randomUUID(), targetObjectType: 'proposition' }])))
       .rejects.toMatchObject({ name: 'BeliefTransactionError', message: 'BELIEF_OPERATION_NOT_DELIVERED' });
+    // Merge and split are delivered by the merge-and-split node, and only inside a
+    // transaction of their own kind: migration 0018 accepts lineage from nothing else.
+    await expect(proposeBeliefTransaction(runner, request(), proposal([
+      { kind: 'MERGE', target: randomUUID(), survivor: randomUUID() }])))
+      .rejects.toMatchObject({ name: 'BeliefTransactionError', message: 'BELIEF_OPERATION_KIND_MISMATCH' });
   });
 
   it('refuses a commit whose idempotency key does not match the proposal', async () => {
