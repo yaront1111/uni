@@ -75,6 +75,9 @@ importers:
       '@unai/jobs':
         specifier: workspace:*
         version: link:../jobs
+      '@unai/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@unai/postgres':
         specifier: workspace:*
         version: link:../postgres

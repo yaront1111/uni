@@ -41,6 +41,9 @@ export { CLAIM_RELATION_KINDS, classifyTemporalUpdate, recordClaimRelation, list
   recordCorrection, recordChange,
   type ClaimRelationKind, type TemporalEffect, type TemporalUpdateKind, type StoredClaimRelation,
   type ValidPeriod, type TemporalUpdateResult, type FollowUpClaim } from './relations.js';
+export { OVERLAY_VERSION, allocateOwnerSequence, recordOverlayDelta, attachOverlayDelta, contestOverlayDelta,
+  recordMemoryOperation, listMemoryOperations, readOwnerOverlay, isOverlayRemoved,
+  type RecordOverlayDeltaInput, type RecordedOverlayDelta, type ContestedReason } from './overlay.js';
 export { BITEMPORAL_QUERY_VERSION, BITEMPORAL_POLICY_VERSION, queryCurrentState, queryCorrectedHistoricalState,
   queryHistoricalBeliefState, queryBeliefState, readBeliefTimeline, recordBeliefStateVersion,
   type BeliefQueryMode, type AssessmentStatusName, type BeliefStateRow, type BeliefStateAnswer,

@@ -8,6 +8,8 @@ import {recordTriageDecision,readTriageDecision,publicTriage} from '@unai/extrac
 import {createEncryptedS3Store,type StorageConfiguration} from '../../storage/src/index.js';
 import {uuidV7} from '../../../src/kernel/identities.js';
 
+const OBJECT_WRITE_PURPOSES=new Set(['evidence.ingest','memory.correct']);
+
 export interface EvidenceObjects {
   put(tx:OwnerTransaction,id:string,bytes:Uint8Array):Promise<void>;
   get(tx:OwnerTransaction,id:string):Promise<Uint8Array>;
@@ -20,7 +22,10 @@ export async function createEvidenceObjects(config:StorageConfiguration){
   const store=await createEncryptedS3Store(config,async(context,id,operation)=>{
     const tx=transactions.getStore();
     if(!tx||JSON.stringify(tx.context)!==JSON.stringify(context))return null;
-    if(operation==='WRITE'&&context.purpose!=='evidence.ingest')return null;
+    // The two purposes that create evidence: the ingest route, and the owner's
+    // own correction controls, which store what the owner said before anything
+    // canonical is proposed (migration 0014, CRT-RYW-06-A).
+    if(operation==='WRITE'&&!OBJECT_WRITE_PURPOSES.has(context.purpose))return null;
     const row=(await tx.query(`SELECT k.object_store_key,s.submitted_by_user_id FROM source_items s
       JOIN evidence_object_keys k ON k.owner_scope_id=s.owner_scope_id AND k.source_item_id=s.id
       WHERE s.raw_object_ref=$1 AND s.owner_scope_id=$2`,[id,context.ownerScopeId])).rows[0];
@@ -146,6 +151,46 @@ async function ingest(tx:OwnerTransaction,input:EvidenceInput,objects:EvidenceOb
     deterministicMetadata:input.deterministicMetadata});
   await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'source_items',id:row.id,fields:metadataFields}]});
   return {evidenceId:row.id,ingestionStatus:'STORED',stored:inserted.rowCount===1};
+}
+
+export interface OwnerStatementRequest {
+  /** The owner's own words. Stored verbatim as the evidence content and anchored
+   * as one message span, so a claim made from it can point at the text. */
+  readonly text:string;
+  readonly externalId:string;
+  readonly idempotencyKey:string;
+  readonly sensitivity:EvidenceInput['sensitivity'];
+  readonly allowedPurposes:readonly string[];
+  readonly deterministicMetadata?:Record<string,unknown>;
+}
+/** Store one owner statement as evidence and answer its anchor.
+ *
+ * The correction write paths create a new evidence row rather than editing an
+ * existing one (CRT-RYW-06-A), and they create it through the same `ingest` the
+ * HTTP route uses: the same content hash, the same idempotency receipt, the same
+ * durable object and the same recorded triage route. The only difference is the
+ * purpose the transaction runs under, which migration 0014 admits alongside
+ * `evidence.ingest`.
+ */
+export async function ingestOwnerStatement(tx:OwnerTransaction,objects:EvidenceObjects,request:OwnerStatementRequest):
+  Promise<{evidenceId:string;sourceAnchorId:string;stored:boolean}>{
+  if(!OBJECT_WRITE_PURPOSES.has(tx.context.purpose))throw new Refusal(403,'EVIDENCE_POLICY_REFUSED');
+  const input=evidenceInputSchema.parse({
+    ownerScopeId:tx.context.ownerScopeId,connectorId:null,sourceType:'CONVERSATION',externalId:request.externalId,
+    // `body` is the field Tier 0 reads for a source type it has no structure
+    // for, so the owner's words are routed like any other message rather than
+    // landing as an empty parse.
+    actorRef:{type:'USER',id:tx.context.actorId},occurredAt:null,content:{body:request.text},
+    deterministicMetadata:request.deterministicMetadata??{},
+    sensitivity:request.sensitivity,allowedPurposes:[...request.allowedPurposes],idempotencyKey:request.idempotencyKey,
+  });
+  const result=await ingest(tx,input,objects);
+  await writeAnchors(tx,result.evidenceId,[{kind:'MESSAGE_SPAN',anchor:{start:0,end:request.text.length},normalizedText:request.text}]);
+  const anchor=(await tx.query(
+    `SELECT id FROM source_anchors WHERE owner_scope_id=$1 AND source_item_id=$2 AND anchor_kind='MESSAGE_SPAN' ORDER BY id LIMIT 1`,
+    [tx.context.ownerScopeId,result.evidenceId])).rows[0];
+  if(!anchor)throw new Refusal(503,'EVIDENCE_UNAVAILABLE');
+  return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string,stored:result.stored};
 }
 
 async function readAnchors(tx:OwnerTransaction,sourceItemId:string):Promise<ParsedSourceAnchor[]>{

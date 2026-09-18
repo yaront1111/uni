@@ -11,7 +11,14 @@ It also owns canonicalization and bitemporal state (`canonicalize.ts`,
 source attribution, frame-instance matching with its five outcomes, claim
 relations that tell a correction from a change, and the three query modes of
 PRD §12.3. Schema: `migrations/0013_canonicalization_and_bitemporal.sql`;
-decisions: ADR 0018; report: `docs/canonicalization-and-bitemporal.md`. Deciding
+decisions: ADR 0018; report: `docs/canonicalization-and-bitemporal.md`.
+
+It also owns owner read-your-writes (`overlay.ts`): the `owner_sequences`
+allocator, the `owner_overlay_deltas` store the owner's every device reads, and
+the `memory_operations` record of the ten correction controls. Schema:
+`migrations/0014_owner_overlay_and_corrections.sql`; decisions: ADR 0019; report:
+`docs/owner-overlay-and-corrections.md`. The HTTP controls over it are
+`packages/api/src/corrections.ts`, not this package. Deciding
 *what to believe* is still the write governor's (`@unai/belief`); the one writer
 here that touches `belief_assessments`, `recordBeliefStateVersion`, appends a
 recorded-time version at a stated knowledge time and names the governed
@@ -84,6 +91,19 @@ transaction it belongs to.
   knowledge time in the future or earlier than what is already recorded, and only
   ever closes an existing version's window. Never write a past knowledge time
   around it (CRT-MEM-06-A).
+- **An owner sequence is allocated, never chosen.** `allocateOwnerSequence` is the
+  only caller of `unai_private.allocate_owner_sequence`, and the row lock that
+  statement takes is what makes the numbers increase in *commit* order. Do not
+  replace it with a PostgreSQL sequence, a `max()+1` read or a client-side
+  counter: all three break CRT-RYW-01-A while still looking monotonic.
+- **The overlay is owner-wide.** `source_device_id` and `source_session_id` are
+  audit columns. Never filter a read by them, and never add a policy that does:
+  the cross-device guarantee of CRT-RYW-02-A and CRT-RYW-02-B is exactly the
+  absence of such a filter.
+- **Re-extraction contests and stops.** `contestOverlayDelta` is the whole write
+  the extraction path has over a delta. REJECTED_AS_INTERPRETATION, SUPERSEDED
+  and WITHDRAWN need the owner's own `memory.correct` purpose, enforced by the
+  `overlay_delta_transition` trigger for every principal (CRT-MEM-15-A).
 - Recomputation appends and closes; it never rewrites. `recomputeCanonicalFingerprints`
   inserts the new-version rows before closing the old ones, so no reader is left
   without an index, and the database's `FINGERPRINT_IMMUTABLE` trigger enforces
@@ -92,12 +112,17 @@ transaction it belongs to.
 ## Running these tests
 
 `temporal.test.ts` is pure: `pnpm exec vitest run packages/memory/src/temporal.test.ts`.
-`identity.test.ts` and `canonicalization.test.ts` need the harness — run `pnpm test`, or export
-`UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated pgvector server. It
-create the `memory_test_app` and `canonicalization_test_app` LOGIN roles when
-absent and run every store through `withOwnerTransaction` under the
-low-privilege application role, so the policies of migrations 0010, 0012 and 0013
-are part of what they prove. No `UNAI_TEST_S3_*` is needed.
+`identity.test.ts`, `canonicalization.test.ts` and `overlay.test.ts` need the harness — run
+`pnpm test`, or export `UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated
+pgvector server. They create the `memory_test_app`, `canonicalization_test_app`
+and `overlay_test_app` LOGIN roles when absent and run every store through
+`withOwnerTransaction` under the low-privilege application role, so the policies
+of migrations 0010, 0012, 0013 and 0014 are part of what they prove. No
+`UNAI_TEST_S3_*` is needed.
+
+`overlay.test.ts` holds two owner transactions open at once to prove the
+allocator serializes them, so it needs a pool that can give out two connections;
+do not cap that pool at one.
 
 ## Traps
 

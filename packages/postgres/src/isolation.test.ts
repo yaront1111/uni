@@ -106,6 +106,16 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,
         temporal_effect,created_by_transaction_id) VALUES($1,$2,$3,$4,'CORRECTS','SAME_VALID_INTERVAL',$5)`,
         [randomUUID(),owner,correction,claim,transaction]);
+      // Owner read-your-writes: the allocated sequence, the delta every device of
+      // this owner reads, and the correction control that produced it.
+      const delta=randomUUID();
+      await pool.query('INSERT INTO owner_sequences(owner_scope_id,last_sequence) VALUES($1,1)',[owner]);
+      await pool.query(`INSERT INTO owner_overlay_deltas(id,owner_scope_id,owner_sequence,source_evidence_id,raw_text,
+        delta_kind,lifecycle,target_object_type,target_object_id) VALUES($1,$2,1,$3,'Actually it was ILS 60',
+        'USER_CORRECTION','USER_ASSERTED','proposition',$4)`,[delta,owner,source,proposition]);
+      await pool.query(`INSERT INTO memory_operations(id,owner_scope_id,operation_kind,target_object_type,target_object_id,
+        overlay_delta_id,evidence_id,transaction_id,requested_by_actor_id) VALUES($1,$2,'CORRECT','proposition',$3,$4,$5,$6,$7)`,
+        [randomUUID(),owner,proposition,delta,source,transaction,actor]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -324,6 +334,46 @@ describe('real PostgreSQL owner isolation', () => {
         [randomUUID(),a,claims[0].id,claims[1].id,kind,effect]),kind).rejects.toMatchObject({code:'23514'});
     }
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A overlay queries and keeps the owner sequence unique',async()=>{
+    const overlayTables=['owner_sequences','owner_overlay_deltas','memory_operations'];
+    await asOwner(a,alice,async c=>{
+      for(const table of overlayTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.correct');
+    await asOwner(b,alice,async c=>{
+      for(const table of overlayTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.correct');
+    await asOwner(a,alice,async c=>{
+      for(const table of overlayTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    for(const table of overlayTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.correct'),table).rejects.toMatchObject({code:'42501'});
+    }
+    // CRT-RYW-01-A in the schema: the owner and its sequence are unique together,
+    // so a caller that invents a number instead of allocating one is rejected.
+    await expect(pool.query(`INSERT INTO owner_overlay_deltas(id,owner_scope_id,owner_sequence,source_evidence_id,
+      raw_text,delta_kind) SELECT $1,owner_scope_id,owner_sequence,source_evidence_id,raw_text,delta_kind
+      FROM owner_overlay_deltas WHERE owner_scope_id=$2`,[randomUUID(),a])).rejects.toMatchObject({code:'23505'});
+    // An operation record is a statement about a moment, for every principal.
+    await expect(pool.query("UPDATE memory_operations SET operation_kind='DELETE' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    // CRT-MEM-15-A in the schema: a re-extraction may contest a delta and no
+    // more. Only the owner's own correction purpose settles one, and the trigger
+    // binds the privileged principal too.
+    await expect(pool.query("UPDATE owner_overlay_deltas SET raw_text='rewritten' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('OVERLAY_DELTA_IMMUTABLE');
+    await expect(pool.query("UPDATE owner_overlay_deltas SET lifecycle='SUPERSEDED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('OVERLAY_DELTA_NEEDS_USER_ACTION');
+    await expect(asOwner(a,alice,c=>c.query(`UPDATE owner_overlay_deltas SET lifecycle='REJECTED_AS_INTERPRETATION'`).then(()=>{}),'memory.govern'))
+      .rejects.toThrow('OVERLAY_DELTA_NEEDS_USER_ACTION');
+    await asOwner(a,alice,async c=>{
+      await c.query(`UPDATE owner_overlay_deltas SET lifecycle='CONTESTED',contested_reason='{"failureReason":"RE_EXTRACTION_CONFLICT"}'`);
+      expect((await c.query('SELECT lifecycle FROM owner_overlay_deltas')).rows).toEqual([{lifecycle:'CONTESTED'}]);
+    },'memory.govern');
+  });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
     // assert a belief in, and the owner sees only its own.
@@ -399,7 +449,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(37);
+    expect(rows.length).toBe(40);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

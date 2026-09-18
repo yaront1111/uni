@@ -49,6 +49,14 @@ export {objectRefSchema,beliefTransactionKindSchema,beliefTransactionStatusSchem
   actionPolicyOutcomeSchema,policyVerdictSchema,validationDecisionSchema,validationReportSchema,commitReceiptSchema,
   type ObjectRef,type AdmissionMode,type AutoAcceptCondition,type AssessmentStatus,type BeliefOperation,
   type ProposeBeliefTransaction,type PolicyVerdict,type ValidationReport,type CommitReceipt} from './governance.js';
+export {overlayDeltaKindSchema,overlayLifecycleSchema,memoryOperationKindSchema,memoryObjectTypeSchema,
+  targetObjectRefSchema,overlayDeltaInputSchema,validIntervalSchema,correctionInputSchema,stateChangeInputSchema,
+  confirmationInputSchema,rejectionInputSchema,keepUncertainInputSchema,suppressionScopeSchema,suppressionInputSchema,
+  archiveInputSchema,deletionInputSchema,memoryWriteReceiptSchema,assertionKindSchema,independentVerificationSchema,
+  INDEPENDENT_CLAIM_ORIGINS,
+  publicOverlayDeltaSchema,ownerOverlaySchema,
+  type OverlayDeltaKind,type OverlayLifecycle,type MemoryOperationKind,type TargetObjectRef,type OverlayDeltaInput,
+  type MemoryWriteReceipt,type PublicOverlayDelta,type OwnerOverlay} from './overlay.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

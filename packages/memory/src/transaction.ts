@@ -17,6 +17,9 @@ export const MEMORY_PURPOSES = Object.freeze({
   canonicalize: 'memory.canonicalize',
   /** Reading it back, as the Memory inspector does. */
   inspect: 'memory.inspect',
+  /** The owner's own correction controls: the overlay delta, the memory
+   * operation and the evidence each one records (migration 0014). */
+  correct: 'memory.correct',
 } as const);
 
 export class MemoryStoreError extends Error {

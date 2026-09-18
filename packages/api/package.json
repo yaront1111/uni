@@ -11,6 +11,7 @@
     "@unai/belief": "workspace:*",
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
+    "@unai/memory": "workspace:*",
     "@unai/postgres": "workspace:*",
     "@unai/secrets": "workspace:*",
     "pg": "^8.16.0",
