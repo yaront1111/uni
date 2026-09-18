@@ -8,6 +8,7 @@
     "@opentelemetry/api": "^1.9.1",
     "@unai/domain": "workspace:*",
     "@unai/auth": "workspace:*",
+    "@unai/belief": "workspace:*",
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/postgres": "workspace:*",

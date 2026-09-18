@@ -70,6 +70,29 @@ describe('real PostgreSQL owner isolation', () => {
         extraction_run_id,cost_microunits,latency_ms,correlation_id,outcome)
         VALUES($1,$2,'memory.canonicalize','anthropic','test-model','surface-frames-0.1.0',$3,1200,340,$4,'SUCCEEDED')`,
         [randomUUID(),owner,run,randomUUID()]);
+      // The write governor: one committed transaction with one operation, the
+      // verdict it recorded, the support it rests on, a derivation over it and the
+      // policy decision that admitted it.
+      const transaction=randomUUID(),decision=randomUUID();
+      await pool.query(`INSERT INTO belief_transactions(id,owner_scope_id,transaction_kind,requested_by_actor_id,
+        source_evidence_ids,registry_release_id,status,risk,idempotency_key,commit_receipt,committed_at)
+        VALUES($1,$2,'CANONICALIZE',$3,ARRAY[$4::uuid],$5,'COMMITTED','LOW',$6,'{}',now())`,
+        [transaction,owner,actor,source,randomUUID(),randomUUID().replaceAll('-','')]);
+      await pool.query(`INSERT INTO belief_transaction_operations(id,owner_scope_id,belief_transaction_id,operation_order,
+        operation_kind,payload) VALUES($1,$2,$3,0,'SET_BELIEF_ASSESSMENT','{"kind":"SET_BELIEF_ASSESSMENT"}')`,
+        [randomUUID(),owner,transaction]);
+      await pool.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,transaction_id)
+        VALUES($1,$2,$3,'ACCEPTED','local-policy-0.1.0',$4)`,[randomUUID(),owner,proposition,transaction]);
+      await pool.query(`INSERT INTO belief_support(id,owner_scope_id,proposition_id,claim_id,support_kind,
+        independence_group,created_by_transaction_id) VALUES($1,$2,$3,$4,'DIRECT_ASSERTION','entity:fixture',$5)`,
+        [randomUUID(),owner,proposition,claim,transaction]);
+      await pool.query(`INSERT INTO derived_proposition_dependencies(id,owner_scope_id,derived_proposition_id,input_claim_ids,
+        evaluator_id,model_or_code_version,registry_release_id,calculation_inputs,created_by_transaction_id)
+        VALUES($1,$2,$3,ARRAY[$4::uuid],'finance.obligation_total','obligation-total-0.1.0',$5,'{}',$6)`,
+        [randomUUID(),owner,proposition,claim,randomUUID(),transaction]);
+      await pool.query(`INSERT INTO policy_decisions(id,owner_scope_id,port,request,outcome,reason,policy_version,
+        subject_transaction_id,correlation_id) VALUES($1,$2,'EvaluateMemoryWrite','{}','ALLOW','WRITE_WITHIN_LOCAL_POLICY',
+        'local-policy-0.1.0',$3,$4)`,[randomUUID(),owner,transaction,randomUUID()]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -144,8 +167,20 @@ describe('real PostgreSQL owner isolation', () => {
     for(const table of memoryTables){
       await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.canonicalize'),table).rejects.toMatchObject({code:'42501'});
     }
-    // A claim is one source assertion: this node grants no update on it at all.
-    await expect(asOwner(a,alice,c=>c.query("UPDATE claims SET lifecycle='ACCEPTED'").then(()=>{}),'memory.canonicalize')).rejects.toMatchObject({code:'42501'});
+    // A claim is one source assertion. Migration 0012 delivered the handoff
+    // 0010 recorded: a claim moves through its lifecycle only under the governing
+    // purpose, so canonicalization still changes no claim, and what the claim
+    // actually said stays immutable for every principal.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("UPDATE claims SET lifecycle='ACCEPTED'")).rowCount).toBe(0);
+    },'memory.canonicalize');
+    expect((await pool.query("SELECT DISTINCT lifecycle FROM claims WHERE owner_scope_id=$1",[a])).rows).toEqual([{lifecycle:'PROVISIONAL'}]);
+    await expect(asOwner(a,alice,c=>c.query("UPDATE claims SET claim_origin='USER_CONFIRMATION'").then(()=>{}),'memory.govern'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(pool.query("UPDATE claims SET source_anchor_id=id WHERE owner_scope_id=$1",[a])).rejects.toThrow('CLAIM_ASSERTION_IMMUTABLE');
+    // A proposition may be retired under a governed transaction; its value never moves.
+    await expect(pool.query(`UPDATE propositions SET normalized_value='{"amount":"99.00"}' WHERE owner_scope_id=$1`,[a]))
+      .rejects.toThrow('PROPOSITION_VALUE_IMMUTABLE');
     // A fingerprint may only be closed; its index columns are immutable even for
     // the privileged principal, so recomputation can never rewrite what an
     // earlier fingerprint said (CRT-MEM-04-A).
@@ -187,6 +222,54 @@ describe('real PostgreSQL owner isolation', () => {
       .rejects.toThrow('EXTRACTION_RUN_IMMUTABLE');
     await expect(pool.query("UPDATE extraction_runs SET status='FAILED',error_code='X' WHERE owner_scope_id=$1",[a]))
       .rejects.toThrow('EXTRACTION_RUN_ALREADY_CLOSED');
+  });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A governor queries and refuses them under another purpose',async()=>{
+    const governorTables=['belief_transactions','belief_transaction_operations','belief_assessments','belief_support',
+      'derived_proposition_dependencies','policy_decisions'];
+    await asOwner(a,alice,async c=>{
+      for(const table of governorTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.govern');
+    await asOwner(b,alice,async c=>{
+      for(const table of governorTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.govern');
+    // Purpose-bound like the rest: an unrelated product purpose reads none of it.
+    await asOwner(a,alice,async c=>{
+      for(const table of governorTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // No governor table takes a DELETE grant, and the three record tables take no
+    // update at all: a verdict, its support and a policy decision are statements
+    // about a moment.
+    for(const table of governorTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.govern'),table).rejects.toMatchObject({code:'42501'});
+    }
+    for(const sql of ["UPDATE belief_support SET support_kind='CORROBORATION'",
+      "UPDATE derived_proposition_dependencies SET evaluator_id='x.y'","UPDATE policy_decisions SET outcome='DENY'",
+      "UPDATE belief_assessments SET assessment_status='REJECTED'"]){
+      await expect(asOwner(a,alice,c=>c.query(sql).then(()=>{}),'memory.govern'),sql).rejects.toMatchObject({code:'42501'});
+    }
+    // Even for the privileged principal, an assessment is append-only, a settled
+    // transaction never reopens and its receipt never changes.
+    await expect(pool.query("UPDATE belief_assessments SET assessment_status='REJECTED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('BELIEF_ASSESSMENT_APPEND_ONLY');
+    await expect(pool.query("UPDATE belief_transactions SET status='PROPOSED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('BELIEF_TRANSACTION_ALREADY_SETTLED');
+    await expect(pool.query(`UPDATE belief_transactions SET commit_receipt='{"forged":true}' WHERE owner_scope_id=$1`,[a]))
+      .rejects.toThrow('BELIEF_TRANSACTION_RECEIPT_IMMUTABLE');
+    await expect(pool.query("UPDATE belief_support SET independence_group='forged' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('BELIEF_RECORD_IMMUTABLE');
+    // CRT-REG-06-B: a context move outside a governed transaction is refused
+    // whatever principal attempts it.
+    await expect(pool.query(`UPDATE belief_slots SET context_space_id=gen_random_uuid() WHERE owner_scope_id=$1`,[a]))
+      .rejects.toThrow('CONTEXT_MOVE_REQUIRES_TRANSACTION');
+    // The registry snapshot stays unreadable; the reviewed reader answers one boolean.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT unai_private.registry_contract_present(gen_random_uuid(),$1,$2) AS present',
+        ['shared.obligation','FRAME'])).rows[0].present).toBe(false);
+    },'memory.govern');
   });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
@@ -263,7 +346,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(29);
+    expect(rows.length).toBe(35);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

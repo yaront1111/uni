@@ -5,11 +5,12 @@ import { withOwnerTransaction } from '@unai/postgres';
 import { registerDeviceSchema,publicDeviceSchema } from '@unai/domain';
 import { randomUUID } from 'node:crypto';
 import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
+import {registerMemoryGovernorRoutes} from './memory.js';
 import {registerOpsRoutes} from './ops.js';
 
 export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];evidenceObjects?:EvidenceObjects}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
-    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
+    'memory.govern','ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -31,6 +32,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/evidence'?'evidence.ingest':
       request.routeOptions.url==='/v1/evidence/:id'?'evidence.read':
       request.routeOptions.url==='/v1/connectors/:id'?'connector.read':
+      request.routeOptions.url?.startsWith('/v1/memory/transactions')?'memory.govern':
       request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
       request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
       request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
@@ -86,6 +88,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     return {revoked:true};
   });
   registerEvidenceRoutes(app,deviceWork,options.evidenceObjects);
+  registerMemoryGovernorRoutes(app,deviceWork);
   registerOpsRoutes(app,deviceWork);
   return app;
 }
