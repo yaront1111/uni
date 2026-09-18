@@ -126,6 +126,31 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query(`INSERT INTO memory_operations(id,owner_scope_id,operation_kind,target_object_type,target_object_id,
         overlay_delta_id,evidence_id,transaction_id,requested_by_actor_id) VALUES($1,$2,'CORRECT','proposition',$3,$4,$5,$6,$7)`,
         [randomUUID(),owner,proposition,delta,source,transaction,actor]);
+      // The typed projections over that obligation, and the receipt of the run
+      // that built them. Every one of the nine PRD §33.12 columns is supplied
+      // here, because every one of them is NOT NULL.
+      const projectionVersion=randomUUID();
+      await pool.query(`INSERT INTO open_commitments_projection(owner_scope_id,commitment_frame_instance_id,
+        promisor_entity_id,action_description,due_time,outcome_state,overdue,due_soon,source_strength,conflict_flag,
+        overlay_complete,last_material_update,projection_version,canonical_transaction_watermark,
+        owner_overlay_watermark,reducer_version,is_complete,source_manifest,updated_at)
+        VALUES($1,$2,$3,'send the report',now(),'UNRESOLVED',false,false,'OWNER_STATEMENT',false,true,now(),$4,now(),1,
+        'projection-reducers-0.1.0',true,'{}',now())`,[owner,instance,entity,projectionVersion]);
+      await pool.query(`INSERT INTO obligations_projection(owner_scope_id,obligation_frame_instance_id,
+        debtor_entity_id,creditor_entity_id,principal_amount,currency,total_canonical_allocation,
+        remaining_amount_capability_derived,outcome_state,conflict_flag,overlay_complete,projection_version,
+        canonical_transaction_watermark,owner_overlay_watermark,reducer_version,is_complete,source_manifest,updated_at)
+        VALUES($1,$2,$3,$3,50.00,'ILS',0,50.00,'UNRESOLVED',false,true,$4,now(),1,'projection-reducers-0.1.0',true,'{}',now())`,
+        [owner,instance,entity,projectionVersion]);
+      await pool.query(`INSERT INTO schedule_projection(owner_scope_id,scheduled_frame_instance_id,start_time,end_time,
+        participants,projection_version,canonical_transaction_watermark,owner_overlay_watermark,reducer_version,
+        is_complete,source_manifest,updated_at)
+        VALUES($1,$2,now(),now()+interval '1 hour',ARRAY[$3::uuid],$4,now(),1,'projection-reducers-0.1.0',true,'{}',now())`,
+        [owner,instance,entity,projectionVersion]);
+      await pool.query(`INSERT INTO projection_rebuild_receipts(id,owner_scope_id,projection_name,trigger,
+        transaction_id,rows_rebuilt,equals_incremental,projection_version,reducer_version)
+        VALUES($1,$2,'obligations_projection','MANUAL_REPLAY',$3,1,true,$4,'projection-reducers-0.1.0')`,
+        [randomUUID(),owner,transaction,projectionVersion]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -432,6 +457,66 @@ describe('real PostgreSQL owner isolation', () => {
       expect((await c.query('SELECT lifecycle FROM owner_overlay_deltas')).rows).toEqual([{lifecycle:'CONTESTED'}]);
     },'memory.govern');
   });
+  it('CRT-SEC-01-A and CRT-PRJ-03-A: hides B from unfiltered owner A projection queries and keeps every projection row complete',async()=>{
+    const projectionTables=['open_commitments_projection','obligations_projection','schedule_projection','projection_rebuild_receipts'];
+    await asOwner(a,alice,async c=>{
+      for(const table of projectionTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'projection.read');
+    await asOwner(b,alice,async c=>{
+      for(const table of projectionTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'projection.read');
+    // A purpose outside the projection read set sees nothing, the same way every
+    // other memory table fails closed.
+    await asOwner(a,alice,async c=>{
+      for(const table of projectionTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // A projection row is a derived cache and may be rebuilt; a rebuild receipt
+    // is a statement about a run that happened and may not be restated or
+    // removed, exactly as an audit event may not.
+    await expect(asOwner(a,alice,c=>c.query('DELETE FROM projection_rebuild_receipts').then(()=>{}),'memory.project'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,alice,c=>c.query('UPDATE projection_rebuild_receipts SET rows_rebuilt=99').then(()=>{}),'memory.project'))
+      .rejects.toMatchObject({code:'42501'});
+    // Re-pointing a projection row at another situation would make its manifest a
+    // lie; the trigger binds the privileged principal too.
+    await expect(pool.query('UPDATE obligations_projection SET obligation_frame_instance_id=$1 WHERE owner_scope_id=$2',
+      [randomUUID(),a])).rejects.toThrow('PROJECTION_IDENTITY_IMMUTABLE');
+    // CRT-PRJ-03-A in the schema: each of the nine required columns is NOT NULL,
+    // so a row that omitted one could not be stored at all.
+    for(const [table,column] of [
+      ['open_commitments_projection','projection_version'],['open_commitments_projection','source_manifest'],
+      ['obligations_projection','canonical_transaction_watermark'],['obligations_projection','owner_overlay_watermark'],
+      ['obligations_projection','is_complete'],['schedule_projection','reducer_version'],
+      ['schedule_projection','updated_at'],['schedule_projection','source_manifest'],
+    ] as const){
+      await expect(pool.query('UPDATE '+table+' SET '+column+'=NULL WHERE owner_scope_id=$1',[a]),table+'.'+column)
+        .rejects.toMatchObject({code:'23502'});
+    }
+    // CRT-PRJ-01-A in the catalog: amount, currency, due time and start/end are
+    // typed columns and not JSONB.
+    const typed=(await pool.query(`SELECT table_name,column_name,data_type FROM information_schema.columns
+      WHERE table_schema='public' AND (table_name,column_name) IN (
+        ('obligations_projection','principal_amount'),('obligations_projection','currency'),
+        ('obligations_projection','due_time'),('obligations_projection','total_canonical_allocation'),
+        ('obligations_projection','remaining_amount_capability_derived'),
+        ('open_commitments_projection','due_time'),('schedule_projection','start_time'),('schedule_projection','end_time'))
+      ORDER BY table_name,column_name`)).rows;
+    expect(Object.fromEntries(typed.map((row:{table_name:string;column_name:string;data_type:string})=>
+      [row.table_name+'.'+row.column_name,row.data_type]))).toEqual({
+      'obligations_projection.currency':'text',
+      'obligations_projection.due_time':'timestamp with time zone',
+      'obligations_projection.principal_amount':'numeric',
+      'obligations_projection.remaining_amount_capability_derived':'numeric',
+      'obligations_projection.total_canonical_allocation':'numeric',
+      'open_commitments_projection.due_time':'timestamp with time zone',
+      'schedule_projection.end_time':'timestamp with time zone',
+      'schedule_projection.start_time':'timestamp with time zone',
+    });
+  });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
     // assert a belief in, and the owner sees only its own.
@@ -507,7 +592,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(42);
+    expect(rows.length).toBe(46);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

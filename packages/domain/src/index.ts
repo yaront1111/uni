@@ -63,6 +63,17 @@ export {overlayDeltaKindSchema,overlayLifecycleSchema,memoryOperationKindSchema,
   publicOverlayDeltaSchema,ownerOverlaySchema,
   type OverlayDeltaKind,type OverlayLifecycle,type MemoryOperationKind,type TargetObjectRef,type OverlayDeltaInput,
   type MemoryWriteReceipt,type PublicOverlayDelta,type OwnerOverlay} from './overlay.js';
+export {moneyAmountSchema,currencyCodeSchema,moneySchema,projectionNameSchema,rebuildTriggerSchema,sourceStrengthSchema,
+  outcomeStateSchema,pendingAssertionReasonSchema,pendingAssertionSchema,projectionRowMetadataSchema,
+  commitmentProjectionRowSchema,obligationProjectionRowSchema,scheduleProjectionRowSchema,
+  commitmentsProjectionViewSchema,obligationsProjectionViewSchema,scheduleProjectionViewSchema,
+  projectionRebuildReceiptSchema,projectionHealthSchema,amountConflictSchema,obligationCalculationSchema,
+  commitmentLanguageSchema,commitmentReadingSchema,PROJECTION_NAMES,
+  type Money,type ProjectionName,type RebuildTrigger,type SourceStrength,type PendingAssertion,
+  type PendingAssertionReason,type CommitmentProjectionRow,type ObligationProjectionRow,type ScheduleProjectionRow,
+  type CommitmentsProjectionView,type ObligationsProjectionView,type ScheduleProjectionView,
+  type ProjectionRebuildReceipt,type ProjectionHealth,type AmountConflict,type ObligationCalculation,
+  type CommitmentLanguage,type CommitmentReading} from './projections.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

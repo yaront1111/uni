@@ -24,6 +24,8 @@ const classifiedTables=new Map([
   ['belief_assessments','owner_scope_id'],['belief_support','owner_scope_id'],
   ['derived_proposition_dependencies','owner_scope_id'],['policy_decisions','owner_scope_id'],
   ['owner_sequences','owner_scope_id'],['owner_overlay_deltas','owner_scope_id'],['memory_operations','owner_scope_id'],
+  ['open_commitments_projection','owner_scope_id'],['obligations_projection','owner_scope_id'],
+  ['schedule_projection','owner_scope_id'],['projection_rebuild_receipts','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a

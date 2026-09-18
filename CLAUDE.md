@@ -71,7 +71,8 @@ Package layering:
   gateway and records an `extraction_runs` row pinned to every version it used.
   It starts no worker: `createExtractionJobHandler` is the handler for job kind
   `evidence.extract`.
-- `@unai/api`: `createApiBoundary` (`index.ts`) is the generic Fastify boundary; `createPlatformApi` (`platform.ts`) is the production composition with device, evidence (`evidence.ts`), governed memory write (`memory.ts`), correction control (`corrections.ts`) and ops (`ops.ts`) routes; `server.ts` is the entry point.
+- `@unai/capabilities`: the commitment, obligation and schedule capabilities and the typed projections they maintain. It exists so that "the Memory Kernel performs no financial arithmetic" is checkable: `money.ts` is the only exact-decimal arithmetic in the repo (scaled `BigInt`, no rounding, no currency conversion), and `src/architecture.test.ts` fails on arithmetic over a money-named operand anywhere in `@unai/memory` or `src/kernel`. One reducer serves both `applyProjectionDelta` and `replayProjection`, so incremental state and full replay cannot drift. Report: `docs/typed-projections.md`.
+- `@unai/api`: `createApiBoundary` (`index.ts`) is the generic Fastify boundary; `createPlatformApi` (`platform.ts`) is the production composition with device, evidence (`evidence.ts`), governed memory write (`memory.ts`), correction control (`corrections.ts`), typed projection read (`projections.ts`) and ops (`ops.ts`) routes; `server.ts` is the entry point.
 - `apps/web`: Next.js Pages Router. `pages/api/platform/[...path].ts` is a same-origin proxy: it derives owner scope from the verified session, refuses cross-origin writes, maps path to purpose, and calls the API over verified TLS. The browser never talks to the API directly.
 
 ### The owner boundary (the central pattern)

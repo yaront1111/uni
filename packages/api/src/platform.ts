@@ -8,6 +8,7 @@ import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
 import {registerMemoryGovernorRoutes} from './memory.js';
 import {registerCorrectionRoutes,CORRECTION_PURPOSE} from './corrections.js';
 import {registerOpsRoutes} from './ops.js';
+import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 
 /** The owner's correction controls and their overlay read. One purpose covers
  * both directions of the same surface: the write records the delta and the read
@@ -19,7 +20,8 @@ const CORRECTION_URLS=new Set(['/v1/memory/overlay-deltas','/v1/memory/correctio
 export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];
   evidenceObjects?:EvidenceObjects;registryReleaseId?:string}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
-    'memory.govern',CORRECTION_PURPOSE,'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
+    'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
+    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -43,6 +45,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/connectors/:id'?'connector.read':
       request.routeOptions.url?.startsWith('/v1/memory/transactions')?'memory.govern':
       request.routeOptions.url&&CORRECTION_URLS.has(request.routeOptions.url)?CORRECTION_PURPOSE:
+      request.routeOptions.url?.startsWith('/v1/projections/')?PROJECTION_READ_PURPOSE:
+      request.routeOptions.url==='/v1/ops/projections'?PROJECTION_HEALTH_PURPOSE:
       request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
       request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
       request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
@@ -101,5 +105,6 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   registerMemoryGovernorRoutes(app,deviceWork);
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerOpsRoutes(app,deviceWork);
+  registerProjectionRoutes(app,deviceWork);
   return app;
 }

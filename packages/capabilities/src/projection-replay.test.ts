@@ -1,0 +1,244 @@
+import { Pool } from 'pg';
+import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeAll, expect, it } from 'vitest';
+import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
+import { lintRegistryCheckout } from '@unai/registry';
+import type { RequestContext, TransitionContract } from '@unai/domain';
+import {
+  createFrameInstance, recordClaim, recordFrameInstanceRole, recordOverlayDelta, resolveBeliefSlot, resolveEntity,
+  resolveProposition,
+} from '@unai/memory';
+import { applyProjectionDelta, canonicalizeCommitmentStatement, projectionRowContent, readProjectionRows,
+  runProjectionReplay } from './index.js';
+
+/**
+ * CRT-PRJ-02-B: dropping the projection tables and running the projection replay
+ * tool rebuilds rows identical to those before the drop.
+ *
+ * This test owns a database of its own, created on the harness server for the
+ * duration of the file and dropped afterwards. Dropping a table takes an ACCESS
+ * EXCLUSIVE lock and leaves the table empty until the rebuild finishes, so doing
+ * it on the shared suite database would make a concurrently running suite fail
+ * for a reason that has nothing to do with that suite. A disposable database is
+ * also the honest shape of the claim: the rebuild must work with nothing left of
+ * the projections but canonical memory and the Git migrations.
+ */
+
+if (!process.env.UNAI_TEST_DATABASE_URL) throw new Error('Run pnpm test for the required PostgreSQL harness');
+const serverUrl = process.env.UNAI_TEST_DATABASE_URL;
+const databaseName = 'unai_replay_' + randomUUID().replaceAll('-', '');
+
+let admin: Pool | undefined;
+let appPool: Pool | undefined;
+/** Set when the harness server refuses a database of its own; the file then
+ * reports why it could not run instead of falsely passing. */
+let unavailable: string | null = null;
+
+const owner = randomUUID(), actor = randomUUID();
+let baseContextSpaceId = '', sourceItemId = '', ownerEntityId = '', danielEntityId = '';
+let contracts: TransitionContract[] = [];
+const anchors: string[] = [];
+let nextAnchor = 0;
+const anchor = () => anchors[nextAnchor++]!;
+const NOW = new Date('2026-03-02T09:00:00.000Z');
+const FRIDAY = new Date('2026-02-27T17:00:00.000Z');
+
+beforeAll(async () => {
+  const server = new Pool({ connectionString: serverUrl, max: 1 });
+  try { await server.query('CREATE DATABASE ' + databaseName); }
+  catch (error) { unavailable = error instanceof Error ? error.message : String(error); return; }
+  finally { await server.end().catch(() => {}); }
+
+  const url = new URL(serverUrl); url.pathname = '/' + databaseName;
+  admin = new Pool({ connectionString: url.href });
+  await runMigrations(admin, resolve('migrations'));
+  await admin.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='replay_test_app') THEN CREATE ROLE replay_test_app LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_app TO replay_test_app");
+  const appUrl = new URL(url.href); appUrl.username = 'replay_test_app'; appUrl.password = 'test-only';
+  appPool = new Pool({ connectionString: appUrl.href });
+
+  await admin.query('INSERT INTO users(id,display_name) VALUES($1,$2)', [actor, 'Replay owner']);
+  await admin.query("INSERT INTO owner_scopes(id,scope_kind,display_name,created_by_user_id) VALUES($1,'PERSONAL','Replay',$2)", [owner, actor]);
+  await admin.query("INSERT INTO owner_scope_members(owner_scope_id,user_id,role) VALUES($1,$2,'OWNER')", [owner, actor]);
+  baseContextSpaceId = (await admin.query('SELECT id FROM context_spaces WHERE owner_scope_id=$1', [owner])).rows[0].id;
+
+  const connectorId = randomUUID(); sourceItemId = randomUUID();
+  await admin.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'CONVERSATION',$3,'{}','ACTIVE')", [connectorId, owner, owner]);
+  await admin.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,
+    raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+    VALUES($1,$2,$3,'CONVERSATION','replay-message-1',$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)`,
+    [sourceItemId, owner, connectorId, JSON.stringify({ type: 'USER', id: actor }), actor, randomUUID(), 'c'.repeat(64), randomUUID()]);
+  for (let index = 0; index < 30; index += 1) {
+    const id = randomUUID(); anchors.push(id);
+    await admin.query(`INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor)
+      VALUES($1,$2,$3,'MESSAGE_SPAN',$4)`, [id, owner, sourceItemId, JSON.stringify({ start: index * 10, end: index * 10 + 9 })]);
+  }
+  await admin.query(`INSERT INTO belief_transactions(id,owner_scope_id,transaction_kind,requested_by_actor_id,
+    source_evidence_ids,registry_release_id,status,risk,idempotency_key,commit_receipt,committed_at)
+    VALUES($1,$2,'CANONICALIZE',$3,ARRAY[$4::uuid],$5,'COMMITTED','LOW',$6,'{}',$7)`,
+    [randomUUID(), owner, actor, sourceItemId, randomUUID(), randomUUID().replaceAll('-', ''), new Date('2026-02-01T00:00:00.000Z')]);
+
+  contracts = [...(await lintRegistryCheckout({ repository: resolve('.'), version: '0.1.0' })).transitions];
+  ownerEntityId = await person('Replay Owner', 'owner.replay@example.test');
+  danielEntityId = await person('Daniel Replay', 'daniel.replay@example.test');
+  await seed();
+});
+
+afterAll(async () => {
+  await appPool?.end().catch(() => {});
+  await admin?.end().catch(() => {});
+  if (unavailable) return;
+  const server = new Pool({ connectionString: serverUrl, max: 1 });
+  try { await server.query('DROP DATABASE IF EXISTS ' + databaseName + ' WITH (FORCE)'); }
+  catch { /* A leaked scratch database is an operator cleanup task, never a verdict. */ }
+  finally { await server.end().catch(() => {}); }
+});
+
+function context(purpose: string): RequestContext { return { actorId: actor, ownerScopeId: owner, purpose, correlationId: randomUUID() }; }
+const as = <T,>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) => withOwnerTransaction(appPool!, context(purpose), run);
+const write = <T,>(run: (tx: OwnerTransaction) => Promise<T>) => as('memory.canonicalize', run);
+const correct = <T,>(run: (tx: OwnerTransaction) => Promise<T>) => as('memory.correct', run);
+const reduce = <T,>(run: (tx: OwnerTransaction) => Promise<T>) => as('memory.project', run);
+
+async function person(label: string, mailbox: string): Promise<string> {
+  return (await write(tx => resolveEntity(tx, {
+    ownerScopeId: owner, entityKind: 'PERSON', canonicalLabel: label,
+    aliases: [{ aliasType: 'EMAIL', aliasValue: mailbox }, { aliasType: 'DISPLAY_NAME', aliasValue: label }],
+  }))).entityId;
+}
+
+async function statedValue(input: {
+  frameInstanceId: string; predicateId: string; modality: 'ACTUAL' | 'SCHEDULED'; value: unknown;
+}): Promise<string> {
+  return write(async tx => {
+    const slot = await resolveBeliefSlot(tx, {
+      ownerScopeId: owner,
+      descriptor: { frameInstanceId: input.frameInstanceId, predicateId: input.predicateId,
+        contextSpaceId: baseContextSpaceId, modality: input.modality, qualifiers: {} },
+    });
+    const proposition = await resolveProposition(tx, {
+      ownerScopeId: owner, beliefSlotId: slot.beliefSlotId, normalizedValue: input.value,
+    });
+    return recordClaim(tx, {
+      ownerScopeId: owner, sourceAnchorId: anchor(), claimOrigin: 'USER_STATEMENT', lifecycle: 'PROVISIONAL',
+      propositionId: proposition.propositionId, assertedByEntityId: ownerEntityId,
+    });
+  });
+}
+
+/** One of each projected situation, plus an owner write the reducer can apply and
+ * one it cannot: the rebuild has to reproduce the incomplete row as faithfully as
+ * the complete ones. */
+async function seed(): Promise<void> {
+  const obligationId = await write(tx => createFrameInstance(tx, {
+    ownerScopeId: owner, frameTypeId: 'shared.obligation', contextSpaceId: baseContextSpaceId }));
+  const principalClaim = await statedValue({ frameInstanceId: obligationId,
+    predicateId: 'shared.obligation.principal_amount', modality: 'ACTUAL', value: { amount: '50.00', currency: 'ILS' } });
+  await write(async tx => {
+    await recordFrameInstanceRole(tx, { ownerScopeId: owner, frameInstanceId: obligationId, roleId: 'debtor',
+      entityId: ownerEntityId, claimId: principalClaim });
+    await recordFrameInstanceRole(tx, { ownerScopeId: owner, frameInstanceId: obligationId, roleId: 'creditor',
+      entityId: danielEntityId, claimId: principalClaim });
+  });
+
+  const allocationId = await write(tx => createFrameInstance(tx, {
+    ownerScopeId: owner, frameTypeId: 'finance.payment_allocation', contextSpaceId: baseContextSpaceId }));
+  const allocationClaim = await statedValue({ frameInstanceId: allocationId,
+    predicateId: 'finance.payment_allocation.allocated_amount', modality: 'ACTUAL',
+    value: { amount: '50.00', currency: 'ILS' } });
+  await write(async tx => {
+    await recordFrameInstanceRole(tx, { ownerScopeId: owner, frameInstanceId: allocationId, roleId: 'obligation',
+      typedValue: { frameInstanceId: obligationId }, claimId: allocationClaim });
+    await recordFrameInstanceRole(tx, { ownerScopeId: owner, frameInstanceId: allocationId, roleId: 'payment_transaction',
+      typedValue: { externalId: 'bank:replay-1', total: { amount: '60.00', currency: 'ILS' } }, claimId: allocationClaim });
+  });
+
+  await write(tx => canonicalizeCommitmentStatement(tx, {
+    ownerScopeId: owner, contextSpaceId: baseContextSpaceId,
+    statement: 'I will send Daniel the report by Friday', sourceAnchorId: anchor(),
+    claimOrigin: 'USER_STATEMENT', assertedByEntityId: ownerEntityId,
+    promisorEntityId: ownerEntityId, promiseeEntityId: danielEntityId,
+    dueTime: FRIDAY, statedAt: new Date('2026-02-23T08:00:00.000Z'),
+  }));
+
+  const eventId = await write(tx => createFrameInstance(tx, {
+    ownerScopeId: owner, frameTypeId: 'shared.event_occurrence', contextSpaceId: baseContextSpaceId }));
+  await statedValue({ frameInstanceId: eventId, predicateId: 'shared.event_occurrence.occurrence_time',
+    modality: 'SCHEDULED', value: { start: '2026-03-10T09:00:00.000Z', end: '2026-03-10T10:00:00.000Z' } });
+
+  // Applied by the reducer...
+  await correct(tx => recordOverlayDelta(tx, {
+    ownerScopeId: owner, deltaKind: 'USER_CORRECTION', rawText: 'Actually, it was ILS 55',
+    sourceEvidenceId: sourceItemId, lifecycle: 'USER_ASSERTED',
+    target: { objectType: 'frame_instance', objectId: obligationId },
+  }));
+  // ...and one it must refuse, so a row with is_complete=false is part of what
+  // gets rebuilt.
+  await correct(tx => recordOverlayDelta(tx, {
+    ownerScopeId: owner, deltaKind: 'USER_ASSERTION', rawText: 'Something about the meeting',
+    sourceEvidenceId: sourceItemId, lifecycle: 'USER_ASSERTED',
+    target: { objectType: 'frame_instance', objectId: eventId },
+  }));
+
+  await reduce(async tx => {
+    for (const projectionName of ['open_commitments_projection', 'obligations_projection', 'schedule_projection'] as const) {
+      await applyProjectionDelta(tx, { ownerScopeId: owner, projectionName, asOf: NOW });
+    }
+  });
+}
+
+const PROJECTIONS = ['open_commitments_projection', 'obligations_projection', 'schedule_projection'] as const;
+const snapshot = () => reduce(async tx => Object.fromEntries(await Promise.all(
+  PROJECTIONS.map(async projectionName =>
+    [projectionName, await readProjectionRows(tx, { ownerScopeId: owner, projectionName })] as const))));
+
+it('CRT-PRJ-02-B: dropping the projection tables and running the projection replay tool rebuilds identical rows', async () => {
+  expect(unavailable, 'the harness server refused a disposable database for this file').toBeNull();
+  const before = await snapshot();
+  for (const projectionName of PROJECTIONS) expect(before[projectionName]!.length, projectionName).toBeGreaterThan(0);
+  // The fixture really does contain an incomplete row, so the rebuild has to
+  // reproduce incompleteness and not only happy rows.
+  expect(before['schedule_projection']!.some(row => !row.isComplete)).toBe(true);
+  const versionsBefore = new Set(PROJECTIONS.flatMap(name => before[name]!.map(row => row.projectionVersion)));
+
+  // Drop them outright. Nothing of the projections survives, not the rows, not
+  // the tables, not the receipts.
+  await admin!.query('DROP TABLE open_commitments_projection, obligations_projection, schedule_projection, projection_rebuild_receipts CASCADE');
+  await admin!.query(`DROP FUNCTION IF EXISTS unai_private.open_commitments_projection_identity(),
+    unai_private.obligations_projection_identity(), unai_private.schedule_projection_identity()`);
+  await expect(admin!.query('SELECT 1 FROM obligations_projection')).rejects.toMatchObject({ code: '42P01' });
+
+  // Rebuild the schema from the same Git migration the deployment applies.
+  await admin!.query('DELETE FROM unai_migrations.applied WHERE name=$1', ['0016_typed_projections.sql']);
+  const applied = await runMigrations(admin!, resolve('migrations'));
+  expect(applied).toEqual(['0016_typed_projections.sql']);
+  expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
+
+  // The projection replay tool -- the same function `uai registry
+  // projection-replay` runs -- rebuilds from canonical memory alone.
+  const result = await reduce(tx => runProjectionReplay(tx, {
+    ownerScopeId: owner, asOf: NOW, trigger: 'DROP_AND_REBUILD',
+  }));
+  expect(result.receipts.map(receipt => receipt.projectionName).sort()).toEqual([...PROJECTIONS].sort());
+  expect(result.receipts.map(receipt => receipt.rowsRebuilt))
+    .toEqual(PROJECTIONS.map(name => before[name]!.length));
+
+  const after = await snapshot();
+  for (const projectionName of PROJECTIONS) {
+    // Identical, column by column, in everything that describes the projected
+    // situation -- including `updated_at`, which is derived from the canonical
+    // inputs rather than from the clock.
+    expect(after[projectionName]!.map(projectionRowContent), projectionName)
+      .toEqual(before[projectionName]!.map(projectionRowContent));
+    // ...and the only column that moved is the identity of the run that wrote
+    // the row, which is a different run.
+    for (const row of after[projectionName]!) expect(versionsBefore.has(row.projectionVersion), projectionName).toBe(false);
+  }
+  // The incomplete row came back incomplete, with the owner write that made it so.
+  const schedule = after['schedule_projection']!.find(row => !row.isComplete)!;
+  expect(schedule.pendingAssertions[0]).toMatchObject({ reason: 'DELTA_VALUE_UNPARSEABLE' });
+
+  // And the rebuild is on the record.
+  const receipts = (await admin!.query('SELECT projection_name,trigger,rows_rebuilt,reducer_version FROM projection_rebuild_receipts WHERE owner_scope_id=$1 ORDER BY projection_name', [owner])).rows;
+  expect(receipts.map((row: { trigger: string }) => row.trigger)).toEqual(['DROP_AND_REBUILD', 'DROP_AND_REBUILD', 'DROP_AND_REBUILD']);
+});

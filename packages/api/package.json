@@ -9,6 +9,7 @@
     "@unai/domain": "workspace:*",
     "@unai/auth": "workspace:*",
     "@unai/belief": "workspace:*",
+    "@unai/capabilities": "workspace:*",
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/memory": "workspace:*",
