@@ -20,7 +20,7 @@ param(
   [string]$Install = "D:\projexts\moe-next\dist\moe-windows",
   # Governance answers an exhausted review instead of parking it on you. Off by default.
   [switch]$Governance,
-  [int]$GovernanceMaxDecisions = 1,
+  [int]$GovernanceMaxDecisions = 3,
   # A Claude OAuth token for THIS RUN ONLY, never written to disk. Prefer setting
   # CLAUDE_CODE_OAUTH_TOKEN in your user environment instead: anything passed on the command line
   # lands in your PowerShell history and is visible in the process list while the command runs,
