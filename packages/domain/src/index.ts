@@ -38,6 +38,12 @@ export {entityKindSchema,entityLifecycleSchema,entityAliasTypeSchema,entityLinea
   modalitySchema,polaritySchema,claimOriginSchema,claimLifecycleSchema,temporalPrecisionSchema,temporalInterpretationSchema,
   slotDescriptorSchema,propositionDescriptorSchema,slotLookupOutcomeSchema,propositionLookupOutcomeSchema,storedClaimSchema,
   type TemporalInterpretation,type SlotDescriptor,type StoredClaim} from './memory.js';
+export {memoryLinkKindSchema,memoryLinkObjectTypeSchema,memoryLinkLifecycleSchema,outcomeCodeSchema,
+  resolutionLifecycleSchema,outcomeProjectionStateSchema,transitionContractSchema,transitionContractSetSchema,
+  storedResolutionAssertionSchema,storedMemoryLinkSchema,outcomeProjectionSchema,
+  TRANSITION_LINK_KINDS,PARTIAL_OUTCOME_CODES,
+  type MemoryLinkKind,type OutcomeCode,type ResolutionLifecycle,type OutcomeProjectionState,type TransitionContract,
+  type StoredResolutionAssertion,type StoredMemoryLink,type OutcomeProjection} from './outcomes.js';
 export {tier1RouteSchema,tier1SignalSchema,routingReasonSchema,tier0ParseSchema,triageDecisionSchema,publicTriageSchema,
   extractionRunKindSchema,extractionRunStatusSchema,extractionRunSchema,extractedSpanSchema,extractedClaimSchema,
   extractionOutputSchema,modelCallOutcomeSchema,modelCallRecordSchema,DEEP_EXTRACTION_ROUTES,

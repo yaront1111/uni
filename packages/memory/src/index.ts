@@ -44,6 +44,14 @@ export { CLAIM_RELATION_KINDS, classifyTemporalUpdate, recordClaimRelation, list
 export { OVERLAY_VERSION, allocateOwnerSequence, recordOverlayDelta, attachOverlayDelta, contestOverlayDelta,
   recordMemoryOperation, listMemoryOperations, readOwnerOverlay, isOverlayRemoved,
   type RecordOverlayDeltaInput, type RecordedOverlayDelta, type ContestedReason } from './overlay.js';
+export { RESOLUTION_VERSION, OUTCOME_PROJECTION_VERSION, RESOLUTION_CLASSIFIER_VERSION,
+  validateTransition, recordMemoryLink, listMemoryLinks, recordResolutionAssertion, readResolutionAssertion,
+  listResolutionAssertions, setResolutionLifecycle, recordRealization, classifyResolutionStatement,
+  canonicalizeResolutionStatement, frameOutcomeProjection, sweepElapsedSchedules,
+  type TransitionValidationRequest, type ValidatedTransition, type MemoryLinkEndpoint, type MemoryLinkInput,
+  type ResolutionAssertionInput, type RecordedResolutionAssertion, type RealizationInput,
+  type ResolutionStatementReading, type ResolutionStatementRequest, type CanonicalizedResolution,
+  type ElapsedSchedule, type ElapsedScheduleSweep } from './resolutions.js';
 export { BITEMPORAL_QUERY_VERSION, BITEMPORAL_POLICY_VERSION, queryCurrentState, queryCorrectedHistoricalState,
   queryHistoricalBeliefState, queryBeliefState, readBeliefTimeline, recordBeliefStateVersion,
   type BeliefQueryMode, type AssessmentStatusName, type BeliefStateRow, type BeliefStateAnswer,

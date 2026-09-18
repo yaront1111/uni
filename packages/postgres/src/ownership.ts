@@ -17,6 +17,7 @@ const classifiedTables=new Map([
   ['propositions','owner_scope_id'],['proposition_fingerprints','owner_scope_id'],
   ['claims','owner_scope_id'],
   ['instance_match_candidates','owner_scope_id'],['claim_relations','owner_scope_id'],
+  ['memory_links','owner_scope_id'],['resolution_assertions','owner_scope_id'],
   ['triage_decisions','owner_scope_id'],['extraction_runs','owner_scope_id'],
   ['model_call_records','owner_scope_id'],
   ['belief_transactions','owner_scope_id'],['belief_transaction_operations','owner_scope_id'],

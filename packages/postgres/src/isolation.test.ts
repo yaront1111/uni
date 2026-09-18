@@ -106,6 +106,16 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,
         temporal_effect,created_by_transaction_id) VALUES($1,$2,$3,$4,'CORRECTS','SAME_VALID_INTERVAL',$5)`,
         [randomUUID(),owner,correction,claim,transaction]);
+      // Outcomes: the target-less settlement of PRD §44.4 and the RESOLVES link
+      // that carries it. Nothing about the obligation above is touched by either.
+      const resolution=randomUUID(),link=randomUUID();
+      await pool.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,
+        to_object_id,link_kind,lifecycle,transition_contract_id) VALUES($1,$2,'resolution_assertion',$3,
+        'frame_instance',$4,'RESOLVES','PROPOSED','shared.obligation.resolution')`,[link,owner,resolution,instance]);
+      await pool.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
+        effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id)
+        VALUES($1,$2,$3,'FULFILLED',now(),$4,$5,'shared.obligation.resolution','PROPOSED',$6)`,
+        [resolution,owner,instance,entity,claim,link]);
       // Owner read-your-writes: the allocated sequence, the delta every device of
       // this owner reads, and the correction control that produced it.
       const delta=randomUUID();
@@ -334,6 +344,54 @@ describe('real PostgreSQL owner isolation', () => {
         [randomUUID(),a,claims[0].id,claims[1].id,kind,effect]),kind).rejects.toMatchObject({code:'23514'});
     }
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A outcome queries and keeps every recorded outcome immutable',async()=>{
+    const outcomeTables=['memory_links','resolution_assertions'];
+    await asOwner(a,alice,async c=>{
+      for(const table of outcomeTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.inspect');
+    await asOwner(b,alice,async c=>{
+      for(const table of outcomeTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.inspect');
+    await asOwner(a,alice,async c=>{
+      for(const table of outcomeTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    for(const table of outcomeTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.govern'),table).rejects.toMatchObject({code:'42501'});
+    }
+    // Canonicalizing a sentence may propose an outcome; accepting one is a
+    // governed decision or the owner's own correction (PRD §19.1, FR-040).
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("UPDATE resolution_assertions SET lifecycle='ACCEPTED'")).rowCount).toBe(0);
+    },'memory.canonicalize');
+    expect((await pool.query('SELECT DISTINCT lifecycle FROM resolution_assertions WHERE owner_scope_id=$1',[a])).rows)
+      .toEqual([{lifecycle:'PROPOSED'}]);
+    // CRT-OUT-03-A and CRT-OUT-05-A in the schema: what a resolution said, which
+    // frame it resolved and which claim asserted it never move, for any principal.
+    await expect(pool.query("UPDATE resolution_assertions SET outcome_code='CANCELLED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('RESOLUTION_ASSERTION_IMMUTABLE');
+    await expect(pool.query("UPDATE resolution_assertions SET transition_contract_id='shared.commitment.resolution' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('RESOLUTION_ASSERTION_IMMUTABLE');
+    await expect(pool.query("UPDATE memory_links SET link_kind='REALIZES' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('MEMORY_LINK_IMMUTABLE');
+    // CRT-OUT-04-A in the schema: a REALIZES or RESOLVES link with no transition
+    // contract, and an outcome code outside PRD §16.5, are both unrepresentable.
+    const instance=(await pool.query('SELECT id FROM frame_instances WHERE owner_scope_id=$1 LIMIT 1',[a])).rows[0].id;
+    const claim=(await pool.query('SELECT id FROM claims WHERE owner_scope_id=$1 ORDER BY id LIMIT 1',[a])).rows[0].id;
+    const entity=(await pool.query("SELECT id FROM entities WHERE owner_scope_id=$1 AND lifecycle='ACTIVE' LIMIT 1",[a])).rows[0].id;
+    await expect(pool.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,
+      to_object_id,link_kind) VALUES($1,$2,'claim',$3,'frame_instance',$4,'RESOLVES')`,[randomUUID(),a,claim,instance]))
+      .rejects.toMatchObject({code:'23514'});
+    await expect(pool.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
+      effective_at,asserted_by_entity_id,claim_id,transition_contract_id) VALUES($1,$2,$3,'SORTED_OUT',now(),$4,$5,
+      'shared.obligation.resolution')`,[randomUUID(),a,instance,entity,claim])).rejects.toMatchObject({code:'23514'});
+    await expect(pool.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
+      effective_at,asserted_by_entity_id,claim_id) VALUES($1,$2,$3,'FULFILLED',now(),$4,$5)`,
+      [randomUUID(),a,instance,entity,claim])).rejects.toMatchObject({code:'23502'});
+  });
   it('CRT-SEC-01-A: hides B from unfiltered owner A overlay queries and keeps the owner sequence unique',async()=>{
     const overlayTables=['owner_sequences','owner_overlay_deltas','memory_operations'];
     await asOwner(a,alice,async c=>{
@@ -449,7 +507,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(40);
+    expect(rows.length).toBe(42);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

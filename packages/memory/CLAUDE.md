@@ -13,6 +13,12 @@ relations that tell a correction from a change, and the three query modes of
 PRD §12.3. Schema: `migrations/0013_canonicalization_and_bitemporal.sql`;
 decisions: ADR 0018; report: `docs/canonicalization-and-bitemporal.md`.
 
+It also owns outcomes (`resolutions.ts`): the `resolution_assertions` and
+`memory_links` stores, transition-contract validation, the resolution-statement
+reader and the derived outcome projection. Schema:
+`migrations/0015_resolution_assertions_and_links.sql`; decisions: ADR 0020;
+report: `docs/resolutions-and-outcomes.md`.
+
 It also owns owner read-your-writes (`overlay.ts`): the `owner_sequences`
 allocator, the `owner_overlay_deltas` store the owner's every device reads, and
 the `memory_operations` record of the ten correction controls. Schema:
@@ -104,6 +110,28 @@ transaction it belongs to.
   the extraction path has over a delta. REJECTED_AS_INTERPRETATION, SUPERSEDED
   and WITHDRAWN need the owner's own `memory.correct` purpose, enforced by the
   `overlay_delta_transition` trigger for every principal (CRT-MEM-15-A).
+- **An outcome is a separate record, never an edit.** `resolutions.ts` only
+  inserts, and its two tables take no `DELETE` grant and a lifecycle-only
+  `UPDATE`. Never add an outcome, status or `resolved_at` column to a frame, slot
+  or proposition table: registry lint already refuses a status *predicate*
+  (CRT-OUT-01-A), and a schema column would be the same second authority one level
+  down (CRT-OUT-01-B, CRT-OUT-03-A, CRT-OUT-05-A).
+- **The outcome projection is derived on read.** `frameOutcomeProjection`
+  recomputes UNRESOLVED / PARTIALLY_RESOLVED / RESOLVED / CONTESTED from accepted
+  assertions every time; do not materialize it here. Only two *different settling*
+  codes conflict — a partial beside a settling one is a progression
+  (CRT-OUT-08-A, ADR 0020 §2).
+- **A transition contract is an argument, never a file read.** `validateTransition`
+  takes the pinned release's contracts from the caller, so an empty set refuses
+  everything. This package must not import `@unai/registry` at runtime
+  (CRT-REG-01-B), and `transitionContractSchema` stays non-strict so a release
+  contract can be passed through unmodified (CRT-OUT-04-A, ADR 0020 §3).
+- **A resolution statement creates no slot.** `canonicalizeResolutionStatement`
+  shares no step with `canonicalizeClaim`: no slot, no proposition, and its claim
+  carries `proposition_id` null. `classifyResolutionStatement` answers `null` for
+  anything unrecognised, negated or not-yet-actual rather than guessing a code.
+- **Time passage writes nothing.** `sweepElapsedSchedules` reports and returns
+  `occurrencesCreated: 0`; never give it an `INSERT` (CRT-OUT-03-A, CRT-OUT-07-A).
 - Recomputation appends and closes; it never rewrites. `recomputeCanonicalFingerprints`
   inserts the new-version rows before closing the old ones, so no reader is left
   without an index, and the database's `FINGERPRINT_IMMUTABLE` trigger enforces
@@ -112,13 +140,18 @@ transaction it belongs to.
 ## Running these tests
 
 `temporal.test.ts` is pure: `pnpm exec vitest run packages/memory/src/temporal.test.ts`.
-`identity.test.ts`, `canonicalization.test.ts` and `overlay.test.ts` need the harness — run
-`pnpm test`, or export `UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated
-pgvector server. They create the `memory_test_app`, `canonicalization_test_app`
-and `overlay_test_app` LOGIN roles when absent and run every store through
+`identity.test.ts`, `canonicalization.test.ts`, `overlay.test.ts` and
+`resolutions.test.ts` need the harness — run `pnpm test`, or export
+`UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated pgvector server. They
+create the `memory_test_app`, `canonicalization_test_app`, `overlay_test_app` and
+`resolutions_test_app` LOGIN roles when absent and run every store through
 `withOwnerTransaction` under the low-privilege application role, so the policies
-of migrations 0010, 0012, 0013 and 0014 are part of what they prove. No
+of migrations 0010, 0012, 0013, 0014 and 0015 are part of what they prove. No
 `UNAI_TEST_S3_*` is needed.
+
+`resolutions.test.ts` reads the pinned release's transition contracts with
+`lintRegistryCheckout` from `@unai/registry` (a devDependency, test-only), so it
+must run from the repository root; it commits no `registry_releases` row.
 
 `overlay.test.ts` holds two owner transactions open at once to prove the
 allocator serializes them, so it needs a pool that can give out two connections;
