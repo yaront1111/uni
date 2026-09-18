@@ -45,8 +45,11 @@ checks actor/owner/purpose and queries RLS-protected source metadata.
 
 Actor attribution (actorRef) is distinct from authenticated submitted_by_user_id.
 USER attribution must match the session. Other source attribution does not confer
-connector or canonical authority. actor_entity_id is constrained null until the
-identity node introduces the governed entity relationship. Connector provisioning,
+connector or canonical authority. actor_entity_id was constrained null until the
+identity node introduced the governed entity relationship; migration 0010 has
+since replaced that placeholder check with the composite owner foreign key to
+entities, without backfilling any value (see docs/canonical-identity.md).
+Connector provisioning,
 consent, sync cursors and revocation remain with the connector owner; this API
 accepts only an existing active owner-local connector and grants no provisioning
 or connector mutation route.

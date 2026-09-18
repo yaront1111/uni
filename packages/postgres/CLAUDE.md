@@ -23,7 +23,7 @@
 
 1. Add `[table, ownerColumn]` to `classifiedTables` in `ownership.ts` (`'id'` only for `users` and `owner_scopes`; the column must exist). A table the application must never reach goes into `globalReferenceTables` instead and needs forced RLS, no policy and no `unai_app` privilege.
 2. In `isolation.test.ts`, insert a row for both owners inside the `beforeAll` loop (through the admin pool), and add the table to the `readUnfiltered` loop, or give it a dedicated test when its policy gates on purpose, as `jobs` has.
-3. Bump the literal `15` in "forces RLS on all application tables"; it counts every `public` table, global ones included.
+3. Bump the table-count literal in "forces RLS on all application tables" (`26` after migration 0010); it counts every `public` table, global ones included.
 4. The second CRT-SEC-01-A test ("covers every classified owner-scoped table ...") requires three sets to be equal: tables on which `unai_app` holds SELECT for at least one column, `OWNER_SCOPED_TABLES`, and the tables recorded in `unfiltered`. A classified table without a SELECT grant therefore fails. The `unfiltered` set is filled by the earlier tests, so running that test alone with `-t` fails.
 
 ## Running these tests

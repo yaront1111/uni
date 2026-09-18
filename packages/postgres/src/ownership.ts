@@ -11,6 +11,11 @@ const classifiedTables=new Map([
   ['evidence_object_keys','owner_scope_id'],
   ['evidence_ingestion_receipts','owner_scope_id'],['jobs','owner_scope_id'],
   ['context_spaces','owner_scope_id'],
+  ['entities','owner_scope_id'],['entity_aliases','owner_scope_id'],['entity_lineage','owner_scope_id'],
+  ['frame_instances','owner_scope_id'],['frame_instance_roles','owner_scope_id'],
+  ['belief_slots','owner_scope_id'],['slot_fingerprints','owner_scope_id'],
+  ['propositions','owner_scope_id'],['proposition_fingerprints','owner_scope_id'],
+  ['claims','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a

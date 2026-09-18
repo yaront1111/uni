@@ -41,6 +41,22 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query("INSERT INTO audit_events (owner_scope_id,actor,purpose,objects_and_fields_accessed,policy_decision,model_or_code_version,result,correlation_id) VALUES ($1,$2,'test','[]','ALLOW','test','SUCCESS',$3)",[owner,actor,randomUUID()]);
       await pool.query("INSERT INTO jobs(id,owner_scope_id,job_kind,payload,idempotency_key) VALUES($1,$2,'evidence.extract',$3,$4)",
         [randomUUID(),owner,JSON.stringify({ownerScopeId:owner}),randomUUID().replaceAll('-','')+'fixture']);
+      // Canonical identity: one row per owner in every identity table, so the
+      // cross-owner sweep below covers them the same way it covers evidence.
+      const anchor=(await pool.query('SELECT id FROM source_anchors WHERE owner_scope_id=$1 LIMIT 1',[owner])).rows[0].id;
+      const context=(await pool.query('SELECT id FROM context_spaces WHERE owner_scope_id=$1',[owner])).rows[0].id;
+      const entity=randomUUID(),merged=randomUUID(),instance=randomUUID(),slot=randomUUID(),proposition=randomUUID(),claim=randomUUID();
+      await pool.query("INSERT INTO entities(id,owner_scope_id,entity_kind,canonical_label) VALUES($1,$2,'PERSON','Daniel'),($3,$2,'PERSON','Daniel')",[entity,owner,merged]);
+      await pool.query("UPDATE entities SET lifecycle='MERGED',retired_at=now() WHERE id=$1",[merged]);
+      await pool.query("INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id) VALUES($1,$2,$3,'DISPLAY_NAME','Daniel','daniel',$4)",[randomUUID(),owner,entity,source]);
+      await pool.query("INSERT INTO entity_lineage(id,owner_scope_id,from_entity_id,to_entity_id,lineage_kind) VALUES($1,$2,$3,$4,'MERGED_INTO')",[randomUUID(),owner,merged,entity]);
+      await pool.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.obligation',$3)",[instance,owner,context]);
+      await pool.query("INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality) VALUES($1,$2,$3,'shared.obligation.principal_amount',$4,'ACTUAL')",[slot,owner,instance,context]);
+      await pool.query("INSERT INTO slot_fingerprints(id,owner_scope_id,belief_slot_id,normalization_version,fingerprint,descriptor) VALUES($1,$2,$3,'normalization-1',$4,'{}')",[randomUUID(),owner,slot,'b'.repeat(64)]);
+      await pool.query(`INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,'{"amount":"50.00","currency":"ILS"}')`,[proposition,owner,slot]);
+      await pool.query("INSERT INTO proposition_fingerprints(id,owner_scope_id,proposition_id,normalization_version,fingerprint,descriptor) VALUES($1,$2,$3,'normalization-1',$4,'{}')",[randomUUID(),owner,proposition,'c'.repeat(64)]);
+      await pool.query("INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle) VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL')",[claim,owner,anchor,proposition]);
+      await pool.query("INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id) VALUES($1,$2,$3,'creditor',$4,$5)",[randomUUID(),owner,instance,entity,claim]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -92,6 +108,40 @@ describe('real PostgreSQL owner isolation', () => {
     for(const sql of ['DELETE FROM jobs','TRUNCATE jobs']){
       await expect(asOwner(a,alice,c=>c.query(sql).then(()=>{}),'ops.jobs.read')).rejects.toMatchObject({code:'42501'});
     }
+  });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A canonical identity queries and refuses them under another purpose',async()=>{
+    const memoryTables=['entities','entity_aliases','entity_lineage','frame_instances','frame_instance_roles',
+      'belief_slots','slot_fingerprints','propositions','proposition_fingerprints','claims'];
+    await asOwner(a,alice,async c=>{
+      for(const table of memoryTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.inspect');
+    // Canonical identity is purpose-bound like evidence: an owner session holding
+    // an unrelated product purpose sees none of it.
+    await asOwner(a,alice,async c=>{
+      for(const table of memoryTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    await asOwner(b,alice,async c=>{
+      for(const table of memoryTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.inspect');
+    // Reading never authorizes writing, and no identity row may be removed.
+    for(const table of memoryTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.canonicalize'),table).rejects.toMatchObject({code:'42501'});
+    }
+    // A claim is one source assertion: this node grants no update on it at all.
+    await expect(asOwner(a,alice,c=>c.query("UPDATE claims SET lifecycle='ACCEPTED'").then(()=>{}),'memory.canonicalize')).rejects.toMatchObject({code:'42501'});
+    // A fingerprint may only be closed; its index columns are immutable even for
+    // the privileged principal, so recomputation can never rewrite what an
+    // earlier fingerprint said (CRT-MEM-04-A).
+    await expect(asOwner(a,alice,c=>c.query("UPDATE slot_fingerprints SET fingerprint=$1",['d'.repeat(64)]).then(()=>{}),'memory.canonicalize'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(pool.query("UPDATE slot_fingerprints SET normalization_version='normalization-2' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('FINGERPRINT_IMMUTABLE');
+    await expect(pool.query('UPDATE entities SET id=gen_random_uuid() WHERE owner_scope_id=$1',[a]))
+      .rejects.toThrow('CANONICAL_IDENTITY_IMMUTABLE');
   });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
@@ -168,7 +218,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(16);
+    expect(rows.length).toBe(26);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

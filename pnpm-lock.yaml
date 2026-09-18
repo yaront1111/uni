@@ -127,6 +127,25 @@ importers:
         specifier: ^8.15.0
         version: 8.23.1
 
+  packages/memory:
+    dependencies:
+      '@unai/domain':
+        specifier: workspace:*
+        version: link:../domain
+      zod:
+        specifier: ^4.6.2
+        version: 4.6.2
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.15.0
+        version: 8.23.1
+      '@unai/postgres':
+        specifier: workspace:*
+        version: link:../postgres
+      pg:
+        specifier: ^8.16.0
+        version: 8.23.0
+
   packages/postgres:
     dependencies:
       '@opentelemetry/api':
