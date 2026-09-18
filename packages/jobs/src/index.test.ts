@@ -106,9 +106,9 @@ it('records only stable error codes and keeps job identity immutable',async()=>{
 it('CRT-NFR-02-A: a worker killed mid-job leaves its evidence and content hash unchanged for the next worker',async()=>{
   const evidence=randomUUID(),hash='b'.repeat(64);
   await admin.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,
-    raw_object_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
-    VALUES($1,$2,NULL,'DOCUMENT',$3,$4,$5,$6,$7,$8,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$9)`,
-    [evidence,owner,'document:'+evidence,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),'raw/'+randomUUID(),hash,key()]);
+    raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+    VALUES($1,$2,NULL,'DOCUMENT',$3,$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)`,
+    [evidence,owner,'document:'+evidence,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),hash,key()]);
   const enqueued=await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'evidence.summarize',payload:{evidenceId:evidence},idempotencyKey:key(),maxAttempts:3}));
   const killed=await as(JOB_PURPOSES.work,tx=>claimJob(tx,{worker:'worker-killed',leaseSeconds:0,jobKinds:['evidence.summarize']}));
   expect(killed).toMatchObject({jobId:enqueued.jobId,payload:{evidenceId:evidence}});

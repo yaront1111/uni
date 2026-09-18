@@ -1,0 +1,61 @@
+{
+  "id": "thread-1f8c2a4b7d",
+  "historyId": "884120",
+  "messages": [
+    {
+      "id": "msg-9a1c04",
+      "threadId": "thread-1f8c2a4b7d",
+      "internalDate": "1788166800000",
+      "labelIds": ["INBOX", "IMPORTANT"],
+      "sizeEstimate": 4821,
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Message-Id", "value": "<CA+root@mail.example.test>"},
+          {"name": "From", "value": "dana@example.test"},
+          {"name": "To", "value": "owner@example.test"},
+          {"name": "Subject", "value": "Kitchen renovation quote"},
+          {"name": "Date", "value": "Mon, 31 Aug 2026 09:00:00 +0000"}
+        ],
+        "body": {"size": 118, "text": "The contractor quoted 18,400 for the kitchen. I said we would confirm by Friday."}
+      }
+    },
+    {
+      "id": "msg-9a1c05",
+      "threadId": "thread-1f8c2a4b7d",
+      "internalDate": "1788170400000",
+      "labelIds": ["INBOX"],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Message-Id", "value": "<CA+reply1@mail.example.test>"},
+          {"name": "In-Reply-To", "value": "<CA+root@mail.example.test>"},
+          {"name": "From", "value": "owner@example.test"},
+          {"name": "To", "value": "dana@example.test"},
+          {"name": "Subject", "value": "Re: Kitchen renovation quote"},
+          {"name": "Date", "value": "Mon, 31 Aug 2026 10:00:00 +0000"}
+        ],
+        "body": {"size": 84, "text": "That is over the budget we agreed. Ask whether the tiling can be split out."}
+      }
+    },
+    {
+      "id": "msg-9a1c06",
+      "threadId": "thread-1f8c2a4b7d",
+      "internalDate": "1788181200000",
+      "labelIds": ["INBOX"],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Message-Id", "value": "<CA+reply2@mail.example.test>"},
+          {"name": "In-Reply-To", "value": "<CA+reply1@mail.example.test>"},
+          {"name": "From", "value": "dana@example.test"},
+          {"name": "To", "value": "owner@example.test"},
+          {"name": "Cc", "value": "contractor@example.test"},
+          {"name": "Subject", "value": "Re: Kitchen renovation quote"},
+          {"name": "Date", "value": "Mon, 31 Aug 2026 13:00:00 +0000"}
+        ],
+        "body": {"size": 96, "text": "Tiling split out brings it to 14,900. I will confirm with them on Friday morning."}
+      }
+    }
+  ]
+}

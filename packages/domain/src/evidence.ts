@@ -1,4 +1,5 @@
 import {z} from 'zod';
+import {parsedSourceAnchorSchema} from './sources.js';
 
 export const dataPurposeSchema=z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
 export const sensitivitySchema=z.enum(['NORMAL','PRIVATE','RESTRICTED']);
@@ -20,5 +21,8 @@ export const publicEvidenceSchema=z.strictObject({
   contentHash:z.string().regex(/^[a-f0-9]{64}$/),sensitivity:sensitivitySchema,
   allowedPurposes:z.array(dataPurposeSchema),ingestionVersion:z.literal('evidence-json-v1'),
   deterministicMetadata:z.record(z.string(),z.json()),ingestionStatus:z.literal('STORED'),
+  // The deterministic anchors this item carries. Present on a single-item read;
+  // omitted from list responses, which return metadata only.
+  anchors:z.array(parsedSourceAnchorSchema).optional(),
 });
 export type PublicEvidence=z.infer<typeof publicEvidenceSchema>;

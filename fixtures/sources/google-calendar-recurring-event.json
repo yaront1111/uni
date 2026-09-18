@@ -1,0 +1,42 @@
+{
+  "id": "evt-weekly-review-7b3",
+  "summary": "Weekly review",
+  "organizer": {"email": "owner@example.test"},
+  "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=FR;COUNT=3"],
+  "timeZone": "Asia/Jerusalem",
+  "instances": [
+    {
+      "id": "evt-weekly-review-7b3_20260904T130000Z",
+      "recurringEventId": "evt-weekly-review-7b3",
+      "status": "confirmed",
+      "summary": "Weekly review",
+      "location": "Home office",
+      "originalStartTime": {"dateTime": "2026-09-04T16:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "start": {"dateTime": "2026-09-04T16:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "end": {"dateTime": "2026-09-04T17:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "attendees": [{"email": "owner@example.test", "responseStatus": "accepted"}]
+    },
+    {
+      "id": "evt-weekly-review-7b3_20260911T130000Z",
+      "recurringEventId": "evt-weekly-review-7b3",
+      "status": "confirmed",
+      "summary": "Weekly review",
+      "location": "Home office",
+      "originalStartTime": {"dateTime": "2026-09-11T16:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "start": {"dateTime": "2026-09-11T16:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "end": {"dateTime": "2026-09-11T17:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "attendees": [{"email": "owner@example.test", "responseStatus": "accepted"}]
+    },
+    {
+      "id": "evt-weekly-review-7b3_20260918T130000Z",
+      "recurringEventId": "evt-weekly-review-7b3",
+      "status": "confirmed",
+      "summary": "Weekly review (moved)",
+      "location": "Cafe",
+      "originalStartTime": {"dateTime": "2026-09-18T16:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "start": {"dateTime": "2026-09-18T18:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "end": {"dateTime": "2026-09-18T19:00:00+03:00", "timeZone": "Asia/Jerusalem"},
+      "attendees": [{"email": "owner@example.test", "responseStatus": "accepted"}]
+    }
+  ]
+}

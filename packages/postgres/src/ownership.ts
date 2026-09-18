@@ -8,6 +8,7 @@ const classifiedTables=new Map([
   ['devices','owner_scope_id'],['audit_events','owner_scope_id'],
   ['auth_identities','owner_scope_id'],['auth_sessions','owner_scope_id'],
   ['connectors','owner_scope_id'],['source_items','owner_scope_id'],['source_anchors','owner_scope_id'],
+  ['evidence_object_keys','owner_scope_id'],
   ['evidence_ingestion_receipts','owner_scope_id'],['jobs','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation

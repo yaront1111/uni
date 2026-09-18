@@ -32,8 +32,9 @@ describe('real PostgreSQL owner isolation', () => {
       const connector=randomUUID(),source=randomUUID();
       const retry=randomUUID();
       await pool.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'DOCUMENT',$3,'{}','ACTIVE')",[connector,owner,owner]);
-      await pool.query("INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,raw_object_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key) VALUES($1,$2,$3,'DOCUMENT','fixture',$4,$5,$6,$7,$8,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$9)",[source,owner,connector,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),'raw/'+randomUUID(),'a'.repeat(64),randomUUID()]);
-      await pool.query("INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor) VALUES($1,$2,$3,'JSON_PATH','{\"path\":\"$.text\"}')",[randomUUID(),owner,source]);
+      await pool.query("INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key) VALUES($1,$2,$3,'DOCUMENT','fixture',$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)",[source,owner,connector,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),'a'.repeat(64),randomUUID()]);
+      await pool.query("INSERT INTO evidence_object_keys(id,owner_scope_id,source_item_id,object_store_key,encryption_key_ref) VALUES($1,$2,$3,$4,'kms:test')",[randomUUID(),owner,source,'raw/'+randomUUID()]);
+      await pool.query("INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor) VALUES($1,$2,$3,'CONNECTOR_JSON_PATH','{\"path\":\"$.text\"}')",[randomUUID(),owner,source]);
       await pool.query('INSERT INTO evidence_ingestion_receipts(owner_scope_id,idempotency_key,source_item_id) VALUES($1,$2,$3)',[owner,retry,source]);
       await pool.query("INSERT INTO auth_identities(owner_scope_id,user_id,issuer,subject) VALUES($1,$2,'https://accounts.google.com',$3)",[owner,actor,actor]);
       await pool.query("INSERT INTO auth_sessions(owner_scope_id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')",[owner,actor,actor!.replaceAll('-','').repeat(2)]);
@@ -60,7 +61,7 @@ describe('real PostgreSQL owner isolation', () => {
 
   it('hides B from unfiltered owner A queries on every owner table', async()=>{
     await asOwner(a,alice,async c=>{
-      for (const table of ['owner_scopes','owner_scope_members','devices','audit_events','connectors','source_items','source_anchors','evidence_ingestion_receipts']) {
+      for (const table of ['owner_scopes','owner_scope_members','devices','audit_events','connectors','source_items','source_anchors','evidence_object_keys','evidence_ingestion_receipts']) {
         const key=table==='owner_scopes'?'id':'owner_scope_id';
         const rows=(await readUnfiltered(c,table)).rows;
         expect(rows.length).toBeGreaterThan(0);
@@ -104,10 +105,12 @@ describe('real PostgreSQL owner isolation', () => {
       await c.query("SELECT set_config('unai.data_purpose','ADVERTISING',true)");
       expect((await c.query('SELECT * FROM source_items')).rows).toEqual([]);
       expect((await c.query('SELECT * FROM source_anchors')).rows).toEqual([]);
+      // The private object-store location follows the evidence row's own decision.
+      expect((await c.query('SELECT * FROM evidence_object_keys')).rows).toEqual([]);
       await c.query("SELECT set_config('unai.data_purpose','PERSONAL_ASSISTANCE',true),set_config('unai.maximum_sensitivity','NORMAL',true)");
       expect((await c.query('SELECT * FROM source_items')).rows).toEqual([]);
     });
-    for(const table of ['source_items','source_anchors']){
+    for(const table of ['source_items','source_anchors','evidence_object_keys']){
       await expect(asOwner(a,alice,c=>c.query('UPDATE '+table+' SET id=id').then(()=>{}))).rejects.toMatchObject({code:'42501'});
       await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}))).rejects.toMatchObject({code:'42501'});
     }
@@ -132,7 +135,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(14);
+    expect(rows.length).toBe(15);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

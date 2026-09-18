@@ -26,6 +26,7 @@ async function fixture(realObjects?:EvidenceObjects){
   // Test-only storage double: no worker or model exists in this fixture.
   const objects=new Map<string,Uint8Array>();let fail=false;
   const evidenceObjects={
+    encryptionKeyRef:'kms:test-double',
     async put(_tx:unknown,id:string,bytes:Uint8Array){if(fail)throw new Error('provider private key');objects.set(id,bytes);},
     async get(_tx:unknown,id:string){return objects.get(id)!;},
   };
@@ -45,9 +46,16 @@ it('CRT-EVD-01-A: persists row and raw bytes synchronously without extraction wo
     expect(result.statusCode).toBe(200);
     expect(result.json()).toMatchObject({evidenceId:expect.any(String),ingestionStatus:'STORED'});
     const row=(await admin.query('SELECT * FROM source_items WHERE id=$1',[result.json().evidenceId])).rows[0];
-    expect(row).toBeDefined();expect(f.objects.get(row.raw_object_id)).toEqual(Buffer.from(JSON.stringify(f.payload.content)));
-    expect(row.content_hash).toBe(createHash('sha256').update(f.objects.get(row.raw_object_id)!).digest('hex'));
+    expect(row).toBeDefined();expect(f.objects.get(row.raw_object_ref)).toEqual(Buffer.from(JSON.stringify(f.payload.content)));
+    expect(row.content_hash).toBe(createHash('sha256').update(f.objects.get(row.raw_object_ref)!).digest('hex'));
+    // The private object-store location and its encryption key reference live on
+    // the evidence_object_keys row, one per source item.
+    expect((await admin.query('SELECT object_store_key,encryption_key_ref FROM evidence_object_keys WHERE source_item_id=$1',[row.id])).rows)
+      .toEqual([{object_store_key:expect.stringMatching(/^raw\//),encryption_key_ref:'kms:test-double'}]);
     expect((await admin.query('SELECT id FROM audit_events WHERE correlation_id=$1',[f.headers['x-correlation-id']])).rowCount).toBe(1);
+    // The row and its bytes are durable with no worker anywhere: ingestion queues
+    // nothing, so the response cannot be waiting on semantic processing.
+    expect((await admin.query('SELECT id FROM jobs WHERE owner_scope_id=$1',[f.owner])).rowCount).toBe(0);
   }finally{await f.app.close();}
 });
 
@@ -62,8 +70,8 @@ it.each([null,'connector'])('CRT-EVD-02-A/B: concurrent %s duplicates retain one
     expect(new Set(results.map(r=>r.json().evidenceId)).size).toBe(1);
     const rows=(await admin.query('SELECT * FROM source_items WHERE owner_scope_id=$1',[f.owner])).rows;
     expect(rows).toHaveLength(1);expect(f.objects.size).toBe(1);
-    await expect(admin.query(`INSERT INTO source_items SELECT (jsonb_populate_record(NULL::source_items,to_jsonb(s)||jsonb_build_object('id',$2::text,'raw_object_id',$3::text,'raw_object_ref',$4::text,'idempotency_key',$5::text))).* FROM source_items s WHERE id=$1`,
-      [rows[0].id,randomUUID(),randomUUID(),'private/'+randomUUID(),randomUUID()])).rejects.toMatchObject({code:'23505',constraint:'source_items_identity'});
+    await expect(admin.query(`INSERT INTO source_items SELECT (jsonb_populate_record(NULL::source_items,to_jsonb(s)||jsonb_build_object('id',$2::text,'raw_object_ref',$3::text,'idempotency_key',$4::text))).* FROM source_items s WHERE id=$1`,
+      [rows[0].id,randomUUID(),randomUUID(),randomUUID()])).rejects.toMatchObject({code:'23505',constraint:'source_items_identity'});
   }finally{await f.app.close();}
 });
 
@@ -76,9 +84,10 @@ it('CRT-EVD-03-A: reads every retained field with public object reference and im
     const row=(await admin.query('SELECT * FROM source_items WHERE id=$1',[id])).rows[0];
     expect(result.json()).toMatchObject({evidenceId:id,ownerScopeId:f.owner,sourceType:'DOCUMENT',connectorId:null,
       externalId:f.payload.externalId,actorRef:f.payload.actorRef,occurredAt:'2026-08-31T09:00:00.000Z',
-      observedAt:row.observed_at.toISOString(),rawObjectRef:row.raw_object_id,contentHash:row.content_hash,
+      observedAt:row.observed_at.toISOString(),rawObjectRef:row.raw_object_ref,contentHash:row.content_hash,
       sensitivity:'PRIVATE',allowedPurposes:['PERSONAL_ASSISTANCE'],ingestionVersion:'evidence-json-v1'});
-    expect(JSON.stringify(result.json())).not.toContain(row.raw_object_ref);
+    const key=(await admin.query('SELECT object_store_key FROM evidence_object_keys WHERE source_item_id=$1',[id])).rows[0];
+    expect(JSON.stringify(result.json())).not.toContain(key.object_store_key);
     await expect(admin.query("UPDATE source_items SET sensitivity='NORMAL' WHERE id=$1",[id])).rejects.toMatchObject({code:'55000'});
     const duplicate=await f.app.inject({method:'POST',url:'/v1/evidence',headers:f.headers,payload:{...f.payload,occurredAt:null}});
     expect(duplicate.json().evidenceId).toBe(id);
@@ -119,13 +128,13 @@ it('CRT-EVD-01-A/02-A/03-A: real TLS/KMS object persistence and authorized read 
     const context={actorId:f.user.id,ownerScopeId:f.owner,purpose:'evidence.read',correlationId:randomUUID()};
     const raw=await withOwnerTransaction(appPool,context,async tx=>{
       await tx.query("SELECT set_config('unai.data_purpose','PERSONAL_ASSISTANCE',true),set_config('unai.maximum_sensitivity','PRIVATE',true)");
-      return objects.get(tx,row.raw_object_id);
+      return objects.get(tx,row.raw_object_ref);
     });
     expect(Buffer.from(raw).toString()).toBe(JSON.stringify(f.payload.content));
     expect(createHash('sha256').update(raw).digest('hex')).toBe(row.content_hash);
     const duplicate=await f.app.inject({method:'POST',url:'/v1/evidence',headers:f.headers,payload:f.payload});
     expect(duplicate.json()).toEqual(result.json());
-    await expect(withOwnerTransaction(appPool,{...context,correlationId:randomUUID()},tx=>objects.get(tx,row.raw_object_id))).rejects.toThrow('STORAGE_ACCESS_DENIED');
+    await expect(withOwnerTransaction(appPool,{...context,correlationId:randomUUID()},tx=>objects.get(tx,row.raw_object_ref))).rejects.toThrow('STORAGE_ACCESS_DENIED');
   }finally{await f.app.close();objects.close();}
 });
 

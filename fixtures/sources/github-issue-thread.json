@@ -1,0 +1,28 @@
+{
+  "repository": {"full_name": "example-org/uai-reference"},
+  "issue": {
+    "node_id": "PR_kwDOA1b2c3d4",
+    "number": 412,
+    "title": "Retry the extraction worker instead of dead-lettering on a gateway timeout",
+    "body": "A gateway timeout currently dead-letters the job on the first attempt. It should retry up to maxAttempts.",
+    "user": {"login": "rivka-dev"},
+    "created_at": "2026-09-02T08:15:00Z",
+    "pull_request": {}
+  },
+  "comments": [
+    {
+      "node_id": "IC_kwDOA1b2c3d5",
+      "id": 9013371,
+      "body": "Agreed. The dead-letter path should stay for handler failures that are not transient.",
+      "user": {"login": "owner-account"},
+      "created_at": "2026-09-02T09:02:00Z"
+    },
+    {
+      "node_id": "IC_kwDOA1b2c3d6",
+      "id": 9013372,
+      "body": "Pushed the retry classification; CI is green on the job queue suite.",
+      "user": {"login": "rivka-dev"},
+      "created_at": "2026-09-02T11:47:00Z"
+    }
+  ]
+}
