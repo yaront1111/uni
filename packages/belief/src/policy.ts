@@ -51,6 +51,12 @@ export interface MemoryReadRequest extends PolicyRequestBase {
 
 export interface MemoryActionRequest extends PolicyRequestBase {
   readonly actionKind: 'DRAFT' | 'EMAIL_SEND' | 'CALENDAR_WRITE' | 'MONEY_MOVEMENT' | 'TRADE';
+  /** The purposes the evidence behind the memory this action rests on admits,
+   * in the port's own purpose vocabulary -- the same field, and the same meaning,
+   * as on a read. An action is founded on memory, so it is bound by what that
+   * memory's evidence was allowed to be used for, and not only by whether the
+   * actor may act at all (CRT-SEC-02-A). */
+  readonly allowedPurposes: readonly string[];
   readonly capabilityGranted: boolean;
   /** The strongest assessment behind the memory this action rests on. */
   readonly supportingAssessment: 'ACCEPTED' | 'PROVISIONAL' | 'CONTESTED' | 'UNSUPPORTED' | 'NONE';
@@ -118,6 +124,11 @@ export function createLocalPolicyAdapters(): PolicyPorts {
 
     async evaluateMemoryAction(request: MemoryActionRequest): Promise<PolicyVerdict> {
       if (!ACTION_PURPOSES.has(request.purpose)) return verdict('DENY', 'PURPOSE_NOT_PERMITTED_FOR_ACTION');
+      // The same rule a read is held to: an action whose purpose the supporting
+      // evidence never admitted is denied before anything else about the action is
+      // considered -- its kind, its capability and its support do not arise
+      // (CRT-SEC-02-A).
+      if (!request.allowedPurposes.includes(request.purpose)) return verdict('DENY', 'PURPOSE_NOT_IN_ALLOWED_PURPOSES');
       // PRD §27: in V0 the only external write is a draft, and even that needs its
       // discrete capability. Execution facts arrive as ingested tool receipts.
       if (request.actionKind !== 'DRAFT') return verdict('DENY', 'EXTERNAL_ACTION_REFUSED_IN_V0');

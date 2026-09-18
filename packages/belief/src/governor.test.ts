@@ -528,19 +528,41 @@ describe('the local policy ports', () => {
   });
 
   it('EvaluateMemoryAction refuses every external action kind but a draft in V0', async () => {
+    // The evidence behind the memory admits the action purpose throughout this
+    // test, so each assertion below is about the rule it names and not about the
+    // purpose gate the next test covers.
+    const acting = { ...base, purpose: 'memory.act', allowedPurposes: ['memory.act'] };
     for (const actionKind of ['EMAIL_SEND', 'CALENDAR_WRITE', 'MONEY_MOVEMENT', 'TRADE'] as const) {
-      expect(await ports.evaluateMemoryAction({ ...base, purpose: 'memory.act', actionKind, capabilityGranted: true,
+      expect(await ports.evaluateMemoryAction({ ...acting, actionKind, capabilityGranted: true,
         supportingAssessment: 'ACCEPTED', projectionComplete: true }), actionKind)
         .toMatchObject({ outcome: 'DENY', reason: 'EXTERNAL_ACTION_REFUSED_IN_V0' });
     }
-    expect(await ports.evaluateMemoryAction({ ...base, purpose: 'memory.act', actionKind: 'DRAFT', capabilityGranted: false,
+    expect(await ports.evaluateMemoryAction({ ...acting, actionKind: 'DRAFT', capabilityGranted: false,
       supportingAssessment: 'ACCEPTED', projectionComplete: true })).toMatchObject({ outcome: 'DENY', reason: 'CAPABILITY_NOT_GRANTED' });
-    expect(await ports.evaluateMemoryAction({ ...base, purpose: 'memory.act', actionKind: 'DRAFT', capabilityGranted: true,
+    expect(await ports.evaluateMemoryAction({ ...acting, actionKind: 'DRAFT', capabilityGranted: true,
       supportingAssessment: 'ACCEPTED', projectionComplete: true })).toMatchObject({ outcome: 'ALLOW' });
     // A high-risk action resting on provisional or incomplete memory is denied.
-    expect(await ports.evaluateMemoryAction({ ...base, risk: 'HIGH', purpose: 'memory.act', actionKind: 'DRAFT',
+    expect(await ports.evaluateMemoryAction({ ...acting, risk: 'HIGH', actionKind: 'DRAFT',
       capabilityGranted: true, supportingAssessment: 'PROVISIONAL', projectionComplete: false }))
       .toMatchObject({ outcome: 'DENY', reason: 'HIGH_RISK_ACTION_ON_UNSETTLED_MEMORY' });
+  });
+
+  it('CRT-SEC-02-A: EvaluateMemoryAction denies an undeclared purpose and one the evidence does not admit', async () => {
+    const acting = { ...base, actionKind: 'DRAFT' as const, capabilityGranted: true,
+      supportingAssessment: 'ACCEPTED' as const, projectionComplete: true };
+    // No declared purpose at all.
+    expect(await ports.evaluateMemoryAction({ ...acting, purpose: '', allowedPurposes: ['memory.act'] }))
+      .toMatchObject({ outcome: 'DENY', reason: 'PURPOSE_NOT_PERMITTED_FOR_ACTION' });
+    // A purpose the evidence behind the supporting memory never admitted. The
+    // action is otherwise impeccable -- a draft, with its capability, on accepted
+    // memory over a complete projection -- and it is still denied.
+    expect(await ports.evaluateMemoryAction({ ...acting, purpose: 'memory.act', allowedPurposes: [] }))
+      .toMatchObject({ outcome: 'DENY', reason: 'PURPOSE_NOT_IN_ALLOWED_PURPOSES' });
+    expect(await ports.evaluateMemoryAction({ ...acting, purpose: 'memory.act', allowedPurposes: ['memory.read'] }))
+      .toMatchObject({ outcome: 'DENY', reason: 'PURPOSE_NOT_IN_ALLOWED_PURPOSES' });
+    // The same action, once the evidence admits it.
+    expect(await ports.evaluateMemoryAction({ ...acting, purpose: 'memory.act', allowedPurposes: ['memory.act'] }))
+      .toMatchObject({ outcome: 'ALLOW' });
   });
 
   it('persists a decision for every port, and refuses to rewrite one', async () => {
@@ -548,7 +570,8 @@ describe('the local policy ports', () => {
       { port: 'EvaluateMemoryRead' as const, verdict: await ports.evaluateMemoryRead({ ...base, purpose: 'memory.read',
         requestedObjects: [], maximumSensitivity: 'PRIVATE', allowedPurposes: ['memory.read'] }), purpose: 'memory.read' },
       { port: 'EvaluateMemoryAction' as const, verdict: await ports.evaluateMemoryAction({ ...base, purpose: 'memory.act',
-        actionKind: 'EMAIL_SEND', capabilityGranted: true, supportingAssessment: 'ACCEPTED', projectionComplete: true }), purpose: 'memory.act' },
+        allowedPurposes: ['memory.act'], actionKind: 'EMAIL_SEND', capabilityGranted: true,
+        supportingAssessment: 'ACCEPTED', projectionComplete: true }), purpose: 'memory.act' },
     ];
     for (const entry of verdicts) {
       const id = await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: entry.purpose, correlationId: randomUUID() },

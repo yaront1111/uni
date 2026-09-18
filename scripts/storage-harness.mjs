@@ -34,7 +34,12 @@ function temporaryDirectory(){
     const absolute=resolve(directory);
     const child=relative(resolve(tmpdir()),absolute);
     if(isAbsolute(child)||child.startsWith('..')||!child.startsWith('unai-s3-'))throw new Error('UNSAFE_TEST_CLEANUP');
-    rmSync(absolute,{recursive:true,force:true});
+    // `docker stop` returns before Windows releases the bind mount on this
+    // directory, so the first removal can still fail EBUSY/EPERM. The suite has
+    // already reached its verdict by then, and a cleanup that loses that race
+    // must not overwrite it: retry briefly rather than report a passing run as a
+    // failure. The guard above still decides *what* may be removed.
+    rmSync(absolute,{recursive:true,force:true,maxRetries:20,retryDelay:100});
   }};
 }
 
@@ -42,7 +47,18 @@ function temporaryDirectory(){
  * MinIO serves that whenever a container daemon is reachable; the in-process
  * S3-compatible server serves it when one is not. Neither is a production store. */
 export async function startStorageHarness(){
-  return containerDaemonReachable()?startMinioContainer():startLocalObjectServer();
+  if(!containerDaemonReachable())return startLocalObjectServer();
+  // A container daemon that is reachable can still refuse this particular
+  // container -- it is busy starting another one, the port it picked was taken,
+  // the pull is still running. That is a fact about the daemon, never about the
+  // product, and the in-process server below is the same real TLS and real
+  // KMS-encrypted object storage, so the suite keeps running against storage of
+  // equal standing instead of reporting the mood of Docker as a test result.
+  try{return await startMinioContainer();}
+  catch(error){
+    console.log('Container object storage was refused ('+error.message+'); using the in-process server.');
+    return startLocalObjectServer();
+  }
 }
 
 async function startLocalObjectServer(){

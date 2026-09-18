@@ -151,6 +151,18 @@ describe('real PostgreSQL owner isolation', () => {
         transaction_id,rows_rebuilt,equals_incremental,projection_version,reducer_version)
         VALUES($1,$2,'obligations_projection','MANUAL_REPLAY',$3,1,true,$4,'projection-reducers-0.1.0')`,
         [randomUUID(),owner,transaction,projectionVersion]);
+      // Memory threads: the same frame instance in two worldlines, which is the
+      // storage shape CRT-RD-10-A and CRT-MEM-02-A rest on, plus the packet the
+      // Context Broker recorded over them.
+      const finance=randomUUID(),family=randomUUID();
+      await pool.query(`INSERT INTO memory_threads(id,owner_scope_id,display_title) VALUES($1,$2,'Daniel loan'),($3,$2,'Family')`,
+        [finance,owner,family]);
+      await pool.query(`INSERT INTO memory_thread_members(owner_scope_id,memory_thread_id,object_type,object_id,membership_kind)
+        VALUES($1,$2,'frame_instance',$4,'SUBJECT'),($1,$3,'frame_instance',$4,'RELATED')`,[owner,finance,family,instance]);
+      await pool.query(`INSERT INTO context_packets(id,owner_scope_id,purpose,requesting_actor_id,
+        answer_type_classification,request,packet,packet_hash,selection_reason)
+        VALUES($1,$2,'PERSONAL_ASSISTANCE',$3,'CURRENT_VALUE','{}','{}',$4,'{}')`,
+        [randomUUID(),owner,actor,'e'.repeat(64)]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -592,7 +604,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(46);
+    expect(rows.length).toBe(49);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -637,6 +649,64 @@ describe('real PostgreSQL owner isolation', () => {
     await withOwnerTransaction(appPool,{actorId:bob,ownerScopeId:b,purpose:'test',correlationId:randomUUID()},async tx=>{
       expect((await tx.query('SELECT owner_scope_id FROM devices')).rows).toEqual([{owner_scope_id:b}]);
     });
+  });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A context and thread queries and keeps both records immutable',async()=>{
+    const brokerTables=['memory_threads','memory_thread_members','context_packets'];
+    await asOwner(a,alice,async c=>{
+      for(const table of brokerTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+      // One frame instance, two threads: the membership rows are the only thing
+      // that repeats, and no second evidence row exists behind them (CRT-RD-10-A).
+      const members=(await c.query('SELECT memory_thread_id,object_id FROM memory_thread_members')).rows;
+      expect(members.length).toBe(2);
+      expect(new Set(members.map(row=>row.object_id)).size).toBe(1);
+      expect(new Set(members.map(row=>row.memory_thread_id)).size).toBe(2);
+      expect((await c.query('SELECT count(*)::int AS n FROM source_items')).rows[0].n).toBe(1);
+    },'memory.read');
+    await asOwner(b,alice,async c=>{
+      for(const table of brokerTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.read');
+    // Purpose-bound like the rest: an unrelated product purpose reads none of it.
+    await asOwner(a,alice,async c=>{
+      for(const table of brokerTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // The model and plugin read path is a read. It holds no grant that could
+    // write a thread, a membership, an overlay delta or any canonical row, and no
+    // table here takes a DELETE grant at all (PRD §23, FR-060).
+    for(const table of [...brokerTables,'propositions','claims','frame_instances','owner_overlay_deltas']){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.read'),table).rejects.toMatchObject({code:'42501'});
+    }
+    for(const sql of ["INSERT INTO memory_threads(id,owner_scope_id) VALUES(gen_random_uuid(),$1)",
+      "INSERT INTO memory_thread_members(owner_scope_id,memory_thread_id,object_type,object_id,membership_kind) SELECT $1,id,'entity',id,'RELATED' FROM memory_threads"]){
+      await expect(asOwner(a,alice,c=>c.query(sql,[a]).then(()=>{}),'memory.read'),sql).rejects.toMatchObject({code:'42501'});
+    }
+    // A packet and a membership are statements about a moment; a thread keeps its
+    // identity even when its title moves.
+    await expect(asOwner(a,alice,c=>c.query("UPDATE context_packets SET purpose='OTHER'").then(()=>{}),'memory.read'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(pool.query("UPDATE context_packets SET packet='{\"forged\":true}' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE memory_thread_members SET membership_kind='SUBJECT' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query('UPDATE memory_threads SET id=gen_random_uuid() WHERE owner_scope_id=$1',[a]))
+      .rejects.toThrow('MEMORY_THREAD_IDENTITY_IMMUTABLE');
+    // CRT-SEC-09-A in the schema: the classification of the owner's own evidence
+    // is answerable above the request ceiling, and it is a label and nothing more.
+    await asOwner(a,alice,async c=>{
+      const labels=(await c.query('SELECT * FROM unai_private.evidence_labels($1)',[a])).rows;
+      expect(labels.length).toBe(1);
+      expect(Object.keys(labels[0]!).sort()).toEqual(['allowed_purposes','sensitivity','source_item_id']);
+    },'memory.read');
+    // It answers for this owner only, and only under a memory read purpose.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM unai_private.evidence_labels($1)',[b])).rows).toEqual([]);
+    },'memory.read');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM unai_private.evidence_labels($1)',[a])).rows).toEqual([]);
+    },'memory.govern');
   });
   it('refuses an elevated application database connection',async()=>{
     await expect(withOwnerTransaction(pool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId:randomUUID()},async()=>{})).rejects.toThrow('DATABASE_ROLE_UNSAFE');

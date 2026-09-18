@@ -10,6 +10,7 @@
     "@unai/auth": "workspace:*",
     "@unai/belief": "workspace:*",
     "@unai/capabilities": "workspace:*",
+    "@unai/context": "workspace:*",
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/memory": "workspace:*",

@@ -69,6 +69,9 @@ importers:
       '@unai/capabilities':
         specifier: workspace:*
         version: link:../capabilities
+      '@unai/context':
+        specifier: workspace:*
+        version: link:../context
       '@unai/domain':
         specifier: workspace:*
         version: link:../domain
@@ -166,6 +169,34 @@ importers:
       '@unai/registry':
         specifier: workspace:*
         version: link:../registry
+      pg:
+        specifier: ^8.16.0
+        version: 8.23.0
+
+  packages/context:
+    dependencies:
+      '@unai/belief':
+        specifier: workspace:*
+        version: link:../belief
+      '@unai/capabilities':
+        specifier: workspace:*
+        version: link:../capabilities
+      '@unai/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@unai/memory':
+        specifier: workspace:*
+        version: link:../memory
+      zod:
+        specifier: ^4.6.2
+        version: 4.6.2
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.15.0
+        version: 8.23.1
+      '@unai/postgres':
+        specifier: workspace:*
+        version: link:../postgres
       pg:
         specifier: ^8.16.0
         version: 8.23.0

@@ -74,6 +74,19 @@ export {moneyAmountSchema,currencyCodeSchema,moneySchema,projectionNameSchema,re
   type CommitmentsProjectionView,type ObligationsProjectionView,type ScheduleProjectionView,
   type ProjectionRebuildReceipt,type ProjectionHealth,type AmountConflict,type ObligationCalculation,
   type CommitmentLanguage,type CommitmentReading} from './projections.js';
+export {answerTypeSchema,worldTimeSchema,knowledgeTimeSchema,certaintySchema,actionRiskSchema,lifeCategorySchema,
+  contextActionKindSchema,intendedActionSchema,contextActionDecisionSchema,
+  REQUIRED_CONTEXT_FIELDS,REDACTABLE_BELIEF_FIELDS,contextRequestSchema,contextBeliefSchema,contextFutureClaimSchema,contextConflictSchema,
+  contextUnknownSchema,contextRedactionSchema,contextProjectionFragmentSchema,contextEvidenceRefSchema,
+  contextResolutionSchema,contextThreadRefSchema,contextWatermarksSchema,selectionReasonSchema,contextPacketSchema,
+  explainClaimSchema,explainEvidenceAnchorSchema,explainSupportSchema,explainContradictionSchema,
+  explainTemporalEntrySchema,explainResolutionLinkSchema,explainProjectionConsumerSchema,beliefExplanationSchema,
+  threadObjectTypeSchema,threadMembershipKindSchema,threadLifecycleSchema,threadMemberInputSchema,threadMemberSchema,
+  memoryThreadViewSchema,
+  type AnswerType,type LifeCategory,type RequiredContextField,type ContextRequest,type ContextBelief,
+  type ContextActionKind,type IntendedAction,
+  type ContextRedaction,type ContextPacket,type BeliefExplanation,type ThreadMemberInput,type ThreadMember,
+  type MemoryThreadView} from './context.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

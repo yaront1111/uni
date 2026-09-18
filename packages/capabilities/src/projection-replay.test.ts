@@ -207,11 +207,18 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   await admin!.query(`DROP FUNCTION IF EXISTS unai_private.open_commitments_projection_identity(),
     unai_private.obligations_projection_identity(), unai_private.schedule_projection_identity()`);
   await expect(admin!.query('SELECT 1 FROM obligations_projection')).rejects.toMatchObject({ code: '42P01' });
+  // The migration ledger is an ordered history, so re-applying 0016 means
+  // re-applying everything recorded after it as well. Migration 0017's own tables
+  // and function go with it -- this database is this file's alone, and nothing in
+  // it depends on them -- and the rebuild below still comes from the Git files the
+  // deployment applies, digests and order checked by `runMigrations` as always.
+  await admin!.query('DROP TABLE memory_thread_members, memory_threads, context_packets CASCADE');
+  await admin!.query('DROP FUNCTION IF EXISTS unai_private.memory_thread_identity(), unai_private.evidence_labels(uuid)');
 
-  // Rebuild the schema from the same Git migration the deployment applies.
-  await admin!.query('DELETE FROM unai_migrations.applied WHERE name=$1', ['0016_typed_projections.sql']);
+  // Rebuild the schema from the same Git migrations the deployment applies.
+  await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
-  expect(applied).toEqual(['0016_typed_projections.sql']);
+  expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

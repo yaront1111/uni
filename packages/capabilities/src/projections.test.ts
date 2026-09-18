@@ -498,7 +498,7 @@ it('CRT-RYW-04-A: reflects a pending correction, answers is_complete=false with 
   const verdict = await policy.evaluateMemoryAction({
     actorId: actor, ownerScopeId: owner, purpose: 'memory.act', sensitivity: 'PRIVATE',
     evidenceRefs: [sourceItemId], risk: 'HIGH', actionKind: 'DRAFT', capabilityGranted: true,
-    supportingAssessment: 'ACCEPTED', projectionComplete: incomplete.isComplete,
+    allowedPurposes: ['memory.act'], supportingAssessment: 'ACCEPTED', projectionComplete: incomplete.isComplete,
   });
   expect(verdict.outcome).toBe('DENY');
   expect(verdict.reason).toBe('HIGH_RISK_ACTION_ON_UNSETTLED_MEMORY');
