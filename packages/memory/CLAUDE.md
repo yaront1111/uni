@@ -2,10 +2,20 @@
 
 `@unai/memory` owns canonical identity: the entity service, the temporal
 resolver, the belief-slot and proposition store with its versioned fingerprints,
-and the claim store. It owns no HTTP route, no job, no projection and no belief
-assessment. Schema lives in `migrations/0010_canonical_identity.sql`; the
-decisions behind it are ADR 0015 and the delivery report is
-`docs/canonical-identity.md`.
+and the claim store. It owns no HTTP route, no job and no projection. Schema
+lives in `migrations/0010_canonical_identity.sql`; the decisions behind it are
+ADR 0015 and the delivery report is `docs/canonical-identity.md`.
+
+It also owns canonicalization and bitemporal state (`canonicalize.ts`,
+`instances.ts`, `relations.ts`, `bitemporal.ts`): the BASE-context default with
+source attribution, frame-instance matching with its five outcomes, claim
+relations that tell a correction from a change, and the three query modes of
+PRD §12.3. Schema: `migrations/0013_canonicalization_and_bitemporal.sql`;
+decisions: ADR 0018; report: `docs/canonicalization-and-bitemporal.md`. Deciding
+*what to believe* is still the write governor's (`@unai/belief`); the one writer
+here that touches `belief_assessments`, `recordBeliefStateVersion`, appends a
+recorded-time version at a stated knowledge time and names the governed
+transaction it belongs to.
 
 ## Surface and consumers
 
@@ -52,6 +62,28 @@ decisions behind it are ADR 0015 and the delivery report is
 - **Confidence stays four values.** `recordClaim` and `readClaim` keep
   extraction, entity-resolution, temporal-resolution and instance-resolution
   confidence apart. Never combine them into one number (CRT-MEM-14-A).
+- **Canonicalization defaults to BASE and refuses extractor-chosen context.**
+  `resolveCanonicalContext` answers BASE unless a caller-supplied `ContextRule`
+  names another kind, and it never creates a context space. A request carrying
+  `contextKind`, `contextSpaceId` or `extractorContext` is rejected with
+  `EXTRACTOR_CONTEXT_SELECTION_REFUSED`; reported speech is handled by
+  `classifySourceAttribution` and `claims.asserted_by_entity_id` instead
+  (CRT-REG-06-A, PRD §11.6).
+- **Only a CONFIRMED_MATCH reuses a frame instance.** `mayReuseInstance` is the
+  single decision point, `recordInstanceMatchCandidate` refuses a reuse behind
+  any other outcome, and the schema check `instance_match_reuse_confirmed` holds
+  the same line for every principal. Do not add a score threshold that reuses
+  (CRT-MEM-11-A, CRT-MEM-11-C, PRD §13.4).
+- **A correction is not a change.** `recordCorrection` restates one valid
+  interval and supersedes the corrected value; `recordChange` closes the earlier
+  period and accepts the new one from the change instant, leaving the earlier
+  value ACCEPTED. Both axes are half-open, and `claim_relations` refuses
+  `CORRECTS` with a new period or `SUPERSEDES` with the old interval
+  (CRT-MEM-09-A, PRD §57).
+- **Recorded time only moves forward.** `recordBeliefStateVersion` refuses a
+  knowledge time in the future or earlier than what is already recorded, and only
+  ever closes an existing version's window. Never write a past knowledge time
+  around it (CRT-MEM-06-A).
 - Recomputation appends and closes; it never rewrites. `recomputeCanonicalFingerprints`
   inserts the new-version rows before closing the old ones, so no reader is left
   without an index, and the database's `FINGERPRINT_IMMUTABLE` trigger enforces
@@ -60,11 +92,12 @@ decisions behind it are ADR 0015 and the delivery report is
 ## Running these tests
 
 `temporal.test.ts` is pure: `pnpm exec vitest run packages/memory/src/temporal.test.ts`.
-`identity.test.ts` needs the harness — run `pnpm test`, or export
+`identity.test.ts` and `canonicalization.test.ts` need the harness — run `pnpm test`, or export
 `UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated pgvector server. It
-creates the `memory_test_app` LOGIN role when absent and runs every store through
-`withOwnerTransaction` under the low-privilege application role, so the policies
-of migration 0010 are part of what it proves. No `UNAI_TEST_S3_*` is needed.
+create the `memory_test_app` and `canonicalization_test_app` LOGIN roles when
+absent and run every store through `withOwnerTransaction` under the
+low-privilege application role, so the policies of migrations 0010, 0012 and 0013
+are part of what they prove. No `UNAI_TEST_S3_*` is needed.
 
 ## Traps
 

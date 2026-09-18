@@ -93,6 +93,19 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query(`INSERT INTO policy_decisions(id,owner_scope_id,port,request,outcome,reason,policy_version,
         subject_transaction_id,correlation_id) VALUES($1,$2,'EvaluateMemoryWrite','{}','ALLOW','WRITE_WITHIN_LOCAL_POLICY',
         'local-policy-0.1.0',$3,$4)`,[randomUUID(),owner,transaction,randomUUID()]);
+      // Canonicalization and bitemporal state: the instance the matcher considered
+      // and declined to join, and the correcting claim that speaks about the same
+      // valid interval as the first one.
+      const correction=randomUUID();
+      await pool.query("INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle) VALUES($1,$2,$3,$4,'USER_CORRECTION','PROVISIONAL')",[correction,owner,anchor,proposition]);
+      await pool.query(`INSERT INTO instance_match_candidates(id,owner_scope_id,claim_id,frame_type_id,
+        candidate_frame_instance_id,resolved_frame_instance_id,match_outcome,materiality,score,score_components,
+        decision_reason,matcher_version) VALUES($1,$2,$3,'shared.obligation',$4,$4,'CONFIRMED_DISTINCT',
+        'MATERIAL_ACCEPTED_UPDATE',0.5,'{}','{"code":"EXPLICIT_DISTINCT_REFERENCE"}','instance-matcher-0.1.0')`,
+        [randomUUID(),owner,correction,instance]);
+      await pool.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,
+        temporal_effect,created_by_transaction_id) VALUES($1,$2,$3,$4,'CORRECTS','SAME_VALID_INTERVAL',$5)`,
+        [randomUUID(),owner,correction,claim,transaction]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -271,6 +284,46 @@ describe('real PostgreSQL owner isolation', () => {
         ['shared.obligation','FRAME'])).rows[0].present).toBe(false);
     },'memory.govern');
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A canonicalization queries and keeps both records immutable',async()=>{
+    const canonicalizationTables=['instance_match_candidates','claim_relations'];
+    await asOwner(a,alice,async c=>{
+      for(const table of canonicalizationTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.canonicalize');
+    await asOwner(b,alice,async c=>{
+      for(const table of canonicalizationTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.canonicalize');
+    await asOwner(a,alice,async c=>{
+      for(const table of canonicalizationTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    for(const table of canonicalizationTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.canonicalize'),table).rejects.toMatchObject({code:'42501'});
+      await expect(asOwner(a,alice,c=>c.query('UPDATE '+table+' SET owner_scope_id=owner_scope_id').then(()=>{}),'memory.canonicalize'),table)
+        .rejects.toMatchObject({code:'42501'});
+      await expect(pool.query('UPDATE '+table+' SET owner_scope_id=owner_scope_id WHERE owner_scope_id=$1',[a]),table)
+        .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    }
+    // CRT-MEM-11-C in the schema: no principal may record a reuse of an existing
+    // instance for a material accepted update behind anything but CONFIRMED_MATCH.
+    const instance=(await pool.query('SELECT id,frame_type_id FROM frame_instances WHERE owner_scope_id=$1 LIMIT 1',[a])).rows[0];
+    for(const outcome of ['PROBABLE_MATCH','POSSIBLE_MATCH']){
+      await expect(pool.query(`INSERT INTO instance_match_candidates(id,owner_scope_id,frame_type_id,
+        candidate_frame_instance_id,resolved_frame_instance_id,match_outcome,materiality,reused_existing_instance,
+        matcher_version) VALUES($1,$2,$3,$4,$4,$5,'MATERIAL_ACCEPTED_UPDATE',true,'instance-matcher-0.1.0')`,
+        [randomUUID(),a,instance.frame_type_id,instance.id,outcome]),outcome).rejects.toMatchObject({code:'23514'});
+    }
+    // CRT-MEM-09-A in the schema: a correction cannot claim a new valid period and
+    // a change cannot claim the interval the earlier claim already covered.
+    const claims=(await pool.query('SELECT id FROM claims WHERE owner_scope_id=$1 ORDER BY id LIMIT 2',[a])).rows;
+    for(const [kind,effect] of [['CORRECTS','NEW_VALID_PERIOD'],['SUPERSEDES','SAME_VALID_INTERVAL']]){
+      await expect(pool.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,
+        temporal_effect,valid_from) VALUES($1,$2,$3,$4,$5,$6,now())`,
+        [randomUUID(),a,claims[0].id,claims[1].id,kind,effect]),kind).rejects.toMatchObject({code:'23514'});
+    }
+  });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
     // assert a belief in, and the owner sees only its own.
@@ -346,7 +399,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(35);
+    expect(rows.length).toBe(37);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

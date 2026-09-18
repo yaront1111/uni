@@ -27,3 +27,21 @@ export { CANONICAL_NORMALIZATION_VERSION, slotFingerprint, propositionFingerprin
   type PropositionCandidate, type PropositionLookup, type PropositionLookupOutcome } from './slots.js';
 export { createFrameInstance, recordFrameInstanceRole, recordClaim, readClaim, listClaimsForProposition,
   claimTemporalInterpretation, type ClaimInput } from './claims.js';
+export { CANONICALIZATION_VERSION, resolveCanonicalContext, classifySourceAttribution, canonicalizeClaim,
+  type ContextKind, type ContextRule, type ContextDecision, type ExtractorContextSelection,
+  type AttributionKind, type SourceAttribution, type CanonicalizationRequest, type CanonicalizedClaim } from './canonicalize.js';
+export { INSTANCE_MATCHER_VERSION, INSTANCE_MATCH_OUTCOMES, scoreInstanceMatch, mayReuseInstance, matchFrameInstance,
+  resolveFrameInstance, applyInstanceDecision, recordInstanceDecision, recordInstanceMatchCandidate,
+  listInstanceMatchCandidates,
+  type InstanceMatchOutcome, type UpdateMateriality, type ExplicitReference, type TemporalCompatibility,
+  type AmountCompatibility, type InstanceMatchSignals, type InstanceMatchScore, type RoleFiller,
+  type InstanceMatchRequest, type ScoredCandidate, type InstanceMatch, type ResolvedFrameInstance,
+  type AppliedInstanceDecision, type StoredInstanceMatchCandidate } from './instances.js';
+export { CLAIM_RELATION_KINDS, classifyTemporalUpdate, recordClaimRelation, listClaimRelations,
+  recordCorrection, recordChange,
+  type ClaimRelationKind, type TemporalEffect, type TemporalUpdateKind, type StoredClaimRelation,
+  type ValidPeriod, type TemporalUpdateResult, type FollowUpClaim } from './relations.js';
+export { BITEMPORAL_QUERY_VERSION, BITEMPORAL_POLICY_VERSION, queryCurrentState, queryCorrectedHistoricalState,
+  queryHistoricalBeliefState, queryBeliefState, readBeliefTimeline, recordBeliefStateVersion,
+  type BeliefQueryMode, type AssessmentStatusName, type BeliefStateRow, type BeliefStateAnswer,
+  type BeliefStateScope, type BeliefStateVersion } from './bitemporal.js';
