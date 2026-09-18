@@ -61,6 +61,10 @@ export interface MemoryActionRequest extends PolicyRequestBase {
   /** The strongest assessment behind the memory this action rests on. */
   readonly supportingAssessment: 'ACCEPTED' | 'PROVISIONAL' | 'CONTESTED' | 'UNSUPPORTED' | 'NONE';
   readonly projectionComplete: boolean;
+  /** True when the memory this action rests on includes a value under a predicate
+   * or frame the pinned registry release does not hold. Such a value may never
+   * trigger a high-risk action (PRD §17.5, CRT-REG-04-A). Absent means false. */
+  readonly unregisteredPredicateSupport?: boolean;
 }
 
 export interface PolicyPorts {
@@ -129,6 +133,12 @@ export function createLocalPolicyAdapters(): PolicyPorts {
       // considered -- its kind, its capability and its support do not arise
       // (CRT-SEC-02-A).
       if (!request.allowedPurposes.includes(request.purpose)) return verdict('DENY', 'PURPOSE_NOT_IN_ALLOWED_PURPOSES');
+      // PRD §17.5: an unregistered surface predicate is evidence, never the
+      // authority for a high-risk action -- whatever kind of action it is, so the
+      // refusal names this reason rather than the V0 action-kind one.
+      if (request.risk === 'HIGH' && request.unregisteredPredicateSupport === true) {
+        return verdict('DENY', 'UNREGISTERED_PREDICATE_MAY_NOT_AUTHORIZE_HIGH_RISK_ACTION');
+      }
       // PRD §27: in V0 the only external write is a draft, and even that needs its
       // discrete capability. Execution facts arrive as ingested tool receipts.
       if (request.actionKind !== 'DRAFT') return verdict('DENY', 'EXTERNAL_ACTION_REFUSED_IN_V0');
