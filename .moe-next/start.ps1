@@ -59,7 +59,12 @@ $env:MOE_WRAPPER_MAX_AGENTS = "2"
 # (default 20 min) with no output, no live tool child and no CPU growth; MOE_AGENT_TIMEOUT_MS is
 # only the absolute backstop (default 2 h). The one-hour cap set here on 2026-09-18 covered the
 # older build that killed on the clock; it is retired so a long, provably working seat is not
-# cut off. Set either knob here only to tighten a specific product's budget.
+# cut off. Set either knob here only to tighten a specific product's budget. An earlier run of
+# this script left MOE_AGENT_TIMEOUT_MS in the calling shell (the wrapper's startup line read
+# "cap=1h" after the override was retired), so both are cleared first: a stale value must never
+# masquerade as the policy of this run.
+Remove-Item Env:MOE_AGENT_TIMEOUT_MS -ErrorAction SilentlyContinue
+Remove-Item Env:MOE_AGENT_SILENCE_MS -ErrorAction SilentlyContinue
 # Operator-authored node specs are optional; uncomment if you put any under .moe-next\node-specs.
 # $env:MOE_NODE_SPECS_DIR = Join-Path $here "node-specs"
 
