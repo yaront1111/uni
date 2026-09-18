@@ -14,6 +14,7 @@ const expired:PublicJob={...base,jobId:'6e6f8a40-6f0d-7b9a-8f6a-2c1a6e2f0004',st
   leaseOwner:'worker-killed',leaseExpiresAt:'2026-09-17T08:05:00.000Z'};
 const held:PublicJob={...base,jobId:'6e6f8a40-6f0d-7b9a-8f6a-2c1a6e2f0005',status:'RUNNING',attemptCount:1,
   leaseOwner:'worker-b',leaseExpiresAt:'2099-01-01T00:00:00.000Z'};
+const exhausted:PublicJob={...expired,jobId:'6e6f8a40-6f0d-7b9a-8f6a-2c1a6e2f0006',attemptCount:3};
 function render(props:Partial<jobs.JobsProps>){
   return renderToStaticMarkup(createElement(jobs.Jobs,{queueDepth:depth,jobs:[],deadLetter:[],...props}));
 }
@@ -53,6 +54,10 @@ it('renders an expired lease as reclaimable with the evidence left intact',()=>{
   expect(html).toContain('One job held a lease that expired after a worker stopped');
   expect(html).toContain('content');
   expect(html).toContain('hash are immutable');
+  // An expired lease with no attempt left is not picked up again: the next worker turn dead-letters it.
+  const stuck=render({jobs:[exhausted]});
+  expect(stuck).toContain('Lease expired — no attempts left, moves to dead letter on the next worker turn');
+  expect(stuck).not.toContain('another worker can pick this job up');
 });
 
 it('renders an empty queue and a read failure without leaking a payload',()=>{

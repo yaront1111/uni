@@ -36,21 +36,31 @@ export async function enqueueJob(tx:OwnerTransaction,input:EnqueueJob):Promise<P
     VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING ${COLUMNS}`,
     [uuidV7(),tx.context.ownerScopeId,job.jobKind,JSON.stringify(job.payload),job.idempotencyKey,job.maxAttempts]);
   if(inserted.rowCount===1)return publicJob(inserted.rows[0]);
-  const existing=(await tx.query(`SELECT ${COLUMNS},payload FROM jobs
-    WHERE owner_scope_id=$1 AND job_kind=$2 AND idempotency_key=$3`,[tx.context.ownerScopeId,job.jobKind,job.idempotencyKey])).rows[0];
+  // jsonb equality, not text: jsonb returns keys in its own order, never the caller's.
+  const existing=(await tx.query(`SELECT ${COLUMNS},payload=$4::jsonb AS same_payload FROM jobs
+    WHERE owner_scope_id=$1 AND job_kind=$2 AND idempotency_key=$3`,
+    [tx.context.ownerScopeId,job.jobKind,job.idempotencyKey,JSON.stringify(job.payload)])).rows[0];
   if(!existing)throw new Error('JOB_ENQUEUE_REFUSED');
-  if(JSON.stringify(existing.payload)!==JSON.stringify(job.payload))throw new Error('JOB_IDEMPOTENCY_CONFLICT');
+  if(existing.same_payload!==true)throw new Error('JOB_IDEMPOTENCY_CONFLICT');
   return publicJob(existing);
 }
 
 /** Claims the oldest runnable job: never claimed, failed with attempts left, or
- * held under a lease that has expired, so a stopped worker never strands work. */
+ * held under a lease that has expired, so a stopped worker never strands work.
+ * An expired lease with no attempt left is dead-lettered as JOB_LEASE_EXPIRED. */
 export async function claimJob(tx:OwnerTransaction,options:{worker:string;leaseSeconds:number;jobKinds?:readonly string[]}):Promise<ClaimedJob|null>{
   requirePurpose(tx,JOB_PURPOSES.work);
   const worker=workerIdSchema.parse(options.worker);
   const leaseSeconds=Math.trunc(options.leaseSeconds);
   if(!(leaseSeconds>=0&&leaseSeconds<=3600))throw new Error('JOB_LEASE_INVALID');
   const kinds=options.jobKinds?.map(kind=>jobKindSchema.parse(kind))??null;
+  // A worker killed on its last attempt can never report, and the claim below skips
+  // an exhausted job: retire it to the dead-letter list so it stays retryable. No
+  // handler runs, so any worker of the owner scope does it, whatever kinds it claims.
+  const stranded=await tx.query(`UPDATE jobs SET status='DEAD_LETTER',last_error='JOB_LEASE_EXPIRED',lease_owner=NULL,lease_expires_at=NULL
+    WHERE owner_scope_id=$1 AND status='RUNNING' AND lease_expires_at<=statement_timestamp() AND attempt_count>=max_attempts`,
+    [tx.context.ownerScopeId]);
+  if(stranded.rowCount)attempts.add(stranded.rowCount,{outcome:'DEAD_LETTER'});
   const claimed=await tx.query(`UPDATE jobs SET status='RUNNING',lease_owner=$2,
       lease_expires_at=statement_timestamp()+make_interval(secs=>$3::double precision),attempt_count=attempt_count+1
     WHERE id=(SELECT id FROM jobs WHERE owner_scope_id=$1 AND attempt_count<max_attempts

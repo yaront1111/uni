@@ -15,9 +15,10 @@ const statusLabels:Record<PublicJob['status'],string>={
 };
 function leaseState(job:PublicJob,now:number){
   if(job.status!=='RUNNING'||!job.leaseExpiresAt)return 'No lease held';
-  return new Date(job.leaseExpiresAt).getTime()<=now
-    ?'Lease expired — another worker can pick this job up'
-    :'Leased by '+job.leaseOwner+' until '+timestamp(job.leaseExpiresAt);
+  if(new Date(job.leaseExpiresAt).getTime()>now)return 'Leased by '+job.leaseOwner+' until '+timestamp(job.leaseExpiresAt);
+  return job.attemptCount>=job.maxAttempts
+    ?'Lease expired — no attempts left, moves to dead letter on the next worker turn'
+    :'Lease expired — another worker can pick this job up';
 }
 function timestamp(value:string){return new Date(value).toISOString().slice(0,19).replace('T',' ')+' UTC';}
 
@@ -59,8 +60,8 @@ export function Jobs(props:JobsProps){
         </ul>
         {reclaimable.length>0&&<p>
           {reclaimable.length===1?'One job':reclaimable.length+' jobs'} held a lease that expired after a worker stopped.
-          Another worker picks the work up on its next turn. Stored evidence is unchanged: raw evidence and its content
-          hash are immutable, so the retry starts from the same bytes.
+          Another worker picks the work up on its next turn, or moves it to the dead letter when it has no attempts left.
+          Stored evidence is unchanged: raw evidence and its content hash are immutable, so the retry starts from the same bytes.
         </p>}
       </section>
       <section className="card" aria-labelledby="queue-jobs">

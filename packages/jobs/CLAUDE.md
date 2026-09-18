@@ -1,11 +1,11 @@
 # packages/jobs
 
-`@unai/jobs` owns the durable queue over the `jobs` table (`migrations/0007_jobs.sql`): the functions in `src/index.ts` that move a row through its lease, attempt and dead-letter states, plus the `runJobAttempt` worker turn. It must not own Zod schemas or DTO types (`packages/domain/src/jobs.ts`), HTTP routes (`packages/api/src/ops.ts`), audit rows or job handlers. No handler, worker process or scheduler exists in the repo yet (`docs/jobs-runtime.md`, "Not claimed here"); decisions are in `docs/adr/0012-durable-job-queue.md`.
+`@unai/jobs` owns the durable queue over the `jobs` table (`migrations/0007_jobs.sql`): the functions in `src/index.ts` that move a row through its lease, attempt and dead-letter states, plus the `runJobAttempt` worker turn. It must not own Zod schemas or DTO types (`packages/domain/src/jobs.ts`), HTTP routes (`packages/api/src/ops.ts`), audit rows or job handlers. The one handler lives in `packages/extraction/src/worker.ts` (`createExtractionJobHandler`, job kind `evidence.extract`); no worker process or scheduler exists in the repo yet (`docs/jobs-runtime.md`, "Not claimed here"). Decisions are in `docs/adr/0012-durable-job-queue.md`.
 
 ## Surface and consumers
 
 - Every function except `runJobAttempt` takes an `OwnerTransaction` and never opens one; `runJobAttempt` takes the pool and a `RequestContext`. The library never calls `tx.audit`: the caller audits, as `ops.ts` does per route.
-- `packages/api/src/ops.ts` is the only production consumer and uses only `listJobs`, `listDeadLetterJobs` and `retryDeadLetterJob`. `enqueueJob`, `claimJob`, `completeJob`, `failJob` and `runJobAttempt` are called only from this package's `src/index.test.ts` and `packages/api/src/ops.test.ts`.
+- `packages/api/src/ops.ts` is the only production consumer and uses only `listJobs`, `listDeadLetterJobs` and `retryDeadLetterJob`. `enqueueJob`, `claimJob`, `completeJob`, `failJob` and `runJobAttempt` are called only from tests: this package's `src/index.test.ts`, `packages/api/src/ops.test.ts` and `packages/api/src/extraction-pipeline.test.ts`.
 - `JOB_PURPOSES` holds the five purpose strings for TypeScript callers, but nothing else imports it outside tests: the same strings are repeated as literals in the `0007` policies, in `packages/api/src/platform.ts` and in `apps/web`. `jobs.enqueue` and `jobs.work` are absent from the `purposes` set in `packages/api/src/platform.ts`, so they cannot arrive over HTTP; only in-process code can enqueue or work a job.
 - Job ids come from `uuidV7` through the relative import `../../../src/kernel/identities.js`, one of the few links into the root `src/` lane.
 
@@ -15,7 +15,7 @@
 - `completeJob` and `failJob` go through `reportOutcome`, which matches only `status='RUNNING'`, the same `lease_owner` and a lease still in the future; otherwise it throws `JOB_LEASE_LOST`. `failJob` writes `DEAD_LETTER` when `attempt_count>=max_attempts`, else `FAILED`.
 - `retryDeadLetterJob` is the only exit from `DEAD_LETTER`: back to `PENDING` with `attempt_count=0` and `last_error` kept. It returns `null` instead of throwing when the job is not dead-lettered in this owner scope, and `ops.ts` turns that into 404 `DEAD_LETTER_JOB_NOT_FOUND`.
 - `SUCCEEDED` is terminal and rows are never deleted: `unai_app` has no DELETE or TRUNCATE on `jobs` (asserted in `packages/postgres/src/isolation.test.ts`).
-- Known gap: a worker that dies on its last attempt leaves the row `RUNNING` with an expired lease and `attempt_count=max_attempts`. No function claims, fails or retries that row; it is visible only as `queueDepth.expiredLeases`.
+- A worker that dies on its last attempt leaves the row `RUNNING` with an expired lease and `attempt_count=max_attempts`, which no claim or outcome can match. `claimJob` therefore first retires every such row of the owner scope, whatever kind the caller claims, to `DEAD_LETTER` with `last_error='JOB_LEASE_EXPIRED'`, where `retryDeadLetterJob` reaches it. Until the next claim in that owner scope, the row shows only as `queueDepth.expiredLeases`. That sweep is a plain `UPDATE`, so a concurrent claim waits on it for the length of the other claim transaction.
 
 ## Invariants a change must keep
 
@@ -41,7 +41,7 @@ Purpose is checked twice: `requirePurpose` throws `JOB_PURPOSE_REFUSED` before a
 ## Tests and traps
 
 - Run `pnpm exec vitest run packages/jobs` from the repo root with `UNAI_TEST_DATABASE_URL` set to a privileged login on a throwaway pgvector server; no S3 is needed. The file applies `migrations/` itself through the cwd-relative `resolve('migrations')`, creates the login role `jobs_test_app` (a member of `unai_app`, because `withOwnerTransaction` refuses the privileged login) and seeds one user and owner scope.
-- All tests share that owner scope and the queue is FIFO per owner, so each test uses its own `jobKind` and passes `jobKinds` to every claim that reaches the database (the claims without it are refused before any SQL). The idempotency test leaves a `connector.sync` job `PENDING`, which an unfiltered claim in a new test would pick up.
+- All tests share that owner scope and the queue is FIFO per owner, so each test uses its own `jobKind` and passes `jobKinds` to every claim that reaches the database (the claims without it are refused before any SQL). The idempotency tests leave a `connector.sync` and a `connector.backfill` job `PENDING`, which an unfiltered claim in a new test would pick up.
 - The killed-worker test inserts a raw `source_items` row through the admin pool. A migration that changes `source_items` columns must update that INSERT, as `0008` had to.
-- `enqueueJob` detects a conflicting retry by comparing `JSON.stringify` of the stored and the new payload, which is key-order sensitive while `jsonb` returns keys in its own order. Only single-key payloads are tested.
+- `enqueueJob` detects a conflicting retry in SQL with `payload=$4::jsonb`, never by comparing JSON text: `jsonb` returns keys in its own order, so a text comparison refuses a legitimate multi-key retry. jsonb equality is also numeric, so `1` and `1.0` are the same payload.
 - `packages/api/src/reference-stack.test.ts` requires this `package.json` to declare `pg`, `@unai/postgres` and `@opentelemetry/api`, and fails when any workspace manifest declares a dependency whose name matches its graph-database, vector-database or `redis` pattern. Other broker packages are not in that pattern, so the test alone does not guard the no-broker decision of ADR 0012.

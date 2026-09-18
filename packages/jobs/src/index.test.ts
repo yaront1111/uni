@@ -84,6 +84,40 @@ it('enqueues idempotently and refuses a conflicting payload for the same key',as
   await expect(as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'connector.sync',payload:{a:2},idempotencyKey}))).rejects.toThrow('JOB_IDEMPOTENCY_CONFLICT');
 });
 
+it('treats a retried payload as the same whatever its key order, and a changed nested value as a conflict',async()=>{
+  const idempotencyKey=key();
+  const first=await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'connector.backfill',payload:{zeta:1,alpha:{y:[1,2],x:'a'},mid:null},idempotencyKey}));
+  // jsonb stores keys in its own order, so the stored payload never comes back in the caller's order.
+  const repeated=await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'connector.backfill',payload:{mid:null,alpha:{x:'a',y:[1,2]},zeta:1},idempotencyKey}));
+  expect(repeated.jobId).toBe(first.jobId);
+  expect(await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'connector.backfill',payload:{zeta:1,alpha:{y:[1,2],x:'a'},mid:null},idempotencyKey}))).toMatchObject({jobId:first.jobId});
+  await expect(as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'connector.backfill',payload:{zeta:1,alpha:{y:[2,1],x:'a'},mid:null},idempotencyKey}))).rejects.toThrow('JOB_IDEMPOTENCY_CONFLICT');
+  await expect(as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'connector.backfill',payload:{zeta:1,alpha:{y:[1,2],x:'a'}},idempotencyKey}))).rejects.toThrow('JOB_IDEMPOTENCY_CONFLICT');
+});
+
+it('CRT-NFR-02-A: a worker killed on its last attempt is dead-lettered by the next claim instead of stranding the job',async()=>{
+  const enqueued=await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'evidence.export',idempotencyKey:key(),maxAttempts:1}));
+  const killed=await as(JOB_PURPOSES.work,tx=>claimJob(tx,{worker:'worker-killed',leaseSeconds:0,jobKinds:['evidence.export']}));
+  expect(killed).toMatchObject({jobId:enqueued.jobId,status:'RUNNING',attemptCount:1,maxAttempts:1});
+  expect((await as(JOB_PURPOSES.readJobs,tx=>listJobs(tx,{limit:50}))).queueDepth.expiredLeases).toBeGreaterThanOrEqual(1);
+  // Retiring runs no handler, so the next worker turn does it even when it claims another kind.
+  expect(await as(JOB_PURPOSES.work,tx=>claimJob(tx,{worker:'worker-e',leaseSeconds:60,jobKinds:['evidence.unrelated']}))).toBeNull();
+  const dead=await as(JOB_PURPOSES.readDeadLetter,tx=>listDeadLetterJobs(tx,{limit:50}));
+  expect(dead.find(job=>job.jobId===enqueued.jobId)).toMatchObject({status:'DEAD_LETTER',attemptCount:1,lastError:'JOB_LEASE_EXPIRED',leaseOwner:null,leaseExpiresAt:null});
+  await expect(as(JOB_PURPOSES.work,tx=>completeJob(tx,{jobId:enqueued.jobId,worker:'worker-killed'}))).rejects.toThrow('JOB_LEASE_LOST');
+  // Dead-lettered like any other exhausted job, so the manual retry reaches it.
+  expect(await as(JOB_PURPOSES.retryDeadLetter,tx=>retryDeadLetterJob(tx,enqueued.jobId))).toMatchObject({status:'PENDING',attemptCount:0,lastError:'JOB_LEASE_EXPIRED'});
+  expect(await runJobAttempt(appPool,context(JOB_PURPOSES.work),{worker:'worker-e',leaseSeconds:60,jobKinds:['evidence.export'],
+    handler:async()=>{}})).toMatchObject({claimed:true,job:{jobId:enqueued.jobId,status:'SUCCEEDED',attemptCount:1}});
+});
+
+it('leaves a job on its last attempt alone while its lease is still live',async()=>{
+  const enqueued=await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'evidence.export_live',idempotencyKey:key(),maxAttempts:1}));
+  await as(JOB_PURPOSES.work,tx=>claimJob(tx,{worker:'worker-f',leaseSeconds:60,jobKinds:['evidence.export_live']}));
+  expect(await as(JOB_PURPOSES.work,tx=>claimJob(tx,{worker:'worker-g',leaseSeconds:60,jobKinds:['evidence.export_live']}))).toBeNull();
+  expect(await as(JOB_PURPOSES.work,tx=>completeJob(tx,{jobId:enqueued.jobId,worker:'worker-f'}))).toMatchObject({status:'SUCCEEDED',attemptCount:1});
+});
+
 it('refuses queue operations under a purpose the queue does not grant',async()=>{
   await expect(as('device.list',tx=>enqueueJob(tx,{jobKind:'evidence.extract',idempotencyKey:key()}))).rejects.toThrow('JOB_PURPOSE_REFUSED');
   await expect(as('device.list',tx=>claimJob(tx,{worker:'worker-a',leaseSeconds:60}))).rejects.toThrow('JOB_PURPOSE_REFUSED');

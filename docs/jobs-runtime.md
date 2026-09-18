@@ -47,7 +47,11 @@ in the dead-letter list with its error, a lease that expires being reclaimed by 
 second worker while the killed worker can no longer report an outcome, a manual
 retry returning a dead-lettered job to the queue where it then succeeds,
 idempotent enqueue with a refused conflicting payload, and stored evidence whose
-content hash is unchanged after a worker is killed mid-job.
+content hash is unchanged after a worker is killed mid-job. It also observes a
+retried payload matching whatever its key order (the comparison is jsonb
+equality, not JSON text), and a worker killed on its last attempt being
+dead-lettered as `JOB_LEASE_EXPIRED` by the next worker turn of that owner scope,
+where the manual retry reaches it; a live lease on a last attempt is left alone.
 `packages/api/src/ops.test.ts` observes the same behaviour through the HTTP
 routes with their purpose, owner-scope, correlation-id and idempotency-key
 refusals.

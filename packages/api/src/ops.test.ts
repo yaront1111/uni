@@ -4,7 +4,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
-import { JOB_PURPOSES, enqueueJob, runJobAttempt } from '@unai/jobs';
+import { JOB_PURPOSES, enqueueJob, claimJob, runJobAttempt } from '@unai/jobs';
 import { registrySnapshotViewSchema, type RequestContext } from '@unai/domain';
 import { createPlatformApi } from './platform.js';
 
@@ -174,5 +174,11 @@ it('CRT-SEC-01-A: the queue routes never answer with another owner scope job',as
       headers:{...a.headers,'x-purpose':'ops.dead_letter.retry','x-correlation-id':randomUUID(),'idempotency-key':randomUUID()},payload:{}});
     expect(stolen.statusCode).toBe(404);
     expect((await admin.query('SELECT status FROM jobs WHERE id=$1',[job.jobId])).rows[0].status).toBe('DEAD_LETTER');
+    // A worker turn retires stranded last-attempt jobs of its own owner scope only.
+    const stranded=await withOwnerTransaction(appPool,b.context(JOB_PURPOSES.enqueue),tx=>enqueueJob(tx,
+      {jobKind:'evidence.extract',idempotencyKey:randomUUID().replaceAll('-',''),maxAttempts:1}));
+    await withOwnerTransaction(appPool,b.context(JOB_PURPOSES.work),tx=>claimJob(tx,{worker:'worker-killed',leaseSeconds:0}));
+    expect(await withOwnerTransaction(appPool,a.context(JOB_PURPOSES.work),tx=>claimJob(tx,{worker:'worker-a',leaseSeconds:60}))).toBeNull();
+    expect((await admin.query('SELECT status FROM jobs WHERE id=$1',[stranded.jobId])).rows[0].status).toBe('RUNNING');
   }finally{await a.app.close();await b.app.close();}
 });

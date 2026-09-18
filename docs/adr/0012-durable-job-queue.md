@@ -34,6 +34,10 @@ reclaims the job when the lease expires. Only the worker still holding a live
 lease may report success or failure; a worker whose lease was reclaimed is
 refused so it cannot overwrite the new holder's outcome. Stored evidence is
 immutable, so a reclaimed attempt restarts from the same bytes and content hash.
+An expired lease on a job with no attempt left cannot be reclaimed and its
+worker can no longer report, so a claim first moves such rows of the owner
+scope to DEAD_LETTER with the error `JOB_LEASE_EXPIRED` (added 2026-09-18);
+the manual retry then applies as for any other dead-lettered job.
 
 Claim, handler execution and outcome recording are three separate transactions.
 A handler that fails with a database error aborts only its own work and never
