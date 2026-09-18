@@ -1,0 +1,19 @@
+{
+  "name": "@unai/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@unai/context": "workspace:*",
+    "@unai/domain": "workspace:*",
+    "@unai/extraction": "workspace:*",
+    "@unai/secrets": "workspace:*",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.0",
+    "@unai/postgres": "workspace:*",
+    "pg": "^8.16.0"
+  }
+}

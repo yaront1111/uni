@@ -1,0 +1,37 @@
+{
+  "repository": {"full_name": "example-org/uai-reference"},
+  "issue": {
+    "node_id": "PR_kwDOA1b2c9f1",
+    "number": 517,
+    "title": "Aggregate connector bursts into one episode",
+    "body": "The extraction cost of a pull request must not grow with the number of commits pushed to it.",
+    "user": {"login": "rivka-dev"},
+    "created_at": "2026-09-10T07:40:00Z",
+    "pull_request": {"head": {"sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0"}}
+  },
+  "comments": [
+    {
+      "node_id": "IC_kwDOA1b2c9f2",
+      "id": 9114001,
+      "body": "Please keep every commit anchored even though only one episode is extracted.",
+      "user": {"login": "owner-account"},
+      "created_at": "2026-09-10T08:05:00Z"
+    }
+  ],
+  "commits": [
+    {"sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "message": "Add the episode aggregator", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T08:10:00Z"},
+    {"sha": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e", "message": "Anchor every commit of the burst", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T08:21:00Z"},
+    {"sha": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f", "message": "Record the aggregated event count", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T08:33:00Z"},
+    {"sha": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70", "message": "Fix the CI conclusion mapping", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T08:44:00Z"},
+    {"sha": "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081", "message": "Bound the anchor count", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T08:58:00Z"},
+    {"sha": "6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192", "message": "Retry the flaky queue test", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T09:12:00Z"},
+    {"sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0", "message": "Aggregate CI webhooks with the commits", "author": {"login": "rivka-dev"}, "committed_at": "2026-09-10T09:27:00Z"}
+  ],
+  "check_runs": [
+    {"id": 70011, "name": "typecheck", "status": "completed", "conclusion": "success", "head_sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0", "completed_at": "2026-09-10T09:31:00Z"},
+    {"id": 70012, "name": "unit", "status": "completed", "conclusion": "failure", "head_sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0", "completed_at": "2026-09-10T09:34:00Z"},
+    {"id": 70013, "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0", "completed_at": "2026-09-10T09:41:00Z"},
+    {"id": 70014, "name": "integration", "status": "completed", "conclusion": "success", "head_sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0", "completed_at": "2026-09-10T09:52:00Z"},
+    {"id": 70015, "name": "build", "status": "completed", "conclusion": "success", "head_sha": "b7c1d90ee2f4a3b5c6d7e8f9012345678abcdef0", "completed_at": "2026-09-10T09:58:00Z"}
+  ]
+}

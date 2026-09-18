@@ -214,11 +214,35 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // deployment applies, digests and order checked by `runMigrations` as always.
   await admin!.query('DROP TABLE memory_thread_members, memory_threads, context_packets CASCADE');
   await admin!.query('DROP FUNCTION IF EXISTS unai_private.memory_thread_identity(), unai_private.evidence_labels(uuid)');
+  // ...and so do migration 0018's connector capability grants, connector
+  // lifecycle columns and the policies it added to the delivered evidence
+  // tables. `CREATE OR REPLACE` definitions (evidence_access) and the grants are
+  // idempotent, so only what 0018 created outright is removed here.
+  await admin!.query('DROP TABLE connector_capability_grants CASCADE');
+  await admin!.query(`DROP FUNCTION IF EXISTS unai_private.connector_grant_identity() CASCADE;
+    DROP FUNCTION IF EXISTS unai_private.connector_update_guard() CASCADE;
+    DROP FUNCTION IF EXISTS unai_private.connector_ingestion_active() CASCADE`);
+  await admin!.query(`ALTER TABLE connectors
+    DROP CONSTRAINT IF EXISTS connectors_status,
+    DROP CONSTRAINT IF EXISTS connectors_disconnected_state,
+    DROP CONSTRAINT IF EXISTS connectors_revoked_secret,
+    DROP COLUMN IF EXISTS secret_ref, DROP COLUMN IF EXISTS manifest_version,
+    DROP COLUMN IF EXISTS cursor_updated_at, DROP COLUMN IF EXISTS disconnected_at,
+    DROP COLUMN IF EXISTS last_sync_error, DROP COLUMN IF EXISTS updated_at`);
+  await admin!.query(`DROP POLICY IF EXISTS owner_connect ON connectors;
+    DROP POLICY IF EXISTS owner_lifecycle ON connectors;
+    DROP POLICY IF EXISTS evidence_append_sync ON source_items;
+    DROP POLICY IF EXISTS anchor_append_sync ON source_anchors;
+    DROP POLICY IF EXISTS object_key_append_sync ON evidence_object_keys;
+    DROP POLICY IF EXISTS owner_append_sync ON triage_decisions;
+    DROP POLICY IF EXISTS owner_read_sync ON triage_decisions;
+    DROP POLICY IF EXISTS owner_append_sync ON evidence_ingestion_receipts`);
 
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
-  expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql']);
+  expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
+    '0018_connector_capabilities_and_lifecycle.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

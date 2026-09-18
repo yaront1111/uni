@@ -39,7 +39,7 @@ export const parsedSourceItemSchema = z.strictObject({
 });
 export type ParsedSourceItem = z.infer<typeof parsedSourceItemSchema>;
 
-export const parsedSourceTypeSchema = z.enum(['GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT']);
+export const parsedSourceTypeSchema = z.enum(['CONVERSATION', 'GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT']);
 export type ParsedSourceType = z.infer<typeof parsedSourceTypeSchema>;
 
 const externalId = z.string().min(1).max(512);
@@ -61,6 +61,25 @@ const gmailMessageSchema = z.object({
 export const gmailThreadSchema = z.object({
   id: externalId,
   messages: z.array(gmailMessageSchema).min(1).max(512),
+});
+
+// --- First-party conversation ----------------------------------------------
+/** Every message of a conversation, whoever said it. PRD §27.5 makes first-party
+ * conversation ingestion a required connector, and §24.2 makes the assistant's
+ * own words evidence rather than belief: both roles are stored, each as its own
+ * item carrying its own external message id (CRT-CON-01-A). */
+const conversationMessageSchema = z.object({
+  messageId: externalId,
+  role: z.enum(['USER', 'ASSISTANT']),
+  text,
+  createdAt: z.string().max(64).optional(),
+  /** The assistant build that produced the message, when the payload names one. */
+  authorRef: z.string().max(512).optional(),
+});
+export const conversationSchema = z.object({
+  conversationId: externalId,
+  title: z.string().max(4096).optional(),
+  messages: z.array(conversationMessageSchema).min(1).max(2048),
 });
 
 // --- Google Calendar -------------------------------------------------------
@@ -111,6 +130,23 @@ export const githubIssueThreadSchema = z.object({
     user: githubUserSchema,
     created_at: z.string().max(64),
   })).max(512).optional(),
+  /** A burst of commits pushed to one pull request. PRD §20.5: aggregate around
+   * the pull request; do not semantically process every commit independently. */
+  commits: z.array(z.object({
+    sha: z.string().min(7).max(64),
+    message: z.string().max(8192),
+    author: githubUserSchema.optional(),
+    committed_at: z.string().max(64).optional(),
+  })).max(512).optional(),
+  /** CI webhooks on the same pull request, aggregated with the commits. */
+  check_runs: z.array(z.object({
+    id: z.number().int().min(1),
+    name: z.string().max(256),
+    status: z.string().max(64),
+    conclusion: z.string().max(64).nullable().optional(),
+    head_sha: z.string().min(7).max(64).optional(),
+    completed_at: z.string().max(64).optional(),
+  })).max(512).optional(),
 });
 
 // --- Uploaded document -----------------------------------------------------
@@ -118,7 +154,13 @@ export const uploadedDocumentSchema = z.object({
   documentId: externalId,
   title: z.string().max(4096).optional(),
   mediaType: z.string().max(128).optional(),
-  pages: z.array(z.object({page: z.number().int().min(1), text})).min(1).max(2048),
+  /** The original bytes, kept verbatim so the stored object is the document the
+   * owner uploaded. Optional: a payload that carries only extracted page text
+   * stores exactly the content it always stored, hash included. */
+  base64: z.string().max(1_400_000).optional(),
+  /** Empty for a format whose text could not be extracted: the document is still
+   * stored, as source-only evidence (PRD §20.5). */
+  pages: z.array(z.object({page: z.number().int().min(1), text})).max(2048),
 });
 
 /** A payload that does not parse is refused under one stable code: connector bytes
@@ -174,6 +216,38 @@ function parseGmailThread(payload: unknown): ParsedSourceItem[] {
       anchors: [
         span('MESSAGE_SPAN', {messageExternalId: message.id, field: 'body', start: 0, end: body.length}, body),
         span('CONNECTOR_JSON_PATH', {path: '$.messages[' + index + '].payload.headers[name=Subject].value'}, subject),
+      ],
+    });
+  });
+}
+
+function parseConversation(payload: unknown): ParsedSourceItem[] {
+  const conversation = conversationSchema.parse(payload);
+  return conversation.messages.map((message, index) => {
+    const previous = index === 0 ? null : conversation.messages[index - 1]!.messageId;
+    return parsedSourceItemSchema.parse({
+      sourceType: 'CONVERSATION',
+      // The message's own external id, which is what makes one message one
+      // evidence row and a redelivered message the same row (CRT-CON-01-A).
+      externalId: message.messageId,
+      parentExternalId: previous ?? conversation.conversationId,
+      // A user message is attributed to the submitting owner, so the ingest path
+      // binds it to the authenticated actor rather than to a name in the payload.
+      // An assistant message names the assistant: PRD §24.2 keeps model output as
+      // evidence with its own origin, never as the owner's own statement.
+      actorRef: message.role === 'ASSISTANT'
+        ? { type: 'ASSISTANT', id: (message.authorRef ?? 'assistant').slice(0, 512) } : null,
+      occurredAt: instant(message.createdAt),
+      content: {
+        messageExternalId: message.messageId, conversationExternalId: conversation.conversationId,
+        role: message.role, title: conversation.title ?? null, body: message.text,
+      },
+      deterministicMetadata: {
+        conversationExternalId: conversation.conversationId, role: message.role,
+        messagePosition: index, repliesTo: previous,
+      },
+      anchors: [
+        span('MESSAGE_SPAN', { messageExternalId: message.messageId, field: 'body', start: 0, end: message.text.length }, message.text),
       ],
     });
   });
@@ -259,7 +333,72 @@ function parseGithubIssueThread(payload: unknown): ParsedSourceItem[] {
       ],
     }));
   }
+  const commits = thread.commits ?? [], checkRuns = thread.check_runs ?? [];
+  if (commits.length > 0 || checkRuns.length > 0) items.push(githubEpisode(thread, issueExternalId, repository));
   return items;
+}
+
+/**
+ * One aggregated episode for a burst of commits and CI webhooks on one pull
+ * request (PRD §20.5, CRT-CON-04-A).
+ *
+ * The aggregation happens here, in the deterministic parser, and not in a worker:
+ * the burst becomes *one* source item, so it receives one triage decision and at
+ * most one semantic extraction, however many commits and check runs it carried.
+ * The events themselves are not lost -- each one is an anchor and a content
+ * entry on the episode -- and the episode's identity is the pull request, so a
+ * redelivery of the identical burst re-derives the identical content hash and
+ * creates no second row.
+ */
+function githubEpisode(
+  thread: z.infer<typeof githubIssueThreadSchema>, issueExternalId: string, repository: string,
+): ParsedSourceItem {
+  const commits = thread.commits ?? [], checkRuns = thread.check_runs ?? [];
+  const commitEntries = commits.map(commit => ({
+    sha: commit.sha, message: commit.message,
+    author: commit.author?.login ?? null, committedAt: instant(commit.committed_at),
+  }));
+  const checkEntries = checkRuns.map(run => ({
+    checkRunId: run.id, name: run.name, status: run.status,
+    conclusion: run.conclusion ?? null, headSha: run.head_sha ?? null, completedAt: instant(run.completed_at),
+  }));
+  const times = [...commitEntries.map(entry => entry.committedAt), ...checkEntries.map(entry => entry.completedAt)]
+    .filter((value): value is string => value !== null).sort();
+  const anchors: ParsedSourceAnchor[] = [];
+  for (const [index, commit] of commits.entries()) {
+    anchors.push(span('CONNECTOR_JSON_PATH', { path: '$.commits[' + index + '].sha', sha: commit.sha }, commit.message));
+  }
+  for (const [index, run] of checkRuns.entries()) {
+    anchors.push(span('CONNECTOR_JSON_PATH',
+      { path: '$.check_runs[' + index + '].conclusion', checkRunId: run.id },
+      run.name + ' ' + run.status + (run.conclusion ? ' ' + run.conclusion : '')));
+  }
+  return parsedSourceItemSchema.parse({
+    sourceType: 'GITHUB',
+    externalId: issueExternalId + '/episode',
+    parentExternalId: issueExternalId,
+    // The repository is the actor of an aggregated episode: no single person
+    // authored it, and attributing it to the submitting owner would be false.
+    actorRef: { type: 'EXTERNAL', id: repository.slice(0, 512) },
+    occurredAt: times.at(-1) ?? null,
+    content: {
+      repository, number: thread.issue.number, kind: 'PULL_REQUEST_EPISODE',
+      title: thread.issue.title, commits: commitEntries, checkRuns: checkEntries,
+      body: [
+        commitEntries.length + ' commit(s) and ' + checkEntries.length + ' CI event(s) on '
+        + (thread.issue.pull_request ? 'pull request ' : 'issue ') + issueExternalId,
+        ...commitEntries.map(entry => entry.sha.slice(0, 7) + ' ' + entry.message.split('\n')[0]),
+        ...checkEntries.map(entry => entry.name + ': ' + (entry.conclusion ?? entry.status)),
+      ].join('\n'),
+    },
+    deterministicMetadata: {
+      repository, issueNumber: thread.issue.number, episodeKind: 'COMMIT_AND_CI_BURST',
+      aggregatedCommitCount: commitEntries.length, aggregatedCheckRunCount: checkEntries.length,
+      aggregatedEventCount: commitEntries.length + checkEntries.length,
+      headSha: commitEntries.at(-1)?.sha ?? null,
+    },
+    anchors,
+  });
 }
 
 function parseUploadedDocument(payload: unknown): ParsedSourceItem[] {
@@ -277,13 +416,18 @@ function parseUploadedDocument(payload: unknown): ParsedSourceItem[] {
       documentId: document.documentId, title: document.title ?? null,
       mediaType: document.mediaType ?? 'text/plain',
       pages: document.pages.map(page => ({page: page.page, text: page.text})),
+      ...(document.base64 === undefined ? {} : {base64: document.base64}),
     },
-    deterministicMetadata: {pageCount: document.pages.length, mediaType: document.mediaType ?? 'text/plain'},
+    deterministicMetadata: {
+      pageCount: document.pages.length, mediaType: document.mediaType ?? 'text/plain',
+      textExtracted: document.pages.length > 0,
+    },
     anchors,
   })];
 }
 
 const parsers: Record<ParsedSourceType, (payload: unknown) => ParsedSourceItem[]> = {
+  CONVERSATION: parseConversation,
   GMAIL: parseGmailThread,
   GOOGLE_CALENDAR: parseGoogleCalendarEvent,
   GITHUB: parseGithubIssueThread,
