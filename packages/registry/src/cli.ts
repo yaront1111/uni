@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createDatabasePool } from '@unai/postgres';
 import { RegistryError, lintRegistryRepository, loadRegistryRelease } from './release.js';
 import { publishRegistryRelease } from './snapshot.js';
@@ -15,14 +15,33 @@ const fail = (code: string, extra: Record<string, unknown> = {}) => {
 };
 const codeOf = (error: unknown) => error instanceof RegistryError ? error.code : 'REGISTRY_COMMAND_FAILED';
 
+/** `--report <path>` keeps the same bounded codes CI prints as a JSON artifact.
+ * The operations screen displays that artifact; nothing in the deployment lints
+ * (ADR 0014), so the report file is the only lint surface outside the CLI. */
+type LintedRelease = { version: string; tag: string; contentHash: string; contracts: number };
+async function writeReport(result: 'PASS' | 'FAIL', releases: LintedRelease[], error?: unknown) {
+  const path = option('report');
+  if (!path) return;
+  const issues = error instanceof RegistryError ? error.issues : [];
+  await writeFile(path, JSON.stringify({ result, checkedAt: new Date().toISOString(),
+    code: result === 'FAIL' ? codeOf(error) : null, releases, issues }, null, 2) + '\n');
+}
+
 try {
   if (group === 'registry' && command === 'lint') {
     const version = option('version');
-    const releases = (await lintRegistryRepository(process.cwd())).filter(release => !version || release.version === version);
-    if (version && releases.length === 0) throw new RegistryError('REGISTRY_RELEASE_NOT_RECORDED');
-    console.log(JSON.stringify({ event, result: 'PASS', releases: releases.map(release => ({
-      version: release.version, tag: release.tag, contentHash: release.contentHash, contracts: release.manifest.contracts.length,
-    })) }));
+    let releases: LintedRelease[] = [];
+    try {
+      const linted = (await lintRegistryRepository(process.cwd())).filter(release => !version || release.version === version);
+      if (version && linted.length === 0) throw new RegistryError('REGISTRY_RELEASE_NOT_RECORDED');
+      releases = linted.map(release => ({ version: release.version, tag: release.tag,
+        contentHash: release.contentHash, contracts: release.manifest.contracts.length }));
+    } catch (error) {
+      await writeReport('FAIL', releases, error);
+      throw error;
+    }
+    await writeReport('PASS', releases);
+    console.log(JSON.stringify({ event, result: 'PASS', releases }));
   } else if (group === 'registry' && command === 'publish') {
     const url = process.env.UNAI_MIGRATION_DATABASE_URL, caPath = process.env.UNAI_DATABASE_CA_PATH, version = option('version');
     if (!url || !caPath || !version) throw new RegistryError('REGISTRY_PUBLISH_CONFIGURATION_REQUIRED');

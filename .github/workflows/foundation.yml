@@ -19,5 +19,13 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - run: pnpm validate:registry
+      # Lint runs here and in the CLI, never in the deployment (ADR 0014). The
+      # report is the artifact the operations registry screen displays.
+      - run: pnpm validate:registry --report registry-lint-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: registry-lint-report
+          path: registry-lint-report.json
+          if-no-files-found: ignore
 

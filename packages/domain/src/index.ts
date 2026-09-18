@@ -30,6 +30,10 @@ export {sourceAnchorKindSchema,parsedSourceAnchorSchema,parsedSourceItemSchema,p
   gmailThreadSchema,googleCalendarEventSchema,githubIssueThreadSchema,uploadedDocumentSchema,
   parseSourcePayload,SourcePayloadInvalid,
   type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType} from './sources.js';
+export {registryVersionSchema,registryContentHashSchema,registryContractKindSchema,publicRegistryContractSchema,
+  loadedRegistryReleaseSchema,registrySnapshotViewSchema,registryLintIssueSchema,registryLintedReleaseSchema,
+  registryLintReportSchema,
+  type PublicRegistryContract,type LoadedRegistryRelease,type RegistrySnapshotView,type RegistryLintReport} from './registry.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

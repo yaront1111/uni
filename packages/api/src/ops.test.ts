@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { JOB_PURPOSES, enqueueJob, runJobAttempt } from '@unai/jobs';
-import type { RequestContext } from '@unai/domain';
+import { registrySnapshotViewSchema, type RequestContext } from '@unai/domain';
 import { createPlatformApi } from './platform.js';
 
 const admin=new Pool({connectionString:process.env.UNAI_TEST_DATABASE_URL});
@@ -78,6 +78,73 @@ it('CRT-NFR-02-A: an exhausted job is listed in the dead-letter route with its e
       headers:{...retryHeaders,'x-correlation-id':randomUUID(),'idempotency-key':randomUUID()},payload:{}});
     expect(invalid.statusCode).toBe(400);
   }finally{await f.app.close();}
+});
+
+/** Design screen "Registry release and migration", loaded-release state: the
+ * runtime reads the snapshot the CLI materialized from an immutable tag, and the
+ * deployment runs no registry logic (CRT-REG-01-B). */
+it('CRT-REG-01-B: serves the materialized release read-only and refuses every other verb and purpose',async()=>{
+  const f=await fixture('ops-registry@example.test');try{
+    const headers={...f.headers,'x-purpose':'ops.registry.read','x-correlation-id':randomUUID()};
+    const response=await f.app.inject({url:'/v1/ops/registry-snapshot',headers});
+    expect(response.statusCode).toBe(200);
+    const view=registrySnapshotViewSchema.parse(response.json());
+    // Whatever this database holds, the view is exactly the committed snapshot:
+    // the release publication is what puts a row there, never a request.
+    const loaded=(await admin.query(`SELECT id,semantic_version,git_tag,git_commit,content_hash FROM registry_releases
+      WHERE lifecycle='RELEASED' ORDER BY string_to_array(semantic_version,'.')::int[] DESC,released_at DESC LIMIT 1`)).rows[0];
+    if(loaded){
+      expect(view.release).toMatchObject({id:loaded.id,semanticVersion:loaded.semantic_version,gitTag:loaded.git_tag,
+        gitCommit:loaded.git_commit,contentHash:loaded.content_hash,lifecycle:'RELEASED'});
+      const contracts=(await admin.query('SELECT contract_id FROM registry_contracts WHERE registry_release_id=$1',[loaded.id])).rows;
+      expect(view.contracts).toHaveLength(contracts.length);
+      // Identity and hashes only: contract text stays in Git.
+      expect(response.body).not.toContain('identityStrategy');
+    }else{
+      expect(view).toEqual({release:null,contracts:[]});
+    }
+    expect((await admin.query('SELECT purpose,result FROM audit_events WHERE correlation_id=$1',[headers['x-correlation-id']])).rows)
+      .toEqual([{purpose:'ops.registry.read',result:'SUCCESS'}]);
+    // No mutation of any kind is routed: a write to the snapshot path matches no
+    // route, so the boundary refuses it before any handler runs. The route table
+    // itself is asserted in registry-boundary.test.ts.
+    for(const method of ['POST','PUT','PATCH','DELETE'] as const){
+      const refused=await f.app.inject({method,url:'/v1/ops/registry-snapshot',
+        headers:{...headers,'x-correlation-id':randomUUID(),'idempotency-key':randomUUID()},payload:{}});
+      expect(refused.statusCode,method).toBe(403);
+      expect(refused.json().code).toBe('PURPOSE_REFUSED');
+    }
+    expect((await admin.query("SELECT count(*)::int AS n FROM registry_releases WHERE lifecycle<>'RELEASED'")).rows[0].n).toBe(0);
+    // The read purpose does not unlock another route.
+    expect((await f.app.inject({url:'/v1/ops/registry-snapshot',headers:{...f.headers,'x-purpose':'ops.jobs.read'}})).statusCode).toBe(403);
+    expect((await f.app.inject({url:'/v1/ops/jobs',headers:{...f.headers,'x-purpose':'ops.registry.read'}})).statusCode).toBe(403);
+  }finally{await f.app.close();}
+});
+
+it('CRT-REG-01-B: the snapshot reader answers the highest released version and only under its own purpose',async()=>{
+  // A fixture release in a rolled-back transaction: the published snapshot is
+  // immutable, so a test may never leave a row behind for the next suite.
+  const client=await admin.connect();
+  try{
+    await client.query('BEGIN');
+    const release=randomUUID(),owner=randomUUID();
+    await client.query(`INSERT INTO registry_releases(id,semantic_version,git_tag,git_commit,content_hash,lifecycle,released_at,manifest,correlation_id)
+      VALUES($1,'9.9.9','registry-v9.9.9',$2,$3,'RELEASED',now(),'{"contracts":[]}',$4)`,
+      [release,'a'.repeat(40),'b'.repeat(64),randomUUID()]);
+    await client.query(`INSERT INTO registry_contracts(id,registry_release_id,contract_id,contract_version,contract_kind,content,content_hash)
+      VALUES($1,$2,'shared.obligation','9.9.9','FRAME','{"id":"shared.obligation"}',$3)`,[randomUUID(),release,'c'.repeat(64)]);
+    await client.query('SET LOCAL ROLE unai_app');
+    await client.query("SELECT set_config('unai.owner_scope_id',$1,true),set_config('unai.purpose','ops.registry.read',true)",[owner]);
+    const view=registrySnapshotViewSchema.parse((await client.query('SELECT unai_private.registry_snapshot() AS snapshot')).rows[0].snapshot);
+    expect(view.release).toMatchObject({id:release,semanticVersion:'9.9.9',gitTag:'registry-v9.9.9',contentHash:'b'.repeat(64)});
+    expect(view.contracts).toEqual([{contractId:'shared.obligation',contractKind:'FRAME',contractVersion:'9.9.9',contentHash:'c'.repeat(64)}]);
+    // The reader is the only application path to these tables, and it fails closed.
+    await client.query("SELECT set_config('unai.purpose','ops.jobs.read',true)");
+    expect((await client.query('SELECT unai_private.registry_snapshot() AS snapshot')).rows[0].snapshot).toBeNull();
+    await client.query("SELECT set_config('unai.purpose','ops.registry.read',true),set_config('unai.owner_scope_id','',true)");
+    expect((await client.query('SELECT unai_private.registry_snapshot() AS snapshot')).rows[0].snapshot).toBeNull();
+    await expect(client.query('SELECT * FROM registry_releases')).rejects.toMatchObject({code:'42501'});
+  }finally{await client.query('ROLLBACK');client.release();}
 });
 
 it('refuses queue routes without the matching purpose, owner scope, correlation id or idempotency key',async()=>{

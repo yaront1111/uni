@@ -6,8 +6,16 @@ goal-aa27afc9-5409-408d-961d-b9c20954d16c@v1, screen "CLI/CI: registry and
 projection replay" (loader, lint and release portion), entities
 registry_releases and registry_contracts.
 
-There is no registry HTTP endpoint, web route or editing UI. Contracts are Git
-files; the only interfaces are the `@unai/registry` library and the CLI.
+Extended for goal-b2cc3b54-1876-401e-a6a2-527f99b679bc@v1 (screen "Registry
+release and migration", route `GET /v1/ops/registry-snapshot`) by ADR 0014; see
+`docs/registry-snapshot-and-contexts.md`.
+
+Registry logic — loading, hashing, linting, publishing — runs only in the
+`@unai/registry` library and its CLI. The deployment holds one registry-shaped
+path: the read-only snapshot view at `GET /v1/ops/registry-snapshot`, rendered
+at `/ops/registry`. It serves rows the CLI already materialized, accepts no
+mutation and imports no registry code, so no network-reachable registry service
+endpoint exists (CRT-REG-01-B). There is no editing UI.
 
 ## Layout
 
@@ -27,10 +35,16 @@ predicate. Outcomes are resolution assertions under these transitions.
 ## Commands
 
 ```
-pnpm uai registry lint [--version 0.1.0]
+pnpm uai registry lint [--version 0.1.0] [--report <path>]
 pnpm uai registry publish --version 0.1.0 [--correlation-id <uuid>]
 pnpm validate:registry        # same as registry lint; runs in CI
 ```
+
+`--report <path>` writes the same bounded result as JSON (result, checked-at,
+refusal code, linted releases, issue codes with contract file and field path)
+for both a pass and a failure. CI keeps it as the `registry-lint-report`
+artifact, and a deployment that sets `UNAI_REGISTRY_LINT_REPORT_FILE` to such a
+file shows it on `/ops/registry`. Nothing in the deployment lints.
 
 `lint` checks every recorded release in the checkout: recorded content hash,
 manifest completeness, every §17.3 frame field and §17.4 predicate field,

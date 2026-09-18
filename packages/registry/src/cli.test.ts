@@ -5,6 +5,9 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import * as registry from './index.js';
+// The report artifact is read by the operations screen, so it is checked here
+// against that screen's schema rather than a second copy of the shape.
+import { registryLintReportSchema } from '../../domain/src/registry.js';
 
 const cliPath = resolve('packages/registry/src/cli.ts');
 const tsx = createRequire(import.meta.url).resolve('tsx/cli');
@@ -55,6 +58,38 @@ it('uai registry lint exits non-zero on a contract missing a required §17.3 fie
   const failure = JSON.parse(result.stderr.trim());
   expect(failure).toMatchObject({ event: 'registry.lint', result: 'FAIL', code: 'REGISTRY_LINT_FAILED' });
   expect(failure.issues).toContainEqual({ code: 'REGISTRY_FIELD_REQUIRED', contract: 'shared.commitment.yaml', path: 'mergePolicy' });
+});
+
+/** The report is the only lint surface outside the CLI: the operations screen
+ * renders this artifact and never lints (ADR 0014), so its bytes must satisfy
+ * the schema that screen parses. */
+it('uai registry lint --report writes the passing release as a schema-valid report', async () => {
+  const repository = await copy();
+  const path = join(repository, 'lint-report.json');
+  const result = run(repository, ['registry', 'lint', '--report', path]);
+  expect(result.status, result.stderr).toBe(0);
+  const report = registryLintReportSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+  expect(report).toMatchObject({ result: 'PASS', code: null, issues: [],
+    releases: [{ version: '0.1.0', tag: 'registry-v0.1.0', contracts: 8 }] });
+});
+
+it.each([
+  ['a contract missing a required field', (yaml: string) => yaml.replace(/^mergePolicy: .*$/m, ''), 'REGISTRY_FIELD_REQUIRED'],
+  ['an outcome status predicate', (yaml: string) => yaml.replace('- id: shared.commitment.due_time', '- id: shared.commitment.status'), 'OUTCOME_STATUS_PREDICATE_FORBIDDEN'],
+  ['a cardinality outside FUNCTIONAL, SET and EVENT', (yaml: string) => yaml.replace(/cardinality: FUNCTIONAL/, 'cardinality: MULTI'), 'REGISTRY_CARDINALITY_INVALID'],
+])('uai registry lint --report records %s as a lint failure', async (_name, edit, code) => {
+  const repository = await copy();
+  const file = join(repository, 'registry/releases/0.1.0/shared.commitment.yaml');
+  await writeFile(file, edit(await readFile(file, 'utf8')));
+  await rerecord(repository);
+  const path = join(repository, 'lint-report.json');
+  const result = run(repository, ['registry', 'lint', '--report', path]);
+  expect(result.status).toBe(1);
+  const report = registryLintReportSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+  expect(report).toMatchObject({ result: 'FAIL', code: 'REGISTRY_LINT_FAILED' });
+  expect(report.issues.map(issue => issue.code)).toContain(code);
+  // Codes, contract file names and field paths only: no contract text.
+  expect(JSON.stringify(report)).not.toMatch(/monetary|debtor|promisor/i);
 });
 
 it('uai registry lint refuses an unrecorded release directory', async () => {

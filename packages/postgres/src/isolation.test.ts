@@ -61,7 +61,7 @@ describe('real PostgreSQL owner isolation', () => {
 
   it('hides B from unfiltered owner A queries on every owner table', async()=>{
     await asOwner(a,alice,async c=>{
-      for (const table of ['owner_scopes','owner_scope_members','devices','audit_events','connectors','source_items','source_anchors','evidence_object_keys','evidence_ingestion_receipts']) {
+      for (const table of ['owner_scopes','owner_scope_members','devices','audit_events','connectors','source_items','source_anchors','evidence_object_keys','evidence_ingestion_receipts','context_spaces']) {
         const key=table==='owner_scopes'?'id':'owner_scope_id';
         const rows=(await readUnfiltered(c,table)).rows;
         expect(rows.length).toBeGreaterThan(0);
@@ -91,6 +91,39 @@ describe('real PostgreSQL owner isolation', () => {
     },'ops.jobs.read');
     for(const sql of ['DELETE FROM jobs','TRUNCATE jobs']){
       await expect(asOwner(a,alice,c=>c.query(sql).then(()=>{}),'ops.jobs.read')).rejects.toMatchObject({code:'42501'});
+    }
+  });
+  it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
+    // Created with the owner scope, so no scope exists without a context to
+    // assert a belief in, and the owner sees only its own.
+    for(const owner of [a,b]){
+      expect((await pool.query("SELECT context_kind,lifecycle,parent_context_space_id FROM context_spaces WHERE owner_scope_id=$1",[owner])).rows)
+        .toEqual([{context_kind:'BASE',lifecycle:'ACTIVE',parent_context_space_id:null}]);
+    }
+    await asOwner(a,alice,async c=>{
+      const rows=(await c.query('SELECT owner_scope_id,context_kind FROM context_spaces')).rows;
+      expect(rows).toEqual([{owner_scope_id:a,context_kind:'BASE'}]);
+    });
+    // A second active BASE is impossible, and the existing one cannot be retired
+    // or re-kinded away, so "at most one" is also "exactly one".
+    await expect(pool.query("INSERT INTO context_spaces(id,owner_scope_id,context_kind) VALUES($1,$2,'BASE')",[randomUUID(),a]))
+      .rejects.toMatchObject({code:'23505'});
+    await expect(pool.query("UPDATE context_spaces SET lifecycle='RETIRED',retired_at=now() WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('BASE_CONTEXT_SPACE_PERMANENT');
+    await expect(pool.query("UPDATE context_spaces SET context_kind='TEST' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CONTEXT_SPACE_IDENTITY_IMMUTABLE');
+    await expect(pool.query('DELETE FROM context_spaces WHERE owner_scope_id=$1',[a]))
+      .rejects.toThrow('BASE_CONTEXT_SPACE_PERMANENT');
+    // A derived context is scoped to a parent in the same owner scope; the
+    // application role may read contexts and write none.
+    const base=(await pool.query("SELECT id FROM context_spaces WHERE owner_scope_id=$1",[a])).rows[0].id;
+    await expect(pool.query("INSERT INTO context_spaces(id,owner_scope_id,context_kind,parent_context_space_id) VALUES($1,$2,'QUOTED',$3)",[randomUUID(),b,base]))
+      .rejects.toMatchObject({code:'23503'});
+    await expect(pool.query("INSERT INTO context_spaces(id,owner_scope_id,context_kind) VALUES($1,$2,'QUOTED')",[randomUUID(),a]))
+      .rejects.toMatchObject({code:'23514'});
+    for(const sql of ["INSERT INTO context_spaces(id,owner_scope_id,context_kind,parent_context_space_id) VALUES(gen_random_uuid(),'"+a+"','TEST','"+base+"')",
+      'UPDATE context_spaces SET creation_transaction_id=NULL','DELETE FROM context_spaces','TRUNCATE context_spaces']){
+      await expect(asOwner(a,alice,c=>c.query(sql).then(()=>{}))).rejects.toMatchObject({code:'42501'});
     }
   });
   it('does not expose session digests to the application role',async()=>{
@@ -135,7 +168,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(15);
+    expect(rows.length).toBe(16);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});

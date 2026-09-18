@@ -34,16 +34,18 @@ The harness forwards no arguments, so a single test goes through vitest:
 
 ```
 pnpm exec vitest run src/kernel/clock.test.ts          # pure tests: src/, domain, registry lint, secrets, web components
-pnpm exec vitest run packages/registry -t "lint"
+pnpm exec vitest run packages/registry/src/lint.test.ts   # name the file: a bare packages/registry path imports snapshot.test.ts, which throws without a database even under -t
 ```
 
-Database-backed tests (`packages/postgres`, `auth`, `api`, `jobs`, `registry/src/snapshot.test.ts`) throw "Run pnpm test for the required PostgreSQL harness" without `UNAI_TEST_DATABASE_URL`; the evidence tests also need `UNAI_TEST_S3_*`. To run one alone, export `UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated pgvector server first; otherwise run the full `pnpm test`.
+Database-backed tests (`packages/postgres`, `auth`, `api`, `jobs`, `registry/src/snapshot.test.ts`) fail without `UNAI_TEST_DATABASE_URL`: some throw "Run pnpm test for the required PostgreSQL harness", while the `auth` and `api` suites have no guard and die with an invalid-URL or connection error instead. The evidence tests also need `UNAI_TEST_S3_*`. To run one alone, export `UNAI_TEST_DATABASE_URL` for a throwaway, already-migrated pgvector server first; otherwise run the full `pnpm test`.
 
 ## Architecture
 
 pnpm workspace (`apps/*`, `packages/*`), ESM, TypeScript executed by `tsx` with no emit step. `packages/` import with `.js` specifiers, root `src/` with `.ts` specifiers. tsconfig is strict plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`.
 
-Two code lanes that are not yet connected:
+Most folders carry their own `CLAUDE.md` with local invariants, change checklists and traps (`packages/*`, `apps/web`, `src`, `migrations`, `registry`, `scripts`); read the one for the folder being changed.
+
+Two code lanes, joined only by `uuidV7` (imported from `src/kernel/identities` by `packages/api`, `jobs` and `registry` through a relative path):
 
 - `src/kernel`, `src/wrapper`: the original in-memory memory-kernel slices (UUIDv7 identities, evidence ledger, provenance, redaction, clock, claims), pure TypeScript with no I/O.
 - `packages/` + `apps/web`: the reference-stack product (Fastify, Next.js Pages Router, PostgreSQL/pgvector, S3, OpenTelemetry).
