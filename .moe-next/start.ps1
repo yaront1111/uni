@@ -55,6 +55,11 @@ if (-not $env:CLAUDE_CODE_OAUTH_TOKEN -and -not $env:ANTHROPIC_AUTH_TOKEN -and -
 }
 
 $env:MOE_WRAPPER_MAX_AGENTS = "2"
+# A seat is killed MOE_AGENT_TIMEOUT_MS after it spawns, whatever it is doing: `claude -p` prints
+# nothing until it finishes, so the wrapper's "seat quiet" lines are notices, not a liveness
+# test, and the default 30 minutes is a hard cap on a node. Nodes 3 and 4 took 15-20 minutes;
+# node 5 was still running a tool at minute 26 (measured 2026-09-18). One hour.
+$env:MOE_AGENT_TIMEOUT_MS = "3600000"
 # Operator-authored node specs are optional; uncomment if you put any under .moe-next\node-specs.
 # $env:MOE_NODE_SPECS_DIR = Join-Path $here "node-specs"
 
