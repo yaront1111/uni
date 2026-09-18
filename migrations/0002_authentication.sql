@@ -1,4 +1,8 @@
-CREATE ROLE unai_auth NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+-- Cluster-global, like unai_app in 0001: create when absent, then assert attributes.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='unai_auth') THEN CREATE ROLE unai_auth; END IF;
+END $$;
+ALTER ROLE unai_auth NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 GRANT USAGE ON SCHEMA unai_private TO unai_auth;
 ALTER TABLE users ADD COLUMN auth_email text;
 ALTER TABLE devices ADD COLUMN removed_at timestamptz;

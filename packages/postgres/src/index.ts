@@ -95,7 +95,7 @@ export async function withOwnerTransaction<T>(pool:Pool, input:RequestContext, r
   });
 }
 
-export { assertOwnershipCoverage } from './ownership.js';
+export { assertOwnershipCoverage, OWNER_SCOPED_TABLES } from './ownership.js';
 export { runMigrations } from './migrations.js';
 
 

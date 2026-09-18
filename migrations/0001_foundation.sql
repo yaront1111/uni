@@ -1,6 +1,12 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE ROLE unai_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+-- Database roles are cluster-global, so a cluster that already hosts another database
+-- of this product already carries them. Create only when absent, then assert the
+-- attributes unconditionally: a pre-existing role can never weaken the owner boundary.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='unai_app') THEN CREATE ROLE unai_app; END IF;
+END $$;
+ALTER ROLE unai_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 CREATE SCHEMA unai_private;
 REVOKE ALL ON SCHEMA unai_private FROM PUBLIC;

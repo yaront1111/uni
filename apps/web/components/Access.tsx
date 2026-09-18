@@ -3,7 +3,7 @@ import {signIn,signOut} from 'next-auth/react';
 import type {PublicDevice} from '@unai/domain';
 import {Navigation} from './Navigation';
 export type AccessState='signed-out'|'signing-in'|'expired'|'refused'|'desktop'|'phone';
-export function Access(props:{state:AccessState;devices:PublicDevice[];registered:boolean;currentDeviceId?:string|null;error?:string}){
+export function Access(props:{state:AccessState;devices:PublicDevice[];registered:boolean;currentDeviceId?:string|null;ownerScopeId?:string|null;error?:string}){
   const [state,setState]=useState(props.state),[busy,setBusy]=useState(false),[error,setError]=useState(props.error??'');
   const signedIn=state==='desktop'||state==='phone';
   async function login(){setState('signing-in');try{await signIn('google',{callbackUrl:'/'});}catch{setState('refused');}}
@@ -35,6 +35,12 @@ export function Access(props:{state:AccessState;devices:PublicDevice[];registere
       </section>}
       {signedIn&&<>
         <p role="status">{state==='phone'?'Signed in on phone':'Signed in on desktop'}. Your devices share the same personal workspace.</p>
+        {props.ownerScopeId&&<section className="card" aria-label="Owner scope">
+          <h2>Owner scope</h2>
+          <label htmlFor="owner-scope">Active workspace</label>
+          <select id="owner-scope" name="ownerScope" defaultValue={props.ownerScopeId}><option value={props.ownerScopeId}>Personal workspace</option></select>
+          <p className="muted">You have exactly one active personal owner scope. Every device you sign in to reads and writes in it.</p>
+        </section>}
         {!props.registered&&<form className="card" onSubmit={event=>{event.preventDefault();const data=new FormData(event.currentTarget);void action('devices','device.register',{displayName:data.get('displayName'),kind:data.get('kind')});}}>
           <h2>Register this device</h2>
           <label htmlFor="device-name">Device name</label><input id="device-name" name="displayName" maxLength={120} required autoComplete="off" placeholder="For example, my laptop"/>

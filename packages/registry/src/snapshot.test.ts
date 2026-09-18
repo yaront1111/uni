@@ -13,9 +13,14 @@ const uuidV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 let pool: Pool, repository: string;
 let release: registry.LoadedRegistryRelease;
 
+// Fixed identity and timestamps, so the fixture tag resolves to the same commit on
+// every run: the published 0.1.0 snapshot is immutable and its version is unique, so
+// a rerun against a server a previous run used must republish the same release rather
+// than a new commit the snapshot would refuse as a conflict.
+const committed = '2024-01-01T00:00:00Z';
 function git(...args: string[]) {
   const result = spawnSync('git', ['-c', 'core.autocrlf=false', '-c', 'user.name=Registry Test', '-c', 'user.email=registry@test.invalid', ...args],
-    { cwd: repository, encoding: 'utf8' });
+    { cwd: repository, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: committed, GIT_COMMITTER_DATE: committed } });
   if (result.status !== 0) throw new Error(result.stderr);
   return result.stdout.trim();
 }
@@ -36,12 +41,16 @@ afterAll(async () => {
 
 it('materializes the tag-loaded release immutably with public UUIDv7 identifiers and publication audit fields', async () => {
   const correlationId = randomUUID();
+  // On a freshly provisioned database this publishes; against a server a previous run
+  // already used, the immutable snapshot must answer ALREADY_PUBLISHED and still carry
+  // the correlation id of the publication that created the row.
+  const prior = (await pool.query('SELECT correlation_id FROM registry_releases')).rows[0]?.correlation_id as string | undefined;
   const outcome = await registry.publishRegistryRelease(pool, release, correlationId);
-  expect(outcome.outcome).toBe('PUBLISHED');
+  expect(outcome.outcome).toBe(prior ? 'ALREADY_PUBLISHED' : 'PUBLISHED');
   expect(outcome.releaseId).toMatch(uuidV7);
   const row = (await pool.query('SELECT *, current_user AS principal FROM registry_releases')).rows[0];
   expect(row).toMatchObject({ id: outcome.releaseId, semantic_version: '0.1.0', git_tag: 'registry-v0.1.0', git_commit: release.gitCommit,
-    content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: correlationId });
+    content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: prior ?? correlationId });
   expect(row.published_by).toBe(row.principal);
   expect(row.released_at).toBeInstanceOf(Date);
   expect(row.id).not.toContain(release.contentHash.slice(0, 8));

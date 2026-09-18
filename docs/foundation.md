@@ -69,7 +69,35 @@ cookies or raw provider errors. Deployment supplies the OpenTelemetry exporter.
 
 Prerequisites: Node 24, pnpm 11.0.8, Docker and OpenSSL. The full test command
 starts disposable PostgreSQL/pgvector with temporary storage and test-only
-credentials; it is not the persistent development or production database.
+credentials; it is not the persistent development or production database. A
+runner that provisions its own throwaway PostgreSQL/pgvector server instead sets
+UNAI_TEST_DATABASE_URL or DATABASE_URL, and pnpm test migrates and runs the whole
+suite against that server rather than starting its own container. The suite
+creates and drops databases and roles, so never point it at a real database.
+
+On a delivered server each run creates a disposable database of its own,
+migrates it, and drops it afterwards, so the run never inherits rows an earlier
+run left behind: the registry 0.1.0 snapshot is immutable and its version is
+unique, so a release published once could otherwise decide whether a later run
+passes. A server that refuses the database falls back to the delivered one and
+says so. Database roles are cluster-global rather than per-database, so
+migrations 0001 and 0002 create unai_app and unai_auth only when absent and then
+assert their attributes unconditionally, which also repairs a role a cluster
+already carries with weaker attributes than the owner boundary requires.
+
+Object storage is delivered the same way. A runner that provisions its own
+throwaway encrypted S3-compatible bucket sets UNAI_TEST_S3_ENDPOINT,
+UNAI_TEST_S3_BUCKET and UNAI_TEST_S3_KMS_KEY_ID, plus its credentials and
+NODE_EXTRA_CA_CERTS, and pnpm test uses that bucket and starts no MinIO
+container. Delivering only part of that set is refused rather than silently
+half-used. The suite writes and deletes test objects, so never point it at a
+real bucket. Without a delivered bucket pnpm test serves real TLS and
+KMS-encrypted object storage itself: disposable MinIO when a container daemon
+answers, and the in-process S3-compatible server in scripts/s3-object-server.mjs
+when none does. The storage tests always run against a real endpoint over TLS;
+none of these is a production store. Database probing and the Git migrations run
+before any harness starts, and each provisioning step fails under its own name,
+so a storage failure is never reported as a database or migration failure.
 
 ```
 pnpm install --frozen-lockfile
@@ -95,14 +123,29 @@ The CLI applies every Git migration, checks immutable migration digests, and
 validates ownership coverage. Create separate LOGIN roles granted only unai_app
 or unai_auth, with credentials supplied through the deployment secret system.
 
+Credentials are configured as secrets-manager handles, never as literal values
+(ADR 0013). A handle is `secret://<provider>/<name>[#<field>]`; the optional
+field selects one member of a structured JSON secret. The bundled `mounted`
+provider reads the directory named by UNAI_SECRETS_MOUNT, which covers a
+Kubernetes projected secret volume, a Vault Agent template and a decrypted
+secret mount. A deployment on a different secrets manager registers its own
+provider with createSecretsManager and changes no caller. A runtime service
+refuses to start when a credential variable holds anything but a handle, so a
+password cannot reach a process listing or a crash report through configuration.
+
 Set these application environment variables before starting services:
 
-- UNAI_APP_DATABASE_URL and UNAI_AUTH_DATABASE_URL: respective low-privilege URLs;
-  no URL query options that downgrade certificate verification.
+- UNAI_SECRETS_MOUNT: directory where the deployment's secrets manager exposes
+  secrets to the `mounted` provider.
+- UNAI_APP_DATABASE_URL and UNAI_AUTH_DATABASE_URL: handles for the respective
+  low-privilege URLs, for example
+  `secret://mounted/runtime/app-database#url`. The resolved URL carries no query
+  option that downgrades certificate verification.
 - UNAI_DATABASE_CA_FILE: trusted PostgreSQL CA file for runtime services.
 - NEXTAUTH_URL: canonical HTTPS web origin, including the port when nonstandard.
-- NEXTAUTH_SECRET: secret of at least 32 characters from the secret system.
-- GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET: configured Google OAuth application.
+- NEXTAUTH_SECRET: handle for a session secret of at least 32 characters.
+- GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET: configured Google OAuth application;
+  the client identifier is plain configuration and the client secret is a handle.
   Register NEXTAUTH_URL + /api/auth/callback/google as its callback URL.
 - UNAI_WEB_TLS_KEY_FILE and UNAI_WEB_TLS_CERT_FILE: web listener TLS files.
 - UNAI_API_TLS_KEY_FILE and UNAI_API_TLS_CERT_FILE: API listener TLS files.
@@ -126,8 +169,14 @@ Actual bucket policy, encrypted-volume and backup evidence is not available.
 
 ## Verification and acceptance limits
 
-Latest observed checks on 2026-09-14: pnpm test passed 186 tests in 20 files;
+Latest observed checks on 2026-09-18: pnpm test passed 325 tests in 31 files,
+both against its own container and against a delivered UNAI_TEST_DATABASE_URL;
 pnpm typecheck passed for backend and web; the optimized Next.js build passed.
+The delivered-server run was observed repeatedly on one server, including against
+a database already migrated and already holding a conflicting registry 0.1.0
+release and a cluster already carrying unai_app and unai_auth: 325 passed and
+exit 0 each time, and a unai_app left with BYPASSRLS and SUPERUSER was returned
+to NOBYPASSRLS and NOSUPERUSER by the migration.
 New schema/lifecycle, adapter, device-route and screen tests were observed failing
 before their implementations. The controlled OAuth test performs a real HTTP
 token exchange, signed ID-token verification, tampered-state refusal and logout
@@ -135,13 +184,12 @@ against PostgreSQL. Restricted-login and unfiltered cross-owner checks cover the
 new auth tables and deny digest access. These are not a production Google login,
 browser end-to-end acceptance or deployment-encryption receipt.
 
-pnpm validate:registry still exits 1 with REGISTRY_RELEASE_MISSING. No configured
-check was skipped or replaced, and no synthetic release was created. This is a
-phase-exit failure. The sealed map assigns CRT-REG-01-A/B, CRT-REG-03-A and
-CRT-OUT-01-A to uai-corpus-registry, which depends on uai-evidence-jobs and
-uai-platform; uai-evidence-jobs depends on uai-platform. Requiring that descendant
-release before foundation phase exit creates an ordering issue for reviewed
-resolution, not an extra foundation deliverable or a waived check.
+pnpm validate:registry now exits 0 and lints release 0.1.0 with its recorded
+content hash, so the earlier REGISTRY_RELEASE_MISSING phase-exit failure recorded
+here no longer reproduces. No configured check was skipped or replaced, and no
+synthetic release was created. Registry release contracts themselves remain the
+registry node's criteria (CRT-REG-01-A/B, CRT-REG-03-A, CRT-OUT-01-A), not a
+foundation deliverable.
 
 Assigned criteria remain CRT-NFR-07-A, CRT-OPS-02-A, CRT-SEC-01-A and CRT-SEC-08-A.
 The latter still needs real encrypted database/backup and object-store deployment

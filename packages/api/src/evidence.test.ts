@@ -13,7 +13,7 @@ const url=new URL(process.env.UNAI_TEST_DATABASE_URL!);url.username='evidence_te
 const appPool=new Pool({connectionString:url.href});
 beforeAll(async()=>{
   await runMigrations(admin,resolve('migrations'));
-  await admin.query("CREATE ROLE evidence_test_app LOGIN PASSWORD 'test-only'; GRANT unai_app TO evidence_test_app");
+  await admin.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='evidence_test_app') THEN CREATE ROLE evidence_test_app LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_app TO evidence_test_app");
 });
 afterAll(async()=>{await appPool.end();await admin.end();});
 

@@ -10,7 +10,7 @@ const url=new URL(process.env.UNAI_TEST_DATABASE_URL!);url.username='platform_te
 const appPool=new Pool({connectionString:url.href});
 beforeAll(async()=>{
   await runMigrations(admin,resolve('migrations'));
-  await admin.query("CREATE ROLE platform_test_app LOGIN PASSWORD 'test-only'; GRANT unai_app TO platform_test_app");
+  await admin.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='platform_test_app') THEN CREATE ROLE platform_test_app LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_app TO platform_test_app");
 });
 afterAll(async()=>{await appPool.end();await admin.end();});
 it('registers and removes only the authenticated device with durable audit and revocation',async()=>{

@@ -2,15 +2,28 @@ import {readFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {createDatabasePool} from '@unai/postgres';
 import {createAuthOptions,resolveSession,sessionToken} from '@unai/auth';
+import {createDefaultSecretsManager,requireSecret} from '@unai/secrets';
 import type {IncomingMessage} from 'node:http';
 import type {TLSSocket} from 'node:tls';
 export function required(name:string){const value=process.env[name];if(!value)throw new Error('CONFIG_REQUIRED:'+name);return value;}
-let pool:ReturnType<typeof createDatabasePool>|undefined;
-export function authPool(){return pool??=createDatabasePool(required('UNAI_AUTH_DATABASE_URL'),readFileSync(required('UNAI_DATABASE_CA_FILE'),'utf8'));}
-export function authOptions(){return createAuthOptions(authPool(),{clientId:required('GOOGLE_CLIENT_ID'),clientSecret:required('GOOGLE_CLIENT_SECRET'),secret:required('NEXTAUTH_SECRET')});}
+/** Credentials are named by secrets-manager handle, so the web process reads the
+ * sign-in secrets from the deployment's secrets manager and never from a literal
+ * configuration value. */
+let secrets:ReturnType<typeof createDefaultSecretsManager>|undefined;
+function secret(name:string){return requireSecret(secrets??=createDefaultSecretsManager(),name);}
+let pool:Promise<ReturnType<typeof createDatabasePool>>|undefined;
+export function authPool(){
+  return pool??=secret('UNAI_AUTH_DATABASE_URL')
+    .then(url=>createDatabasePool(url,readFileSync(required('UNAI_DATABASE_CA_FILE'),'utf8')))
+    .catch(error=>{pool=undefined;throw error;});
+}
+export async function authOptions(){
+  const [clientSecret,sessionSecret]=await Promise.all([secret('GOOGLE_CLIENT_SECRET'),secret('NEXTAUTH_SECRET')]);
+  return createAuthOptions(await authPool(),{clientId:required('GOOGLE_CLIENT_ID'),clientSecret,secret:sessionSecret});
+}
 export async function identity(req:IncomingMessage){
   if((req.socket as TLSSocket).encrypted!==true)throw new Error('TLS_REQUIRED');
-  const token=sessionToken(req.headers.cookie);return token?resolveSession(authPool(),token):null;
+  const token=sessionToken(req.headers.cookie);return token?resolveSession(await authPool(),token):null;
 }
 export async function apiRequest(path:string,method:string,headers:Record<string,string>,body?:unknown):Promise<{status:number;body:unknown}>{
   const base=new URL(required('UNAI_API_ORIGIN'));

@@ -7,7 +7,7 @@ import * as auth from './index.js';
 const admin=new Pool({connectionString:process.env.UNAI_TEST_DATABASE_URL});
 const url=new URL(process.env.UNAI_TEST_DATABASE_URL!);url.username='auth_adapter_test';url.password='test-only';
 const pool=new Pool({connectionString:url.href});
-beforeAll(async()=>{await runMigrations(admin,resolve('migrations'));await admin.query("CREATE ROLE auth_adapter_test LOGIN PASSWORD 'test-only'; GRANT unai_auth TO auth_adapter_test");});
+beforeAll(async()=>{await runMigrations(admin,resolve('migrations'));await admin.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='auth_adapter_test') THEN CREATE ROLE auth_adapter_test LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_auth TO auth_adapter_test");});
 afterAll(async()=>{await pool.end();await admin.end();});
 it('configures only Google identity scopes and protected database session cookies',()=>{
   expect(auth).toHaveProperty('createAuthOptions');

@@ -8,8 +8,13 @@ const classifiedTables=new Map([
   ['devices','owner_scope_id'],['audit_events','owner_scope_id'],
   ['auth_identities','owner_scope_id'],['auth_sessions','owner_scope_id'],
   ['connectors','owner_scope_id'],['source_items','owner_scope_id'],['source_anchors','owner_scope_id'],
-  ['evidence_ingestion_receipts','owner_scope_id'],
+  ['evidence_ingestion_receipts','owner_scope_id'],['jobs','owner_scope_id'],
 ]);
+/** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
+ * suite is driven from this classification instead of a second hand-kept list: a
+ * new owner table with no unfiltered fixture fails the suite rather than passing
+ * unexamined. */
+export const OWNER_SCOPED_TABLES:readonly string[]=Object.freeze([...classifiedTables.keys()]);
 /** Global Git registry snapshot (ADR 0011): not owner data, so it must stay
  * forced-RLS and completely inaccessible to the application role.
  */

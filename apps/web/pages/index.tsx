@@ -13,5 +13,6 @@ export const getServerSideProps:GetServerSideProps=async({req,res})=>{
   const data=response.body as {devices?:unknown[]};
   const devices=response.status===200?(data.devices??[]).map(d=>publicDeviceSchema.parse(d)):[];
   const current=devices.find(d=>d.id===session.deviceId);
-  return {props:{state:current?.kind==='PHONE'?'phone':'desktop',devices,registered:!!session.deviceId,currentDeviceId:session.deviceId,...(response.status!==200?{error:'Devices could not be loaded. Please reload to retry.'}:{})}};
+  return {props:{state:current?.kind==='PHONE'?'phone':'desktop',devices,registered:!!session.deviceId,currentDeviceId:session.deviceId,
+    ownerScopeId:session.ownerScopeId,...(response.status!==200?{error:'Devices could not be loaded. Please reload to retry.'}:{})}};
 };

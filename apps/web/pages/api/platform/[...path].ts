@@ -8,7 +8,8 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     if(req.method!=='POST')return res.status(405).json({code:'METHOD_REFUSED'});
     if(req.headers.origin!==new URL(required('NEXTAUTH_URL')).origin)return res.status(403).json({code:'ORIGIN_REFUSED'});
     const path=Array.isArray(req.query.path)?req.query.path.join('/'):'';
-    const purpose=path==='devices'?'device.register':/^devices\/[0-9a-f-]{36}\/revoke$/i.test(path)?'device.remove':path==='sessions/revoke-all'?'auth.sign_out_all':path==='evidence'?'evidence.ingest':null;
+    const purpose=path==='devices'?'device.register':/^devices\/[0-9a-f-]{36}\/revoke$/i.test(path)?'device.remove':path==='sessions/revoke-all'?'auth.sign_out_all':path==='evidence'?'evidence.ingest':
+      /^ops\/dead-letter\/[0-9a-f-]{36}\/retry$/i.test(path)?'ops.dead_letter.retry':null;
     if(!purpose||req.headers['x-purpose']!==purpose)return res.status(403).json({code:'PURPOSE_REFUSED'});
     const correlation=req.headers['x-correlation-id'],key=req.headers['idempotency-key'];
     if(typeof correlation!=='string'||typeof key!=='string')return res.status(400).json({code:'REQUEST_CONTEXT_REQUIRED'});

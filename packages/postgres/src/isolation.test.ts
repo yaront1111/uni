@@ -1,8 +1,17 @@
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import { withOwnerTransaction, assertOwnershipCoverage, runMigrations } from './index.js';
+import { withOwnerTransaction, assertOwnershipCoverage, runMigrations, OWNER_SCOPED_TABLES } from './index.js';
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+
+/** Every owner-scoped table this suite queries without an application filter.
+ * The final test compares it with the ownership classification, so a new owner
+ * table cannot reach migration exit without its own cross-owner fixture. */
+const unfiltered=new Set<string>();
+function readUnfiltered(client:import('pg').PoolClient,table:string){
+  unfiltered.add(table);
+  return client.query('SELECT * FROM '+table);
+}
 
 if (!process.env.UNAI_TEST_DATABASE_URL) throw new Error('Run pnpm test for the required PostgreSQL harness');
 describe('real PostgreSQL owner isolation', () => {
@@ -12,7 +21,9 @@ describe('real PostgreSQL owner isolation', () => {
   const a = randomUUID(), b = randomUUID(), alice = randomUUID(), bob = randomUUID();
   beforeAll(async () => {
     await runMigrations(pool, resolve('migrations'));
-    await pool.query("CREATE ROLE unai_test_app LOGIN PASSWORD 'unai-test-only'; GRANT unai_app TO unai_test_app");
+    // Roles are cluster-global, so a server a previous suite run already used still
+    // carries this fixture role: create it only when it is absent.
+    await pool.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='unai_test_app') THEN CREATE ROLE unai_test_app LOGIN PASSWORD 'unai-test-only'; END IF; END $$; GRANT unai_app TO unai_test_app");
     await pool.query('INSERT INTO users (id, display_name) VALUES ($1,$2),($3,$4)', [alice,'Alice',bob,'Bob']);
     await pool.query('INSERT INTO owner_scopes (id, scope_kind, display_name, created_by_user_id) VALUES ($1,$2,$3,$4),($5,$2,$6,$7)', [a,'PERSONAL','A',alice,b,'B',bob]);
     await pool.query('INSERT INTO owner_scope_members (owner_scope_id,user_id,role) VALUES ($1,$2,$3),($4,$5,$3)', [a,alice,'OWNER',b,bob]);
@@ -27,17 +38,19 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query("INSERT INTO auth_identities(owner_scope_id,user_id,issuer,subject) VALUES($1,$2,'https://accounts.google.com',$3)",[owner,actor,actor]);
       await pool.query("INSERT INTO auth_sessions(owner_scope_id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')",[owner,actor,actor!.replaceAll('-','').repeat(2)]);
       await pool.query("INSERT INTO audit_events (owner_scope_id,actor,purpose,objects_and_fields_accessed,policy_decision,model_or_code_version,result,correlation_id) VALUES ($1,$2,'test','[]','ALLOW','test','SUCCESS',$3)",[owner,actor,randomUUID()]);
+      await pool.query("INSERT INTO jobs(id,owner_scope_id,job_kind,payload,idempotency_key) VALUES($1,$2,'evidence.extract',$3,$4)",
+        [randomUUID(),owner,JSON.stringify({ownerScopeId:owner}),randomUUID().replaceAll('-','')+'fixture']);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
 
-  async function asOwner(owner: string, actor: string, run: (client: import('pg').PoolClient)=>Promise<void>) {
+  async function asOwner(owner: string, actor: string, run: (client: import('pg').PoolClient)=>Promise<void>, purpose='evidence.read') {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE unai_app');
       await client.query("SELECT set_config('unai.owner_scope_id',$1,true), set_config('unai.actor_id',$2,true)",[owner,actor]);
-      await client.query("SELECT set_config('unai.purpose','evidence.read',true),set_config('unai.data_purpose','PERSONAL_ASSISTANCE',true),set_config('unai.maximum_sensitivity','RESTRICTED',true)");
+      await client.query("SELECT set_config('unai.purpose',$1,true),set_config('unai.data_purpose','PERSONAL_ASSISTANCE',true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
       await run(client);
     } finally {
       await client.query('ROLLBACK');
@@ -49,17 +62,35 @@ describe('real PostgreSQL owner isolation', () => {
     await asOwner(a,alice,async c=>{
       for (const table of ['owner_scopes','owner_scope_members','devices','audit_events','connectors','source_items','source_anchors','evidence_ingestion_receipts']) {
         const key=table==='owner_scopes'?'id':'owner_scope_id';
-        const rows=(await c.query('SELECT * FROM '+table)).rows;
+        const rows=(await readUnfiltered(c,table)).rows;
         expect(rows.length).toBeGreaterThan(0);
         expect(rows.every(row=>row[key]===a)).toBe(true);
       }
+      unfiltered.add('users');
       expect((await c.query('SELECT id FROM users')).rows).toEqual([{id:alice}]);
       for(const table of ['auth_sessions','auth_identities']){
+        unfiltered.add(table);
         const rows=(await c.query('SELECT owner_scope_id,user_id FROM '+table)).rows;
         expect(rows.length).toBeGreaterThan(0);
         expect(rows.every(row=>row.owner_scope_id===a&&row.user_id===alice)).toBe(true);
       }
     });
+  });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A queue queries and refuses queue rows under another purpose',async()=>{
+    await asOwner(a,alice,async c=>{
+      const rows=(await readUnfiltered(c,'jobs')).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every(row=>row.owner_scope_id===a)).toBe(true);
+    },'ops.jobs.read');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM jobs')).rows).toEqual([]);
+    });
+    await asOwner(b,alice,async c=>{
+      expect((await c.query('SELECT * FROM jobs')).rows).toEqual([]);
+    },'ops.jobs.read');
+    for(const sql of ['DELETE FROM jobs','TRUNCATE jobs']){
+      await expect(asOwner(a,alice,c=>c.query(sql).then(()=>{}),'ops.jobs.read')).rejects.toMatchObject({code:'42501'});
+    }
   });
   it('does not expose session digests to the application role',async()=>{
     await expect(asOwner(a,alice,c=>c.query('SELECT token_hash FROM auth_sessions').then(()=>{}))).rejects.toMatchObject({code:'42501'});
@@ -101,7 +132,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(13);
+    expect(rows.length).toBe(14);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -203,12 +234,31 @@ describe('real PostgreSQL owner isolation', () => {
   });
 
 
+  it('CRT-SEC-01-A: covers every classified owner-scoped table with an unfiltered cross-owner query',async()=>{
+    // Read the classification from the database rather than trusting the export:
+    // every table an owner session can read at all, including the auth tables the
+    // application may only read column by column.
+    const live=(await pool.query(`SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='public' AND c.relkind='r' AND EXISTS(
+        SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+        AND has_column_privilege('unai_app',c.oid,a.attnum,'SELECT'))`)).rows.map(row=>row.relname as string);
+    expect([...live].sort()).toEqual([...OWNER_SCOPED_TABLES].sort());
+    expect([...unfiltered].sort()).toEqual([...OWNER_SCOPED_TABLES].sort());
+  });
+
   it('rejects TLS downgrade options and plaintext database transport',async()=>{
     const {createDatabasePool}=await import('./index.js');
     expect(()=>createDatabasePool(process.env.UNAI_TEST_DATABASE_URL!+'?sslmode=disable','test-ca')).toThrow('DATABASE_TLS_CONFIG_INVALID');
     expect(()=>createDatabasePool(process.env.UNAI_TEST_DATABASE_URL!,'')).toThrow('DATABASE_TLS_CONFIG_INVALID');
+    // A pool built on an unpinnable CA must never reach the database, and the transport is
+    // what has to refuse it. Both refusals are correct and which one arrives is a property of
+    // the server, not of this code: a server without TLS answers "does not support SSL
+    // connections", while one serving a certificate this CA cannot validate answers a
+    // certificate error. Asserting either wording alone passes only on the server that
+    // happens to be in front of it, so match the transport refusal itself and prove no row
+    // was ever returned.
     const tlsPool=createDatabasePool(process.env.UNAI_TEST_DATABASE_URL!,'test-ca');
-    try{await expect(tlsPool.query('SELECT 1')).rejects.toThrow(/SSL/);}
+    try{await expect(tlsPool.query('SELECT 1')).rejects.toThrow(/SSL|certificate/i);}
     finally{await tlsPool.end();}
   });
 

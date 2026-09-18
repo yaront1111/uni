@@ -5,9 +5,11 @@ import { withOwnerTransaction } from '@unai/postgres';
 import { registerDeviceSchema,publicDeviceSchema } from '@unai/domain';
 import { randomUUID } from 'node:crypto';
 import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
+import {registerOpsRoutes} from './ops.js';
 
 export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];evidenceObjects?:EvidenceObjects}){
-  const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read']);
+  const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
+    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -28,7 +30,10 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/sessions/revoke-all'?'auth.sign_out_all':
       request.routeOptions.url==='/v1/evidence'?'evidence.ingest':
       request.routeOptions.url==='/v1/evidence/:id'?'evidence.read':
-      request.routeOptions.url==='/v1/connectors/:id'?'connector.read':null;
+      request.routeOptions.url==='/v1/connectors/:id'?'connector.read':
+      request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
+      request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
+      request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':null;
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>){
@@ -80,5 +85,6 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     return {revoked:true};
   });
   registerEvidenceRoutes(app,deviceWork,options.evidenceObjects);
+  registerOpsRoutes(app,deviceWork);
   return app;
 }
