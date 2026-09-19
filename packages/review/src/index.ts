@@ -1,5 +1,5 @@
 /** `@unai/review` -- proactive clarification and the weekly review (PRD §7.5,
- * §7.7, §19.3-§19.5, §37.4, §39; ADR 0028).
+ * §7.7, §19.3-§19.5, §37.4, §39; ADR 0029).
  *
  * Every function takes a transaction the caller opened inside the owner
  * boundary, as `@unai/memory` and `@unai/context` do. Nothing here opens a

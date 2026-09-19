@@ -122,6 +122,19 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
+export {inspectableObjectTypeSchema,inspectorEntitySchema,inspectorEvidenceSchema,inspectorInferenceSchema,
+  inspectorThreadSchema,inspectorAccessSchema,inspectorClaimConfidenceSchema,inspectorOperationSchema,
+  memoryInspectorSchema,relatedResolutionSchema,relatedFrameSchema,relatedFramesSchema,
+  type InspectableObjectType,type MemoryInspector,type RelatedFrame,type RelatedFrames} from './inspection.js';
+export {memoryLabelSchema,type MemoryLabel} from './labels.js';
+export {timeZoneSchema,todayRequestSchema,briefingDomainSchema,briefingPrioritySchema,briefingOutcomeStateSchema,
+  briefingItemKindSchema,rankComponentsSchema,whyObjectTypeSchema,whyRefSchema,briefingItemSchema,
+  briefingRecommendationSchema,withheldRecommendationSchema,suppressedRepeatSchema,briefingPacketManifestSchema,
+  briefingProjectionCompletenessSchema,todayBriefingSchema,claimingActorSchema,sourceExcerptSchema,whyClaimSchema,
+  whySourcesSchema,
+  type TodayRequest,type BriefingDomain,type BriefingPriority,type BriefingItemKind,type RankComponents,
+  type WhyObjectType,type WhyRef,type BriefingItem,type BriefingRecommendation,type WithheldRecommendation,
+  type BriefingPacketManifest,type TodayBriefing,type WhySources} from './today.js';
 export {DEFAULT_ATTENTION_BUDGET,attentionBudgetSchema,attentionBudgetPatchSchema,ambiguityKindSchema,
   sensitivityScopeSchema,situationKeySchema,situationKindSchema,ambiguitySchema,cardEffectSchema,cardChoiceSchema,
   errorConsequenceSchema,irreversibilitySchema,urgencySchema,interruptionCostSchema,interruptionPolicyInputsSchema,

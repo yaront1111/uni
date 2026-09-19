@@ -10,7 +10,7 @@ import { DAY_MS, ownerLocalDate } from './time.js';
 
 /**
  * The weekly review (PRD §7.5, §39; design GET /v1/weekly-review and entity
- * `weekly_reviews`; ADR 0028 §7).
+ * `weekly_reviews`; ADR 0029 §7).
  *
  * Pure: one persisted Context Broker packet and the owner-local week in, the
  * review's sections out. Every statement is composed by code from the packet
@@ -359,7 +359,7 @@ const MANIFEST_SET: Readonly<Record<ReviewGround['objectType'], keyof Omit<Revie
 });
 
 /** Every ground of every statement that the manifest does not hold. Empty is the
- * only answer under which a review may be stored (ADR 0028 §7). */
+ * only answer under which a review may be stored (ADR 0029 §7). */
 export function ungroundedStatements(statements: ReadonlyArray<{ statementId: string; grounds: readonly ReviewGround[] }>,
   manifest: ReviewManifest): Array<{ statementId: string; ground: ReviewGround }> {
   const sets = Object.fromEntries(Object.entries(MANIFEST_SET).map(([type, key]) => [type, new Set(manifest[key])])) as

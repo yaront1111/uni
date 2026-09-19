@@ -14,7 +14,7 @@ import { DAY_MS, addLocalDays, ownerLocalDate, startOfLocalDate } from './time.j
 
 /**
  * The Memory inbox (PRD §7.7, §19.3, §37.4; design GET /v1/memory/inbox,
- * clarification_cards and interruption_decisions; ADR 0028 §2-§5).
+ * clarification_cards and interruption_decisions; ADR 0029 §2-§5).
  *
  * `evaluateInbox` takes the card drafts composed from one Context Broker packet
  * and decides, card by card, whether each is asked, deferred to batch review or
@@ -145,7 +145,7 @@ export interface InboxEvaluation {
 }
 
 /**
- * Evaluate the owner's cards against the drafts of one packet (ADR 0028 §4).
+ * Evaluate the owner's cards against the drafts of one packet (ADR 0029 §4).
  *
  * Each card is evaluated at most once per owner-local day unless evidence it
  * had not seen arrives, so reloading the inbox spends no budget and floods no

@@ -1,4 +1,4 @@
-# ADR 0028: Memory inbox, attention budgets, learned approval rules and the weekly review
+# ADR 0029: Memory inbox, attention budgets, learned approval rules and the weekly review
 
 Date: 2026-09-19
 Status: Accepted
@@ -8,11 +8,11 @@ goal-b2cc3b54-1876-401e-a6a2-527f99b679bc (design v1, sealed graph
 Criteria: CRT-UX-05-A, CRT-UX-06-A, CRT-UX-08-A, CRT-WRT-05-A, CRT-WRT-05-B,
 CRT-WRT-06-A.
 
-Recorded before the implementing change, per PRD §0.7 and §46. Numbered 0028
-and paired with `migrations/0023_memory_inbox_and_weekly_review.sql` because
-this node's dependency (`web-shell-labels-today-briefing-and-ask-surface`) was
-still unlanded when this was written and carries its own ADR and migration; the
-numbers leave it room to land first as 0027 and 0022.
+Recorded before the implementing change, per PRD §0.7 and §46. Paired with
+`migrations/0023_memory_inbox_and_weekly_review.sql`: this node's dependency
+(`web-shell-labels-today-briefing-and-ask-surface`) landed first as ADR 0027 and
+migration 0022, and the commitments and correction-controls node took ADR 0028,
+so this record is numbered 0029.
 
 ## 1. An ambiguity is read through the Context Broker, never stored twice
 

@@ -24,7 +24,7 @@ import { ingestOwnerStatement, type EvidenceObjects } from './evidence.js';
  * Proactive clarification and the weekly review (design GET /v1/memory/inbox,
  * POST /v1/memory/inbox/cards/{id}/decide, PATCH /v1/settings/attention-budgets,
  * GET /v1/approval-rules and its approve and revoke, GET /v1/weekly-review;
- * PRD §19.3-§19.5, §37.4, §39; ADR 0028).
+ * PRD §19.3-§19.5, §37.4, §39; ADR 0029).
  *
  * Each surface runs under its own purpose, and every step that is not the
  * surface's own is opened under the purpose that owns it, chosen here and never
@@ -128,7 +128,7 @@ export function registerReviewRoutes(app: FastifyInstance, work: Work, options: 
   }
 
   /**
-   * Answer one card through the correction path (ADR 0028 §6). One evidence row
+   * Answer one card through the correction path (ADR 0029 §6). One evidence row
    * holds the owner's answer; every target gets an overlay delta and a memory
    * operation of the choice's kind; a confirmation records its own
    * USER_CONFIRMATION claim; and one belief transaction is proposed, never

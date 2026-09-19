@@ -1,6 +1,7 @@
 import React from 'react';
 import type {BehavioralObservation,CertaintyLabel,ReviewSection,ReviewStatement,WeeklyReview as Review} from '@unai/domain';
 import {Navigation} from './Navigation';
+import {BeliefRefLinks} from './BeliefLinks';
 
 /** The Weekly review screen (design journey J6; PRD §7.5, §39). */
 export interface WeeklyReviewProps {
@@ -19,7 +20,8 @@ export const labelText:Record<CertaintyLabel,string>={
 
 function Statement({statement}:{statement:ReviewStatement}){
   return <li><span className="label">[{labelText[statement.label]}]</span> {statement.text}
-    <small> · Sources: {statement.grounds.length} {statement.grounds.length===1?'item':'items'} from this review’s context packet</small></li>;
+    <small> · Sources: {statement.grounds.length} {statement.grounds.length===1?'item':'items'} from this review’s context packet</small>
+    <BeliefRefLinks refs={statement.grounds} about={statement.text}/></li>;
 }
 
 function Section({id,title,section,children}:{id:string;title:string;section:ReviewSection;children?:React.ReactNode}){
@@ -44,6 +46,7 @@ function Observation({observation}:{observation:BehavioralObservation}){
       <dt>Confidence</dt><dd>{Math.round(observation.confidence*100)}%</dd>
       <dt>Review or expiry date</dt><dd>{observation.reviewOrExpiryDate}</dd>
     </dl>
+    <BeliefRefLinks refs={observation.grounds} about={observation.statement}/>
   </section>;
 }
 

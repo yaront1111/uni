@@ -6,7 +6,7 @@ import { addLocalDays, ownerLocalDate } from './time.js';
 
 /**
  * Repeated postponement and the behavioral observation it may support (PRD §39;
- * design entity `behavioral_observations`; ADR 0028 §8; CRT-UX-06-A).
+ * design entity `behavioral_observations`; ADR 0029 §8; CRT-UX-06-A).
  *
  * "Behavioral observations require multiple supporting episodes, counterexample
  * search, observation window, confidence, and a review or expiry date. A single

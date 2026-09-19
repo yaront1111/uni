@@ -5,7 +5,7 @@ import {
 
 /**
  * Ambiguities and the cards that group them (PRD §19.2 BATCH_REVIEW, §19.3,
- * §37.4; ADR 0028 §1-§3).
+ * §37.4; ADR 0029 §1-§3).
  *
  * Pure: a Context Broker packet and the situation each of its frames belongs to
  * go in, card drafts come out. No transaction, no clock (the instant is a
@@ -30,7 +30,7 @@ export interface CardRisk {
   readonly interruptionCost: RiskLevel;
 }
 
-/** What a learned rule can match a card on (ADR 0028 §6): the situation kind and
+/** What a learned rule can match a card on (ADR 0029 §6): the situation kind and
  * an exact text, such as a transfer memo. */
 export interface RuleBasis {
   readonly situationKind: 'REPAYMENT' | 'GENERAL';
@@ -104,7 +104,7 @@ function sortedUnique(ids: Iterable<string>): string[] {
 }
 
 /**
- * The ambiguities one packet holds (ADR 0028 §1). A conflict's propositions are
+ * The ambiguities one packet holds (ADR 0029 §1). A conflict's propositions are
  * one ambiguity, so the same values are never also counted as contested
  * singles. A value the owner already confirmed or rejected is not an ambiguity
  * any more, whatever its assessment still says.
@@ -313,7 +313,7 @@ function generalCard(packet: ContextPacket, situation: Situation, ambiguities: r
 }
 
 /**
- * One card per situation (ADR 0028 §2): every ambiguity of one thread, or of one
+ * One card per situation (ADR 0029 §2): every ambiguity of one thread, or of one
  * frame outside any thread, becomes one card that says what is known, why it
  * matters and what each choice will change.
  */

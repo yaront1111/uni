@@ -181,6 +181,17 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query(`INSERT INTO reconsideration_candidates(id,owner_scope_id,changed_object_type,changed_object_id,
         answer_manifest_id,change_kind,change_ref) VALUES($1,$2,'proposition',$3,$4,'BELIEF_ASSESSMENT_CHANGED',$5)`,
         [randomUUID(),owner,proposition,manifest,randomUUID()]);
+      // The Today briefing: one edition over that packet, and the item it ranked.
+      const edition=randomUUID();
+      await pool.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,timezone,utc_offset,
+        generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+        VALUES($1,$2,$3,'2026-09-19','Asia/Jerusalem','+03:00',now(),$4,$5,'{}','briefing-ranking-0.1.0')`,
+        [edition,owner,actor,packet,'e'.repeat(64)]);
+      await pool.query(`INSERT INTO briefing_items(id,owner_scope_id,briefing_edition_id,item_object_type,item_object_id,domain_section,
+        headline,why_surfaced,rank_components,rank_score,priority,certainty_label,past_target,outcome_state,material_fingerprint,rank_position)
+        VALUES($1,$2,$3,'frame_instance',$4,'FINANCE','Obligation to Daniel','Due today',
+        '{"consequence":1,"urgency":1,"goalRelevance":0.5,"confidence":1,"effort":0.5,"reversibility":0.2,"attentionBudget":1}',
+        0.9,'HIGH','CONFIRMED',false,'UNRESOLVED',$5,1)`,[randomUUID(),owner,edition,instance,'d'.repeat(64)]);
       // Proactive clarification and the weekly review (migration 0023): a budget,
       // a proposed rule, a card with its logged decision, and a review with the
       // observation it holds, all resting on the packet above.
@@ -722,7 +733,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(61);
+    expect(rows.length).toBe(63);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -913,6 +924,45 @@ describe('real PostgreSQL owner isolation', () => {
     await expect(pool.query("UPDATE answer_manifests SET belief_ids='{}' WHERE owner_scope_id=$1",[a]))
       .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
     await expect(pool.query("UPDATE reconsideration_candidates SET change_kind='CLAIM_CORRECTED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+  });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A briefing queries and keeps the edition history immutable',async()=>{
+    const briefing=['briefing_editions','briefing_items'];
+    for(const purpose of ['memory.read','memory.inspect']){
+      await asOwner(a,alice,async c=>{
+        for(const table of briefing){
+          const rows=(await readUnfiltered(c,table)).rows;
+          expect(rows.length,table).toBeGreaterThan(0);
+          expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+        }
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        for(const table of briefing) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+    }
+    // Purpose-bound: an unrelated product purpose reads none of it.
+    await asOwner(a,alice,async c=>{
+      for(const table of briefing) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // Only the briefing read writes an edition, and only for the session's actor
+    // over the owner's own packet; nobody deletes or rewrites one, because the
+    // history is what suppresses tomorrow's unchanged repeat.
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,
+      timezone,utc_offset,generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+      SELECT gen_random_uuid(),owner_scope_id,requesting_actor_id,owner_local_date,timezone,utc_offset,generated_at,
+      context_packet_id,packet_hash,packet_manifest,ranking_version FROM briefing_editions`).then(()=>{}),'memory.inspect'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,bob,c=>c.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,
+      timezone,utc_offset,generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+      VALUES(gen_random_uuid(),$1,$2,'2026-09-20','UTC','+00:00',now(),gen_random_uuid(),$3,'{}','briefing-ranking-0.1.0')`,
+      [a,alice,'e'.repeat(64)]).then(()=>{}),'memory.read')).rejects.toBeTruthy();
+    for(const table of briefing){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.read'),table).rejects.toMatchObject({code:'42501'});
+      await expect(asOwner(a,alice,c=>c.query('UPDATE '+table+' SET created_at=now()').then(()=>{}),'memory.read'),table).rejects.toMatchObject({code:'42501'});
+    }
+    await expect(pool.query("UPDATE briefing_items SET suppressed_as_unchanged=false WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE briefing_editions SET timezone='UTC' WHERE owner_scope_id=$1",[a]))
       .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
   });
   it('CRT-SEC-01-A and CRT-RD-04-A: hides B from unfiltered owner A semantic-index queries and applies the evidence gate to every row',async()=>{
