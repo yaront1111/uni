@@ -5,7 +5,7 @@
 **Tech Stack:** TypeScript, Zod, Fastify, Next.js, PostgreSQL/pgvector, encrypted S3, the existing model gateway and Git-versioned semantic registry.
 
 **Date:** 2026-09-19. **Inspected baseline:** `fbce0aa`.
-**Status:** Tasks A-E are implemented in the free-agent worktree and undergoing final combined verification and integration. The table below records the initial baseline, not current behavior. Earlier privacy work is documented in [privacy and temporal read boundaries](../privacy-and-temporal-read-boundaries.md) and [derived evidence and inspector privacy](../derived-evidence-privacy.md).
+**Status:** Tasks A-E are implemented and integrated with the latest inspected master. Automated verification passes; the phase-exit gate remains unmet because real-corpus results are missing. See [verification and limits](../evolving-understanding-verification.md). The table below records the initial baseline, not current behavior. Earlier privacy work is documented in [privacy and temporal read boundaries](../privacy-and-temporal-read-boundaries.md) and [derived evidence and inspector privacy](../derived-evidence-privacy.md).
 
 Current implementation:
 
