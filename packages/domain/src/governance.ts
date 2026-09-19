@@ -125,6 +125,13 @@ export type PolicyVerdict = z.infer<typeof policyVerdictSchema>;
 
 export const validationDecisionSchema = z.enum(['COMMITTABLE','REQUIRES_CONFIRMATION','CONTESTED','REJECTED','SOURCE_ONLY']);
 
+/** PRD §17.5: the four things an unregistered surface predicate may never be used
+ * for. A transaction touching one is refused for each use it would make of it
+ * (CRT-REG-04-A); storing and indexing it are not uses and stay permitted. */
+export const unregisteredPredicateUseSchema = z.enum(['SUPERSEDE_ACCEPTED_BELIEF','RESOLVE_CONFLICT','SET_CURRENT_VALUE',
+  'AUTHORIZE_HIGH_RISK_ACTION']);
+export type UnregisteredPredicateUse = z.infer<typeof unregisteredPredicateUseSchema>;
+
 export const validationReportSchema = z.strictObject({
   transactionId: z.uuid(),
   decision: validationDecisionSchema,
@@ -132,6 +139,14 @@ export const validationReportSchema = z.strictObject({
   admissionMode: admissionModeSchema,
   withheldAutoAcceptConditions: z.array(autoAcceptConditionSchema),
   unregisteredContracts: z.array(z.strictObject({ contractId: z.string(), contractKind: z.enum(['FRAME','PREDICATE']) })),
+  /** Each refused use of an unregistered contract this transaction touches, with
+   * the contracts it touches and the operation that would have made the use. */
+  unregisteredPredicateUses: z.array(z.strictObject({
+    use: unregisteredPredicateUseSchema,
+    operationOrder: z.number().int().min(0).nullable(),
+    propositionRef: z.string().nullable(),
+    contractIds: z.array(z.string()).min(1),
+  })).default([]),
   circularSupport: z.array(z.strictObject({ propositionRef: z.string(), cycle: z.array(z.string()) })),
   independenceGroups: z.array(z.strictObject({ propositionRef: z.string(), groups: z.array(independenceGroupSchema), independentSourceCount: z.number().int().min(0) })),
   conflicts: z.array(z.record(z.string(), z.unknown())),

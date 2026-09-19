@@ -30,6 +30,16 @@ here that touches `belief_assessments`, `recordBeliefStateVersion`, appends a
 recorded-time version at a stated knowledge time and names the governed
 transaction it belongs to.
 
+It also owns the semantic index (`embeddings.ts`): the pinned
+`hashed-lexical-256-0.1.0` embedder, `indexClaimEmbeddings` (called by the
+belief governor inside every commit) and `searchMemoryEmbeddings`, which runs the
+owner, permission, sensitivity, knowledge-time, time-window, source and entity
+filters inside a `MATERIALIZED` expression *before* ranking by distance. Keep it
+that way: a filter moved after the `ORDER BY`, or an approximate index queried
+first, lets the nearest match cross a boundary (CRT-RD-04-A). The embedded text is
+canonical memory only, never raw evidence. Schema: `migrations/0019_semantic_index.sql`;
+decisions: ADR 0024; report: `docs/semantic-index-and-ask.md`.
+
 ## Surface and consumers
 
 - Every store takes a `MemoryTransaction` (`src/transaction.ts`) — just `query` —

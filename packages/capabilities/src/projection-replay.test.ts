@@ -214,6 +214,10 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // deployment applies, digests and order checked by `runMigrations` as always.
   await admin!.query('DROP TABLE memory_thread_members, memory_threads, context_packets CASCADE');
   await admin!.query('DROP FUNCTION IF EXISTS unai_private.memory_thread_identity(), unai_private.evidence_labels(uuid)');
+  // Migration 0019's semantic index and its evidence-scope reader likewise; its
+  // registry reader is a CREATE OR REPLACE and re-applies over itself.
+  await admin!.query('DROP TABLE memory_embeddings CASCADE');
+  await admin!.query('DROP FUNCTION IF EXISTS unai_private.anchor_evidence_scope(uuid,uuid[])');
   // ...and so do migration 0018's connector capability grants, connector
   // lifecycle columns and the policies it added to the delivered evidence
   // tables. `CREATE OR REPLACE` definitions (evidence_access) and the grants are
@@ -242,7 +246,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
-    '0018_connector_capabilities_and_lifecycle.sql']);
+    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

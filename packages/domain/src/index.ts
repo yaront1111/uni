@@ -53,6 +53,7 @@ export {objectRefSchema,beliefTransactionKindSchema,beliefTransactionStatusSchem
   autoAcceptConditionSchema,assessmentStatusSchema,supportKindSchema,independenceGroupSchema,beliefOperationKindSchema,
   beliefOperationSchema,proposeBeliefTransactionSchema,policyPortSchema,writePolicyOutcomeSchema,readPolicyOutcomeSchema,
   actionPolicyOutcomeSchema,policyVerdictSchema,validationDecisionSchema,validationReportSchema,commitReceiptSchema,
+  unregisteredPredicateUseSchema,type UnregisteredPredicateUse,
   type ObjectRef,type AdmissionMode,type AutoAcceptCondition,type AssessmentStatus,type BeliefOperation,
   type ProposeBeliefTransaction,type PolicyVerdict,type ValidationReport,type CommitReceipt} from './governance.js';
 export {overlayDeltaKindSchema,overlayLifecycleSchema,memoryOperationKindSchema,memoryObjectTypeSchema,
@@ -87,6 +88,14 @@ export {answerTypeSchema,worldTimeSchema,knowledgeTimeSchema,certaintySchema,act
   type ContextActionKind,type IntendedAction,
   type ContextRedaction,type ContextPacket,type BeliefExplanation,type ThreadMemberInput,type ThreadMember,
   type MemoryThreadView} from './context.js';
+export {SELECTION_RULES,selectionRuleSchema,selectionOutcomeSchema,selectionStepSchema,contextSelectionSchema,
+  semanticFiltersSchema,semanticMatchSchema,semanticSearchSchema,
+  type SelectionRule,type SelectionOutcome,type SelectionStep,type ContextSelection,type SemanticFilters,
+  type SemanticMatch,type SemanticSearch} from './selection.js';
+export {questionTypeSchema,historicalModeSchema,certaintyLabelSchema,REQUIRED_ASK_FIELDS,askRequestSchema,
+  askSourceLinkSchema,askStatementKindSchema,askStatementSchema,askAnswerSchema,
+  type QuestionType,type HistoricalMode,type CertaintyLabel,type RequiredAskField,type AskRequest,
+  type AskSourceLink,type AskStatement,type AskAnswer} from './ask.js';
 export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityAccessSchema,capabilityRiskClassSchema,
   capabilityContextProfileSchema,manifestCapabilitySchema,connectorManifestSchema,connectorCursorSchema,
   connectCapabilityRequestSchema,createConnectorSchema,grantCapabilitiesSchema,publicCapabilityGrantSchema,

@@ -6,6 +6,11 @@ decisions: `docs/adr/0022-context-broker-packets-explain-and-memory-threads.md`.
 
 This is the only memory read path for models and plugins (FR-060).
 
+It also holds deterministic selection (`selector.ts`), the eight-type question
+classifier (`question.ts`) and the Ask pipeline (`ask.ts`, route
+`packages/api/src/ask.ts`). Report: `docs/semantic-index-and-ask.md`;
+decisions: `docs/adr/0024-deterministic-selection-semantic-index-and-ask.md`.
+
 ## Local invariants
 
 - **Everything here is a read.** `memory.read` appears in no INSERT, UPDATE or
@@ -20,6 +25,17 @@ This is the only memory read path for models and plugins (FR-060).
   purpose — see below.
 - **No model call.** `classifyAnswerType` is deterministic string matching over
   the thirteen query modes of PRD §23.3. This package depends on no gateway.
+- **Selection is a pure function.** `selectSlotState` reads no clock, random
+  source, model or network, compares only the request's world and knowledge
+  instants, and sorts every list it returns. `selectionsDigest` over its output
+  must be identical on repeated runs (CRT-RD-03-A). Anything that makes it depend
+  on row order or on `new Date()` breaks that. It never picks between two standing
+  values (`CONTESTED` has no selected proposition), never selects under an
+  unregistered contract, and fails closed when no registry release is pinned.
+- **The Ask composer calls no model.** Statements are built from the packet by
+  code; each names the packet objects it rests on and links only evidence the
+  packet carries. Model phrasing, the answer manifest and the grounding validator
+  belong to `answer-manifests-grounding-validator-and-reconsideration`.
 - **No life-category column.** Categories are derived on read in `categories.ts`
   from the evidence's allowed purposes and the frame's registry namespace. Adding
   a category means adding a rule there — never a migration, never a second copy
@@ -53,6 +69,15 @@ This is the only memory read path for models and plugins (FR-060).
   returns id, sensitivity and allowed purposes and nothing else. Do not widen it
   to carry text, an object key or an anchor: the point is to be able to *list* a
   withheld item, not to read it (CRT-SEC-09-A).
+- **Assessment validity decides current versus historical.** A change closes the
+  earlier value's period on its *assessment*, not on its claim, so the belief
+  rows read the version live at the knowledge time and prefer its interval to the
+  claims'. Reading only claim intervals reports a change over time as a live
+  conflict.
+- **Overlay deltas are not knowledge-time filtered in the packet, only in the
+  selector.** Fixtures leave `owner_overlay_deltas.created_at` at the wall clock;
+  filtering the packet's overlay by knowledge time would hide them from every
+  test that pins `now` in the past.
 - **A thread owns nothing.** `memory_thread_members` carries no evidence column.
   Attaching an object to a second thread writes one row naming a row that already
   exists; if a change here starts creating evidence, claims or propositions,
