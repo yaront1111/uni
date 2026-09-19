@@ -110,6 +110,15 @@ real governor.
   test supplies the evidence store production always has; the composer
   expectation names the two new null fields; the RLS table count is 52; the
   projection replay drops and expects migration 0021.
+- Test-harness fix outside this node's feature scope:
+  `packages/registry/src/snapshot.test.ts` failed with `deadlock detected`
+  (40P01). Its `TRUNCATE registry_contracts, registry_releases` locked contracts
+  then releases, while parallel suites (this node's `answers.test.ts` among them)
+  publish 0.1.0 by inserting releases then contracts. The statement now reads
+  `TRUNCATE registry_releases, registry_contracts`, retried at most 5 times on
+  40P01 only; the outcome must still be `REGISTRY_SNAPSHOT_IMMUTABLE`, and an
+  exhausted retry fails the test. No product code, migration or suite
+  parallelism changed.
 
 ## What this node does not claim
 
