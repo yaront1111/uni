@@ -122,6 +122,10 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
+export {inspectableObjectTypeSchema,inspectorEntitySchema,inspectorEvidenceSchema,inspectorInferenceSchema,
+  inspectorThreadSchema,inspectorAccessSchema,inspectorClaimConfidenceSchema,inspectorOperationSchema,
+  memoryInspectorSchema,relatedResolutionSchema,relatedFrameSchema,relatedFramesSchema,
+  type InspectableObjectType,type MemoryInspector,type RelatedFrame,type RelatedFrames} from './inspection.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

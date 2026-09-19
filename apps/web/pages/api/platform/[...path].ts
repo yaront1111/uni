@@ -14,7 +14,8 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       /^connectors\/[0-9a-f-]{36}\/(capabilities|disconnect)$/i.test(path)?'connector.manage':
       /^connectors\/[0-9a-f-]{36}\/sync$/i.test(path)?'connector.sync':
       /^ops\/dead-letter\/[0-9a-f-]{36}\/retry$/i.test(path)?'ops.dead_letter.retry':
-      /^memory\/(frame-instances|entities)\/(merge|[0-9a-f-]{36}\/split)$/i.test(path)?'memory.govern':null;
+      /^memory\/(frame-instances|entities)\/(merge|[0-9a-f-]{36}\/split)$/i.test(path)?'memory.govern':
+      /^memory\/(corrections|state-changes|confirmations|rejections|keep-uncertain|suppressions|archives|deletions)$/.test(path)?'memory.correct':null;
     if(!purpose||req.headers['x-purpose']!==purpose)return res.status(403).json({code:'PURPOSE_REFUSED'});
     const correlation=req.headers['x-correlation-id'],key=req.headers['idempotency-key'];
     if(typeof correlation!=='string'||typeof key!=='string')return res.status(400).json({code:'REQUEST_CONTEXT_REQUIRED'});
@@ -27,7 +28,10 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     const response=await apiRequest('/v1/'+path,'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
       // A merge or split (whose governed commit reads the evidence behind the
       // claims it reassigns) passes the evidence gate with the same pinned context.
-      ...(evidencePath||purpose==='memory.govern'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{})},body);
+      ...(evidencePath||purpose==='memory.govern'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{}),
+      // A correction control stores the owner's own words as evidence; they are
+      // kept PRIVATE, and the browser can raise neither value (ADR 0027 §4).
+      ...(purpose==='memory.correct'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'PRIVATE'}:{})},body);
     return res.status(response.status).json(response.body);
   }catch{return res.status(503).json({code:'SERVICE_UNAVAILABLE'});}
 }
