@@ -111,15 +111,18 @@ export async function evaluateActionBasis(runner: ContextRunner, input: {
     const decision = packet.actionDecision;
     if (!decision) throw new ControlError('ACTION_DECISION_MISSING');
     const supportingAssessment = packet.conflicts.length > 0 ? 'CONTESTED' as const
-      : packet.currentBeliefs.some(belief => belief.certainty === 'ACCEPTED') ? 'ACCEPTED' as const
-        : packet.currentBeliefs.length > 0 ? 'PROVISIONAL' as const : 'NONE' as const;
+      : packet.currentBeliefs.some(belief => belief.certainty === 'ACCEPTED')
+        || packet.selections.some(selection => selection.outcome === 'SELECTED' && selection.certainty === 'ACCEPTED'
+          && packet.futureClaims.some(claim => claim.propositionId === selection.selectedPropositionId)) ? 'ACCEPTED' as const
+        : packet.currentBeliefs.length + packet.futureClaims.length > 0 ? 'PROVISIONAL' as const : 'NONE' as const;
     return {
       outcome: decision.outcome, reason: decision.reason, policyDecisionId: decision.policyDecisionId,
       packetId: packet.packetId,
       // A belief's evidence ids may have been redacted from it; only what the
       // packet actually carries is named.
       evidenceIds: [...new Set([...packet.evidenceRefs.map(ref => ref.evidenceId),
-        ...packet.currentBeliefs.flatMap(belief => belief.evidenceIds ?? [])])].sort(),
+        ...packet.currentBeliefs.flatMap(belief => belief.evidenceIds ?? []),
+        ...packet.futureClaims.flatMap(belief => belief.evidenceIds ?? [])])].sort(),
       supportingAssessment, projectionComplete: packet.projectionFragments.every(fragment => fragment.isComplete),
     };
   } catch (error) {

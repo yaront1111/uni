@@ -15,6 +15,7 @@ export { CARD_COMPOSER_VERSION, collectAmbiguities, composeCards, describeValue,
 export { INTERRUPTION_POLICY_VERSION, decideInterruption, expectedValueOf, interruptionCostOf,
   type InterruptionState, type InterruptionOutcome } from './interruption.js';
 export { readAttentionBudget, updateAttentionBudget } from './budgets.js';
+export { readProactiveAttentionCounts } from './attention.js';
 export { RULES_VERSION, REPEATED_CONFIRMATIONS_FOR_PROPOSAL, LearnedRuleError, cardRuleSignature, ruleSignature,
   listLearnedRules, readLearnedRule, approveLearnedRule, revokeLearnedRule, approvedRuleFor, proposeRuleIfRepeated } from './rules.js';
 export { INBOX_PURPOSE, InboxError, readSituations, evaluateInbox, readInbox, readCard, askingDecision, recordCardAnswer,

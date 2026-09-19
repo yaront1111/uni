@@ -15,6 +15,8 @@ import { actionHistoryEntrySchema, contextPacketSchema, exportBundleSchema, perm
 import { canonicalJson } from '@unai/memory';
 import { decideInterruption } from '@unai/review';
 import { readPersistedPacket } from '@unai/context';
+import { evaluateActionBasis } from '@unai/control';
+import { replayProjection } from '@unai/capabilities';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
 
@@ -143,6 +145,9 @@ async function belief(o: Owner, input: { slot: string; value: unknown; anchorId:
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
     VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL',$5,$6)`,
     [claimId, o.owner, input.anchorId, propositionId, new Date('2026-02-01T08:00:00.000Z'), RECORDED_AT]);
+  await admin.query(`UPDATE frame_instance_roles r SET claim_id=$3,created_at=$4 WHERE r.owner_scope_id=$1
+    AND r.frame_instance_id=(SELECT frame_instance_id FROM belief_slots WHERE owner_scope_id=$1 AND id=$2) AND r.claim_id IS NULL`,
+    [o.owner,input.slot,claimId,RECORDED_AT]);
   if (input.assessment) {
     await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,
       transaction_id,decision_reason,recorded_at) VALUES($1,$2,$3,$4,'local-policy-0.1.0',$5,'{"code":"FIXTURE"}',$6)`,
@@ -229,6 +234,24 @@ beforeAll(async () => {
   data = await newOwner('data');
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
+
+it('allows a draft supported by selected accepted commitment memory and reports its future assessment accurately', async () => {
+  const o = await newOwner('future-action');
+  const source = await evidence(o,[FINANCE],'I will send the report.');
+  const frame = randomUUID(), slot = randomUUID();
+  await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.commitment',$3)", [frame,o.owner,o.base]);
+  await admin.query("INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality) VALUES($1,$2,$3,'shared.commitment.action_description',$4,'COMMITTED')", [slot,o.owner,frame,o.base]);
+  await belief(o,{slot,value:{text:'send the report'},anchorId:source.anchorId,assessment:'ACCEPTED'});
+  const context = { ownerScopeId:o.owner, actorId:o.actor, correlationId:randomUUID(), purpose:'memory.project' };
+  await withOwnerTransaction(appPool,context,tx=>replayProjection(tx,{ownerScopeId:o.owner,projectionName:'open_commitments_projection',asOf:new Date()}));
+  const result = await evaluateActionBasis(run=>withOwnerTransaction(appPool,{...context,purpose:'memory.read'},run),{
+    ownerScopeId:o.owner,actorId:o.actor,purpose:FINANCE,basis:{query:'What report did I commit to send?',entityHints:[],frameTypeHints:['shared.commitment']},
+    maximumSensitivity:'RESTRICTED',actionRisk:'LOW',capabilityGranted:true,
+  },{correlationId:context.correlationId,registryReleaseId,registryRelease:'0.1.0'});
+  expect(result.outcome,JSON.stringify(result)).toBe('ALLOW');
+  expect(result.supportingAssessment).toBe('ACCEPTED');
+  expect(result.evidenceIds).toContain(source.evidenceId);
+});
 
 // ---------------------------------------------------------------------------
 
@@ -616,7 +639,10 @@ it('CRT-SEC-06-A: retained assistant history cannot reconstruct erased memory', 
       url: '/v1/memory/why/propositions/' + propositionId, headers: evidenceHeaders(o, 'memory.inspect') });
     const packetOf = (packetId: string) => withOwnerTransaction(appPool,
       { ownerScopeId: o.owner, actorId: o.actor, purpose: 'memory.inspect', correlationId: randomUUID() },
-      tx => readPersistedPacket(tx, { ownerScopeId: o.owner, packetId }));
+      async tx => {
+        await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)", [FINANCE]);
+        return readPersistedPacket(tx, { ownerScopeId: o.owner, packetId });
+      });
 
     const before = await ask();
     expect(JSON.stringify(before.statements)).toContain(erasedValue);
@@ -700,6 +726,11 @@ async function derivedErasureFixture(inputKind: 'claim' | 'proposition',
   const av = await baseValue(a.anchorId, '31.25'), bv = await baseValue(b.anchorId, '57.63'), control = await baseValue(c.anchorId, '9.87');
   const derivedValue = async (amount: string) => {
     const creditor = await entity(o, 'Derived ' + amount), frame = await obligation(o, creditor), propositionId = randomUUID();
+    // The entity hint's role has source provenance of its own; this unbound
+    // candidate does not independently support the derived amount.
+    const roleClaim=randomUUID();
+    await admin.query("INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,recorded_at) VALUES($1,$2,$3,'USER_STATEMENT','CANDIDATE',$4)",[roleClaim,o.owner,b.anchorId,RECORDED_AT]);
+    await admin.query('UPDATE frame_instance_roles SET claim_id=$3,created_at=$4 WHERE owner_scope_id=$1 AND frame_instance_id=$2',[o.owner,frame.frame,roleClaim,RECORDED_AT]);
     await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
       [propositionId, o.owner, frame.slot, JSON.stringify({ amount, currency: 'ILS', ...(independent ? {} : { note: marker }) })]);
     await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,

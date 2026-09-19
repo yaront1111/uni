@@ -3,7 +3,7 @@ import {
   type AttentionBudget, type ContextPacket, type Goal, type LifeCategory, type MentorCard, type MentorGround, type MentorView,
 } from '@unai/domain';
 import type { MemoryTransaction } from '@unai/memory';
-import { INTERRUPTION_POLICY_VERSION, decideInterruption, expectedValueOf, ownerLocalDate, readAttentionBudget,
+import { INTERRUPTION_POLICY_VERSION, decideInterruption, expectedValueOf, ownerLocalDate, readAttentionBudget, readProactiveAttentionCounts,
   type CardRisk } from '@unai/review';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { standingStatement } from './goals.js';
@@ -224,17 +224,11 @@ export function composeContradictions(packet: ContextPacket, input: {
 
 /**
  * Proactive items already put in front of the owner today, per sensitivity
- * scope: asked clarification cards and emitted mentor cards, counted together
- * (ADR 0029 §7). The Memory inbox counts through the same two tables.
+ * scope: asked clarification cards, emitted mentor cards and initiative notices,
+ * counted through the same content-free reader as Inbox and initiative.
  */
 export async function proactiveItemsToday(tx: MemoryTransaction, input: { ownerScopeId: string; ownerLocalDate: string }): Promise<Map<string, number>> {
-  const rows = (await tx.query(
-    `SELECT sensitivity_scope,count(*)::int AS n FROM (
-       SELECT sensitivity_scope FROM clarification_cards WHERE owner_scope_id=$1 AND asked_on=$2::date
-       UNION ALL
-       SELECT sensitivity_scope FROM mentor_cards WHERE owner_scope_id=$1 AND owner_local_date=$2::date AND decision='ASK'
-     ) items GROUP BY sensitivity_scope`, [input.ownerScopeId, input.ownerLocalDate])).rows;
-  return new Map(rows.map(row => [row['sensitivity_scope'] as string, row['n'] as number]));
+  return readProactiveAttentionCounts(tx, input);
 }
 
 const CARD_COLUMNS = `id,card_kind,goal_id,goal_priority_history_id,evidence,inference,recommendation,observation_window_start,
