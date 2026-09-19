@@ -122,6 +122,15 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
+export {memoryLabelSchema,type MemoryLabel} from './labels.js';
+export {timeZoneSchema,todayRequestSchema,briefingDomainSchema,briefingPrioritySchema,briefingOutcomeStateSchema,
+  briefingItemKindSchema,rankComponentsSchema,whyObjectTypeSchema,whyRefSchema,briefingItemSchema,
+  briefingRecommendationSchema,withheldRecommendationSchema,suppressedRepeatSchema,briefingPacketManifestSchema,
+  briefingProjectionCompletenessSchema,todayBriefingSchema,claimingActorSchema,sourceExcerptSchema,whyClaimSchema,
+  whySourcesSchema,
+  type TodayRequest,type BriefingDomain,type BriefingPriority,type BriefingItemKind,type RankComponents,
+  type WhyObjectType,type WhyRef,type BriefingItem,type BriefingRecommendation,type WithheldRecommendation,
+  type BriefingPacketManifest,type TodayBriefing,type WhySources} from './today.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

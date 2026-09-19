@@ -13,6 +13,7 @@ import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
+import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
 import {ConnectorError} from '@unai/connectors';
@@ -47,11 +48,13 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
    * revoker a disconnect calls, and the extraction enqueue a FULL document plan
    * uses. A deployment without them still serves the inspection routes and
    * refuses a sync rather than pretending to run one. */
-  connectors?:ConnectorRouteOptions}){
+  connectors?:ConnectorRouteOptions;
+  /** The instant a Today briefing is built for; only tests pin it. */
+  todayClock?:TodayRouteOptions['clock']}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
     CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
-    CONTEXT_READ_PURPOSE,ASK_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
+    CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
     'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
@@ -85,6 +88,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url?.startsWith('/v1/memory/transactions')?'memory.govern':
       request.routeOptions.url==='/v1/memory/context'?CONTEXT_READ_PURPOSE:
       request.routeOptions.url==='/v1/ask'?ASK_PURPOSE:
+      request.routeOptions.url==='/v1/today'?TODAY_PURPOSE:
+      request.routeOptions.url==='/v1/memory/why/:objectType/:id'?WHY_PURPOSE:
       request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
@@ -192,5 +197,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,phraser:options.answerPhraser,
     purposeWork:(request,purpose,run)=>deviceWork(request,tx=>run(tx),purpose)});
   registerAnswerRoutes(app,deviceWork);
+  registerTodayRoutes(app,deviceWork,{
+    ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    ...(options.todayClock?{clock:options.todayClock}:{}),
+    registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null});
   return app;
 }
