@@ -375,7 +375,8 @@ it('CRT-RD-12-A: each of the eight answer types is classified correctly and answ
     for (const statement of answer.statements) {
       for (const evidenceId of statement.sourceEvidenceIds) expect(linked.has(evidenceId), question).toBe(true);
     }
-    expect(answer.composer).toEqual({ kind: 'DETERMINISTIC_COMPOSER', version: 'ask-composer-0.1.0', modelCalled: false });
+    expect(answer.composer).toEqual({ kind: 'DETERMINISTIC_COMPOSER', version: 'ask-composer-0.1.0', modelCalled: false,
+      modelId: null, promptVersion: null });
     // The same question over the same memory is the same answer.
     const again = await ask(question, over);
     expect(again.statements, question).toEqual(answer.statements);

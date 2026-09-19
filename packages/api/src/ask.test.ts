@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { runMigrations } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { createPlatformApi } from './platform.js';
+import type { EvidenceObjects } from './evidence.js';
 
 /**
  * POST /v1/ask over the real boundary (design API surface; CRT-RD-12-A at the
@@ -24,6 +25,15 @@ const FINANCE = 'PERSONAL_FINANCE';
 const RECORDED_AT = new Date('2026-02-01T09:00:00.000Z');
 let owner = '', token = '', actor = '';
 const evidenceIds: string[] = [];
+/** Every answer is recorded as assistant conversation evidence before it is
+ * returned (ADR 0024), so the route needs somewhere to store it, as the
+ * deployment's encrypted store is. */
+const stored = new Map<string, Uint8Array>();
+const evidenceObjects: EvidenceObjects = {
+  encryptionKeyRef: 'kms:test-double',
+  async put(_tx, id, bytes) { stored.set(id, bytes); },
+  async get(_tx, id) { const bytes = stored.get(id); if (!bytes) throw new Error('OBJECT_NOT_FOUND'); return bytes; },
+};
 
 beforeAll(async () => {
   await runMigrations(admin, resolve('migrations'));
@@ -71,7 +81,7 @@ beforeAll(async () => {
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
 function api() {
-  const app = createPlatformApi({ authPool: admin, appPool, registryReleaseId: randomUUID(), registryRelease: '0.1.0' });
+  const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects, registryReleaseId: randomUUID(), registryRelease: '0.1.0' });
   app.addHook('onRequest', async request => { Object.defineProperty(request.raw.socket, 'encrypted', { value: true }); });
   return app;
 }

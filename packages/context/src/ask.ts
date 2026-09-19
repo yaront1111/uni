@@ -1,14 +1,17 @@
 import {
-  REQUIRED_ASK_FIELDS, askAnswerSchema, askRequestSchema,
-  type AskAnswer, type AskStatement, type CertaintyLabel, type ContextPacket, type ContextSelection,
+  REQUIRED_ASK_FIELDS, answerCandidateSchema, askAnswerSchema, askRequestSchema, groundingResultSchema,
+  type AnswerCandidate, type AnswerCandidateStatement, type AskAnswer, type AskStatement, type CertaintyLabel,
+  type ContextPacket, type ContextSelection, type GroundingResult, type GroundingViolation, type QuestionType,
   type RequiredAskField,
 } from '@unai/domain';
-import { canonicalJson } from '@unai/memory';
 import { ContextBrokerError, readContextPacket, type ContextBrokerOptions, type ContextRunner } from './broker.js';
+import { GROUNDING_VALIDATOR_VERSION, indexPacket, validateGrounding, type ValidatableStatement } from './grounding.js';
 import { classifyQuestion, type QuestionClassification } from './question.js';
+import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from './wording.js';
 
 /**
- * Question answering (PRD §8.2; design POST /v1/ask; CRT-RD-12-A). ADR 0023 §5.
+ * Question answering (PRD §8.2, §23.6, §24.6; design POST /v1/ask; CRT-RD-12-A,
+ * CRT-RD-06-A, CRT-RD-08-A). ADR 0023 §5, ADR 0024.
  *
  *  1. Classify the requested answer type -- one of the eight of §8.2 -- and the
  *     §23.3 query mode it is planned under.
@@ -16,16 +19,23 @@ import { classifyQuestion, type QuestionClassification } from './question.js';
  *  3. Use structured state first (the deterministic selections), then relations
  *     (conflicts, resolutions, future claims), then semantic evidence.
  *  4. Label every statement with the §24.5 label its support warrants.
- *  5. Return source links, and the path to each belief's explanation.
+ *  5. When a phrasing model is configured, let it phrase the answer from the
+ *     packet, and put every candidate through the grounding validator: block,
+ *     downgrade or regenerate before anything is presented.
+ *  6. Return source links, the path to each belief's explanation, and -- through
+ *     the recorder -- the manifest of the context supplied.
  *
- * The answer is composed by code from the packet. No model is called, so the
+ * Without a phrasing model the answer is composed by code from the packet, so the
  * same question over the same memory yields the same statements; a statement
  * names the packet objects it rests on, a contested value is worded as contested,
  * a future modality as not having happened, and a slot with nothing selected as
- * unknown.
+ * unknown. The composer is also what a rejected model candidate is regenerated
+ * from, and its output passes the same validator.
  */
 
 export const ASK_COMPOSER_VERSION = 'ask-composer-0.1.0';
+/** How many candidates a phrasing model gets before the composer takes over. */
+export const MAX_PHRASING_ATTEMPTS = 2;
 
 export function missingAskFields(body: unknown): RequiredAskField[] {
   const object = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
@@ -35,40 +45,64 @@ export function missingAskFields(body: unknown): RequiredAskField[] {
   });
 }
 
+/** What a phrasing model is given: the question, the packet, the composer's own
+ * grounded draft, and on a retry the violations its last candidate committed. */
+export interface AnswerPhrasingRequest {
+  readonly ownerScopeId: string;
+  readonly correlationId: string;
+  readonly question: string;
+  readonly answerType: QuestionType;
+  readonly packet: ContextPacket;
+  readonly draft: readonly AnswerCandidateStatement[];
+  readonly attempt: number;
+  readonly violations: readonly GroundingViolation[];
+}
+
+/**
+ * A model that phrases an answer from a packet. This package depends on no
+ * gateway: the implementation is supplied by the caller, and every call it makes
+ * must go through the LLM gateway, which validates the output against
+ * `answerCandidateSchema` and records the call (ADR 0024 §3).
+ */
+export interface AnswerPhraser {
+  readonly modelProvider: string;
+  readonly modelId: string;
+  readonly promptVersion: string;
+  phrase(request: AnswerPhrasingRequest): Promise<AnswerCandidate>;
+}
+
+/** One model candidate, kept so it can be stored as the assistant conversation
+ * evidence it is (PRD §24.2, CRT-AI-01-A) whatever the validator did with it. */
+export interface ModelCandidateRecord {
+  readonly attempt: number;
+  readonly outcome: GroundingResult['action'];
+  readonly statements: readonly AnswerCandidateStatement[];
+}
+
+/** Everything the recorder needs to store one answer and its manifest. */
+export interface AnswerRecording {
+  readonly packet: ContextPacket;
+  readonly answer: Omit<AskAnswer, 'answerManifestId'>;
+  readonly grounding: GroundingResult;
+  readonly suppliedTo: { modelProvider: string; modelId: string; promptVersion: string; composerVersion: string };
+  readonly modelCandidates: readonly ModelCandidateRecord[];
+}
+
+/** Stores the presented answer as assistant conversation evidence and records its
+ * manifest; answers the manifest id. The API opens its own `answer.record`
+ * transaction for this (ADR 0024 §4). */
+export type AnswerRecorder = (recording: AnswerRecording) => Promise<{ answerManifestId: string }>;
+
 export interface AskOptions extends ContextBrokerOptions {
   /** The session's actor. It is never read from the request body. */
   readonly requestingActorId: string;
+  readonly phraser?: AnswerPhraser;
+  readonly recorder?: AnswerRecorder;
 }
 
-/** "shared.obligation.principal_amount" -> "obligation principal amount". */
-function describeContract(frameTypeId: string | null, predicateId: string | null): string {
-  const frame = frameTypeId ? frameTypeId.split('.').slice(1).join(' ').replaceAll('_', ' ') : '';
-  const predicate = predicateId ? (predicateId.split('.').at(-1) ?? '').replaceAll('_', ' ') : '';
-  return [frame, predicate].filter(part => part.length > 0).join(' ') || 'value';
-}
+/** The provider name the manifest records when no model phrased the answer. */
+export const DETERMINISTIC_COMPOSER_PROVIDER = 'unai-deterministic';
 
-/** A normalized value in words. Money is stated as recorded -- the composer does
- * no arithmetic on it. */
-function describeValue(value: unknown): string {
-  if (value === null || value === undefined) return 'no value';
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (typeof value === 'object' && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-    if (typeof record['amount'] === 'string' && typeof record['currency'] === 'string') return record['currency'] + ' ' + record['amount'];
-    for (const key of ['text', 'time', 'description', 'label']) if (typeof record[key] === 'string') return record[key] as string;
-  }
-  return canonicalJson(value);
-}
-
-const FUTURE_LABEL: Record<string, CertaintyLabel> = {
-  SCHEDULED: 'SCHEDULED', INTENDED: 'INTENDED', COMMITTED: 'COMMITTED', EXPECTED: 'PREDICTED', PREDICTED: 'PREDICTED',
-  RECOMMENDED: 'RECOMMENDED', CONDITIONAL: 'INFERRED',
-};
-const FUTURE_WORDING: Record<string, string> = {
-  SCHEDULED: 'Scheduled, not yet happened', INTENDED: 'Intended, not yet done', COMMITTED: 'Committed, not yet fulfilled',
-  EXPECTED: 'Expected, not yet known to have happened', PREDICTED: 'Predicted, not yet confirmed',
-  RECOMMENDED: 'Recommended, not decided', CONDITIONAL: 'Conditional, not established',
-};
 const MODEL_ORIGINS = new Set(['MODEL_EXTRACTION', 'MODEL_INFERENCE', 'MODEL_RECOMMENDATION', 'MODEL_PREDICTION']);
 const OWNER_OR_AUTHORITY = new Set(['USER_STATEMENT', 'USER_CONFIRMATION', 'USER_CORRECTION',
   'STRUCTURED_CONNECTOR_OBSERVATION', 'TOOL_EXECUTION_RECEIPT']);
@@ -228,8 +262,9 @@ export function composeStatements(packet: ContextPacket, classification: Questio
       const counted = drafts.filter(draft => draft.kind === 'SELECTED_STATE');
       // A count of retrieved values, not arithmetic over them: a sum of money is
       // the capability projections' to compute (PRD §16.7).
+      // Nothing matched is not an inference about the owner, and names no object.
       drafts.push({
-        kind: 'AGGREGATE_COUNT', label: 'INFERRED',
+        kind: 'AGGREGATE_COUNT', label: counted.length === 0 ? 'UNKNOWN' : 'INFERRED',
         text: 'Matched ' + counted.length + ' recorded value' + (counted.length === 1 ? '' : 's')
           + '; totals of money come from the capability projections, not from this answer.',
         objectRefs: counted.flatMap(draft => draft.objectRefs.filter(ref => ref.objectType === 'propositions')),
@@ -279,6 +314,35 @@ export function composeStatements(packet: ContextPacket, classification: Questio
 const SETTLED_LABELS = new Set<CertaintyLabel>(['CONFIRMED', 'REPORTED', 'INFERRED', 'SCHEDULED', 'INTENDED', 'COMMITTED',
   'PREDICTED', 'RECOMMENDED']);
 
+/** The prompt version the manifest records when the deterministic composer, not a
+ * model, was supplied the packet: its wording templates are its prompt. */
+export const DETERMINISTIC_PROMPT_VERSION = 'composer-templates-0.1.0';
+
+/** The only statement of an answer the grounding validator blocked. It says that
+ * something was withheld and names none of it. */
+export const GROUNDING_BLOCKED_TEXT =
+  'This answer was withheld: it would have stated memory this request is not permitted to read.';
+
+const EXPLAINABLE = new Set(['propositions', 'proposition']);
+
+function explainPathOf(statement: AnswerCandidateStatement): string | null {
+  const proposition = statement.objectRefs.find(ref => EXPLAINABLE.has(ref.objectType));
+  return proposition ? '/v1/memory/propositions/' + proposition.objectId + '/explain' : null;
+}
+
+function numbered(statements: readonly AnswerCandidateStatement[]): ValidatableStatement[] {
+  return statements.map((statement, position) => ({ ...statement, statementId: 'S' + (position + 1) }));
+}
+
+type Verdict = GroundingResult['action'];
+const VERDICT_OUTCOME: Readonly<Record<string, Verdict>> = Object.freeze({
+  PASSED: 'PASSED', DOWNGRADED: 'DOWNGRADED', REGENERATE: 'REGENERATED', BLOCKED: 'BLOCKED',
+});
+const BLOCKED_STATEMENT: AskStatement = Object.freeze({
+  statementId: 'S1', kind: 'GROUNDING_BLOCKED', label: 'UNKNOWN', text: GROUNDING_BLOCKED_TEXT,
+  objectRefs: [], sourceEvidenceIds: [], explainPath: null,
+}) as AskStatement;
+
 /**
  * Answer one question (design POST /v1/ask).
  *
@@ -288,6 +352,20 @@ const SETTLED_LABELS = new Set<CertaintyLabel>(['CONFIRMED', 'REPORTED', 'INFERR
  * answer performs no action, and an action founded on one goes through the
  * broker's own gate. A purpose the evidence does not admit is refused by the
  * broker, and that refusal is recorded (CRT-SEC-02-A).
+ *
+ * Whatever phrased it, nothing is presented before the grounding validator has
+ * checked it against the packet (PRD §24.6, CRT-RD-08-A):
+ *
+ *  - a candidate the validator passes or downgrades is presented, downgraded;
+ *  - a candidate that needs regenerating is phrased again with its violations,
+ *    up to `MAX_PHRASING_ATTEMPTS`, and then replaced by the composer's own
+ *    statements, which pass the same validator;
+ *  - a candidate that leaks is blocked: the answer says it was withheld and
+ *    states nothing.
+ *
+ * With a recorder, the presented answer (and every model candidate) is stored as
+ * assistant conversation evidence and the manifest of the context supplied is
+ * recorded before the answer is returned (CRT-RD-06-A, CRT-AI-01-A).
  */
 export async function answerQuestion(runner: ContextRunner, raw: unknown, options: AskOptions): Promise<AskAnswer> {
   const missing = missingAskFields(raw);
@@ -313,18 +391,99 @@ export async function answerQuestion(runner: ContextRunner, raw: unknown, option
     answerType: classification.queryMode, timeWindow: ask.timeWindow, sourceTypes: ask.sourceTypes,
   }, options);
 
+  const index = indexPacket(packet);
   const refs = new Map(packet.evidenceRefs.map(reference => [reference.evidenceId, reference]));
+  // A statement links only evidence the packet actually carries: nothing the
+  // request could not read is linked, nothing is linked twice, and an assistant's
+  // own earlier message is never linked as a source (CRT-AI-01-A).
+  const linkable = (evidenceIds: readonly string[]) =>
+    [...new Set(evidenceIds.filter(id => refs.has(id) && !index.assistantEvidence.has(id)))].sort();
+
   const drafts = composeStatements(packet, classification, { historicalInstantMissing });
-  const statements: AskStatement[] = drafts.map((draft, index) => ({
-    statementId: 'S' + (index + 1), kind: draft.kind, label: draft.label, text: draft.text,
-    objectRefs: draft.objectRefs,
-    // A statement links only evidence the packet actually carries: nothing the
-    // request could not read is linked, and nothing is linked twice.
-    sourceEvidenceIds: [...new Set(draft.evidenceIds.filter(id => refs.has(id)))].sort(),
-    explainPath: draft.explain,
+  const composed: AskStatement[] = drafts.map((draft, position) => ({
+    statementId: 'S' + (position + 1), kind: draft.kind, label: draft.label, text: draft.text,
+    objectRefs: draft.objectRefs, sourceEvidenceIds: linkable(draft.evidenceIds), explainPath: draft.explain,
   }));
+  const draftCandidate: AnswerCandidateStatement[] = composed.map(statement => ({
+    text: statement.text, label: statement.label, objectRefs: statement.objectRefs,
+    sourceEvidenceIds: statement.sourceEvidenceIds, sensitivityScope: null,
+  }));
+
+  const attempts: GroundingResult['attempts'] = [];
+  const violations: GroundingViolation[] = [];
+  const modelCandidates: ModelCandidateRecord[] = [];
+  let presented: AskStatement[] | null = null;
+  let finalSource: 'MODEL' | 'DETERMINISTIC_COMPOSER' = 'DETERMINISTIC_COMPOSER';
+  let finalVerdict: Verdict = 'PASSED';
+  const validate = (statements: readonly ValidatableStatement[]) =>
+    validateGrounding(packet, statements, { maximumSensitivity: ask.maximumSensitivity, index });
+
+  const phraser = options.phraser;
+  if (phraser) {
+    let lastViolations: GroundingViolation[] = [];
+    for (let attempt = 1; attempt <= MAX_PHRASING_ATTEMPTS && presented === null; attempt++) {
+      let candidate: AnswerCandidate;
+      try {
+        candidate = answerCandidateSchema.parse(await phraser.phrase({
+          ownerScopeId: ask.ownerScopeId, correlationId: options.correlationId, question: ask.question,
+          answerType: classification.answerType, packet, draft: draftCandidate, attempt, violations: lastViolations,
+        }));
+      } catch {
+        // A model that failed or answered outside its contract produced no
+        // candidate (the gateway recorded the call); the composer answers.
+        break;
+      }
+      const result = validate(numbered(candidate.statements));
+      const outcome = VERDICT_OUTCOME[result.verdict]!;
+      attempts.push({ attempt, candidateSource: 'MODEL', outcome, violations: result.violations });
+      violations.push(...result.violations);
+      modelCandidates.push({ attempt, outcome, statements: candidate.statements });
+      lastViolations = result.violations;
+      if (result.verdict === 'BLOCKED') {
+        presented = [BLOCKED_STATEMENT];
+        finalSource = 'MODEL'; finalVerdict = 'BLOCKED';
+      } else if (result.verdict !== 'REGENERATE') {
+        presented = result.statements.map(statement => ({
+          statementId: statement.statementId, kind: 'MODEL_PHRASED', label: statement.label, text: statement.text,
+          objectRefs: statement.objectRefs, sourceEvidenceIds: linkable(statement.sourceEvidenceIds),
+          explainPath: explainPathOf(statement),
+        }));
+        finalSource = 'MODEL'; finalVerdict = outcome;
+      }
+    }
+  }
+  if (presented === null) {
+    // No model, or a model that could not produce a grounded candidate: the
+    // composer's statements, through the same validator. A composer statement
+    // the validator will not pass is a defect, and it fails closed as a block.
+    const result = validate(numbered(draftCandidate));
+    const outcome = VERDICT_OUTCOME[result.verdict]!;
+    attempts.push({ attempt: attempts.length + 1, candidateSource: 'DETERMINISTIC_COMPOSER', outcome,
+      violations: result.violations });
+    violations.push(...result.violations);
+    finalSource = 'DETERMINISTIC_COMPOSER';
+    if (result.verdict === 'PASSED') {
+      presented = composed; finalVerdict = 'PASSED';
+    } else if (result.verdict === 'DOWNGRADED') {
+      presented = result.statements.map((statement, position) => ({
+        ...composed[position]!, label: statement.label, text: statement.text,
+        sourceEvidenceIds: linkable(statement.sourceEvidenceIds),
+      }));
+      finalVerdict = 'DOWNGRADED';
+    } else {
+      presented = [BLOCKED_STATEMENT]; finalVerdict = 'BLOCKED';
+    }
+  }
+  const regenerated = attempts.some(entry => entry.outcome === 'REGENERATED');
+  const grounding = groundingResultSchema.parse({
+    validatorVersion: GROUNDING_VALIDATOR_VERSION,
+    action: finalVerdict === 'BLOCKED' ? 'BLOCKED' : regenerated ? 'REGENERATED' : finalVerdict,
+    finalSource, attempts, violations,
+  });
+
+  const statements = presented;
   const linked = [...new Set(statements.flatMap(statement => statement.sourceEvidenceIds))].sort();
-  return askAnswerSchema.parse({
+  const answer = askAnswerSchema.omit({ answerManifestId: true }).parse({
     question: ask.question, answerType: classification.answerType, queryMode: classification.queryMode,
     historicalMode: classification.historicalMode,
     classification: { matchedRule: classification.matchedRule, classifierVersion: classification.classifierVersion },
@@ -340,6 +499,23 @@ export async function answerQuestion(runner: ContextRunner, raw: unknown, option
     declinesToAssert: !statements.some(statement => SETTLED_LABELS.has(statement.label)
       && statement.kind !== 'OWNER_ASSERTION_PENDING' && statement.kind !== 'AGGREGATE_COUNT'),
     packetId: packet.packetId, packetHash: packet.packetHash, selectionsDigest: packet.selectionReason.selectionsDigest,
-    composer: { kind: 'DETERMINISTIC_COMPOSER', version: ASK_COMPOSER_VERSION, modelCalled: false },
+    composer: {
+      kind: finalSource === 'MODEL' ? 'MODEL_PHRASED' : 'DETERMINISTIC_COMPOSER', version: ASK_COMPOSER_VERSION,
+      modelCalled: phraser !== undefined, modelId: phraser?.modelId ?? null, promptVersion: phraser?.promptVersion ?? null,
+    },
+    grounding,
   });
+
+  let answerManifestId: string | null = null;
+  if (options.recorder) {
+    answerManifestId = (await options.recorder({
+      packet, answer, grounding, modelCandidates,
+      suppliedTo: phraser
+        ? { modelProvider: phraser.modelProvider, modelId: phraser.modelId, promptVersion: phraser.promptVersion,
+          composerVersion: ASK_COMPOSER_VERSION }
+        : { modelProvider: DETERMINISTIC_COMPOSER_PROVIDER, modelId: ASK_COMPOSER_VERSION,
+          promptVersion: DETERMINISTIC_PROMPT_VERSION, composerVersion: ASK_COMPOSER_VERSION },
+    })).answerManifestId;
+  }
+  return askAnswerSchema.parse({ ...answer, answerManifestId });
 }

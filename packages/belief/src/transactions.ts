@@ -4,6 +4,7 @@ import {
   type ProposeBeliefTransaction, type ValidationReport,
 } from '@unai/domain';
 import { createBeliefSlot, createProposition, indexClaimEmbeddings, recordClaim, recordFrameInstanceRole } from '@unai/memory';
+import { contestDeltasConflictingWithClaims } from './delta-conflicts.js';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { admittedAssessmentStatus, selectAdmissionMode, type AdmissionCandidate } from './admission.js';
 import { recordBeliefAssessment, recordDerivedDependency, reassessDerivedPropositions, type StoredAssessment } from './assessments.js';
@@ -389,6 +390,29 @@ async function originForClaim(tx: BeliefTransactionStore, ownerScopeId: string, 
   };
 }
 
+/** How a claim anchored in assistant conversation evidence is counted by
+ * admission: as a model's reading, which may be proposed and never accepted. */
+const ASSISTANT_EVIDENCE_ORIGIN = 'MODEL_INFERENCE';
+
+/** Whether an anchor, or a stored claim's anchor, lies in an assistant-authored
+ * evidence item. A row the gate does not show answers false: the origin check that
+ * decides support already refuses an unreadable anchor. */
+async function anchoredInAssistantEvidence(
+  tx: BeliefTransactionStore, ownerScopeId: string, ref: { sourceAnchorId: string } | { claimId: string },
+): Promise<boolean> {
+  const row = 'claimId' in ref
+    ? (await tx.query(
+      `SELECT s.actor_ref->>'type' AS actor_type FROM claims c
+       JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+       JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+       WHERE c.owner_scope_id=$1 AND c.id=$2`, [ownerScopeId, ref.claimId])).rows[0]
+    : (await tx.query(
+      `SELECT s.actor_ref->>'type' AS actor_type FROM source_anchors a
+       JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+       WHERE a.owner_scope_id=$1 AND a.id=$2`, [ownerScopeId, ref.sourceAnchorId])).rows[0];
+  return row?.['actor_type'] === 'ASSISTANT';
+}
+
 /** The independence groups a proposition already rests on. A derivation is as
  * independent as its own support and never more (PRD §15.4). */
 async function storedGroups(tx: BeliefTransactionStore, ownerScopeId: string, propositionId: string): Promise<string[]> {
@@ -475,13 +499,28 @@ async function buildValidationReport(
   //    the answer is how many distinct groups the rows collapse into.
   const groupsByProposition = new Map<string, string[]>();
   const claimOrigins: string[] = [];
+  // PRD §24.1: an assistant's own message is never independent evidence for what
+  // it says. A claim anchored in one counts as model-authored whatever origin it
+  // declares, so the write policy refuses to accept a belief on it alone; and it
+  // is never support for anything (CRT-AI-01-A, ADR 0024 §4).
+  const assistantClaimRefs = new Set<string>();
+  let assistantSupport = false;
   for (const operation of operations) {
-    if (operation.kind === 'ADD_CLAIM') claimOrigins.push(operation.claimOrigin);
+    if (operation.kind === 'ADD_CLAIM') {
+      const assistant = await anchoredInAssistantEvidence(tx, request.ownerScopeId, { sourceAnchorId: operation.sourceAnchorId });
+      if (assistant) assistantClaimRefs.add(operation.operationRef);
+      claimOrigins.push(assistant ? ASSISTANT_EVIDENCE_ORIGIN : operation.claimOrigin);
+    }
     if (operation.kind !== 'ADD_SUPPORT') continue;
+    if (operation.claim && isPendingRef(operation.claim) && assistantClaimRefs.has(operation.claim)) assistantSupport = true;
     if (operation.claim && !isPendingRef(operation.claim)) {
       const origin = (await tx.query('SELECT claim_origin FROM claims WHERE owner_scope_id=$1 AND id=$2',
         [request.ownerScopeId, operation.claim])).rows[0]?.['claim_origin'];
-      if (typeof origin === 'string') claimOrigins.push(origin);
+      if (typeof origin === 'string') {
+        const assistant = await anchoredInAssistantEvidence(tx, request.ownerScopeId, { claimId: operation.claim });
+        if (assistant) assistantSupport = true;
+        claimOrigins.push(assistant ? ASSISTANT_EVIDENCE_ORIGIN : origin);
+      }
     }
     const group = await groupForSupport(tx, request.ownerScopeId, operations, operation);
     const key = operation.proposition;
@@ -521,8 +560,10 @@ async function buildValidationReport(
   const policy = await ports.evaluateMemoryWrite(policyRequest);
 
   const admitted = admittedAssessmentStatus(admission.mode);
+  if (assistantSupport) warnings.push('ASSISTANT_EVIDENCE_IS_NOT_SUPPORT');
   const decision: ValidationReport['decision'] =
     unregistered.length > 0 || unregisteredUses.length > 0 || warnings.includes('CONTRACT_UNRESOLVABLE') ? 'REJECTED'
+      : assistantSupport ? 'REJECTED'
       : circularSupport.length > 0 ? 'REJECTED'
         : policy.outcome === 'DENY' ? 'REJECTED'
           : accepted.length > 0 && admitted !== 'ACCEPTED'
@@ -819,10 +860,12 @@ export async function commitBeliefTransaction(
     // predicate included, which PRD §17.5 allows to be indexed -- and a rolled-back
     // commit leaves no index row behind (ADR 0023 §3). The index is not a belief
     // object, so the receipt does not list it.
-    await indexClaimEmbeddings(tx, {
-      ownerScopeId: request.ownerScopeId,
-      claimIds: context.createdObjects.filter(object => object.objectType === 'claims').map(object => object.objectId),
-    });
+    const createdClaimIds = context.createdObjects.filter(object => object.objectType === 'claims').map(object => object.objectId);
+    await indexClaimEmbeddings(tx, { ownerScopeId: request.ownerScopeId, claimIds: createdClaimIds });
+    // Evidence this commit brought in may contradict what the owner said and
+    // nothing has verified yet. Such a delta becomes CONTESTED here, with its
+    // record, and never disappears (PRD §21.7, CRT-RYW-05-A, ADR 0024 §6).
+    await contestDeltasConflictingWithClaims(tx, { ownerScopeId: request.ownerScopeId, claimIds: createdClaimIds });
 
     const committedAt = (await tx.query('SELECT now() AS at')).rows[0]!['at'] as Date;
     const receipt = commitReceiptSchema.parse({

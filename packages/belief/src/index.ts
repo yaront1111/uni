@@ -31,6 +31,9 @@ export {
   type AdmissionCandidate, type AdmissionDecision, type MemoryWorthiness,
 } from './admission.js';
 export {
+  PENDING_DELTA_LIFECYCLES, recordDeltaContest, contestDeltasConflictingWithClaims, manifestsContainingDelta,
+} from './delta-conflicts.js';
+export {
   POLICY_VERSION, PolicyError, createLocalPolicyAdapters, recordPolicyDecision, readPolicyDecision,
   type PolicyPorts, type PolicyRequestBase, type MemoryWriteRequest, type MemoryReadRequest,
   type MemoryActionRequest, type Sensitivity,

@@ -8,7 +8,9 @@ import {recordTriageDecision,readTriageDecision,publicTriage} from '@unai/extrac
 import {createEncryptedS3Store,type StorageConfiguration} from '../../storage/src/index.js';
 import {uuidV7} from '../../../src/kernel/identities.js';
 
-const OBJECT_WRITE_PURPOSES=new Set(['evidence.ingest','memory.correct']);
+// `answer.record` stores an assistant's own answer as conversation evidence and
+// nothing else: migration 0019 admits it to ASSISTANT_CONVERSATION items only.
+const OBJECT_WRITE_PURPOSES=new Set(['evidence.ingest','memory.correct','answer.record']);
 
 export interface EvidenceObjects {
   put(tx:OwnerTransaction,id:string,bytes:Uint8Array):Promise<void>;
@@ -22,9 +24,10 @@ export async function createEvidenceObjects(config:StorageConfiguration){
   const store=await createEncryptedS3Store(config,async(context,id,operation)=>{
     const tx=transactions.getStore();
     if(!tx||JSON.stringify(tx.context)!==JSON.stringify(context))return null;
-    // The two purposes that create evidence: the ingest route, and the owner's
-    // own correction controls, which store what the owner said before anything
-    // canonical is proposed (migration 0014, CRT-RYW-06-A).
+    // The purposes that create evidence: the ingest route, the owner's own
+    // correction controls, which store what the owner said before anything
+    // canonical is proposed (migration 0014, CRT-RYW-06-A), and the recording of
+    // an assistant's answer as conversation evidence (migration 0019).
     if(operation==='WRITE'&&!OBJECT_WRITE_PURPOSES.has(context.purpose))return null;
     const row=(await tx.query(`SELECT k.object_store_key,s.submitted_by_user_id FROM source_items s
       JOIN evidence_object_keys k ON k.owner_scope_id=s.owner_scope_id AND k.source_item_id=s.id
@@ -174,7 +177,8 @@ export interface OwnerStatementRequest {
  */
 export async function ingestOwnerStatement(tx:OwnerTransaction,objects:EvidenceObjects,request:OwnerStatementRequest):
   Promise<{evidenceId:string;sourceAnchorId:string;stored:boolean}>{
-  if(!OBJECT_WRITE_PURPOSES.has(tx.context.purpose))throw new Refusal(403,'EVIDENCE_POLICY_REFUSED');
+  // An assistant's answer is never recorded as the owner's own statement.
+  if(!OBJECT_WRITE_PURPOSES.has(tx.context.purpose)||tx.context.purpose==='answer.record')throw new Refusal(403,'EVIDENCE_POLICY_REFUSED');
   const input=evidenceInputSchema.parse({
     ownerScopeId:tx.context.ownerScopeId,connectorId:null,sourceType:'CONVERSATION',externalId:request.externalId,
     // `body` is the field Tier 0 reads for a source type it has no structure
@@ -191,6 +195,47 @@ export async function ingestOwnerStatement(tx:OwnerTransaction,objects:EvidenceO
     [tx.context.ownerScopeId,result.evidenceId])).rows[0];
   if(!anchor)throw new Refusal(503,'EVIDENCE_UNAVAILABLE');
   return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string,stored:result.stored};
+}
+
+/** The source type every assistant answer is stored under (ADR 0024 §4). */
+export const ASSISTANT_CONVERSATION='ASSISTANT_CONVERSATION';
+export interface AssistantMessageRequest {
+  /** The words the assistant produced, stored verbatim and anchored as one span. */
+  readonly text:string;
+  /** The answer's own structure: its statements, labels and the packet it came from. */
+  readonly structure:Record<string,unknown>;
+  readonly externalId:string;
+  readonly parentExternalId:string|null;
+  readonly idempotencyKey:string;
+  /** Which assistant produced it: the composer or the model it was supplied to. */
+  readonly assistantId:string;
+  readonly sensitivity:EvidenceInput['sensitivity'];
+  readonly allowedPurposes:readonly string[];
+}
+/** Store one assistant message as conversation evidence (PRD §24.1-24.2,
+ * CRT-AI-01-A; ADR 0024 §4).
+ *
+ * It goes through the same `ingest` as every other item, so it gets the same
+ * content hash, receipt, durable object and recorded triage route -- which, for
+ * an ASSISTANT actor, is SOURCE_ONLY: nothing is ever extracted from it. Only the
+ * `answer.record` purpose may call this, and migration 0019 lets that purpose
+ * write this one kind of item and no other. */
+export async function ingestAssistantMessage(tx:OwnerTransaction,objects:EvidenceObjects,request:AssistantMessageRequest):
+  Promise<{evidenceId:string;sourceAnchorId:string}>{
+  if(tx.context.purpose!=='answer.record')throw new Refusal(403,'EVIDENCE_POLICY_REFUSED');
+  const input=evidenceInputSchema.parse({
+    ownerScopeId:tx.context.ownerScopeId,connectorId:null,sourceType:ASSISTANT_CONVERSATION,externalId:request.externalId,
+    parentExternalId:request.parentExternalId,actorRef:{type:'ASSISTANT',id:request.assistantId},occurredAt:null,
+    content:{body:request.text,...request.structure},deterministicMetadata:{},
+    sensitivity:request.sensitivity,allowedPurposes:[...request.allowedPurposes],idempotencyKey:request.idempotencyKey,
+  });
+  const result=await ingest(tx,input,objects);
+  await writeAnchors(tx,result.evidenceId,[{kind:'MESSAGE_SPAN',anchor:{start:0,end:request.text.length},normalizedText:request.text}]);
+  const anchor=(await tx.query(
+    `SELECT id FROM source_anchors WHERE owner_scope_id=$1 AND source_item_id=$2 AND anchor_kind='MESSAGE_SPAN' ORDER BY id LIMIT 1`,
+    [tx.context.ownerScopeId,result.evidenceId])).rows[0];
+  if(!anchor)throw new Refusal(503,'EVIDENCE_UNAVAILABLE');
+  return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string};
 }
 
 async function readAnchors(tx:OwnerTransaction,sourceItemId:string):Promise<ParsedSourceAnchor[]>{
