@@ -6,8 +6,8 @@ import {resolve} from 'node:path';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {runMigrations,withOwnerTransaction} from '@unai/postgres';
 import {postgresAdapter,SESSION_COOKIE} from '@unai/auth';
-import type {MemoryInspector as Inspection} from '@unai/domain';
-import {beliefRefType} from '../components/BeliefLinks';
+import {inspectableObjectTypeSchema,type MemoryInspector as Inspection} from '@unai/domain';
+import {beliefRefType,type BeliefRefType} from '../components/BeliefLinks';
 import {Ask} from '../components/Ask';
 import {Commitments} from '../components/Commitments';
 import {CONTROLS,CorrectionControls,requestFor} from '../components/CorrectionControls';
@@ -551,6 +551,19 @@ it('CRT-UX-10-B: every belief surfaced in Today, Ask and Commitments can be insp
     expect(confirmed.status,JSON.stringify(confirmed.body)).toBe(201);
     expect((await admin.query('SELECT target_object_id FROM memory_operations WHERE id=$1',[confirmed.body.memoryOperationId])).rows[0])
       .toEqual({target_object_id:promise.subject.propositionId});
+
+    // Every object type a surface can name opens in both the inspector and the
+    // Correction controls, the owner's own confirmation just posted included.
+    const confirmation=(await inspect(app,'frame_instance',frames.promise)).explanation.ownerOverlayDeltas
+      .find(delta=>delta.deltaKind==='USER_CONFIRMATION')!;
+    const byType:Record<BeliefRefType,string>={proposition:beliefs.principal,claim:claims.danielAmount,frame_instance:frames.promise,
+      resolution_assertion:resolutions.payment,owner_overlay_delta:confirmation.overlayDeltaId};
+    expect(Object.keys(byType).sort()).toEqual([...inspectableObjectTypeSchema.options].sort());
+    for(const [type,id] of Object.entries(byType)){
+      const opened=await loadInspector(transport(app),caller(),type,id);
+      expect(opened.kind==='props'&&opened.props.state,type).toBe('ready');
+      if(opened.kind==='props')expect(render(CorrectionControls,opened.props),type).toContain('>'+confirm.label+'</h3>');
+    }
 
     // Today: the rendered briefing links every item it shows.
     const today=await loadToday(transport(app),caller(),'UTC');

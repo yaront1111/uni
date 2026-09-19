@@ -59,8 +59,8 @@ and `audit_events` through the existing row policies.
 | `GET /v1/memory/frames/related?ids=…` | `memory.inspect` | per frame: people with roles, sources, resolutions with their evidence and asserting entity, beliefs, threads; `400 RELATED_FRAMES_REQUEST_INVALID` |
 
 `objectType` is one of `proposition`, `claim`, `frame_instance`,
-`resolution_assertion`, `owner_overlay_delta` — every object Today, Ask,
-Commitments and Weekly Review name. The four merge and split endpoints now also
+`resolution_assertion`, `owner_overlay_delta`: every object type a surface can
+name. The four merge and split endpoints now also
 answer `memoryOperationId`, and refuse `503 STORAGE_UNAVAILABLE` when no evidence
 store is configured. The same-origin proxy maps the eight correction endpoints to
 `memory.correct` and pins `PERSONAL_ASSISTANCE` / `PRIVATE`.
@@ -97,8 +97,12 @@ fixture does not reach are in the component tests.
   uncertain control is posted and persists a `KEEP_UNCERTAIN` operation, and the
   two sets of links match. Every Today item links its primary source; the Ask
   conflict statement links both competing principal amounts. A confirmation
-  posted from a commitment row lands on the belief that row showed. Weekly
-  Review: see the limits below.
+  posted from a commitment row lands on the belief that row showed. The
+  inspector and Correction controls routes open every object type a surface can
+  name (`proposition`, `claim`, `frame_instance`, `resolution_assertion`,
+  `owner_overlay_delta`, checked against `inspectableObjectTypeSchema`).
+  **Delivered for Today, Ask and Commitments only.** The Weekly Review half is
+  not claimed here; see below.
 - **CRT-UX-15-A** — the Daniel payment thread shows its obligations projection
   fragment, a timeline, the promise as a plan, the principal as an actual event,
   the partial repayment as a resolution link, Daniel's different figure as an
@@ -117,10 +121,22 @@ the TRUNCATE is refused with `REGISTRY_SNAPSHOT_IMMUTABLE` is unchanged.
 
 ## What this node does not claim
 
-- **Weekly Review** belongs to `memory-inbox-attention-budgets-and-weekly-review`,
-  which is neither an ancestor nor a descendant of this node and has not landed:
-  no Weekly Review screen or route exists. `BeliefRefLinks` is the one function
-  it needs to link its beliefs. Submitted as a finding against CRT-UX-10-B.
+- **The Weekly Review half of CRT-UX-10-B.** By operator decision (review
+  version 3), this node does not build, stub or fake a Weekly Review screen,
+  route or fixture. That screen is CRT-UX-05-A, owned by
+  `memory-inbox-attention-budgets-and-weekly-review`, and it has not landed.
+  CRT-UX-10-B is not waived or narrowed. Its Weekly Review half is reassigned
+  to `memory-inbox-attention-budgets-and-weekly-review`. The replan requested
+  here moves that half and adds a dependency edge **from that node to this
+  node**. The edge is acyclic because neither node is an ancestor of the other.
+  It then puts `BeliefRefLinks` / `BeliefLinks` (`apps/web/components/BeliefLinks.tsx`)
+  and the `/memory/inspector/[type]/[id]` and `/memory/correct/[type]/[id]`
+  routes on that node's base. The owning node must meet this contract:
+  - every belief the Weekly Review screen renders emits Inspect and Correct
+    links through `BeliefRefLinks` / `BeliefLinks`;
+  - an e2e test in the `apps/web/e2e/memory.test.ts` pattern (see
+    `followEveryLink`) renders the screen through its page loader, follows every
+    emitted link into the Memory inspector, and persists a correction.
 - **No deletion cascade, no canonical archive.** The Delete and Archive controls
   record their requests exactly as ADR 0019 delivered them.
 - **Entity split from this screen** is not offered: it needs alias assignments
