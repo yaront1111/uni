@@ -1,4 +1,4 @@
-# ADR 0023: Deterministic selection, the semantic index and the Ask pipeline
+# ADR 0024: Deterministic selection, the semantic index and the Ask pipeline
 
 Date: 2026-09-18
 Status: Accepted

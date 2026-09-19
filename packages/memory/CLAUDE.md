@@ -37,8 +37,8 @@ owner, permission, sensitivity, knowledge-time, time-window, source and entity
 filters inside a `MATERIALIZED` expression *before* ranking by distance. Keep it
 that way: a filter moved after the `ORDER BY`, or an approximate index queried
 first, lets the nearest match cross a boundary (CRT-RD-04-A). The embedded text is
-canonical memory only, never raw evidence. Schema: `migrations/0018_semantic_index.sql`;
-decisions: ADR 0023; report: `docs/semantic-index-and-ask.md`.
+canonical memory only, never raw evidence. Schema: `migrations/0019_semantic_index.sql`;
+decisions: ADR 0024; report: `docs/semantic-index-and-ask.md`.
 
 ## Surface and consumers
 

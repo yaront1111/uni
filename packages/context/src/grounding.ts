@@ -7,7 +7,7 @@ import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from '.
 /**
  * The grounding validator (PRD §24.6; design component
  * "grounding-validator-block-downgrade-add-uncertainty-or-regenerate";
- * CRT-RD-08-A; ADR 0024 §3).
+ * CRT-RD-08-A; ADR 0025 §3).
  *
  * A pure function of one packet and one candidate answer. It never reads memory,
  * a clock or a model: what a statement may say is decided by what the packet
@@ -32,7 +32,7 @@ import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from '.
  */
 
 export const GROUNDING_VALIDATOR_VERSION = 'grounding-validator-0.1.0';
-/** The source type every assistant answer is stored under (ADR 0024 §4). */
+/** The source type every assistant answer is stored under (ADR 0025 §4). */
 export const ASSISTANT_CONVERSATION_SOURCE_TYPE = 'ASSISTANT_CONVERSATION';
 
 export interface ValidatableStatement extends AnswerCandidateStatement {

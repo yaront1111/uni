@@ -3,7 +3,7 @@ import { sensitivitySchema } from './evidence.js';
 import { certaintyLabelSchema } from './labels.js';
 
 /** Answer provenance and grounding (PRD §23.6, §23.7, §24.6; design entities
- * `answer_manifests` and `reconsideration_candidates`; ADR 0024).
+ * `answer_manifests` and `reconsideration_candidates`; ADR 0025).
  *
  * Schemas only. `@unai/context` validates candidates and derives manifests; the
  * API records them. Nothing here names a model provider: the model a manifest was

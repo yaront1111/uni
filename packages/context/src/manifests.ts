@@ -12,7 +12,7 @@ import { ContextBrokerError } from './broker.js';
 /**
  * The answer manifest store (PRD §23.6, §23.7; design entities `answer_manifests`
  * and `reconsideration_candidates`; CRT-RD-06-A, CRT-RD-07-A, CRT-RD-11-A;
- * ADR 0024 §1, §2, §5).
+ * ADR 0025 §1, §2, §5).
  *
  * A manifest is a record of the context *supplied* to a model for one answer. It
  * is derived from the packet as persisted -- read back from `context_packets` and
@@ -34,7 +34,7 @@ const TARGET_SET: Readonly<Record<string, 'belief' | 'claim' | 'evidence' | 'ove
 });
 
 /**
- * The sets one packet supplied (ADR 0024 §1). Pure: the same packet gives the same
+ * The sets one packet supplied (ADR 0025 §1). Pure: the same packet gives the same
  * sets, each sorted and holding every id once.
  *
  * "Supplied" means named anywhere in the packet body a model reads -- a stated

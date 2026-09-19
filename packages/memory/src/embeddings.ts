@@ -4,7 +4,7 @@ import { uuidV7 } from '../../../src/kernel/identities.js';
 import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
 
 /** The semantic index (design entity `memory_embeddings`; PRD §23.2 step 10,
- * §33.13; FR-063; CRT-RD-04-A, CRT-REG-04-A). ADR 0023 §2 and §3.
+ * §33.13; FR-063; CRT-RD-04-A, CRT-REG-04-A). ADR 0024 §2 and §3.
  *
  * Embeddings are indexes only. Nothing here writes a belief, a support row or a
  * projection, and no belief can cite an embedding: a match is a pointer back to
@@ -54,7 +54,7 @@ function bucket(feature: string): { index: number; sign: number } {
  * stems ("promise"/"promised"). Each feature is hashed with SHA-256 into one of
  * 256 signed dimensions and the vector is L2-normalized. It reads no model, no
  * clock and no network, so the same text gives the same vector on every run and
- * the index can be regenerated bit for bit (ADR 0023 §2).
+ * the index can be regenerated bit for bit (ADR 0024 §2).
  */
 export const hashedLexicalEmbedder: Embedder = Object.freeze({
   model: EMBEDDING_MODEL,

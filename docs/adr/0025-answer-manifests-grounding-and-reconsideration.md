@@ -1,4 +1,4 @@
-# ADR 0024: Answer manifests, the grounding validator and reconsideration
+# ADR 0025: Answer manifests, the grounding validator and reconsideration
 
 Date: 2026-09-19
 Status: Accepted
@@ -9,7 +9,7 @@ Criteria: CRT-AI-01-A, CRT-RD-06-A, CRT-RD-07-A, CRT-RD-08-A, CRT-RD-11-A,
 CRT-RYW-05-A.
 
 Recorded before the implementing change, per PRD §0.7 and §46. It builds on the
-Ask pipeline of ADR 0023, which this node's dependency delivered; the delivered
+Ask pipeline of ADR 0024, which this node's dependency delivered; the delivered
 commit (`f0c307b`) was verified by the daemon and is the base of this work.
 
 ## 1. A manifest is derived from the persisted packet, never from memory
@@ -56,7 +56,7 @@ key of the DTO and the Answer provenance screen's markup against that list.
 
 ## 3. The answer is phrased by a model only behind the grounding validator
 
-ADR 0023 composed answers deterministically and left model phrasing to this
+ADR 0024 composed answers deterministically and left model phrasing to this
 node. An `AnswerPhraser` (an interface in `@unai/context`, which still depends on
 no gateway) may be supplied; the API's implementation goes through the LLM
 gateway, so every call is schema-validated and recorded in

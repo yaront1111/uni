@@ -7,7 +7,7 @@ import { canonicalJson, type MemoryTransaction } from '@unai/memory';
 
 /**
  * Deterministic current-state selection (PRD §23.4, FR-062; CRT-RD-03-A,
- * CRT-REG-04-A). ADR 0023 §1.
+ * CRT-REG-04-A). ADR 0024 §1.
  *
  * `selectSlotState` is a pure function over the rows of one belief slot. It reads
  * no clock, no random source, no model and no network; every instant it compares

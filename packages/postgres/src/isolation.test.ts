@@ -32,6 +32,11 @@ describe('real PostgreSQL owner isolation', () => {
       const connector=randomUUID(),source=randomUUID();
       const retry=randomUUID();
       await pool.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'DOCUMENT',$3,'{}','ACTIVE')",[connector,owner,owner]);
+      // One grant row per discrete manifest capability: an upload capability the
+      // owner granted, and a read capability they did not (CRT-CON-07-A).
+      await pool.query(`INSERT INTO connector_capability_grants(id,owner_scope_id,connector_id,capability_id,risk_class,access_kind,granted,granted_at)
+        VALUES($1,$2,$3,'documents.upload','LOW','READ',true,now()),($4,$2,$3,'documents.read','LOW','READ',false,NULL)`,
+        [randomUUID(),owner,connector,randomUUID()]);
       await pool.query("INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key) VALUES($1,$2,$3,'DOCUMENT','fixture',$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)",[source,owner,connector,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),'a'.repeat(64),randomUUID()]);
       await pool.query("INSERT INTO evidence_object_keys(id,owner_scope_id,source_item_id,object_store_key,encryption_key_ref) VALUES($1,$2,$3,$4,'kms:test')",[randomUUID(),owner,source,'raw/'+randomUUID()]);
       await pool.query("INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor) VALUES($1,$2,$3,'CONNECTOR_JSON_PATH','{\"path\":\"$.text\"}')",[randomUUID(),owner,source]);
@@ -624,7 +629,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(52);
+    expect(rows.length).toBe(53);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -658,6 +663,56 @@ describe('real PostgreSQL owner isolation', () => {
       expect((await tx.query('SELECT owner_scope_id FROM devices')).rows).toEqual([{owner_scope_id:b}]);
     });
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A capability-grant queries and keeps grant identity immutable',async()=>{
+    await asOwner(a,alice,async c=>{
+      const rows=(await readUnfiltered(c,'connector_capability_grants')).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every(row=>row.owner_scope_id===a)).toBe(true);
+      // The grant set is per capability, and the two rows disagree: one granted,
+      // one not. Nothing in the schema lets one stand for the other.
+      expect(rows.filter(row=>row.granted).map(row=>row.capability_id)).toEqual(['documents.upload']);
+    },'connector.read');
+    await asOwner(b,alice,async c=>{
+      expect((await c.query('SELECT * FROM connector_capability_grants')).rows).toEqual([]);
+    },'connector.read');
+    // Purpose-bound: a read purpose that is not a connector purpose sees none of it.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM connector_capability_grants')).rows).toEqual([]);
+    });
+    // Consent is the only path that may change a grant, and it may move only the
+    // grant flag: a denied capability cannot become a granted one by renaming.
+    // A sync's own purpose matches no row of the UPDATE policy, so the statement
+    // changes nothing rather than widening the grant it runs under.
+    await asOwner(a,alice,async c=>{
+      const changed=await c.query("UPDATE connector_capability_grants SET granted=true WHERE capability_id='documents.read'");
+      expect(changed.rowCount).toBe(0);
+    },'connector.sync');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("SELECT granted FROM connector_capability_grants WHERE capability_id='documents.read'")).rows)
+        .toEqual([{granted:false}]);
+    },'connector.read');
+    await expect(pool.query("UPDATE connector_capability_grants SET capability_id='documents.upload' WHERE owner_scope_id=$1 AND capability_id='documents.read'",[a]))
+      .rejects.toThrow('CONNECTOR_GRANT_IDENTITY_IMMUTABLE');
+    // V0 is read-only: a granted write capability is unrepresentable.
+    await expect(pool.query(`INSERT INTO connector_capability_grants(id,owner_scope_id,connector_id,capability_id,risk_class,access_kind,granted,granted_at)
+      SELECT $1,owner_scope_id,connector_id,'gmail.send','HIGH','WRITE',true,now() FROM connector_capability_grants WHERE owner_scope_id=$2 LIMIT 1`,[randomUUID(),a]))
+      .rejects.toMatchObject({constraint:'connector_capability_grants_read_only'});
+    // A connector's identity never moves, and a disconnected connector ingests
+    // nothing: both are refused by the schema, not only by the service.
+    await expect(pool.query("UPDATE connectors SET connector_type='GMAIL' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CONNECTOR_IDENTITY_IMMUTABLE');
+    const connector=(await pool.query('SELECT id FROM connectors WHERE owner_scope_id=$1',[a])).rows[0].id;
+    await pool.query("UPDATE connectors SET status='DISCONNECTED',disconnected_at=now(),secret_ref=NULL WHERE id=$1",[connector]);
+    try{
+      await expect(pool.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+        VALUES($1,$2,$3,'DOCUMENT','after-disconnect',$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)`,
+        [randomUUID(),a,connector,JSON.stringify({type:'USER',id:alice}),alice,randomUUID(),'d'.repeat(64),randomUUID()]))
+        .rejects.toThrow('CONNECTOR_INGESTION_STOPPED');
+    }finally{
+      await pool.query("UPDATE connectors SET status='ACTIVE',disconnected_at=NULL WHERE id=$1",[connector]);
+    }
+  });
+
   it('refuses success when a caught SQL error causes COMMIT to roll back',async()=>{
     const correlationId=randomUUID();
     await expect(withOwnerTransaction(appPool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId},async tx=>{

@@ -24,7 +24,7 @@ import type { EvidenceObjects } from './evidence.js';
  *
  * Every answer the route returns has passed the grounding validator and has
  * been recorded -- as assistant conversation evidence, with the manifest of the
- * context supplied -- before it is returned (ADR 0024). A deployment with no
+ * context supplied -- before it is returned (ADR 0025). A deployment with no
  * evidence storage cannot record an answer, so it gives none: the refusal comes
  * before any retrieval.
  */

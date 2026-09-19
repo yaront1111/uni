@@ -239,7 +239,7 @@ type UnregisteredContracts = string[];
 
 /**
  * Which of this transaction's operations touch a predicate or frame type absent
- * from the pinned release (PRD §17.5; ADR 0023 §4).
+ * from the pinned release (PRD §17.5; ADR 0024 §4).
  *
  * "Touch" is any operation over a slot, a proposition, a claim, a support row, an
  * assessment or a derivation whose contracts are unregistered -- including a
@@ -320,7 +320,7 @@ async function liveVerdict(tx: BeliefTransactionStore, ownerScopeId: string, pro
 
 /**
  * The uses PRD §17.5 forbids an unregistered surface predicate, found in one
- * transaction (CRT-REG-04-A; ADR 0023 §4).
+ * transaction (CRT-REG-04-A; ADR 0024 §4).
  *
  * Nothing here refuses *storing* the claim or indexing it. A transaction that
  * touches an unregistered contract is refused when it also supersedes or rejects
@@ -502,7 +502,7 @@ async function buildValidationReport(
   // PRD §24.1: an assistant's own message is never independent evidence for what
   // it says. A claim anchored in one counts as model-authored whatever origin it
   // declares, so the write policy refuses to accept a belief on it alone; and it
-  // is never support for anything (CRT-AI-01-A, ADR 0024 §4).
+  // is never support for anything (CRT-AI-01-A, ADR 0025 §4).
   const assistantClaimRefs = new Set<string>();
   let assistantSupport = false;
   for (const operation of operations) {
@@ -858,13 +858,13 @@ export async function commitBeliefTransaction(
     // Every claim this commit created is indexed in the same transaction, so it is
     // semantically searchable the moment it is visible -- an unregistered surface
     // predicate included, which PRD §17.5 allows to be indexed -- and a rolled-back
-    // commit leaves no index row behind (ADR 0023 §3). The index is not a belief
+    // commit leaves no index row behind (ADR 0024 §3). The index is not a belief
     // object, so the receipt does not list it.
     const createdClaimIds = context.createdObjects.filter(object => object.objectType === 'claims').map(object => object.objectId);
     await indexClaimEmbeddings(tx, { ownerScopeId: request.ownerScopeId, claimIds: createdClaimIds });
     // Evidence this commit brought in may contradict what the owner said and
     // nothing has verified yet. Such a delta becomes CONTESTED here, with its
-    // record, and never disappears (PRD §21.7, CRT-RYW-05-A, ADR 0024 §6).
+    // record, and never disappears (PRD §21.7, CRT-RYW-05-A, ADR 0025 §6).
     await contestDeltasConflictingWithClaims(tx, { ownerScopeId: request.ownerScopeId, claimIds: createdClaimIds });
 
     const committedAt = (await tx.query('SELECT now() AS at')).rows[0]!['at'] as Date;

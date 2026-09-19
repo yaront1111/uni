@@ -63,7 +63,17 @@ it.each([null,'connector'])('CRT-EVD-02-A/B: concurrent %s duplicates retain one
   const f=await fixture();try{
     const connector=kind?randomUUID():null;
     if(connector)await admin.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'DOCUMENT','test','{}','ACTIVE')",[connector,f.owner]);
-    if(connector)expect((await appPool.query("SELECT has_table_privilege(current_user,'connectors','UPDATE') AS allowed")).rows[0].allowed).toBe(false);
+    // Migration 0018 gives the application the connector lifecycle, so the grant
+    // exists; what still holds is that the *evidence* purposes may not use it.
+    // The row policy admits only connector.manage and connector.sync, and the
+    // identity columns never move under any purpose.
+    if(connector){
+      expect((await appPool.query("SELECT has_table_privilege(current_user,'connectors','UPDATE') AS allowed")).rows[0].allowed).toBe(true);
+      await expect(withOwnerTransaction(appPool,{actorId:f.user.id,ownerScopeId:f.owner,purpose:'evidence.ingest',correlationId:randomUUID()},
+        tx=>tx.query("UPDATE connectors SET status='DISCONNECTED' WHERE id=$1",[connector]).then(result=>{
+          expect(result.rowCount).toBe(0);
+        }))).resolves.toBeUndefined();
+    }
     const payload={...f.payload,connectorId:connector};
     const results=await Promise.all(Array.from({length:4},()=>f.app.inject({method:'POST',url:'/v1/evidence',headers:f.headers,payload})));
     expect(results.map(r=>r.statusCode)).toEqual([200,200,200,200]);
