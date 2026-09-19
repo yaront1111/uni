@@ -6,6 +6,7 @@ import {join,resolve,relative,isAbsolute} from 'node:path';
 import {createRequire} from 'node:module';
 import {snapshotObjects,restoreObjects} from './recovery-objects.mjs';
 import {compareAcceptanceReads} from './recovery-acceptance.mjs';
+import {verifyEvidenceObjects} from './recovery-evidence-objects.mjs';
 import {startStorageHarness} from './storage-harness.mjs';
 const {Pool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg');
 
@@ -57,22 +58,11 @@ export async function databaseRoundtrip(container,sourceUrl,storageEnv,sourceEvi
     const dump=command('pg_dump',['--username='+decodeURIComponent(source.username),'--dbname='+source.pathname.slice(1),'--format=custom']);
     const objects=await snapshotObjects(storageEnv);
     if(!objects.length)throw new Error('BACKUP_OBJECT_FIXTURE_EMPTY');
-    const objectByKey=new Map(objects.map(object=>[object.key,object]));
-    const mappings=(await sourcePool.query(`SELECT k.object_store_key,k.encryption_key_ref,s.content_hash FROM evidence_object_keys k
+    const mappings=(await sourcePool.query(`SELECT k.object_store_key,k.encryption_key_ref,s.content_hash,
+      s.deleted_at AS source_deleted_at,k.deleted_at AS key_deleted_at FROM evidence_object_keys k
       JOIN source_items s ON s.owner_scope_id=k.owner_scope_id AND s.id=k.source_item_id`)).rows;
     const realKeyRef='kms:'+storageEnv.UNAI_TEST_S3_KMS_KEY_ID;
-    // These exact test-only providers are declared by the existing isolation,
-    // API and live connector fixtures. They never claimed bytes in this S3 store.
-    // Count them explicitly; unknown providers cannot silently evade verification.
-    const fixtureProviders=new Set(['kms:test','kms:test-double','kms:live-test']);
-    const syntheticMappings=mappings.filter(mapping=>fixtureProviders.has(mapping.encryption_key_ref));
-    const durableMappings=mappings.filter(mapping=>mapping.encryption_key_ref===realKeyRef);
-    if(syntheticMappings.length+durableMappings.length!==mappings.length)throw new Error('BACKUP_UNKNOWN_OBJECT_PROVIDER');
-    if(!durableMappings.length)throw new Error('BACKUP_DURABLE_EVIDENCE_FIXTURE_EMPTY');
-    for(const mapping of durableMappings){
-      const object=objectByKey.get(mapping.object_store_key);
-      if(!object||object.digest!==mapping.content_hash)throw new Error('BACKUP_LIVE_EVIDENCE_OBJECT_MISSING_OR_CHANGED');
-    }
+    const verifiedObjects=verifyEvidenceObjects(mappings,objects,realKeyRef);
     const payload=Buffer.from(JSON.stringify({database:dump.toString('base64'),objects}));
     const key=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);
     const archive=Buffer.concat([iv,Buffer.alloc(16),cipher.update(payload),cipher.final()]);cipher.getAuthTag().copy(archive,12);
@@ -96,7 +86,7 @@ export async function databaseRoundtrip(container,sourceUrl,storageEnv,sourceEvi
     const fixtures=await compareAcceptanceReads(sourceUrl,restored.href);
     const report={...sourceEvidence,format:'unai-coordinated-roundtrip/1',executedAt:new Date().toISOString(),environment:'TEST',result:'PASS',
       emptyTarget:true,archiveRef:archivePath,archiveDigest:hash(saved),tables:before,objectsRestored:objectCount,
-      keyRecoveryVerified:true,liveEvidenceObjectsVerified:durableMappings.length,syntheticObjectMappings:syntheticMappings.length,acceptanceAnswersRegenerated:true,comparatorVersion:'recovery-output-v1',
+      keyRecoveryVerified:true,...verifiedObjects,acceptanceAnswersRegenerated:true,comparatorVersion:'recovery-output-v1',
       fixtureScope:'Fresh Today/Ask/Why reads of terminal persisted states from the existing passing AC44 suites; no fixture reseeding after restore.',fixtures};
     await writeFile('test-results/operations/coordinated-roundtrip.json',JSON.stringify(report,null,2)+'\n');
     console.log('Coordinated backup/restore: '+before.length+' tables, '+objectCount+' objects and '+fixtures.length+' fixture read digest pairs identical.');
