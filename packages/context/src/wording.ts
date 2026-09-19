@@ -1,5 +1,21 @@
-import type { CertaintyLabel } from '@unai/domain';
+import type { CertaintyLabel, FreshnessAssessment } from '@unai/domain';
 import { canonicalJson } from '@unai/memory';
+
+export function describeFreshness(assessment?: Pick<FreshnessAssessment, 'state' | 'basisAt' | 'verificationRequired'>
+  & Partial<Pick<FreshnessAssessment, 'reason'>>): string {
+  if (!assessment) return '';
+  const date = assessment.basisAt?.slice(0, 10);
+  switch (assessment.state) {
+    case 'CURRENT': return date ? ' Evidence dated ' + date + '; no freshness check is due.' : '';
+    case 'VERIFY': return (date ? ' Original evidence dated ' + date : ' Last known value')
+      + (assessment.verificationRequired ? '; verify whether this still applies.' : '; it may have changed since then.');
+    case 'OUTSIDE_INTERVAL': return (assessment.reason === 'VALID_INTERVAL_NOT_STARTED'
+      ? ' Its recorded interval has not started' : assessment.reason === 'VALID_INTERVAL_ENDED'
+        ? ' Its recorded interval has ended' : ' It is outside its recorded interval')
+      + '; no replacement state is established.';
+    case 'UNKNOWN': return ' Current applicability is unknown' + (date ? '; original evidence dated ' + date : '') + '.';
+  }
+}
 
 /** How an answer words a packet object (PRD §24.5). Shared by the deterministic
  * composer, which writes statements this way, and the grounding validator, which

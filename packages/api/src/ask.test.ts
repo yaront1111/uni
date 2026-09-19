@@ -55,10 +55,10 @@ beforeAll(async () => {
     [transactionId, owner, actor, randomUUID(), randomUUID().replaceAll('-', ''), RECORDED_AT]);
   const frame = randomUUID(), slot = randomUUID();
   fixtureFrame = frame;
-  await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.obligation',$3)",
-    [frame, owner, context]);
-  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
-    VALUES($1,$2,$3,'shared.obligation.description',$4,'ACTUAL')`, [slot, owner, frame, context]);
+  await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,'shared.obligation',$3,$4)",
+    [frame, owner, context, RECORDED_AT]);
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,'shared.obligation.description',$4,'ACTUAL',$5)`, [slot, owner, frame, context, RECORDED_AT]);
   // Two sources that disagree about what the loan was for.
   for (const [externalId, text] of [['api-ask-chat', 'loan to repair the car'], ['api-ask-document', 'loan to cover the rent']]) {
     const evidenceId = randomUUID(), anchorId = randomUUID(), connectorId = randomUUID(), propositionId = randomUUID();
@@ -71,8 +71,8 @@ beforeAll(async () => {
         randomUUID().replaceAll('-', '').padEnd(64, 'a').slice(0, 64), FINANCE, randomUUID(), RECORDED_AT]);
     await admin.query(`INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor)
       VALUES($1,$2,$3,'MESSAGE_SPAN','{"start":0,"end":20}')`, [anchorId, owner, evidenceId]);
-    await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
-      [propositionId, owner, slot, JSON.stringify({ text })]);
+    await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,$5)',
+      [propositionId, owner, slot, JSON.stringify({ text }), RECORDED_AT]);
     await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,recorded_at)
       VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL',$5)`, [randomUUID(), owner, anchorId, propositionId, RECORDED_AT]);
     await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,

@@ -15,7 +15,7 @@ import type { AnswerType, HistoricalMode, QuestionType } from '@unai/domain';
  * ("what was due as of March 1") is answered as of that time.
  */
 
-export const QUESTION_CLASSIFIER_VERSION = 'question-classifier-0.1.0';
+export const QUESTION_CLASSIFIER_VERSION = 'question-classifier-0.2.0';
 
 export interface QuestionClassification {
   readonly answerType: QuestionType;
@@ -39,6 +39,12 @@ const DECISION = /\b(decision|decid(e|ed|ing)|chose|choose|chosen|choice)\b/;
 const SCHEDULE = /\b(schedul\w*|calendar|upcoming|next (week|month|meeting|appointment)|appointment|plan(s|ned)?)\b/;
 
 const RULES: readonly Rule[] = [
+  { name: 'LIFE_CHANGES', answerType: 'EPISODE_RECALL',
+    test: matches(/\bwhat (has |have )?changed\b/), queryMode: () => 'PATTERN_REVIEW' },
+  { name: 'ASSISTANT_CAPABILITIES', answerType: 'FUTURE_COMMITMENT',
+    test: matches(/\bwhat can you (handle|do|prepare)\b/), queryMode: () => 'OPEN_COMMITMENTS' },
+  { name: 'FOCUS_PRIORITIES', answerType: 'FUTURE_COMMITMENT',
+    test: matches(/\bwhat should i (focus on|prioriti[sz]e)\b/), queryMode: () => 'OPEN_COMMITMENTS' },
   {
     name: 'CONTRADICTION_TERMS', answerType: 'CONTRADICTION_CHECK',
     test: matches(/\b(contradict\w*|conflict\w*|disagree\w*|inconsisten\w*|at odds|clash\w*)\b/),

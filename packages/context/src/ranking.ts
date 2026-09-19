@@ -15,10 +15,10 @@ import { canonicalJson } from '@unai/memory';
  *
  * Four rules decide what a reader sees:
  *
- *  1. Only current or imminent material items. An unresolved item whose target
- *     time is within `IMMINENT_HOURS` ahead, or passed within `PAST_TARGET_DAYS`,
- *     or which carries a decision-affecting conflict, is material. A resolved one
- *     is not, and neither is one weeks away.
+ *  1. Unfinished commitments and obligations remain eligible when overdue or
+ *     undated. Scheduled events use `PAST_TARGET_DAYS`; future targets use
+ *     `IMMINENT_HOURS`. A decision-affecting conflict is material. A resolved
+ *     item is not, and neither is an ordinary item weeks away.
  *  2. The order is the seven rank components, never a recording time. An older
  *     urgent high-consequence item outranks a newer low-consequence one because
  *     nothing in the score knows which is newer.
@@ -30,7 +30,7 @@ import { canonicalJson } from '@unai/memory';
  *     most `MAX_RECOMMENDATIONS` recommendations are made.
  */
 
-export const RANKING_VERSION = 'briefing-ranking-0.1.0';
+export const RANKING_VERSION = 'briefing-ranking-0.2.0';
 export const IMMINENT_HOURS = 48;
 export const PAST_TARGET_DAYS = 14;
 export const REPEAT_SUPPRESSION_DAYS = 7;
@@ -121,6 +121,8 @@ export interface BriefingCandidate {
   /** Money as recorded ("ILS 450"), never computed here. */
   readonly amount: string | null;
   readonly statedPriority: string | null;
+  /** Set only from a source-authorized explicit goal relationship. */
+  readonly goalLinked?: boolean;
   readonly decisionAffectingConflict: boolean;
   readonly ownerAssertionPending: boolean;
   /** A HIGH-risk recommendation over this item needs a complete projection. */
@@ -268,7 +270,7 @@ export function rankComponentsOf(candidate: BriefingCandidate, context: {
     : context.hoursUntil === null ? 0.3
       : context.hoursUntil <= 24 ? 0.9 : 0.6;
   return {
-    consequence: round(consequence), urgency, goalRelevance: GOAL_RELEVANCE_WITHOUT_GOALS,
+    consequence: round(consequence), urgency, goalRelevance: candidate.goalLinked ? 1 : GOAL_RELEVANCE_WITHOUT_GOALS,
     confidence: CONFIDENCE[candidate.label] ?? 0.5, effort: EFFORT[candidate.kind],
     reversibility: REVERSIBILITY[candidate.kind],
     // A repeat costs the reader attention it already spent.
@@ -307,9 +309,10 @@ export function materialFingerprintOf(candidate: BriefingCandidate, pastTarget: 
 export function isCurrentOrImminent(candidate: BriefingCandidate, now: Date): boolean {
   if (candidate.outcomeState === 'RESOLVED') return false;
   if (candidate.kind === 'OWNER_ASSERTION') return true;
-  if (candidate.targetTime === null) return candidate.decisionAffectingConflict;
+  const unfinished = candidate.kind === 'COMMITMENT' || candidate.kind === 'OBLIGATION';
+  if (candidate.targetTime === null) return unfinished || candidate.decisionAffectingConflict;
   const hours = (candidate.targetTime.getTime() - now.getTime()) / 3_600_000;
-  if (hours < 0) return -hours <= PAST_TARGET_DAYS * 24;
+  if (hours < 0) return unfinished || -hours <= PAST_TARGET_DAYS * 24;
   return hours <= IMMINENT_HOURS;
 }
 

@@ -1,9 +1,9 @@
 import {traceStage} from '@unai/observability';
 import { createHash } from 'node:crypto';
-import type { z } from 'zod';
+import { z } from 'zod';
 import {
   contextRequestSchema, contextPacketSchema, contextBeliefSchema, contextFutureClaimSchema, contextConflictSchema,
-  contextUnknownSchema, contextEvidenceRefSchema, contextResolutionSchema, contextRedactionSchema,
+  contextUnknownSchema, contextEvidenceRefSchema, contextRedactionSchema,
   contextActionDecisionSchema,
   REQUIRED_CONTEXT_FIELDS, REDACTABLE_BELIEF_FIELDS, SELECTION_RULES, answerTypeSchema,
   type AnswerType, type ContextPacket, type ContextRequest, type ContextRedaction, type LifeCategory,
@@ -16,7 +16,11 @@ import { categoryOfPurpose, deriveLifeCategories, inCategoryView } from './categ
 import { readProjectionFragments } from './fragments.js';
 import { SELECTION_VERSION, modalitiesForAnswerType, selectCurrentStates, selectionsDigest } from './selector.js';
 import { listThreadsForObject } from './threads.js';
-import { readPropositionAuthority } from './support-authority.js';
+import { readContextFreshness } from './freshness.js';
+import { deriveUnderstanding } from './understanding.js';
+import { readableFrameCandidates } from './candidates.js';
+import { classifyQuestion } from './question.js';
+import { readableResolutions, closedFrameIds } from './resolutions.js';
 
 /**
  * The Context Broker (PRD §23, §36.11; design POST /v1/memory/context).
@@ -47,7 +51,7 @@ import { readPropositionAuthority } from './support-authority.js';
  * completeness and watermarks are all present rather than implied (CRT-RD-05-A).
  */
 
-export const BROKER_VERSION = 'context-broker-0.3.0';
+export const BROKER_VERSION = 'context-broker-0.4.0';
 export const SELECTOR_VERSION = SELECTION_VERSION;
 /** The route purpose the broker runs under. It appears in no INSERT, UPDATE or
  * DELETE policy on any canonical table: this path cannot write memory. */
@@ -87,6 +91,8 @@ export function missingContextFields(body: unknown): RequiredContextField[] {
  * the plan a packet was built under is auditable and is never the model's own
  * choice of "what kind of question was that". */
 export function classifyAnswerType(query: string): AnswerType {
+  const classified = classifyQuestion(query);
+  if (classified.matchedRule !== 'DEFAULT_CURRENT_STATE') return classified.queryMode;
   const text = query.toLowerCase();
   const has = (...words: string[]) => words.some(word => text.includes(word));
   if (has('why', 'because', 'caused', 'led to')) return 'CAUSAL_EXPLANATION';
@@ -331,6 +337,7 @@ async function assemble(
   const answerType = answerTypeSchema.parse(request.answerType ?? classifyAnswerType(request.query));
   const category: LifeCategory | null = request.lifeCategory ?? categoryOfPurpose(request.purpose);
   const frameLimit = Math.min(Math.max(options.frameLimit ?? 100, 1), 500);
+  const frameScanLimit = 2000;
 
   // Step 1 of PRD §23.2, once per transaction: the settings the row policies read
   // are transaction-local, so they are re-declared here even when the verdict
@@ -402,28 +409,89 @@ async function assemble(
     }
   }
 
-  // The frame instances this request is about: everything the hints intersect,
-  // or the owner's most recent frames when the question names none.
+  // Similarity supplies frame candidates before value selection. Otherwise an
+  // older match contributes only a citation while its actual value is omitted.
+  const semanticSearch = await searchMemoryEmbeddings(tx, {
+    ownerScopeId: request.ownerScopeId, query: request.query, dataPurpose: request.purpose,
+    maximumSensitivity: request.maximumSensitivity, knowledgeTime,
+    timeWindow: request.timeWindow ? {
+      from: request.timeWindow.from ? new Date(request.timeWindow.from) : null,
+      to: request.timeWindow.to ? new Date(request.timeWindow.to) : null,
+    } : null,
+    entityIds: request.entityHints.length > 0 ? request.entityHints : null,
+    sourceTypes: request.sourceTypes.length > 0 ? request.sourceTypes : null,
+    authorizedSourceItemIds: readableEvidenceIds,
+    excludedObjectIds: [...new Set([...removedFromRetrieval, ...redactions.objects,
+      ...[...redactions.fields].filter(([, fields]) => fields.has('normalizedValue')).map(([id]) => id)])],
+    registryReleaseId: options.registryReleaseId ?? null, limit: 50,
+  });
+  const semanticPropositions = (semanticSearch?.matches ?? []).flatMap(match => match.propositionId ? [match.propositionId] : []);
+  const semanticFrames = semanticPropositions.length === 0 ? [] : (await tx.query(
+    `SELECT p.id,s.frame_instance_id FROM propositions p JOIN belief_slots s
+       ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
+     WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])`, [request.ownerScopeId, semanticPropositions])).rows;
+  const frameForValue = new Map(semanticFrames.map(row => [row['id'] as string, row['frame_instance_id'] as string]));
+  const relevantFrameIds = [...new Set(semanticPropositions.flatMap(id => frameForValue.has(id) ? [frameForValue.get(id)!] : []))];
+  // Structured hints and unfinished work remain candidates even when the query
+  // has no distinctive words. The finite scan reports truncation explicitly.
   const threadFrames = request.worldlineHints.length === 0 ? [] : (await tx.query(
     `SELECT object_id FROM memory_thread_members WHERE owner_scope_id=$1 AND memory_thread_id=ANY($2::uuid[])
-       AND object_type='frame_instance'`, [request.ownerScopeId, [...request.worldlineHints]])).rows
+       AND object_type='frame_instance' AND created_at<=$3`, [request.ownerScopeId, [...request.worldlineHints], knowledgeTime])).rows
     .map(row => row['object_id'] as string);
   const hinted = entityIds.length > 0 || threadFrames.length > 0 || request.frameTypeHints.length > 0;
   const frameRows = (await tx.query(
-    `SELECT f.id,f.frame_type_id,f.created_at FROM frame_instances f
-     WHERE f.owner_scope_id=$1 AND f.lifecycle<>'RETIRED'
+    `SELECT f.id,f.frame_type_id,f.created_at,count(*) OVER() AS candidate_count,
+       unai_private.object_state_at(f.owner_scope_id,'frame_instances',f.id,$9) AS temporal_state FROM frame_instances f
+     WHERE f.owner_scope_id=$1 AND f.created_at<=$9 AND coalesce(unai_private.object_state_at(f.owner_scope_id,'frame_instances',f.id,$9)->>'lifecycle','UNKNOWN')<>'RETIRED'
+       AND NOT f.id=ANY($8::uuid[])
        AND ($2=false OR f.id=ANY($3::uuid[]) OR f.frame_type_id=ANY($4::text[])
-         OR EXISTS(SELECT 1 FROM frame_instance_roles r WHERE r.owner_scope_id=f.owner_scope_id
-           AND r.frame_instance_id=f.id AND r.entity_id=ANY($5::uuid[])))
-     ORDER BY f.created_at DESC,f.id DESC LIMIT $6`,
-    [request.ownerScopeId, hinted, threadFrames, [...request.frameTypeHints], entityIds, frameLimit])).rows;
+         OR EXISTS(SELECT 1 FROM frame_instance_roles r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+           JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+           WHERE r.owner_scope_id=f.owner_scope_id AND r.frame_instance_id=f.id AND r.entity_id=ANY($5::uuid[])
+           AND a.source_item_id=ANY($10::uuid[]) AND c.recorded_at<=$9 AND r.created_at<=$9
+           AND NOT r.id=ANY($8::uuid[]) AND NOT c.id=ANY($8::uuid[])
+           AND unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$9) IS NOT NULL))
+     ORDER BY array_position($7::uuid[],f.id) NULLS LAST,
+       CASE WHEN f.frame_type_id IN ('shared.commitment','shared.obligation') THEN 0 ELSE 1 END,
+       f.created_at DESC,f.id DESC LIMIT $6`,
+    [request.ownerScopeId, hinted, threadFrames, [...request.frameTypeHints], entityIds, frameScanLimit,
+      relevantFrameIds, [...removedFromRetrieval, ...redactions.objects], knowledgeTime, readableEvidenceIds])).rows;
+  if (Number(frameRows[0]?.['candidate_count'] ?? 0) > frameRows.length) {
+    unknowns.push(contextUnknownSchema.parse({ kind: 'RETRIEVAL_INCOMPLETE', objectType: 'frame_instances',
+      objectId: null, detail: 'FRAME_CANDIDATE_BUDGET_REACHED' }));
+  }
+  if (frameRows.some(row => row['temporal_state'] === null)) {
+    unknowns.push(contextUnknownSchema.parse({ kind: 'HISTORY_NOT_RECORDED', objectType: 'frame_instances',
+      objectId: null, detail: 'HISTORICAL_FRAME_STATE_UNAVAILABLE' }));
+  }
   // The category view is *not* applied here. A frame's registry namespace is only
   // half of what places it in a view: the other half is the evidence behind each
   // value, which is known one step further down. Filtering frames on the namespace
   // alone would drop the finance-and-family item from the family view even though
   // one evidence row admits both purposes (CRT-MEM-02-A).
+  const candidateFrameIds = frameRows.filter(row => row['temporal_state'] !== null).map(row => row['id'] as string);
+  const candidateResolutions = await readableResolutions(tx, { ownerScopeId: request.ownerScopeId,
+    frameIds: candidateFrameIds, knowledgeTime, worldTime, readableEvidenceIds,
+    withheldObjectIds: redactions.objects, removedObjectIds: removedFromRetrieval });
+  const closedFrames = closedFrameIds(candidateResolutions);
+  // Sort only after outcome authority: a hidden or future outcome cannot make an
+  // unfinished item disappear behind a finite answer budget. Preserve the stable
+  // semantic order within each group, and retain completed history for other asks.
+  if (answerType === 'OPEN_COMMITMENTS') {
+    candidateFrameIds.sort((a, b) => Number(closedFrames.has(a)) - Number(closedFrames.has(b)));
+  }
+  const candidateRead = await readableFrameCandidates(tx, { ownerScopeId: request.ownerScopeId, knowledgeTime,
+    frameIds: candidateFrameIds, limit: frameLimit,
+    readableEvidenceIds, withheldObjectIds: redactions.objects,
+    withheldValueIds: new Set([...redactions.fields].filter(([, fields]) => fields.has('normalizedValue')).map(([id]) => id)),
+    removedObjectIds: removedFromRetrieval });
+  if (candidateRead.incomplete && !unknowns.some(value => value.kind === 'RETRIEVAL_INCOMPLETE')) {
+    unknowns.push(contextUnknownSchema.parse({ kind: 'RETRIEVAL_INCOMPLETE', objectType: 'frame_instances',
+      objectId: null, detail: 'MEMORY_RETRIEVAL_BUDGET_REACHED' }));
+  }
+  const admittedFrames = new Set([...candidateRead.frameIds, ...candidateRead.withheldFrameIds]);
   const frames = frameRows
-    .filter(row => !removedFromRetrieval.has(row['id'] as string))
+    .filter(row => admittedFrames.has(row['id'] as string))
     .map(row => ({ frameInstanceId: row['id'] as string, frameTypeId: row['frame_type_id'] as string }));
   const frameIds = frames.map(frame => frame.frameInstanceId);
   const frameTypeById = new Map(frames.map(frame => [frame.frameInstanceId, frame.frameTypeId]));
@@ -436,7 +504,15 @@ async function assemble(
   // superseded then -- which is what "what did Uai believe then" means (PRD
   // §12.3); the live row alone would answer "now" for every knowledge time.
   const beliefRows = frameIds.length === 0 ? [] : (await tx.query(
-    `SELECT p.id AS proposition_id,p.belief_slot_id,p.normalized_value,p.polarity,p.lifecycle AS proposition_lifecycle,
+    `WITH known_claims AS MATERIALIZED (
+       SELECT c.*,(unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid AS historical_proposition_id
+       FROM claims c WHERE c.owner_scope_id=$1 AND c.recorded_at<=$3
+         AND c.proposition_id IN (SELECT p.id FROM propositions p JOIN belief_slots s
+           ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
+           WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[]))
+     )
+     SELECT p.id AS proposition_id,p.belief_slot_id,p.normalized_value,p.polarity,
+       unai_private.object_state_at(p.owner_scope_id,'propositions',p.id,$3)->>'lifecycle' AS proposition_lifecycle,
        s.frame_instance_id,s.predicate_id,s.modality,
        (SELECT b.assessment_status FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
           AND b.proposition_id=p.id AND b.recorded_at<=$3
@@ -454,35 +530,32 @@ async function assemble(
           AND b.proposition_id=p.id AND b.recorded_at<=$3
           AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
           ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_valid_to,
-       (SELECT min(c.valid_from) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
+       (SELECT min(c.valid_from) FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id
           AND c.recorded_at<=$3) AS valid_from,
-       (SELECT max(c.valid_to) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
+       (SELECT max(c.valid_to) FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id
           AND c.recorded_at<=$3) AS valid_to,
-       coalesce((SELECT array_agg(DISTINCT c.id) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id
-          AND c.proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_ids,
-       (SELECT count(*)::int FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
+       coalesce((SELECT array_agg(DISTINCT c.id) FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id
+          AND c.historical_proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_ids,
+       (SELECT count(*)::int FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id
           AND c.recorded_at<=$3) AS claim_count,
-       coalesce((SELECT array_agg(DISTINCT a.source_item_id) FROM claims c
+       coalesce((SELECT array_agg(DISTINCT a.source_item_id) FROM known_claims c
           JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-          WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id AND c.recorded_at<=$3),'{}') AS evidence_ids,
-       coalesce((SELECT array_agg(DISTINCT c.claim_origin) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id
-          AND c.proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_origins
+          WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id AND c.recorded_at<=$3),'{}') AS evidence_ids,
+       coalesce((SELECT array_agg(DISTINCT c.claim_origin) FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id
+          AND c.historical_proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_origins
      FROM propositions p
      JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
      WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[])
-       AND (EXISTS(SELECT 1 FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id AND c.recorded_at<=$3)
+       AND (EXISTS(SELECT 1 FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id AND c.recorded_at<=$3)
          OR EXISTS(SELECT 1 FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
            AND b.proposition_id=p.id AND b.recorded_at<=$3))
      ORDER BY s.frame_instance_id,s.id,p.id`,
     [request.ownerScopeId, frameIds, knowledgeTime])).rows;
 
-  const supportAuthority = await readPropositionAuthority(tx, {
-    ownerScopeId: request.ownerScopeId,
-    propositionIds: beliefRows.map(row => row['proposition_id'] as string), knowledgeTime, readableEvidenceIds,
-    withheldObjectIds: redactions.objects,
-    withheldValueIds: new Set([...redactions.fields].filter(([, fields]) => fields.has('normalizedValue')).map(([id]) => id)),
-    removedObjectIds: removedFromRetrieval,
-  });
+  const supportAuthority = new Map(beliefRows.map(row => {
+    const id = row['proposition_id'] as string;
+    return [id, candidateRead.authority.get(id) ?? { readable: false, claimIds: [], evidenceIds: [] }] as const;
+  }));
   const authorizedClaimIds = new Set([...supportAuthority.values()].flatMap(authority => authority.claimIds));
   const authorizedClaimRows = authorizedClaimIds.size === 0 ? [] : (await tx.query(
     `SELECT id,claim_origin,valid_from,valid_to FROM claims
@@ -638,11 +711,11 @@ async function assemble(
 
   // Step 5: the owner's overlay, including the deltas that have no frame yet.
   const overlay = await readOwnerOverlay(tx, { ownerScopeId: request.ownerScopeId, knowledgeTime, readableEvidenceIds });
-  const attachedToPacket = new Set(frameIds);
+  const attachedToPacket = new Set(frameRows.filter(row => row['temporal_state'] !== null).map(row => row['id'] as string));
   const relevant = overlay.deltas.filter(delta =>
     (delta.attachedFrameInstanceId !== null && attachedToPacket.has(delta.attachedFrameInstanceId))
     || (delta.target !== null && delta.target.objectType === 'proposition'
-      && [...currentBeliefs, ...historicalBeliefs].some(belief => belief.propositionId === delta.target!.objectId)));
+      && [...currentBeliefs, ...historicalBeliefs, ...futureClaims].some(belief => belief.propositionId === delta.target!.objectId)));
 
   // PRD §21.4 and CRT-RYW-03-A: a delta in AWAITING_INSTANCE_RESOLUTION with no
   // attached frame is retrieved when the query intersects it through *any one* of
@@ -651,14 +724,16 @@ async function assemble(
   // synchronous canonicalization could not name the obligation.
   const unattachedRows = (await tx.query(
     `SELECT id FROM owner_overlay_deltas
-     WHERE owner_scope_id=$1 AND lifecycle='AWAITING_INSTANCE_RESOLUTION' AND attached_frame_instance_id IS NULL
+     WHERE owner_scope_id=$1
+       AND unai_private.object_state_at(owner_scope_id,'owner_overlay_deltas',id,$6)->>'lifecycle'='AWAITING_INSTANCE_RESOLUTION'
+       AND unai_private.object_state_at(owner_scope_id,'owner_overlay_deltas',id,$6)->>'attached_frame_instance_id' IS NULL
        AND (candidate_entity_refs && $2::uuid[]
          OR candidate_worldline_refs && $3::uuid[]
          OR (discourse_anchor IS NOT NULL AND discourse_anchor=ANY($4::text[]))
          OR candidate_frame_types && $5::text[])
      ORDER BY owner_sequence`,
     [request.ownerScopeId, [...request.entityHints], [...request.worldlineHints],
-      [...request.discourseAnchors], [...request.frameTypeHints]])).rows;
+      [...request.discourseAnchors], [...request.frameTypeHints], knowledgeTime])).rows;
   const eligibleOverlayIds = new Set(overlay.deltas.map(delta => delta.overlayDeltaId));
   const unattachedIds = new Set(unattachedRows.map(row => row['id'] as string).filter(id => eligibleOverlayIds.has(id)));
   const ownerOverlayDeltas = [...relevant, ...overlay.deltas.filter(delta => unattachedIds.has(delta.overlayDeltaId))]
@@ -703,31 +778,6 @@ async function assemble(
   });
   const registeredBySlot = new Map(selections.map(selection => [selection.beliefSlotId, selection.predicateRegistered]));
 
-  // Step 10: semantic search, only after the hard filters. Owner, permission and
-  // sensitivity are the request's own declarations; knowledge time, the time
-  // window, source types and the entity hints narrow further. The ranking sees
-  // the filtered rows and no others, so the nearest embedding never crosses a
-  // boundary the request drew (CRT-RD-04-A).
-  const semantic = await searchMemoryEmbeddings(tx, {
-    ownerScopeId: request.ownerScopeId, query: request.query, dataPurpose: request.purpose,
-    maximumSensitivity: request.maximumSensitivity, knowledgeTime,
-    timeWindow: request.timeWindow ? {
-      from: request.timeWindow.from ? new Date(request.timeWindow.from) : null,
-      to: request.timeWindow.to ? new Date(request.timeWindow.to) : null,
-    } : null,
-    entityIds: request.entityHints.length > 0 ? request.entityHints : null,
-    sourceTypes: request.sourceTypes.length > 0 ? request.sourceTypes : null,
-    registryReleaseId: options.registryReleaseId ?? null, limit: 10,
-  });
-  // What the owner removed from normal retrieval, or a verdict withheld, is not
-  // recalled by similarity either. Dropping after ranking only ever narrows.
-  const semanticSearch = semantic === null ? null : {
-    ...semantic,
-    matches: semantic.matches.filter(match => !removedFromRetrieval.has(match.objectId)
-      && !redactions.objects.has(match.objectId)
-      && !match.evidenceIds.some(id => withheldEvidence.has(id))
-      && !(match.propositionId !== null && (removedFromRetrieval.has(match.propositionId) || redactions.objects.has(match.propositionId)))),
-  };
   const semanticEvidence = new Set((semanticSearch?.matches ?? []).flatMap(match => match.evidenceIds));
 
   // Steps 3 and 4: the typed projection state, with its completeness and its
@@ -748,25 +798,8 @@ async function assemble(
   }
 
   // Step 8: the accepted outcome authority over those frames.
-  const resolutionRows = frameIds.length === 0 ? [] : (await tx.query(
-    `SELECT r.id,r.source_frame_instance_id,r.target_frame_instance_id,r.outcome_code,r.effective_at,r.lifecycle,r.transition_contract_id
-     FROM resolution_assertions r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
-     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     WHERE r.owner_scope_id=$1
-       AND (r.source_frame_instance_id=ANY($2::uuid[]) OR r.target_frame_instance_id=ANY($2::uuid[]))
-       AND r.recorded_at<=$3 AND c.recorded_at<=$3 AND r.effective_at<=$4
-       AND a.source_item_id=ANY($5::uuid[])
-     ORDER BY r.effective_at,r.id`, [request.ownerScopeId, frameIds, knowledgeTime, worldTime, readableEvidenceIds])).rows;
-  const resolutionAssertions = resolutionRows.filter(row => !redactions.objects.has(row['id'] as string)
-    && !removedFromRetrieval.has(row['id'] as string)
-    && !removedFromRetrieval.has(row['source_frame_instance_id'] as string)
-    && !removedFromRetrieval.has(row['target_frame_instance_id'] as string))
-    .map(row => contextResolutionSchema.parse({
-    resolutionAssertionId: row['id'], sourceFrameInstanceId: row['source_frame_instance_id'],
-    targetFrameInstanceId: (row['target_frame_instance_id'] as string | null) ?? null,
-    outcomeCode: row['outcome_code'], effectiveAt: (row['effective_at'] as Date).toISOString(),
-    lifecycle: row['lifecycle'], transitionContractId: row['transition_contract_id'],
-  }));
+  const resolutionAssertions = candidateResolutions.filter(value => admittedFrames.has(value.sourceFrameInstanceId)
+    || (value.targetFrameInstanceId !== null && admittedFrames.has(value.targetFrameInstanceId)));
 
   // Step 9: the original evidence, when grounding needs it. `NEVER` still leaves
   // the redactions and the unknowns in place: what was withheld is still said.
@@ -799,7 +832,7 @@ async function assemble(
   const seenThreads = new Set<string>();
   for (const frameInstanceId of suppliedFrameIds) {
     for (const thread of await listThreadsForObject(tx, {
-      ownerScopeId: request.ownerScopeId, objectType: 'frame_instance', objectId: frameInstanceId,
+      ownerScopeId: request.ownerScopeId, objectType: 'frame_instance', objectId: frameInstanceId, knowledgeTime,
     })) {
       if (seenThreads.has(thread.memoryThreadId)) continue;
       seenThreads.add(thread.memoryThreadId);
@@ -845,8 +878,10 @@ async function assemble(
     // action in V0 is founded on memory or it is not founded.
     const admitsAction = supportingEvidence.length > 0 && admittingEvidence.length === supportingEvidence.length;
     const supportingAssessment = conflicts.length > 0 ? 'CONTESTED' as const
-      : currentBeliefs.some(belief => belief.certainty === 'ACCEPTED') ? 'ACCEPTED' as const
-        : currentBeliefs.length > 0 ? 'PROVISIONAL' as const : 'NONE' as const;
+      : currentBeliefs.some(belief => belief.certainty === 'ACCEPTED')
+        || selections.some(selection => selection.outcome === 'SELECTED' && selection.certainty === 'ACCEPTED'
+          && futureClaims.some(claim => claim.propositionId === selection.selectedPropositionId)) ? 'ACCEPTED' as const
+        : currentBeliefs.length + futureClaims.length > 0 ? 'PROVISIONAL' as const : 'NONE' as const;
     const actionVerdict = await ports.evaluateMemoryAction({
       actorId: request.requestingActorId, ownerScopeId: request.ownerScopeId, purpose: CONTEXT_ACTION_PURPOSE,
       sensitivity: request.maximumSensitivity, risk: request.actionRisk,
@@ -894,13 +929,64 @@ async function assemble(
     .map(fragment => new Date(fragment.canonicalTransactionWatermark))
     .reduce((latest, time) => time.getTime() > latest.getTime() ? time : latest, new Date(0));
 
+  const suppliedValues = new Map([...currentBeliefs, ...historicalBeliefs, ...futureClaims].map(value => [value.propositionId, value]));
+  const freshness = await readContextFreshness(tx, { ownerScopeId: request.ownerScopeId,
+    registryReleaseId: options.registryReleaseId ?? null, evaluatedAt: now, worldTime, knowledgeTime,
+    decisionRelevant: answerType === 'DECISION_RECONSTRUCTION' || request.actionRisk !== 'LOW',
+    beliefs: beliefRows.flatMap(row => {
+      const value = suppliedValues.get(row['proposition_id'] as string);
+      const fields = redactions.fields.get(row['proposition_id'] as string);
+      if (!value || !('normalizedValue' in value) || !value.evidenceIds || fields?.has('claimIds') || fields?.has('evidenceIds')) return [];
+      return [{ propositionId: value.propositionId, frameTypeId: value.frameTypeId, predicateId: value.predicateId,
+        validFrom: fields?.has('validFrom') ? null : value.validFrom ?? null,
+        validTo: fields?.has('validTo') ? null : (row['assessment_valid_to'] as Date | null) ?? (row['valid_to'] as Date | null) ?? null,
+        claimIds: supportAuthority.get(value.propositionId)?.claimIds ?? [], evidenceIds: value.evidenceIds }];
+    }),
+  });
+  const pendingProcessing = Number((await tx.query(`SELECT count(*)::int AS n FROM evidence_processing
+    WHERE owner_scope_id=$1 AND source_item_id=ANY($2::uuid[]) AND status<>'SUCCEEDED'`,
+    [request.ownerScopeId, readableEvidenceIds])).rows[0]?.['n'] ?? 0);
+  if (pendingProcessing > 0) unknowns.push(contextUnknownSchema.parse({ kind: 'PROCESSING_INCOMPLETE',
+    objectType: 'evidence_processing', objectId: null, detail: 'ELIGIBLE_EVIDENCE_AWAITS_UNDERSTANDING' }));
+  const relationRows = authorizedClaimIds.size === 0 ? [] : (await tx.query(
+    `SELECT r.relation_kind,r.created_at,r.valid_from,
+       unai_private.object_state_at(r.owner_scope_id,'claims',r.to_claim_id,$3)->>'proposition_id' AS from_proposition_id,
+       unai_private.object_state_at(r.owner_scope_id,'claims',r.from_claim_id,$3)->>'proposition_id' AS to_proposition_id
+     FROM claim_relations r WHERE r.owner_scope_id=$1 AND r.from_claim_id=ANY($2::uuid[]) AND r.to_claim_id=ANY($2::uuid[])
+       AND r.created_at<=$3 AND r.relation_kind IN ('CORRECTS','SUPERSEDES') ORDER BY r.created_at,r.id LIMIT 500`,
+    [request.ownerScopeId, [...authorizedClaimIds], knowledgeTime])).rows;
+  const goalRows = authorizedClaimIds.size === 0 ? [] : (await tx.query(
+    `SELECT r.id,r.frame_instance_id,r.typed_value->>'goalId' AS goal_id,r.claim_id,a.source_item_id
+     FROM frame_instance_roles r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE r.owner_scope_id=$1 AND r.frame_instance_id=ANY($2::uuid[]) AND r.role_id='related_goal'
+       AND r.claim_id=ANY($3::uuid[]) AND a.source_item_id=ANY($4::uuid[]) AND r.created_at<=$5
+     ORDER BY r.id LIMIT 500`, [request.ownerScopeId, frameIds, [...authorizedClaimIds], readableEvidenceIds, knowledgeTime])).rows;
+  const goalIds = [...new Set(goalRows.flatMap(row => z.uuid().safeParse(row['goal_id']).success ? [row['goal_id'] as string] : []))];
+  const activeGoalIds = new Set(goalIds.length === 0 ? [] : (await tx.query(
+    'SELECT goal_id FROM unai_private.active_goal_priorities($1,$2::uuid[],$3,$4)',
+    [request.ownerScopeId, goalIds, worldTime, knowledgeTime])).rows.map(row => row['goal_id'] as string));
+  const understanding = deriveUnderstanding({ worldTime: worldTime.toISOString(), currentBeliefs, historicalBeliefs,
+    futureClaims, selections, resolutionAssertions, freshness, unknowns,
+    transitions: relationRows.flatMap(row => row['from_proposition_id'] && row['to_proposition_id'] ? [{
+      fromPropositionId: row['from_proposition_id'] as string, toPropositionId: row['to_proposition_id'] as string,
+      kind: row['relation_kind'] as string, recordedAt: (row['created_at'] as Date).toISOString(),
+      effectiveAt: row['valid_from'] ? (row['valid_from'] as Date).toISOString() : null }] : []),
+    goalLinks: goalRows.filter(row => activeGoalIds.has(row['goal_id'] as string)
+      && ![row['id'], row['goal_id'], row['claim_id']].some(id => redactions.objects.has(id as string) || removedFromRetrieval.has(id as string))
+      && !redactions.fields.has(row['id'] as string) && !redactions.fields.has(row['claim_id'] as string)
+      && !redactions.fields.has(row['goal_id'] as string)).map(row => ({
+      frameInstanceId: row['frame_instance_id'] as string, goalId: row['goal_id'] as string,
+      claimId: row['claim_id'] as string, evidenceId: row['source_item_id'] as string })),
+  });
+
   const body = {
     ownerScopeId: request.ownerScopeId, requestingActorId: request.requestingActorId, purpose: request.purpose,
     answerType, lifeCategory: category, registryRelease: options.registryRelease ?? null,
     worldTime: worldTime.toISOString(), knowledgeTime: knowledgeTime.toISOString(),
     currentBeliefs, historicalBeliefs, futureClaims, resolutionAssertions, conflicts, unknowns,
     ownerOverlayDeltas, projectionFragments, evidenceRefs, memoryThreads, allowedActions, actionDecision,
-    redactions: redactions.listed, selections, semanticSearch,
+    redactions: redactions.listed, selections, semanticSearch, freshness, understanding,
     watermarks: {
       ownerOverlayWatermark: Math.max(overlay.ownerOverlayWatermark,
         ...projectionFragments.map(fragment => fragment.ownerOverlayWatermark), 0),

@@ -40,10 +40,28 @@ it('keeps only current or imminent material items', () => {
   expect(isCurrentOrImminent(candidate(1, { targetTime: hours(47) }), NOW)).toBe(true);
   expect(isCurrentOrImminent(candidate(1, { targetTime: hours(49) }), NOW)).toBe(false);
   expect(isCurrentOrImminent(candidate(1, { targetTime: hours(-24 * 13) }), NOW)).toBe(true);
-  expect(isCurrentOrImminent(candidate(1, { targetTime: hours(-24 * 15) }), NOW)).toBe(false);
+  expect(isCurrentOrImminent(candidate(1, { kind: 'SCHEDULED_EVENT', targetTime: hours(-24 * 15) }), NOW)).toBe(false);
   expect(isCurrentOrImminent(candidate(1, { outcomeState: 'RESOLVED' }), NOW)).toBe(false);
-  expect(isCurrentOrImminent(candidate(1, { targetTime: null }), NOW)).toBe(false);
+  expect(isCurrentOrImminent(candidate(1, { kind: 'SCHEDULED_EVENT', targetTime: null }), NOW)).toBe(false);
   expect(isCurrentOrImminent(candidate(1, { targetTime: null, decisionAffectingConflict: true }), NOW)).toBe(true);
+});
+
+it('keeps old and undated unfinished commitments eligible within the attention budget', () => {
+  const old = candidate(71, { targetTime: hours(-24 * 365) });
+  const undated = candidate(72, { targetTime: null, kind: 'OBLIGATION' });
+  expect(isCurrentOrImminent(old, NOW)).toBe(true);
+  expect(isCurrentOrImminent(undated, NOW)).toBe(true);
+  expect(rank([old, undated]).items.map(item => item.candidate.itemObjectId)).toEqual([old.itemObjectId, undated.itemObjectId]);
+  expect(rank([{ ...old, outcomeState: 'RESOLVED' }, { ...undated, outcomeState: 'RESOLVED' }]).items).toEqual([]);
+});
+
+it('uses actual goal links for goal relevance and keeps unlinked items neutral', () => {
+  const linked = candidate(81, { goalLinked: true } as Partial<BriefingCandidate>);
+  const neutral = candidate(82);
+  const items = rank([neutral, linked]).items;
+  expect(items[0]!.candidate.itemObjectId).toBe(linked.itemObjectId);
+  expect(items[0]!.components.goalRelevance).toBe(1);
+  expect(items[1]!.components.goalRelevance).toBe(0.5);
 });
 
 it('CRT-UX-02-A: ranks an older urgent high-consequence item above a newer low-consequence one, whatever the input order', () => {

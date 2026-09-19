@@ -55,6 +55,13 @@ it('CRT-RD-12-A: classifies fixture questions for each of the eight answer types
 });
 
 const SLOT = '01900000-0000-7000-8000-000000000001';
+it('routes the five assistant questions through their appropriate memory views', () => {
+  expect(classifyQuestion('What am I forgetting?').queryMode).toBe('OPEN_COMMITMENTS');
+  expect(classifyQuestion('What changed in my life this month?').queryMode).toBe('PATTERN_REVIEW');
+  expect(classifyQuestion('Given my situation, what should I focus on?').queryMode).toBe('OPEN_COMMITMENTS');
+  expect(classifyQuestion('Why did I decide against this before?').queryMode).toBe('DECISION_RECONSTRUCTION');
+  expect(classifyQuestion('What can you handle for me today?').queryMode).toBe('OPEN_COMMITMENTS');
+});
 const FRAME = '01900000-0000-7000-8000-000000000002';
 const OLD = '01900000-0000-7000-8000-00000000000a', NEW = '01900000-0000-7000-8000-00000000000b';
 const OTHER = '01900000-0000-7000-8000-00000000000c';

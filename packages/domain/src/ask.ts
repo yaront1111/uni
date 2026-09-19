@@ -71,6 +71,7 @@ export type AskSourceLink = z.infer<typeof askSourceLinkSchema>;
 export const askStatementKindSchema = z.enum(['SELECTED_STATE', 'CONTESTED_STATE', 'NO_CURRENT_VALUE',
   'HISTORICAL_VALUE', 'FUTURE_CLAIM', 'RESOLUTION', 'CONFLICT', 'NO_CONFLICT_FOUND', 'SEMANTIC_RECALL',
   'AGGREGATE_COUNT', 'OWNER_ASSERTION_PENDING', 'WITHHELD', 'NOTHING_FOUND', 'HISTORICAL_INSTANT_MISSING',
+  'RECORDED_CHANGE', 'CAPABILITY_SUMMARY', 'FOCUS_SUMMARY', 'MEMORY_INCOMPLETE',
   // A statement phrased by a model. Its kind is not the composer's to know; the
   // grounding validator has checked its label, objects and citations instead.
   'MODEL_PHRASED',

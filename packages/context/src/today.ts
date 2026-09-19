@@ -275,6 +275,7 @@ async function candidatesOf(tx: MemoryTransaction, packet: ContextPacket, now: D
       outcomeState,
       targetTime: row.targetTime ? new Date(row.targetTime) : null,
       subject: row.subject, counterpart: row.counterpart, amount: row.amount, statedPriority: row.statedPriority,
+      goalLinked: packet.understanding?.goalLinks.some(link => link.frameInstanceId === frameInstanceId) ?? false,
       decisionAffectingConflict: conflict, ownerAssertionPending: pending, projectionComplete: projection?.isComplete === true,
       supportAccepted: selected.length > 0 && selected.every(selection => selection.certainty === 'ACCEPTED'),
       sourceRefs: sourceRefsOf(view, label, keyPropositions), evidenceIds: view.evidenceIds.slice(0, 64),
@@ -450,6 +451,7 @@ export async function buildTodayBriefing(runner: ContextRunner, input: TodayInpu
       })),
       deferredByAttentionBudget: items.filter(({ item }) => item.presentation === 'DEFERRED_BY_ATTENTION_BUDGET').length,
       projectionCompleteness, packetManifest: manifest, rankingVersion: RANKING_VERSION,
+      memoryIncomplete: packet.understanding?.complete === false,
     });
   });
 }

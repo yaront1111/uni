@@ -29,8 +29,9 @@ export interface AskProps{
   error?:string|null;
 }
 
-export const EXAMPLE_QUESTIONS=Object.freeze(['What did I promise Daniel?','Do I still owe Daniel?','What is on my calendar next week?',
-  'Did the planning call happen?','Does anything I recorded about the loan contradict itself?']);
+export const EXAMPLE_QUESTIONS=Object.freeze(['What am I forgetting?','What changed in my life this month?',
+  'Given my situation, what should I focus on?','Why did I decide against this before?',
+  'What can you handle for me today?','What did I promise Daniel?','Do I still owe Daniel?']);
 
 const ANSWER_TYPE:Record<AskAnswer['answerType'],string>={
   CURRENT_STATE:'What is true now',HISTORICAL_STATE:'What was true then',EPISODE_RECALL:'Remembering an episode',

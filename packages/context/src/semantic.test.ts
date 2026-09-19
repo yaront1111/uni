@@ -67,18 +67,19 @@ async function claim(input: {
       input.purposes ?? [FINANCE], randomUUID(), input.validFrom ?? new Date('2026-02-01T08:00:00.000Z')]);
   await admin.query("INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor) VALUES($1,$2,$3,'MESSAGE_SPAN','{\"start\":0,\"end\":40}')",
     [anchorId, ownerScopeId, sourceItemId]);
-  await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.obligation',$3)",
+  await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,'shared.obligation',$3,'2024-01-01T00:00:00Z')",
     [frameId, ownerScopeId, context]);
-  await admin.query("INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id) VALUES($1,$2,$3,'creditor',$4)",
-    [randomUUID(), ownerScopeId, frameId, input.creditor]);
-  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
-    VALUES($1,$2,$3,'shared.obligation.description',$4,'ACTUAL')`, [slotId, ownerScopeId, frameId, context]);
-  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,'shared.obligation.description',$4,'ACTUAL','2024-01-01T00:00:00Z')`, [slotId, ownerScopeId, frameId, context]);
+  await admin.query("INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,'2024-01-01T00:00:00Z')",
     [propositionId, ownerScopeId, slotId, JSON.stringify({ text: input.text })]);
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,valid_to,recorded_at)
     VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL',$5,$6,$7)`,
     [claimId, ownerScopeId, anchorId, propositionId, input.validFrom ?? new Date('2026-02-01T08:00:00.000Z'),
       input.validTo ?? null, input.recordedAt ?? new Date('2026-02-01T09:00:00.000Z')]);
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id,created_at)
+    VALUES($1,$2,$3,'creditor',$4,$5,$6)`,
+    [randomUUID(), ownerScopeId, frameId, input.creditor, claimId, input.recordedAt ?? new Date('2026-02-01T09:00:00.000Z')]);
   return claimId;
 }
 
@@ -139,6 +140,19 @@ async function search(over: Partial<Parameters<typeof searchMemoryEmbeddings>[1]
     return searchMemoryEmbeddings(tx, request);
   });
 }
+
+it('an explicitly empty authorized source set cannot widen semantic retrieval', async () => {
+  const result = await search({ sourceItemIds: [] });
+  expect(result!.matches).toEqual([]);
+  expect(result!.candidatesAfterFilters).toBe(0);
+});
+
+it('policy exclusions apply before the semantic candidate budget', async () => {
+  const result = await search({ maximumSensitivity: 'RESTRICTED', limit: 1,
+    excludedObjectIds: [claims.restricted] } as Partial<Parameters<typeof searchMemoryEmbeddings>[1]>);
+  expect(result!.matches.map(match => match.objectId)).toEqual([claims.allowed]);
+  expect(result!.candidatesAfterFilters).toBe(1);
+});
 
 it('CRT-RD-04-A: the excluded objects are the nearest embeddings, and the search still returns only the admitted one', async () => {
   // The premise: by distance alone every excluded object beats the admitted one.

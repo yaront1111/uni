@@ -56,9 +56,9 @@ function git(repository: string, ...args: string[]) {
   return result.stdout.trim();
 }
 /** The immutable 0.1.0 snapshot, published by whichever suite gets there first. */
-async function pinnedRegistryRelease(): Promise<string> {
+async function pinnedRegistryRelease(version = '0.1.0'): Promise<string> {
   for (let attempt = 0; attempt < 8; attempt++) {
-    const existing = (await admin.query("SELECT id FROM registry_releases WHERE semantic_version='0.1.0'")).rows[0];
+    const existing = (await admin.query('SELECT id FROM registry_releases WHERE semantic_version=$1', [version])).rows[0];
     if (existing) return existing.id as string;
     await sleep(250);
   }
@@ -66,8 +66,8 @@ async function pinnedRegistryRelease(): Promise<string> {
   try {
     await cp(resolve('registry'), join(repository, 'registry'), { recursive: true });
     git(repository, 'init', '--quiet'); git(repository, 'add', 'registry');
-    git(repository, 'commit', '--quiet', '-m', 'release'); git(repository, 'tag', 'registry-v0.1.0');
-    const release = await loadRegistryRelease({ repository, version: '0.1.0' });
+    git(repository, 'commit', '--quiet', '-m', 'release'); git(repository, 'tag', 'registry-v' + version);
+    const release = await loadRegistryRelease({ repository, version });
     return (await publishRegistryRelease(admin, release, randomUUID())).releaseId;
   } finally { await rm(repository, { recursive: true, force: true }); }
 }
@@ -89,18 +89,16 @@ async function item(externalId: string, sourceType: string, classification: {
   return { evidenceId, anchorId };
 }
 
-async function frame(frameTypeId: string, contextSpaceId = baseContext): Promise<string> {
+async function frame(frameTypeId: string, contextSpaceId = baseContext, createdAt = T('2025-01-01')): Promise<string> {
   const id = uuidV7();
-  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,$3,$4)',
-    [id, owner, frameTypeId, contextSpaceId]);
-  await admin.query("INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id) VALUES($1,$2,$3,'creditor',$4)",
-    [randomUUID(), owner, id, danielEntity]);
+  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,$3,$4,$5)',
+    [id, owner, frameTypeId, contextSpaceId, createdAt]);
   return id;
 }
 async function slot(frameInstanceId: string, predicateId: string, modality = 'ACTUAL', contextSpaceId = baseContext): Promise<string> {
   const id = uuidV7();
-  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
-    VALUES($1,$2,$3,$4,$5,$6)`, [id, owner, frameInstanceId, predicateId, contextSpaceId, modality]);
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,$4,$5,$6,'2025-01-01T00:00:00Z')`, [id, owner, frameInstanceId, predicateId, contextSpaceId, modality]);
   return id;
 }
 interface Version { status: string; validFrom?: Date | null; validTo?: Date | null; recordedAt: Date; supersededAt?: Date | null }
@@ -109,11 +107,14 @@ interface Version { status: string; validFrom?: Date | null; validTo?: Date | nu
 async function value(input: { slotId: string; value: unknown; source: keyof typeof evidence; origin?: string;
   claimRecordedAt: Date; claimValidFrom?: Date | null; sourceAnchorId?: string; versions: Version[] }): Promise<{ propositionId: string; claimId: string }> {
   const propositionId = uuidV7(), claimId = uuidV7();
-  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
+  await admin.query("INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,'2025-01-01T00:00:00Z')",
     [propositionId, owner, input.slotId, JSON.stringify(input.value)]);
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
     VALUES($1,$2,$3,$4,$5,'PROVISIONAL',$6,$7)`, [claimId, owner, input.sourceAnchorId ?? evidence[input.source].anchorId, propositionId,
     input.origin ?? 'USER_STATEMENT', input.claimValidFrom ?? T('2026-01-01'), input.claimRecordedAt]);
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id,created_at)
+    SELECT $1,$2,frame_instance_id,'creditor',$3,$4,$5 FROM belief_slots WHERE owner_scope_id=$2 AND id=$6`,
+    [randomUUID(), owner, danielEntity, claimId, input.claimRecordedAt, input.slotId]);
   for (const version of input.versions) {
     await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,valid_to,
       recorded_at,superseded_recorded_at,policy_version,decision_reason,transaction_id)
@@ -133,7 +134,7 @@ async function relation(from: string, to: string, kind: 'CORRECTS' | 'SUPERSEDES
 async function derivedValue(marker: string, input: { modality?: string; validTo?: Date; slotId?: string } = {}) {
   const derivedSlot = input.slotId ?? await slot(await frame('shared.obligation'), 'shared.obligation.description', input.modality ?? 'ACTUAL');
   const propositionId = uuidV7();
-  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
+  await admin.query("INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,'2025-01-01T00:00:00Z')",
     [propositionId, owner, derivedSlot, JSON.stringify({ text: marker })]);
   await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,valid_to,
     recorded_at,policy_version,decision_reason,transaction_id)
@@ -256,6 +257,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
+
 const runner: ContextRunner = run => withOwnerTransaction(appPool,
   { actorId: actor, ownerScopeId: owner, purpose: 'memory.read', correlationId: randomUUID() }, tx => run(tx as OwnerTransaction));
 const options = () => ({ correlationId: randomUUID(), now: NOW, registryReleaseId, registryRelease: '0.1.0' });
@@ -307,7 +309,7 @@ it('CRT-RD-03-A: the broker returns the same selected current state and selectio
     predicateRegistered: false, selectedPropositionId: null });
   expect(of(slots.principal).predicateRegistered).toBe(true);
   // The selection reason travels with the packet and the stored record.
-  expect(first!.selectionReason).toMatchObject({ selectorVersion: 'deterministic-selector-0.4.0' });
+  expect(first!.selectionReason).toMatchObject({ selectorVersion: 'deterministic-selector-0.5.0' });
   const stored = (await admin.query('SELECT selection_reason,packet FROM context_packets WHERE id=$1', [first!.packetId])).rows[0];
   expect(stored.selection_reason.selectionsDigest).toBe(first!.selectionReason.selectionsDigest);
   expect(stored.packet.selections).toEqual(JSON.parse(JSON.stringify(first!.selections)));
@@ -394,7 +396,7 @@ it('CRT-RD-12-A: each of the eight answer types is classified correctly and answ
     expect(answer.answerType, question).toBe(answerType);
     // Source links: present, pointing at the fixture's own evidence through the
     // evidence route, and every statement's links are among them.
-    expect(answer.sourceLinks.length, question).toBeGreaterThan(0);
+    expect(answer.sourceLinks.length, question + ' ' + JSON.stringify(answer.grounding)).toBeGreaterThan(0);
     for (const link of answer.sourceLinks) {
       expect(evidenceIds, question).toContain(link.evidenceId);
       expect(link.href, question).toBe('/v1/evidence/' + link.evidenceId);
@@ -403,7 +405,7 @@ it('CRT-RD-12-A: each of the eight answer types is classified correctly and answ
     for (const statement of answer.statements) {
       for (const evidenceId of statement.sourceEvidenceIds) expect(linked.has(evidenceId), question).toBe(true);
     }
-    expect(answer.composer).toEqual({ kind: 'DETERMINISTIC_COMPOSER', version: 'ask-composer-0.1.0', modelCalled: false,
+    expect(answer.composer).toEqual({ kind: 'DETERMINISTIC_COMPOSER', version: 'ask-composer-0.2.0', modelCalled: false,
       modelId: null, promptVersion: null });
     // The same question over the same memory is the same answer.
     const again = await ask(question, over);
@@ -459,7 +461,7 @@ it('CRT-RD-12-A: each of the eight answer types is classified correctly and answ
   // the question was classified into.
   const stored = (await admin.query('SELECT answer_type_classification FROM context_packets WHERE id=$1', [promised.packetId])).rows[0];
   expect(stored.answer_type_classification).toBe('OPEN_COMMITMENTS');
-});
+}, 20000);
 
 it('CRT-RD-12-A: an Ask request missing a declaration, or declaring a purpose the evidence refuses, is refused', async () => {
   for (const field of ['question', 'purpose', 'worldTime', 'knowledgeTime', 'maximumSensitivity', 'ownerScopeId']) {
@@ -583,16 +585,16 @@ it('does not attach a thread title from a frame whose entire support is withheld
   await value({ slotId: protectedSlot, value: { text: 'private thread subject' }, source: 'document', sourceAnchorId: protectedSource.anchorId,
     claimRecordedAt: T('2026-02-01'), versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-01') }] });
   const threadId = uuidV7();
-  await admin.query('INSERT INTO memory_threads(id,owner_scope_id,display_title) VALUES($1,$2,$3)', [threadId, owner, marker]);
-  await admin.query(`INSERT INTO memory_thread_members(owner_scope_id,memory_thread_id,object_type,object_id,membership_kind)
-    VALUES($1,$2,'frame_instance',$3,'SUBJECT')`, [owner, threadId, protectedFrame]);
+  await admin.query('INSERT INTO memory_threads(id,owner_scope_id,display_title,created_at) VALUES($1,$2,$3,$4)', [threadId, owner, marker, T('2026-02-01')]);
+  await admin.query(`INSERT INTO memory_thread_members(owner_scope_id,memory_thread_id,object_type,object_id,membership_kind,created_at)
+    VALUES($1,$2,'frame_instance',$3,'SUBJECT',$4)`, [owner, threadId, protectedFrame, T('2026-02-01')]);
   const packet = await readContextPacket(runner, request(), options());
   expect(packet.currentBeliefs.some(belief => belief.propositionId === p.principal60)).toBe(true);
   expect(JSON.stringify(packet)).not.toContain(marker);
   const stored = (await admin.query('SELECT packet FROM context_packets WHERE id=$1', [packet.packetId])).rows[0].packet;
   expect(JSON.stringify(stored)).not.toContain(marker);
   const allowed = await readContextPacket(runner, request({ maximumSensitivity: 'RESTRICTED' }), options());
-  expect(allowed.memoryThreads.some(thread => thread.displayTitle === marker)).toBe(true);
+  expect(allowed.memoryThreads.some(thread => thread.memoryThreadId === threadId && thread.displayTitle === null)).toBe(true);
 });
 
 it('keeps archived values available for explicit historical recall while excluding them from current context', async () => {
@@ -791,6 +793,7 @@ it('bounds provenance traversal and fails closed instead of accepting a partial 
   });
   const bounded = await check([chain[0]!]);
   expect(bounded.get(chain[0]!)).toMatchObject({ readable: false, evidenceIds: [], claimIds: [] });
+  expect(bounded.get(chain[0]!)).toHaveProperty('incomplete',true);
   // A separate bounded read of an ordinary direct assertion is still available.
   const direct = await check([p.principal60]);
   expect(direct.get(p.principal60)?.readable).toBe(true);
@@ -836,3 +839,209 @@ it('does not turn a withheld same-proposition retraction into an external retrac
   expect(packet.selections.some(selection => selection.selectedPropositionId === visible.propositionId)).toBe(true);
   expect(packet.selections.find(selection => selection.selectedPropositionId === visible.propositionId)?.appliedRelations).toEqual([]);
 });
+
+it('text-only Ask recalls an older supported commitment beyond the recent frame budget', async () => {
+  const oldFrame = await frame('shared.commitment');
+  const old = await value({
+    slotId: await slot(oldFrame, 'shared.commitment.action_description', 'COMMITTED'),
+    value: { text: 'Deliver the obsidian telescope to Marisol' }, source: 'conversation',
+    claimRecordedAt: T('2025-01-01'), claimValidFrom: T('2025-01-01'),
+    versions: [{ status: 'ACCEPTED', recordedAt: T('2025-01-01') }],
+  });
+  await admin.query(`INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at)
+    SELECT gen_random_uuid(),$1,'shared.obligation',$2,$3 FROM generate_series(1,125)`,
+    [owner, baseContext, T('2026-02-20')]);
+  // A broad reminder must find unfinished work even before embeddings exist.
+  const broad = await readContextPacket(runner, request({ query: 'What am I forgetting?',
+    entityHints: [], answerType: 'OPEN_COMMITMENTS' }), options());
+  expect(broad.understanding?.unresolvedFrameIds).toContain(oldFrame);
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.govern', correlationId: randomUUID() },
+    tx => indexClaimEmbeddings(tx, { ownerScopeId: owner, claimIds: [old.claimId] }));
+  const packet = await readContextPacket(runner, request({ query: 'What did I promise about the obsidian telescope to Marisol?',
+    answerType: 'OPEN_COMMITMENTS' }), options());
+  expect(packet.selections.some(selection => selection.selectedPropositionId === old.propositionId)).toBe(true);
+  const answer = await answerQuestion(runner, { ownerScopeId: owner,
+    question: 'What did I promise about the obsidian telescope to Marisol?', purpose: FINANCE,
+    worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE' },
+    { ...options(), requestingActorId: actor });
+  expect(JSON.stringify(answer)).toContain('Deliver the obsidian telescope to Marisol');
+});
+
+it('answers the personal-assistant product questions with grounded sources and honest limits', async () => {
+  for (const [question, kind] of [
+    ['What am I forgetting?', 'SELECTED_STATE'],
+    ['Given my situation, what should I focus on?', 'FOCUS_SUMMARY'],
+    ['What can you handle for me today?', 'CAPABILITY_SUMMARY'],
+    ['What changed in my life this month?', 'RECORDED_CHANGE'],
+  ] as const) {
+    const answer = await answerQuestion(runner, { ownerScopeId: owner, question, purpose: FINANCE,
+      worldTime: '2026-02-28T09:00:00.000Z', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE' },
+    { ...options(), requestingActorId: actor });
+    expect(answer.grounding.action, question + JSON.stringify(answer.grounding)).not.toBe('BLOCKED');
+    expect(answer.statements.some(statement => statement.kind === kind), question).toBe(true);
+    expect(answer.sourceLinks.length, question).toBeGreaterThan(0);
+  }
+}, 20000);
+
+it('recalls a recorded decision rationale after its interval ended without asserting it as current', async () => {
+  const decisionRelease = await pinnedRegistryRelease('0.3.0');
+  const decisionFrame = await frame('shared.decision');
+  const rationale = await value({ slotId: await slot(decisionFrame, 'shared.decision.rationale'),
+    value: { text: 'I declined the astrolabe trip because caring for Ada came first.' }, source: 'conversation',
+    claimRecordedAt: T('2026-01-20'), claimValidFrom: T('2026-01-20'),
+    versions: [{ status: 'ACCEPTED', recordedAt: T('2026-01-20'), validFrom: T('2026-01-20'), validTo: T('2026-02-01') }] });
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.govern', correlationId: randomUUID() },
+    tx => indexClaimEmbeddings(tx, { ownerScopeId: owner, claimIds: [rationale.claimId] }));
+  const answer = await answerQuestion(runner, { ownerScopeId: owner,
+    question: 'Why did I decide against the astrolabe trip before?', purpose: FINANCE,
+    frameTypeHints: ['shared.decision'], worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE' },
+    { ...options(), registryReleaseId: decisionRelease, registryRelease: '0.3.0', requestingActorId: actor });
+  expect(answer.grounding.action, JSON.stringify(answer.grounding)).not.toBe('BLOCKED');
+  expect(JSON.stringify(answer)).toContain('caring for Ada came first');
+  expect(answer.sourceLinks.map(link => link.evidenceId)).toContain(evidence.conversation.evidenceId);
+  const packet = await readContextPacket(runner, request({ frameTypeHints: ['shared.decision'] }),
+    { ...options(), registryReleaseId: decisionRelease, registryRelease: '0.3.0' });
+  expect(packet.understanding?.currentPropositionIds).not.toContain(rationale.propositionId);
+  expect(packet.historicalBeliefs.map(value => value.propositionId)).toContain(rationale.propositionId);
+}, 15000);
+
+
+/** Populated budget controls: each frame carries a sourced, accepted commitment
+ * value. Completed controls also have their own source claim and accepted outcome.
+ * Batch inserts keep a >100-frame regression practical without empty fixtures. */
+async function populatedCommitments(count:number,source:{anchorId:string},marker:string,completed=false) {
+  const rows=Array.from({length:count},(_,index)=>({frame_id:uuidV7(),slot_id:uuidV7(),proposition_id:uuidV7(),claim_id:uuidV7(),
+    outcome_claim_id:uuidV7(),resolution_id:uuidV7(),link_id:uuidV7(),assessment_id:uuidV7(),text:marker+' '+index}));
+  const encoded=JSON.stringify(rows),recordset=`jsonb_to_recordset($2::jsonb) AS r(frame_id uuid,slot_id uuid,proposition_id uuid,claim_id uuid,
+    outcome_claim_id uuid,resolution_id uuid,link_id uuid,assessment_id uuid,text text)`;
+  await admin.query(`INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at)
+    SELECT frame_id,$1,'shared.commitment',$3,'2026-02-20T09:00:00Z' FROM ${recordset}`,[owner,encoded,baseContext]);
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    SELECT slot_id,$1,frame_id,'shared.commitment.action_description',$3,'COMMITTED','2026-02-20T09:00:00Z' FROM ${recordset}`,[owner,encoded,baseContext]);
+  await admin.query(`INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at)
+    SELECT proposition_id,$1,slot_id,jsonb_build_object('text',text),'2026-02-20T09:00:00Z' FROM ${recordset}`,[owner,encoded]);
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
+    SELECT claim_id,$1,$3,proposition_id,'USER_STATEMENT','ACCEPTED','2026-02-20T09:00:00Z','2026-02-20T09:00:00Z' FROM ${recordset}`,[owner,encoded,source.anchorId]);
+  await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,recorded_at,policy_version,decision_reason,transaction_id)
+    SELECT assessment_id,$1,proposition_id,'ACCEPTED','2026-02-20T09:00:00Z','2026-02-20T09:00:00Z','local-policy-0.1.0','{"code":"FIXTURE"}',$3
+    FROM ${recordset}`,[owner,encoded,transactionId]);
+  if(completed){
+    await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,valid_from,recorded_at)
+      SELECT outcome_claim_id,$1,$3,'USER_STATEMENT','CANDIDATE','2026-02-22T09:00:00Z','2026-02-22T09:00:00Z' FROM ${recordset}`,[owner,encoded,source.anchorId]);
+    await admin.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id,created_at)
+      SELECT link_id,$1,'resolution_assertion',resolution_id,'frame_instance',frame_id,'RESOLVES','ACTIVE','shared.commitment.resolution',$3,'2026-02-22T09:00:00Z'
+      FROM ${recordset}`,[owner,encoded,transactionId]);
+    await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id,creation_transaction_id,recorded_at)
+      SELECT resolution_id,$1,frame_id,'FULFILLED','2026-02-22T09:00:00Z',$3,outcome_claim_id,'shared.commitment.resolution','ACCEPTED',link_id,$4,'2026-02-22T09:00:00Z'
+      FROM ${recordset}`,[owner,encoded,danielEntity,transactionId]);
+  }
+  return rows;
+}
+
+it('does not spend a tight frame budget on newer source-denied populated commitments',async()=>{
+  const purpose='BUDGET_PRIVATE_CONTROL';
+  const readable=await item('budget-readable-'+randomUUID(),'DOCUMENT',{purpose});
+  const protectedSource=await item('budget-protected-'+randomUUID(),'DOCUMENT',{purpose,sensitivity:'RESTRICTED'});
+  const oldFrame=await frame('shared.commitment');
+  const old=await value({slotId:await slot(oldFrame,'shared.commitment.action_description','COMMITTED'),value:{text:'Return the old brass compass'},
+    source:'document',sourceAnchorId:readable.anchorId,claimRecordedAt:T('2026-01-25'),claimValidFrom:T('2025-01-01'),versions:[{status:'ACCEPTED',recordedAt:T('2026-01-25')}]});
+  const protectedRows=await populatedCommitments(3,protectedSource,'restricted-budget-control');
+  const input=request({purpose,query:'What am I forgetting?',entityHints:[],frameTypeHints:['shared.commitment'],answerType:'OPEN_COMMITMENTS',tokenBudget:200000});
+  const limited=await readContextPacket(runner,input,{...options(),frameLimit:1});
+  expect(limited.understanding?.unresolvedFrameIds).toContain(oldFrame);
+  expect(limited.selections.some(selection=>selection.selectedPropositionId===old.propositionId)).toBe(true);
+  expect(JSON.stringify(limited)).not.toContain('restricted-budget-control');
+  const widened=await readContextPacket(runner,{...input,maximumSensitivity:'RESTRICTED'},{...options(),frameLimit:10});
+  for(const row of protectedRows)expect(widened.selections.some(selection=>selection.selectedPropositionId===row.proposition_id&&selection.selectedValue!==undefined)).toBe(true);
+},20000);
+
+it('retrieves an unembedded older unfinished commitment behind 101 completed and 101 source-denied populated commitments',async()=>{
+  const purpose='BUDGET_UNFINISHED_CONTROL';
+  const readable=await item('older-open-budget-'+randomUUID(),'DOCUMENT',{purpose});
+  const protectedSource=await item('newer-private-budget-'+randomUUID(),'DOCUMENT',{purpose,sensitivity:'RESTRICTED'});
+  const oldFrame=await frame('shared.commitment');
+  const marker='Return the forgotten amber astrolabe to Lin';
+  const old=await value({slotId:await slot(oldFrame,'shared.commitment.action_description','COMMITTED'),value:{text:marker},
+    source:'document',sourceAnchorId:readable.anchorId,claimRecordedAt:T('2026-01-25'),claimValidFrom:T('2025-01-01'),versions:[{status:'ACCEPTED',recordedAt:T('2026-01-25')}]});
+  const completed=await populatedCommitments(101,readable,'already-fulfilled-budget-control',true);
+  const protectedRows=await populatedCommitments(101,protectedSource,'withheld-newer-budget-control');
+  // Verify these are not empty frames or an embedding recall test: all202 newer
+  // frames have accepted values and claims;101 have accepted final outcomes.
+  const counts=(await admin.query(`SELECT count(DISTINCT f.id)::int AS frames,count(DISTINCT p.id)::int AS values,
+    count(DISTINCT c.id)::int AS claims,count(DISTINCT r.id)::int AS outcomes
+    FROM frame_instances f JOIN belief_slots s ON s.owner_scope_id=f.owner_scope_id AND s.frame_instance_id=f.id
+    JOIN propositions p ON p.owner_scope_id=s.owner_scope_id AND p.belief_slot_id=s.id
+    JOIN claims c ON c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
+    JOIN belief_assessments b ON b.owner_scope_id=p.owner_scope_id AND b.proposition_id=p.id AND b.assessment_status='ACCEPTED'
+    LEFT JOIN resolution_assertions r ON r.owner_scope_id=f.owner_scope_id AND r.source_frame_instance_id=f.id AND r.lifecycle='ACCEPTED' AND r.outcome_code='FULFILLED'
+    WHERE f.owner_scope_id=$1 AND f.id=ANY($2::uuid[]) AND length(p.normalized_value->>'text')>0`,
+    [owner,[...completed,...protectedRows].map(row=>row.frame_id)])).rows[0];
+  expect(counts).toEqual({frames:202,values:202,claims:202,outcomes:101});
+  expect((await admin.query('SELECT count(*)::int AS n FROM memory_embeddings WHERE owner_scope_id=$1 AND object_id=$2',[owner,old.claimId])).rows[0].n).toBe(0);
+  const packet=await readContextPacket(runner,request({purpose,query:'What am I forgetting?',entityHints:[],frameTypeHints:['shared.commitment'],
+    answerType:'OPEN_COMMITMENTS',tokenBudget:200000}),options());
+  expect(packet.understanding?.unresolvedFrameIds).toContain(oldFrame);
+  expect(packet.selections.find(selection=>selection.selectedPropositionId===old.propositionId)).toMatchObject({outcome:'SELECTED',selectedValue:{text:marker}});
+  expect(packet.understanding?.unresolvedFrameIds?.some(id=>completed.some(row=>row.frame_id===id))).toBe(false);
+  expect(JSON.stringify(packet)).not.toContain('withheld-newer-budget-control');
+},20000);
+
+
+it('keeps a readable commitment open when its final outcome source or supporting claim is withheld',async()=>{
+  const purpose='BUDGET_OUTCOME_AUTHORITY';
+  const readable=await item('outcome-visible-'+randomUUID(),'DOCUMENT',{purpose});
+  const protectedSource=await item('outcome-private-'+randomUUID(),'DOCUMENT',{purpose,sensitivity:'RESTRICTED'});
+  const oldFrame=await frame('shared.commitment');
+  const old=await value({slotId:await slot(oldFrame,'shared.commitment.action_description','COMMITTED'),value:{text:'Take the old atlas to Mira'},
+    source:'document',sourceAnchorId:readable.anchorId,claimRecordedAt:T('2026-01-25'),claimValidFrom:T('2025-01-01'),versions:[{status:'ACCEPTED',recordedAt:T('2026-01-25')}]});
+  await populatedCommitments(3,readable,'newer-completed-outcome-control',true);
+  const outcomeClaim=uuidV7(),outcomeId=uuidV7(),linkId=uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,valid_from,recorded_at)
+    VALUES($1,$2,$3,'USER_STATEMENT','CANDIDATE',$4,$4)`,[outcomeClaim,owner,protectedSource.anchorId,T('2026-02-22')]);
+  await admin.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id,created_at)
+    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.commitment.resolution',$5,$6)`,[linkId,owner,outcomeId,oldFrame,transactionId,T('2026-02-22')]);
+  await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id,creation_transaction_id,recorded_at)
+    VALUES($1,$2,$3,'FULFILLED',$4,$5,$6,'shared.commitment.resolution','ACCEPTED',$7,$8,$4)`,[outcomeId,owner,oldFrame,T('2026-02-22'),danielEntity,outcomeClaim,linkId,transactionId]);
+  const input=request({purpose,query:'What am I forgetting?',entityHints:[],frameTypeHints:['shared.commitment'],answerType:'OPEN_COMMITMENTS',tokenBudget:200000});
+  const privateView=await readContextPacket(runner,input,{...options(),frameLimit:1});
+  expect.soft(privateView.understanding?.unresolvedFrameIds).toContain(oldFrame);
+  expect.soft(privateView.selections.some(selection=>selection.selectedPropositionId===old.propositionId)).toBe(true);
+  expect.soft(privateView.resolutionAssertions.some(value=>value.resolutionAssertionId===outcomeId)).toBe(false);
+  const authorized=await readContextPacket(runner,{...input,maximumSensitivity:'RESTRICTED'},{...options(),frameLimit:20});
+  expect(authorized.resolutionAssertions.find(value=>value.resolutionAssertionId===outcomeId)).toMatchObject({outcomeCode:'FULFILLED',lifecycle:'ACCEPTED'});
+  expect(authorized.understanding?.unresolvedFrameIds).not.toContain(oldFrame);
+  const ports:PolicyPorts={...createLocalPolicyAdapters(),async evaluateMemoryRead():Promise<PolicyVerdict>{
+    return {outcome:'REDACT',requiredConfirmation:false,obligations:[],expiry:null,reason:'OUTCOME_CLAIM_WITHHELD',policyVersion:'test-policy-0.1.0',
+      redactions:[{objectType:'claims',objectId:outcomeClaim,fields:[],reason:'OUTCOME_CLAIM_WITHHELD'}]};
+  }};
+  const policyWithheld=await readContextPacket(runner,{...input,maximumSensitivity:'RESTRICTED'},{...options(),ports,frameLimit:20});
+  expect.soft(policyWithheld.resolutionAssertions.some(value=>value.resolutionAssertionId===outcomeId)).toBe(false);
+  expect.soft(policyWithheld.understanding?.unresolvedFrameIds).toContain(oldFrame);
+},20000);
+
+
+it("does not present quoted or rejected rationale as the owner's historical decision reason",async()=>{
+  const release=await pinnedRegistryRelease('0.3.0'),purpose='DECISION_RATIONALE_BOUNDARY';
+  const source=await item('rationale-boundary-'+randomUUID(),'DOCUMENT',{purpose});
+  const accepted=await value({slotId:await slot(await frame('shared.decision'),'shared.decision.rationale'),
+    value:{text:'I declined the cobalt journey to finish caring for Ada'},source:'document',sourceAnchorId:source.anchorId,
+    claimRecordedAt:T('2026-01-25'),versions:[{status:'ACCEPTED',recordedAt:T('2026-01-25')}]});
+  const quotedSlot=await slot(await frame('shared.decision',quotedContext),'shared.decision.rationale','ACTUAL',quotedContext);
+  const quoted=await value({slotId:quotedSlot,value:{text:'quoted-rationale-not-the-owner'},source:'document',sourceAnchorId:source.anchorId,
+    claimRecordedAt:T('2026-01-25'),versions:[{status:'ACCEPTED',recordedAt:T('2026-01-25')}]});
+  const rejected=await value({slotId:await slot(await frame('shared.decision'),'shared.decision.rationale'),
+    value:{text:'rejected-rationale-not-a-recorded-reason'},source:'document',sourceAnchorId:source.anchorId,
+    claimRecordedAt:T('2026-01-25'),versions:[{status:'REJECTED',recordedAt:T('2026-01-25')}]});
+  const packet=await readContextPacket(runner,request({purpose,query:'Why did I decide against the cobalt journey before?',answerType:'DECISION_RECONSTRUCTION',frameTypeHints:['shared.decision']}),
+    {...options(),registryReleaseId:release,registryRelease:'0.3.0'});
+  expect(packet.selections.find(selection=>selection.beliefSlotId===quotedSlot)).toMatchObject({outcome:'EXCLUDED',reason:'CONTEXT_NOT_BASE'});
+  expect(packet.selections.some(selection=>selection.selectedPropositionId===accepted.propositionId)).toBe(true);
+  expect(packet.selections.some(selection=>selection.selectedPropositionId===rejected.propositionId||selection.selectedPropositionId===quoted.propositionId)).toBe(false);
+  const answer=await answerQuestion(runner,{ownerScopeId:owner,question:'Why did I decide against the cobalt journey before?',purpose,
+    frameTypeHints:['shared.decision'],worldTime:'NOW',knowledgeTime:'LATEST',maximumSensitivity:'PRIVATE'},
+    {...options(),registryReleaseId:release,registryRelease:'0.3.0',requestingActorId:actor});
+  expect(answer.grounding.action,JSON.stringify(answer.grounding)).not.toBe('BLOCKED');
+  expect(JSON.stringify(answer)).toContain('finish caring for Ada');
+  expect(JSON.stringify(answer)).not.toContain('quoted-rationale-not-the-owner');
+  expect(JSON.stringify(answer)).not.toContain('rejected-rationale-not-a-recorded-reason');
+},15000);

@@ -218,6 +218,10 @@ export interface SemanticSearchRequest {
   readonly sourceTypes?: readonly string[] | null;
   /** A candidate's every evidence item must be one of these. */
   readonly sourceItemIds?: readonly string[] | null;
+  /** Internal source authority; not a list of sources supplied to the answer. */
+  readonly authorizedSourceItemIds?: readonly string[];
+  /** Present access controls, applied before ranking; includes claims and values. */
+  readonly excludedObjectIds?: readonly string[];
   /** The release registration is judged against. Null means none is pinned, and
    * no match is then authoritative. */
   readonly registryReleaseId?: string | null;
@@ -253,9 +257,11 @@ export async function searchMemoryEmbeddings(tx: MemoryTransaction, request: Sem
   const timeTo = request.timeWindow?.to ?? null;
   const entityIds = orNull(request.entityIds);
   const sourceTypes = orNull(request.sourceTypes);
-  const sourceItemIds = orNull(request.sourceItemIds);
+  const sourceItemIds = request.sourceItemIds == null ? null : [...request.sourceItemIds];
+  const authorizedSources = request.authorizedSourceItemIds === undefined ? sourceItemIds
+    : request.authorizedSourceItemIds.filter(id => sourceItemIds === null || sourceItemIds.includes(id));
   const values: unknown[] = [request.ownerScopeId, embedder.version, request.dataPurpose, request.maximumSensitivity,
-    request.knowledgeTime, timeFrom, timeTo, entityIds, sourceTypes, sourceItemIds];
+    request.knowledgeTime, timeFrom, timeTo, entityIds, sourceTypes, authorizedSources, [...(request.excludedObjectIds ?? [])]];
   const candidates = `candidates AS MATERIALIZED (
       SELECT e.object_type,e.object_id,e.proposition_id,e.frame_type_id,e.predicate_id,e.source_item_ids,e.entity_ids,
         e.security_scope,e.time_start,e.time_end,e.vector
@@ -272,17 +278,21 @@ export async function searchMemoryEmbeddings(tx: MemoryTransaction, request: Sem
         AND ($8::uuid[] IS NULL OR e.entity_ids && $8::uuid[])
         AND ($9::text[] IS NULL OR e.source_types <@ $9::text[])
         AND ($10::uuid[] IS NULL OR e.source_item_ids <@ $10::uuid[])
-        AND c.lifecycle NOT IN ('REJECTED','SUPPRESSED')
+        AND NOT e.object_id=ANY($11::uuid[])
+        AND (e.proposition_id IS NULL OR NOT e.proposition_id=ANY($11::uuid[]))
+        AND unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$5)->>'lifecycle' NOT IN ('REJECTED','SUPPRESSED')
+        AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$5)->>'proposition_id')::uuid
+          IS NOT DISTINCT FROM e.proposition_id
         AND NOT EXISTS(SELECT 1 FROM unnest(e.source_item_ids) AS behind(id)
           WHERE NOT EXISTS(SELECT 1 FROM source_items s WHERE s.owner_scope_id=e.owner_scope_id AND s.id=behind.id)))`;
   const total = Number((await tx.query(
     `WITH ${candidates} SELECT count(DISTINCT object_id)::int AS n FROM candidates`, values)).rows[0]?.['n'] ?? 0);
   const rows = total === 0 ? [] : (await tx.query(
     `WITH ${candidates},
-     nearest AS (SELECT DISTINCT ON (object_id) *, round((vector <=> $11::vector)::numeric,6) AS distance
-       FROM candidates ORDER BY object_id, vector <=> $11::vector)
+     nearest AS (SELECT DISTINCT ON (object_id) *, round((vector <=> $12::vector)::numeric,6) AS distance
+       FROM candidates ORDER BY object_id, vector <=> $12::vector)
      SELECT object_type,object_id,proposition_id,frame_type_id,predicate_id,source_item_ids,entity_ids,security_scope,
-       time_start,time_end,distance FROM nearest ORDER BY distance,object_id LIMIT $12`,
+       time_start,time_end,distance FROM nearest ORDER BY distance,object_id LIMIT $13`,
     [...values, vectorLiteral(vector), limit])).rows;
 
   // Registration is judged against the pinned release, once per contract. With no

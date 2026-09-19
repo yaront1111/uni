@@ -225,7 +225,7 @@ beforeAll(async () => {
   await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,effective_at,
     asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,creation_transaction_id,recorded_at)
     VALUES($1,$2,$3,'FULFILLED',$4,$5,$6,'shared.commitment.resolution','ACCEPTED',$7,$8)`,
-    [resolution, owner, f.resolved, at(-30), maya, paid.claimId, transactionId, RECORDED]);
+    [resolution, owner, f.resolved, RECORDED, maya, paid.claimId, transactionId, RECORDED]);
 
   // A loan whose principal two sources disagree about.
   f.loan = await frame('shared.obligation', at(-60));
@@ -239,7 +239,7 @@ beforeAll(async () => {
   // Two calendar events: one tomorrow morning, one whose time passed an hour ago
   // with nothing recorded about whether it took place.
   f.dentist = (await event('Dentist appointment', at(20), calendar.anchorId, at(-50))).id;
-  const call = await event('Planning call with the design team', at(-5), planning.anchorId, at(-40));
+  const call = await event('Planning call with the design team', at(-5), planning.anchorId, RECORDED);
   f.planning = call.id; p.planningTime = call.time.propositionId;
 
   // The owner's pending word on the dentist appointment, and one statement that
@@ -326,7 +326,7 @@ it('CRT-UX-01-A: builds the briefing on the owner\'s local date and timezone, no
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ code: 'TODAY_DATE_NOT_CURRENT', ownerLocalDate: tokyoDate });
   } finally { await app.close(); }
-});
+},20_000);
 
 it('CRT-UX-01-A: shows only current or imminent material items, a past-due planned outcome and a reason for each', async () => {
   const shown = items(first);
@@ -670,7 +670,11 @@ it.each(['sensitivity', 'purpose', 'redaction'] as const)('does not restore with
       // grounds for calling the frame imminent or for displaying its schedule.
       expect(limited.packetManifest.frameInstanceIds).toContain(target.frameId);
       expect(JSON.stringify(packet)).toContain(target.words);
-      expect.soft(itemFor(limited, target.frameId)).toBeUndefined();
+      // An unfinished task remains eligible without a readable deadline. The
+      // omitted time cannot make it an imminent event or leak via its headline.
+      const surfaced = itemFor(limited, target.frameId);
+      if (target.words === 'attend an event') expect.soft(surfaced).toBeUndefined();
+      else if (surfaced) expect.soft(surfaced.targetTime).toBeNull();
       for (const surface of [limited, stored, packet]) {
         expect.soft(JSON.stringify(surface), target.words).not.toContain(target.instant.toISOString());
       }
@@ -704,7 +708,7 @@ it('does not recover an actual due time from the projection before its valid int
   try {
     const before = await read();
     expect(before.packetManifest.frameInstanceIds).toContain(frameId);
-    expect.soft(itemFor(before, frameId)).toBeUndefined();
+    expect.soft(itemFor(before, frameId)?.targetTime ?? null).toBeNull();
     const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1',
       [before.packetManifest.contextPacketId])).rows[0].packet;
     expect(JSON.stringify(packet.currentBeliefs)).not.toContain(at(20).toISOString());

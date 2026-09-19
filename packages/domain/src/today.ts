@@ -154,6 +154,7 @@ export const todayBriefingSchema = z.strictObject({
   /** Material items beyond today's attention budget, left for their own views. */
   deferredByAttentionBudget: z.number().int().min(0),
   projectionCompleteness: z.array(briefingProjectionCompletenessSchema).max(16),
+  memoryIncomplete: z.boolean().optional(),
   packetManifest: briefingPacketManifestSchema,
   rankingVersion: version,
 });

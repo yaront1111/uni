@@ -21,7 +21,7 @@ const objectType = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 /** The five checks the validator runs over every candidate statement. */
 export const GROUNDING_RULES = Object.freeze([
   'UNGROUNDED_PERSONAL_FACT', 'SCHEDULED_WORDED_AS_OCCURRED', 'CONTESTED_WORDED_AS_CERTAIN',
-  'INFERENCE_PRESENTED_AS_EVIDENCE', 'SENSITIVITY_SCOPE_LEAK',
+  'INFERENCE_PRESENTED_AS_EVIDENCE', 'SENSITIVITY_SCOPE_LEAK', 'STALE_WORDED_AS_CURRENT',
 ] as const);
 export const groundingRuleSchema = z.enum(GROUNDING_RULES);
 export type GroundingRule = z.infer<typeof groundingRuleSchema>;

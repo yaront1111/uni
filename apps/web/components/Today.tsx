@@ -88,13 +88,15 @@ export function Today(props:TodayProps){
     {briefing?<>
       <p className="today-zone">Your local date in <strong>{briefing.timeZone}</strong> (UTC{briefing.utcOffset}). Items are ranked by consequence, urgency, confidence and effort, not by when they were recorded.</p>
       <LabelKey labels={labels}/>
+      <p><a href="/initiative">Manage reminders and prerequisite checks</a></p>
+      {briefing.memoryIncomplete?<p className="notice" role="status">Some memory is still being processed or could not be included. This briefing may be missing unfinished items. <a href="/sources">Review sources</a></p>:null}
       {briefing.projectionCompleteness.filter(entry=>!entry.isComplete).map(entry=><section key={entry.projectionName} className="notice" aria-labelledby={'incomplete-'+entry.projectionName}>
         <h2 id={'incomplete-'+entry.projectionName}>{PROJECTION[entry.projectionName]??'A view'} is incomplete</h2>
         <p>Something you said has not been applied to it yet, so this briefing may be missing a change. High-risk suggestions based on it are withheld.</p>
         <ul>{entry.pendingAssertions.slice(0,5).map(assertion=><li key={assertion.overlayDeltaId}><CertaintyBadge label="PENDING_OWNER_ASSERTION"/> {'“'}{assertion.rawText}{'”'}</li>)}</ul>
       </section>)}
-      {briefing.isEmpty?<section className="card" aria-labelledby="empty"><h2 id="empty">Nothing material today</h2>
-        <p>Nothing current or due in the next two days needs your attention. Your commitments and schedule are still in their own views.</p></section>:null}
+      {briefing.isEmpty?<section className="card" aria-labelledby="empty"><h2 id="empty">{briefing.memoryIncomplete?'No items in this partial view':'Nothing material today'}</h2>
+        <p>{briefing.memoryIncomplete?'The available memory is incomplete, so an empty briefing does not mean everything is handled.':'No items were selected for this briefing. Your commitments and schedule are still in their own views.'}</p></section>:null}
       {briefing.sections.map(section=><section key={section.domain} className="card" aria-labelledby={'section-'+section.domain}>
         <h2 id={'section-'+section.domain}>{SECTION[section.domain]}</h2>
         <ol className="briefing">{section.items.map(item=><Item key={item.briefingItemId} item={item} panel={props.why[item.briefingItemId]??null} timeZone={briefing.timeZone}/>)}</ol>

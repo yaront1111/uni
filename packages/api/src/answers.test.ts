@@ -115,8 +115,6 @@ async function frame(frameTypeId: string) {
   const id = uuidV7();
   await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,$3,$4)',
     [id, owner, frameTypeId, baseContext]);
-  await admin.query("INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id) VALUES($1,$2,$3,'creditor',$4)",
-    [randomUUID(), owner, id, daniel]);
   return id;
 }
 async function slot(frameInstanceId: string, predicateId: string, modality = 'ACTUAL') {
@@ -131,6 +129,9 @@ async function value(slotId: string, normalized: unknown, source: keyof typeof e
     [propositionId, owner, slotId, JSON.stringify(normalized)]);
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
     VALUES($1,$2,$3,$4,$5,'PROVISIONAL',$6,$7)`, [claimId, owner, evidence[source].anchorId, propositionId, origin, T('2026-01-01'), T('2026-02-01')]);
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id)
+    SELECT $1,$2,frame_instance_id,'creditor',$3,$4 FROM belief_slots WHERE owner_scope_id=$2 AND id=$5`,
+    [randomUUID(), owner, daniel, claimId, slotId]);
   await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,recorded_at,
     policy_version,decision_reason,transaction_id) VALUES($1,$2,$3,$4,$5,$6,'local-policy-0.1.0','{"code":"FIXTURE"}',$7)`,
     [uuidV7(), owner, propositionId, status, T('2026-01-01'), T('2026-02-01'), transactionId]);
@@ -191,7 +192,8 @@ function api(phraser?: AnswerPhraser, objects: EvidenceObjects | null = evidence
 }
 const headers = (purpose: string, extra: Record<string, string> = {}) => ({
   cookie: SESSION_COOKIE + '=' + token, 'x-owner-scope-id': owner, 'x-purpose': purpose,
-  'x-correlation-id': randomUUID(), 'idempotency-key': randomBytes(16).toString('hex'), ...extra,
+  'x-correlation-id': randomUUID(), 'idempotency-key': randomBytes(16).toString('hex'),
+  ...(purpose === 'memory.inspect' ? { 'x-data-purpose': FINANCE, 'x-maximum-sensitivity': 'PRIVATE' } : {}), ...extra,
 });
 
 /** A phrasing model that says exactly what the test scripts, one candidate per call. */
@@ -217,7 +219,7 @@ async function ask(app: ReturnType<typeof api>, question: string, over: Record<s
   expect(response.statusCode, response.body).toBe(200);
   const answer = response.json();
   answered.push({ answerManifestId: answer.answerManifestId, packetId: answer.packetId,
-    modelId: answer.composer.modelId ?? 'ask-composer-0.1.0', promptVersion: answer.composer.promptVersion ?? 'composer-templates-0.1.0' });
+    modelId: answer.composer.modelId ?? 'ask-composer-0.2.0', promptVersion: answer.composer.promptVersion ?? 'composer-templates-0.2.0' });
   return answer;
 }
 /** What the answer says, without its ids: an invented digit must not match a UUID. */
@@ -412,8 +414,8 @@ it('[AC44.20] CRT-RD-06-A, CRT-RD-07-A: an answer has a manifest equal to its pe
     expect(row.overlay_delta_ids).toEqual([overlayDelta]);
     expect(row.evidence_ids).not.toContain(evidence.medical.evidenceId);
     expect(row).toMatchObject({ context_packet_id: answer.packetId, packet_hash: packet.packet_hash, registry_release: '0.1.0',
-      registry_release_id: registryReleaseId, model_provider: 'unai-deterministic', model_id: 'ask-composer-0.1.0',
-      prompt_version: 'composer-templates-0.1.0' });
+      registry_release_id: registryReleaseId, model_provider: 'unai-deterministic', model_id: 'ask-composer-0.2.0',
+      prompt_version: 'composer-templates-0.2.0' });
     expect(row.projection_versions).toEqual(packet.packet.watermarks.projectionVersions);
     expect(row.watermarks).toEqual(packet.packet.watermarks);
 
@@ -424,7 +426,7 @@ it('[AC44.20] CRT-RD-06-A, CRT-RD-07-A: an answer has a manifest equal to its pe
     expect(manifest).toMatchObject({ answerManifestId: answer.answerManifestId, recordKind: 'CONTEXT_SUPPLIED_TO_MODEL',
       recordStatement: SUPPLIED_CONTEXT_STATEMENT, question: 'Do I still owe Daniel?',
       contextSupplied: { packetId: answer.packetId, packetHash: packet.packet_hash, registryRelease: '0.1.0', registryReleaseId },
-      suppliedTo: { modelId: 'ask-composer-0.1.0', promptVersion: 'composer-templates-0.1.0' },
+      suppliedTo: { modelId: 'ask-composer-0.2.0', promptVersion: 'composer-templates-0.2.0' },
       reconsideration: { isCandidate: false, changes: [] } });
     expect([...manifest.contextSupplied.beliefIds].sort()).toEqual(expected.beliefIds);
     const keys: string[] = [];
@@ -448,7 +450,7 @@ it('[AC44.20] CRT-RD-06-A, CRT-RD-07-A: an answer has a manifest equal to its pe
 });
 
 it('CRT-RD-08-A: an ungrounded personal fact is regenerated, and the composer answers when the model cannot ground it', async () => {
-  const grounded = statement('Recorded: obligation principal amount is ILS 60.00.', 'CONFIRMED', [ref(p.principal)]);
+  const grounded = statement('Last recorded: obligation principal amount is ILS 60.00.', 'CONFIRMED', [ref(p.principal)]);
   const invented = statement('You owe Daniel ILS 500.', 'CONFIRMED', [ref(p.principal)]);
   let app = api(scripted([invented], [grounded]));
   try {
@@ -665,7 +667,10 @@ it('[AC44.06] CRT-RD-11-A, CRT-RYW-05-A: a material change marks exactly the ans
     // it is listed there. Its packet did name the owner's pending delta on that
     // slot (the selector lists it beside a partly withheld slot), so the delta's
     // move is listed, and nothing else.
-    const unmarked = (await app.inject({ method: 'GET', url: '/v1/answers/' + unrelated.answerManifestId + '/manifest', headers: headers('memory.inspect') })).json();
+    const unmarkedResponse = await app.inject({ method: 'GET', url: '/v1/answers/' + unrelated.answerManifestId + '/manifest',
+      headers: headers('memory.inspect', { 'x-data-purpose': SCHEDULING }) });
+    expect(unmarkedResponse.statusCode, unmarkedResponse.body).toBe(200);
+    const unmarked = unmarkedResponse.json();
     expect(unmarked.contextSupplied.beliefIds).not.toContain(p.principal);
     expect(unmarked.reconsideration.changes.filter((change: { changedObjectType: string }) => change.changedObjectType === 'belief')).toEqual([]);
     for (const change of unmarked.reconsideration.changes) {
@@ -730,6 +735,42 @@ it('refuses to answer where no answer could be recorded', async () => {
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({ code: 'ANSWER_RECORDING_UNAVAILABLE' });
     expect((await admin.query('SELECT count(*)::int AS n FROM context_packets WHERE owner_scope_id=$1', [owner])).rows[0].n).toBe(before);
+  } finally { await app.close(); }
+});
+
+it.each(['purpose', 'sensitivity'])('saved answer manifest enforces current %s before returning its private question', async boundary => {
+  const app = api();
+  try {
+    const marker = 'private-manifest-question-' + boundary;
+    const answer = await ask(app, marker);
+    const url = '/v1/answers/' + answer.answerManifestId + '/manifest';
+    const denied = await app.inject({ method: 'GET', url, headers: headers('memory.inspect', {
+      'x-data-purpose': boundary === 'purpose' ? 'FAMILY_COORDINATION' : FINANCE,
+      'x-maximum-sensitivity': boundary === 'sensitivity' ? 'NORMAL' : 'PRIVATE',
+    }) });
+    expect(denied.statusCode, denied.body).toBe(403);
+    expect(denied.json().code).toBe('ANSWER_MANIFEST_SOURCE_WITHHELD');
+    expect(denied.body).not.toContain(marker);
+    const allowed = await app.inject({ method: 'GET', url, headers: headers('memory.inspect', {
+      'x-data-purpose': FINANCE, 'x-maximum-sensitivity': 'PRIVATE',
+    }) });
+    expect(allowed.statusCode, allowed.body).toBe(200);
+    expect(allowed.json().question).toBe(marker);
+  } finally { await app.close(); }
+});
+
+it('saved answer manifest requires valid purpose and sensitivity declarations', async () => {
+  const app = api();
+  try {
+    const answer = await ask(app, 'manifest header declaration control');
+    for (const extra of [{}, { 'x-data-purpose': 'bad-purpose', 'x-maximum-sensitivity': 'PRIVATE' },
+      { 'x-data-purpose': FINANCE, 'x-maximum-sensitivity': 'INVALID' }]) {
+      const response = await app.inject({ method: 'GET', url: '/v1/answers/' + answer.answerManifestId + '/manifest',
+        headers: headers('memory.inspect', Object.keys(extra).length === 0
+          ? { 'x-data-purpose': '', 'x-maximum-sensitivity': '' } : extra) });
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json().code).toBe('ANSWER_MANIFEST_REQUEST_INVALID');
+    }
   } finally { await app.close(); }
 });
 

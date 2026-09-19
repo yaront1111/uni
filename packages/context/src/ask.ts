@@ -1,3 +1,4 @@
+import { closedFrameIds } from './resolutions.js';
 import {traceStage,traceStageSync} from '@unai/observability';
 import {
   REQUIRED_ASK_FIELDS, answerCandidateSchema, askAnswerSchema, askRequestSchema, groundingResultSchema,
@@ -8,7 +9,8 @@ import {
 import { ContextBrokerError, readContextPacket, type ContextBrokerOptions, type ContextRunner } from './broker.js';
 import { GROUNDING_VALIDATOR_VERSION, indexPacket, validateGrounding, type ValidatableStatement } from './grounding.js';
 import { classifyQuestion, type QuestionClassification } from './question.js';
-import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from './wording.js';
+import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue, describeFreshness } from './wording.js';
+import { changeWindow } from './change-window.js';
 
 /**
  * Question answering (PRD §8.2, §23.6, §24.6; design POST /v1/ask; CRT-RD-12-A,
@@ -34,7 +36,7 @@ import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from '.
  * from, and its output passes the same validator.
  */
 
-export const ASK_COMPOSER_VERSION = 'ask-composer-0.1.0';
+export const ASK_COMPOSER_VERSION = 'ask-composer-0.2.0';
 /** How many candidates a phrasing model gets before the composer takes over. */
 export const MAX_PHRASING_ATTEMPTS = 2;
 
@@ -130,6 +132,7 @@ interface Draft {
 /** Compose the statements for one answer type from one packet. Pure. */
 export function composeStatements(packet: ContextPacket, classification: QuestionClassification, options: {
   historicalInstantMissing: boolean;
+  changes?: ReturnType<typeof changeWindow>;
 }): Draft[] {
   const drafts: Draft[] = [];
   const beliefs = new Map([...packet.currentBeliefs, ...packet.historicalBeliefs].map(belief => [belief.propositionId, belief]));
@@ -137,17 +140,23 @@ export function composeStatements(packet: ContextPacket, classification: Questio
   const evidenceOf = (propositionId: string | null): string[] =>
     propositionId ? [...(beliefs.get(propositionId)?.evidenceIds ?? futures.get(propositionId)?.evidenceIds ?? [])] : [];
   const explain = (propositionId: string | null) => propositionId ? '/v1/memory/propositions/' + propositionId + '/explain' : null;
-  const stateSelections = packet.selections.filter(selection => selection.outcome !== 'EXCLUDED' && selection.outcome !== 'WITHHELD');
+  const closedFrames = closedFrameIds(packet.resolutionAssertions);
+  const stateSelections = packet.selections.filter(selection => selection.outcome !== 'EXCLUDED' && selection.outcome !== 'WITHHELD'
+    && (classification.queryMode !== 'OPEN_COMMITMENTS' || !closedFrames.has(selection.frameInstanceId)));
+  const freshnessByValue = new Map(packet.freshness?.map(value => [value.propositionId, value.assessment]) ?? []);
 
   const stateStatements = (prefix: string) => {
     for (const selection of stateSelections) {
       const subject = describeContract(selection.frameTypeId, selection.predicateId);
       if (selection.outcome === 'SELECTED') {
-        const label = FUTURE_LABEL[selection.modality] ?? selectedLabel(selection);
-        const lead = FUTURE_WORDING[selection.modality] ?? prefix;
+        const label = selection.certainty === 'ACCEPTED' ? FUTURE_LABEL[selection.modality] ?? selectedLabel(selection) : selectedLabel(selection);
+        const freshness = freshnessByValue.get(selection.selectedPropositionId!);
+        const lead = FUTURE_WORDING[selection.modality] ?? (freshness && freshness.state !== 'CURRENT' ? 'Last recorded' : prefix);
         drafts.push({
           kind: 'SELECTED_STATE', label,
           text: lead + ': ' + subject + ' is ' + ('selectedValue' in selection ? describeValue(selection.selectedValue) : 'withheld') + '.'
+            + describeFreshness(freshness)
+            + (selection.certainty === 'PROVISIONAL' ? ' This interpretation is provisional.' : '')
             + (selection.ownerAssertionPending ? ' You have a pending correction on this that is not yet verified.' : ''),
           objectRefs: [{ objectType: 'belief_slots', objectId: selection.beliefSlotId },
             { objectType: 'propositions', objectId: selection.selectedPropositionId! }],
@@ -239,8 +248,45 @@ export function composeStatements(packet: ContextPacket, classification: Questio
       stateStatements(classification.historicalMode === 'HISTORICAL_BELIEF_STATE'
         ? 'What Uai believed then, from what it knew then' : 'What is now believed to have held then');
       break;
-    case 'EPISODE_RECALL': semanticStatements(); resolutionStatements(); break;
-    case 'CAUSAL_EXPLANATION': stateStatements('Recorded'); resolutionStatements(); semanticStatements(); break;
+    case 'EPISODE_RECALL':
+      if (classification.matchedRule === 'LIFE_CHANGES') {
+        const window = options.changes ?? changeWindow('', packet.worldTime);
+        drafts.push({kind:'NO_CURRENT_VALUE',label:'UNKNOWN',text:window.description,objectRefs:[],evidenceIds:[],explain:null});
+        for (const transition of packet.understanding?.transitions ?? []) {
+          if ((window.from && new Date(transition.recordedAt) < new Date(window.from))
+            || (window.to && new Date(transition.recordedAt) >= new Date(window.to))) continue;
+          const before = beliefs.get(transition.fromPropositionId), after = beliefs.get(transition.toPropositionId);
+          if (!before || !after || !('normalizedValue' in before) || !('normalizedValue' in after)) continue;
+          drafts.push({ kind: 'RECORDED_CHANGE', label: 'REPORTED',
+            text: 'Historical record learned ' + transition.recordedAt.slice(0, 10)
+              + (transition.effectiveAt ? ', effective ' + transition.effectiveAt.slice(0, 10) : ', effective date not recorded')
+              + ': ' + describeContract(after.frameTypeId, after.predicateId)
+              + ' changed from ' + describeValue(before.normalizedValue) + ' to ' + describeValue(after.normalizedValue)
+              + (transition.kind === 'CORRECTS' ? ' (a correction to the record).' : '.') + ' No change reason is recorded in this link.',
+            objectRefs: [before, after].map(value => ({ objectType: 'propositions', objectId: value.propositionId })),
+            evidenceIds: [...new Set([...(before.evidenceIds ?? []), ...(after.evidenceIds ?? [])])], explain: explain(after.propositionId) });
+        }
+        if(!drafts.some(draft=>draft.kind==='RECORDED_CHANGE')) drafts.push({kind:'NO_CURRENT_VALUE',label:'UNKNOWN',
+          text:'No recorded transition in the available memory answers this date range.',objectRefs:[],evidenceIds:[],explain:null});
+      } else { semanticStatements(); resolutionStatements(); }
+      break;
+    case 'CAUSAL_EXPLANATION':
+      if(classification.queryMode==='DECISION_RECONSTRUCTION'){
+        const rationaleSlots = new Set(packet.selections.filter(selection => selection.contextKind === 'BASE'
+          && selection.predicateRegistered && selection.outcome !== 'WITHHELD' && selection.outcome !== 'EXCLUDED')
+          .map(selection => selection.beliefSlotId));
+        const reasons=[...beliefs.values()].filter(value=>value.frameTypeId==='shared.decision'
+          && value.predicateId==='shared.decision.rationale' && 'normalizedValue' in value
+          && rationaleSlots.has(value.beliefSlotId)
+          && ['ACCEPTED','SUPERSEDED','PROVISIONAL'].includes(value.assessmentStatus ?? ''));
+        for(const reason of reasons)drafts.push({kind:'HISTORICAL_VALUE',label:'REPORTED',
+          text:'Historical decision rationale: '+describeValue(reason.normalizedValue)+'.'
+            + (reason.assessmentStatus === 'PROVISIONAL' ? ' This interpretation is provisional.' : ''),
+          objectRefs:[{objectType:'propositions',objectId:reason.propositionId}],evidenceIds:[...(reason.evidenceIds??[])],explain:explain(reason.propositionId)});
+        if(reasons.length===0)drafts.push({kind:'NO_CURRENT_VALUE',label:'UNKNOWN',
+          text:'No recorded rationale for that decision was found in the available memory.',objectRefs:[],evidenceIds:[],explain:null});
+      }else{stateStatements('Recorded');resolutionStatements();semanticStatements();}
+      break;
     // The broker planned this under OPEN_COMMITMENTS or FUTURE_PLANS, so the
     // selections already cover the committed, intended and scheduled slots --
     // with lifecycle, correction and conflicts applied, which raw future claims
@@ -285,6 +331,21 @@ export function composeStatements(packet: ContextPacket, classification: Questio
       break;
   }
 
+  if (classification.matchedRule === 'ASSISTANT_CAPABILITIES') drafts.push({ kind: 'CAPABILITY_SUMMARY', label: 'UNKNOWN',
+    text: 'I can summarize these records and prepare a plan.' + (packet.allowedActions.includes('DRAFT')
+      ? ' Draft preparation is available, subject to the current draft permission check.' : 'More information or confirmation is needed before preparing a draft.'),
+    objectRefs: [], evidenceIds: [], explain: null });
+  if (classification.matchedRule === 'FOCUS_PRIORITIES') {
+    const unresolved = new Set(packet.understanding?.unresolvedFrameIds ?? []);
+    const linkedFrames = new Set(packet.understanding?.goalLinks.filter(link => unresolved.has(link.frameInstanceId)).map(link => link.frameInstanceId) ?? []);
+    const linked = stateSelections.filter(selection => linkedFrames.has(selection.frameInstanceId) && selection.selectedPropositionId);
+    drafts.push({ kind: 'FOCUS_SUMMARY', label: linked.length > 0 ? 'RECOMMENDED' : 'UNKNOWN',
+      text: linked.length > 0 ? 'Start with the unfinished items explicitly linked to your recorded goals, then review deadlines and unresolved conflicts.'
+        : 'Review these unfinished items by deadline and consequence. No explicit goal link was available for this prioritization.',
+      objectRefs: linked.map(selection => ({ objectType: 'propositions', objectId: selection.selectedPropositionId! })),
+      evidenceIds: linked.flatMap(selection => [...(selection.evidenceIds ?? [])]), explain: null });
+  }
+
   // What the answer must be able to say out loud whatever the type: the owner's
   // own pending word, and anything withheld above the requested ceiling.
   for (const delta of packet.ownerOverlayDeltas.filter(entry => entry.lifecycle === 'AWAITING_INSTANCE_RESOLUTION'
@@ -303,6 +364,11 @@ export function composeStatements(packet: ContextPacket, classification: Questio
       objectRefs: [], evidenceIds: [], explain: null,
     });
   }
+  if (packet.unknowns.some(unknown => ['PROCESSING_INCOMPLETE','RETRIEVAL_INCOMPLETE','HISTORY_NOT_RECORDED'].includes(unknown.kind))) {
+    drafts.push({ kind: 'MEMORY_INCOMPLETE', label: 'UNKNOWN',
+      text: 'This view is incomplete: some evidence is still being processed, exceeds this retrieval window, or has no recorded historical state.',
+      objectRefs: [], evidenceIds: [], explain: null });
+  }
   if (drafts.every(draft => draft.kind === 'WITHHELD' || draft.kind === 'HISTORICAL_INSTANT_MISSING')) {
     drafts.push({
       kind: 'NOTHING_FOUND', label: 'UNKNOWN', text: 'Nothing in the memory this request could read answers this question.',
@@ -317,7 +383,7 @@ const SETTLED_LABELS = new Set<CertaintyLabel>(['CONFIRMED', 'REPORTED', 'INFERR
 
 /** The prompt version the manifest records when the deterministic composer, not a
  * model, was supplied the packet: its wording templates are its prompt. */
-export const DETERMINISTIC_PROMPT_VERSION = 'composer-templates-0.1.0';
+export const DETERMINISTIC_PROMPT_VERSION = 'composer-templates-0.2.0';
 
 /** The only statement of an answer the grounding validator blocked. It says that
  * something was withheld and names none of it. */
@@ -386,9 +452,10 @@ async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: 
   const packet = await readContextPacket(runner, {
     ownerScopeId: ask.ownerScopeId, requestingActorId: options.requestingActorId, purpose: ask.purpose,
     query: ask.question, entityHints: ask.entityHints, worldlineHints: ask.worldlineHints,
-    discourseAnchors: ask.discourseAnchors, frameTypeHints: ask.frameTypeHints, lifeCategory: ask.lifeCategory,
+    discourseAnchors: ask.discourseAnchors,
+    frameTypeHints: ask.frameTypeHints.length>0?ask.frameTypeHints:classification.queryMode==='DECISION_RECONSTRUCTION'?['shared.decision']:[], lifeCategory: ask.lifeCategory,
     worldTime: ask.worldTime, knowledgeTime, maximumSensitivity: ask.maximumSensitivity, actionRisk: 'LOW',
-    requiredCertainty: ['ACCEPTED', 'CONTESTED', 'OWNER_OVERLAY'], includeEvidence: 'WHEN_NEEDED',
+    requiredCertainty: ['ACCEPTED', 'PROVISIONAL', 'CONTESTED', 'OWNER_OVERLAY'], includeEvidence: 'WHEN_NEEDED',
     answerType: classification.queryMode, timeWindow: ask.timeWindow, sourceTypes: ask.sourceTypes,
   }, options);
 
@@ -400,7 +467,8 @@ async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: 
   const linkable = (evidenceIds: readonly string[]) =>
     [...new Set(evidenceIds.filter(id => refs.has(id) && !index.assistantEvidence.has(id)))].sort();
 
-  const drafts = composeStatements(packet, classification, { historicalInstantMissing });
+  const drafts = composeStatements(packet, classification, { historicalInstantMissing,
+    changes: changeWindow(ask.question,packet.worldTime,ask.timeWindow) });
   const composed: AskStatement[] = drafts.map((draft, position) => ({
     statementId: 'S' + (position + 1), kind: draft.kind, label: draft.label, text: draft.text,
     objectRefs: draft.objectRefs, sourceEvidenceIds: linkable(draft.evidenceIds), explainPath: draft.explain,

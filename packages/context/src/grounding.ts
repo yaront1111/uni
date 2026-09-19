@@ -31,7 +31,7 @@ import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from '.
  *    hold or the request may not read.
  */
 
-export const GROUNDING_VALIDATOR_VERSION = 'grounding-validator-0.1.0';
+export const GROUNDING_VALIDATOR_VERSION = 'grounding-validator-0.2.0';
 /** The source type every assistant answer is stored under (ADR 0026 §4). */
 export const ASSISTANT_CONVERSATION_SOURCE_TYPE = 'ASSISTANT_CONVERSATION';
 
@@ -73,6 +73,10 @@ const OCCURRENCE_WORDS = /\b(happened|occurred|took place|was held|were held|has
 const NEGATION = /\b(not|never|no|yet to|hasn't|has not|haven't|have not|didn't|did not|wasn't|was not|weren't|isn't|is not)\b[^.;:]*$/i;
 const CERTAINTY_WORDS = /\b(definitely|certainly|for sure|without (a )?doubt|undoubtedly|is confirmed|was confirmed|confirmed that|it is settled|is certain|clearly is)\b/i;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const CONTAINER_TYPES = new Set(['frame_instance', 'frame_instances', 'belief_slot', 'belief_slots']);
+// A verification assertion is not a request to verify. Likewise, "not yet" may
+// refer to an unrelated event; accept the explicit pending-assertion wording.
+const FRESHNESS_QUALIFIER = /\blast (?:known|recorded)\b|\boriginal evidence dated\b|\bcurrent applicability is unknown\b|\bno replacement state is established\b|\bverify (?:whether|if)\b|\b(?:needs?|requires?) (?:independent )?verification\b|\bmay have changed\b|\bnot (?:yet )?independently verified\b|\bhistorical\b|\brecorded source\b|\bbelieved then\b|^Outcome recorded:/i;
 
 /** Numbers as values: "60.00", "060" and "60" are one number; a date's parts are
  * numbers too, so "August 8" is grounded by "2026-08-08". */
@@ -187,6 +191,14 @@ export function indexPacket(packet: ContextPacket): PacketIndex {
     }
   }
   for (const delta of packet.ownerOverlayDeltas) add(delta.overlayDeltaId, delta.rawText);
+  for (const value of packet.freshness ?? []) {
+    // A source assertion date is supplied evidence, not a number the phraser invented.
+    add(value.propositionId, value.assessment.basisAt, value.assessment.validFrom, value.assessment.validTo);
+  }
+  for (const transition of packet.understanding?.transitions ?? []) {
+    add(transition.fromPropositionId, transition.recordedAt, transition.effectiveAt);
+    add(transition.toPropositionId, transition.recordedAt, transition.effectiveAt);
+  }
   for (const match of packet.semanticSearch?.matches ?? []) {
     const belief = [...packet.currentBeliefs, ...packet.historicalBeliefs].find(entry => entry.propositionId === match.propositionId);
     add(match.objectId, belief?.normalizedValue, match.timeStart, match.timeEnd);
@@ -244,6 +256,8 @@ export function validateGrounding(packet: ContextPacket, candidate: readonly Val
   for (const statement of candidate) {
     const id = statement.statementId;
     const refIds = statement.objectRefs.map(ref => ref.objectId);
+    const propositionRefs = statement.objectRefs.filter(ref => ref.objectType === 'propositions' || ref.objectType === 'proposition')
+      .map(ref => ref.objectId);
     const asserting = statement.label !== 'UNKNOWN';
 
     // SENSITIVITY_SCOPE_LEAK: the one violation no rewording can repair.
@@ -268,7 +282,11 @@ export function validateGrounding(packet: ContextPacket, candidate: readonly Val
     else if (unknownRefs.length > 0) ungrounded = { detail: 'NAMES_OBJECT_NOT_IN_PACKET', objectIds: unknownRefs };
     else if (unsuppliedCitations.length > 0) ungrounded = { detail: 'CITES_EVIDENCE_NOT_IN_PACKET', objectIds: unsuppliedCitations };
     else if (FACT_LABELS.has(statement.label)) {
-      const grounded = new Set(refIds.flatMap(objectId => index.objects.get(objectId)!.grounding.flatMap(text => [...numbersIn(text)])));
+      // An explicit proposition narrows the assertion. Its enclosing frame or
+      // slot must not contribute a sibling value the statement did not name.
+      const valueRefs = propositionRefs.length > 0
+        ? statement.objectRefs.filter(ref => !CONTAINER_TYPES.has(ref.objectType)).map(ref => ref.objectId) : refIds;
+      const grounded = new Set(valueRefs.flatMap(objectId => index.objects.get(objectId)!.grounding.flatMap(text => [...numbersIn(text)])));
       const invented = [...numbersIn(statement.text)].filter(value => !grounded.has(value));
       if (invented.length > 0) ungrounded = { detail: 'STATES_VALUE_NOT_IN_NAMED_OBJECTS', objectIds: refIds };
     }
@@ -311,8 +329,6 @@ export function validateGrounding(packet: ContextPacket, candidate: readonly Val
 
     // INFERENCE_PRESENTED_AS_EVIDENCE.
     const assistantCitations = next.sourceEvidenceIds.filter(evidenceId => index.assistantEvidence.has(evidenceId));
-    const propositionRefs = next.objectRefs.filter(ref => ref.objectType === 'propositions' || ref.objectType === 'proposition')
-      .map(ref => ref.objectId);
     const inferredOnly = SOURCE_LABELS.has(next.label) && propositionRefs.length > 0
       && propositionRefs.every(objectId => index.modelOnly.has(objectId));
     if (assistantCitations.length > 0 || inferredOnly) {
@@ -324,6 +340,20 @@ export function validateGrounding(packet: ContextPacket, candidate: readonly Val
         text: /^Inferred, not stated in a source: /.test(next.text) ? next.text : 'Inferred, not stated in a source: ' + next.text,
         sourceEvidenceIds: next.sourceEvidenceIds.filter(evidenceId => !index.assistantEvidence.has(evidenceId)) };
       escalate('DOWNGRADED');
+    }
+    const uncertainFreshness = (packet.freshness ?? []).filter(value => value.assessment.state !== 'CURRENT');
+    const freshnessRefs = new Set(uncertainFreshness.flatMap(value => {
+      const belief = [...packet.currentBeliefs, ...packet.historicalBeliefs].find(entry => entry.propositionId === value.propositionId);
+      return [value.propositionId, ...(belief ? [belief.beliefSlotId, belief.frameInstanceId] : [])];
+    }));
+    const applicableRefs = propositionRefs.length > 0 ? propositionRefs : refIds;
+    const uncertainRefs = applicableRefs.filter(objectId => freshnessRefs.has(objectId));
+    const needsQualifier = uncertainRefs.length > 0
+      && SOURCE_LABELS.has(next.label) && !FRESHNESS_QUALIFIER.test(next.text);
+    if (needsQualifier) {
+      violations.push(violation(id, 'STALE_WORDED_AS_CURRENT', 'REGENERATE', 'FRESHNESS_QUALIFIER_REQUIRED',
+        uncertainRefs));
+      escalate('REGENERATE');
     }
     statements.push(next);
   }
