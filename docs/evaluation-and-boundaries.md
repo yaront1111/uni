@@ -58,6 +58,24 @@ definer reader `unai_private.economic_and_quality_inputs`.
 | CRT-QA-02-A | The private path is gitignored and tracked by nothing (`evaluation.test.ts`, CI step); a forced commit is refused by the hook (`evaluation.test.ts`); CI scores the synthetic corpus against the recorded thresholds. **The ten labelled real Gmail threads do not exist in this repository or on this machine**; see below. |
 | CRT-QA-03-A | `uai corpus verify` refuses until real-corpus results cover every production keying rule at its current version; recording and verification are proven end to end in `evaluation.test.ts`. **No real-corpus results are recorded**; see below. |
 
+## Owner-run phase-exit gate
+
+The real-thread half of CRT-QA-02-A and all of CRT-QA-03-A are deferred to
+this gate, which the owner runs outside this node. They are unverified, not
+waived. The gate is:
+
+```sh
+pnpm check:phase-exit
+```
+
+It runs `pnpm typecheck`, `pnpm test`, `pnpm validate:registry`,
+`pnpm uai registry test`, `pnpm uai corpus run --corpus synthetic` and
+`pnpm uai corpus verify`. Until the owner has labelled at least ten private
+Gmail threads, run `pnpm uai corpus run --corpus private --record` and
+committed `corpus/expected/real-corpus-results.json`, `pnpm uai corpus verify`
+exits 1 with `REAL_CORPUS_EVALUATION_REQUIRED` / `REAL_RESULTS_MISSING`, and so
+does the gate. That failure is intended. The owner steps are listed below.
+
 ## What this node does not claim
 
 - **Phase exits.** Neither the Phase 0 exit (PRD §46) nor the Phase 1
