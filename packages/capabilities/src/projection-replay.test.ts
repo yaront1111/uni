@@ -214,6 +214,10 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // deployment applies, digests and order checked by `runMigrations` as always.
   await admin!.query('DROP TABLE memory_thread_members, memory_threads, context_packets CASCADE');
   await admin!.query('DROP FUNCTION IF EXISTS unai_private.memory_thread_identity(), unai_private.evidence_labels(uuid)');
+  // Migration 0019's semantic index and its evidence-scope reader likewise; its
+  // registry reader is a CREATE OR REPLACE and re-applies over itself.
+  await admin!.query('DROP TABLE memory_embeddings CASCADE');
+  await admin!.query('DROP FUNCTION IF EXISTS unai_private.anchor_evidence_scope(uuid,uuid[])');
   // ...and so do migration 0018's connector capability grants, connector
   // lifecycle columns and the policies it added to the delivered evidence
   // tables. `CREATE OR REPLACE` definitions (evidence_access) and the grants are
@@ -237,10 +241,6 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     DROP POLICY IF EXISTS owner_append_sync ON triage_decisions;
     DROP POLICY IF EXISTS owner_read_sync ON triage_decisions;
     DROP POLICY IF EXISTS owner_append_sync ON evidence_ingestion_receipts`);
-  // Migration 0019's semantic index and its evidence-scope reader likewise; its
-  // registry reader is a CREATE OR REPLACE and re-applies over itself.
-  await admin!.query('DROP TABLE memory_embeddings CASCADE');
-  await admin!.query('DROP FUNCTION IF EXISTS unai_private.anchor_evidence_scope(uuid,uuid[])');
   // Migration 0020's answer manifests and reconsideration candidates, and the
   // policies it added beside the evidence tables' own; its functions and
   // triggers are CREATE OR REPLACE and re-apply over themselves.

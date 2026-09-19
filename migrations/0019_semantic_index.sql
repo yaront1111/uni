@@ -1,6 +1,6 @@
 -- The semantic index (design entity `memory_embeddings`; PRD §23.2 step 10,
 -- §33.13, FR-063) and the two reviewed readers deterministic selection and the
--- indexer need. ADR 0024 records the decisions below before the code.
+-- indexer need. ADR 0023 records the decisions below before the code.
 --
 -- Three rules are carried by the schema rather than by convention:
 --

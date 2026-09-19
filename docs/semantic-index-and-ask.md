@@ -4,7 +4,7 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `current-state-selector-semantic-index-and-ask-pipeline`. This node owns
 CRT-RD-03-A, CRT-RD-04-A, CRT-RD-12-A and CRT-REG-04-A. ADR 0024 records its
-decisions; ADRs 0001–0022 and every delivered slice before it were inspected and
+decisions; ADRs 0001–0023 and every delivered slice before it were inspected and
 retained.
 
 ## Design entities implemented here
@@ -122,7 +122,7 @@ The web proxy is not extended; the screen node that builds Ask adds its mapping.
   claims carry their evidence ids.
 - `packages/capabilities/src/projection-replay.test.ts` drops and expects
   migration 0019's objects when it re-applies the ledger from 0016, exactly as the
-  previous node did for 0017.
+  previous node did for 0017 (and alongside migration 0018's connector objects).
 
 ## What this node does not claim
 
