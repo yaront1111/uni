@@ -245,7 +245,7 @@ describe('CRT-REG-02-A: uai registry test runs every contract through the ten PR
   it('exits zero from the CLI for the recorded release and prints only counts', () => {
     const result = run(resolve('.'), ['registry', 'test']);
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout.trim())).toMatchObject({ event: 'registry.test', result: 'PASS', releases: ['0.1.0', '0.2.0'], contracts: 5, areas: 10 });
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({ event: 'registry.test', result: 'PASS', releases: ['0.1.0', '0.2.0', '0.3.0'], contracts: 5, areas: 10 });
   }, 120000);
 });
 

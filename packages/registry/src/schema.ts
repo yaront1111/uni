@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { agingPolicySchema } from '@unai/domain';
 
 export const CARDINALITIES = ['FUNCTIONAL', 'SET', 'EVENT'] as const;
 export const CONTEXT_KINDS = ['BASE', 'QUOTED', 'TEST'] as const;
@@ -23,6 +24,7 @@ export const predicateSchema = z.strictObject({
   required: z.boolean(), normalization: text, allowedModalities: modalities, slotQualifiers: z.array(localId).max(20),
   temporalBehavior: text, conflictBehavior: text, supersessionBehavior: text, sourceAuthorityPolicy: text,
   projectionContracts: texts,
+  agingPolicy: agingPolicySchema.optional(),
 });
 
 /** §17.3: every frame field is an explicit key. */
@@ -123,5 +125,5 @@ export type RegistryManifest = z.infer<typeof manifestSchema>;
 
 const keys = (schema: { shape: Record<string, unknown> }, omit: string[] = []) => Object.keys(schema.shape).filter(key => !omit.includes(key));
 export const FRAME_CONTRACT_FIELDS: readonly string[] = Object.freeze(keys(frameSchema, ['kind']));
-export const PREDICATE_CONTRACT_FIELDS: readonly string[] = Object.freeze(keys(predicateSchema));
+export const PREDICATE_CONTRACT_FIELDS: readonly string[] = Object.freeze(keys(predicateSchema, ['agingPolicy']));
 export const TRANSITION_CONTRACT_FIELDS: readonly string[] = Object.freeze(keys(transitionSchema, ['kind']));

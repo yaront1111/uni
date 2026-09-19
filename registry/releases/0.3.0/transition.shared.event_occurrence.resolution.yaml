@@ -1,0 +1,19 @@
+kind: TRANSITION
+id: shared.event_occurrence.resolution
+version: 0.3.0
+description: >-
+  RESOLVES a scheduled event occurrence. Attendance evidence resolves it as
+  OCCURRED with an actual occurrence as target; a calendar cancellation resolves
+  it as CANCELLED without a target.
+linkKind: RESOLVES
+sourceFrameTypes: [shared.event_occurrence]
+targetFrameTypes: [shared.event_occurrence]
+targetRequired: false
+allowedOutcomes: [OCCURRED, OCCURRED_MODIFIED, CANCELLED, MISSED]
+authorityRules:
+  - A resolution assertion requires a source event frame and a claim.
+  - MISSED requires supporting evidence; an event left on the calendar past its date produces no resolution.
+invariants:
+  - The scheduled source and its propositions are never rewritten.
+acceptanceTests:
+  - PRD §44.7 attendance OCCURRED and calendar CANCELLED

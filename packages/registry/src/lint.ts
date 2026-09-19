@@ -73,6 +73,15 @@ export function lintContractDocuments(documents: readonly ContractDocument[], re
     frame.predicates.forEach((predicate, index) => {
       const at = 'predicates.' + index;
       unique(predicate.id, file, at + '.id');
+      if (predicate.agingPolicy) {
+        const policy = predicate.agingPolicy;
+        if (policy.frameTypeId !== frame.id || policy.predicateId !== predicate.id) {
+          issues.push({ code: 'REGISTRY_AGING_APPLICABILITY_MISMATCH', contract: file, path: at + '.agingPolicy' });
+        }
+        if (policy.policyVersion !== releaseVersion) {
+          issues.push({ code: 'REGISTRY_AGING_VERSION_MISMATCH', contract: file, path: at + '.agingPolicy.policyVersion' });
+        }
+      }
       if (predicate.frameType !== frame.id) issues.push({ code: 'REGISTRY_PREDICATE_FRAME_MISMATCH', contract: file, path: at + '.frameType' });
       if (!predicate.id.startsWith(frame.id + '.') || predicate.id.split('.').length !== frame.id.split('.').length + 1) {
         issues.push({ code: 'REGISTRY_PREDICATE_FRAME_MISMATCH', contract: file, path: at + '.id' });

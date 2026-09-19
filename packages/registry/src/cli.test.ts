@@ -34,9 +34,10 @@ it('uai registry lint passes the checked-in release and prints only bounded meta
   const result = run(resolve('.'), ['registry', 'lint']);
   expect(result.status, result.stderr).toBe(0);
   const event = JSON.parse(result.stdout.trim());
-  expect(event).toMatchObject({ event: 'registry.lint', result: 'PASS', releases: [{ version: '0.1.0', tag: 'registry-v0.1.0', contracts: 8 }, { version: '0.2.0', tag: 'registry-v0.2.0', contracts: 11 }] });
+  expect(event).toMatchObject({ event: 'registry.lint', result: 'PASS', releases: [{ version: '0.1.0', tag: 'registry-v0.1.0', contracts: 8 }, { version: '0.2.0', tag: 'registry-v0.2.0', contracts: 11 }, { version: '0.3.0', tag: 'registry-v0.3.0', contracts: 11 }] });
   expect(event.releases[0].contentHash).toMatch(/^[a-f0-9]{64}$/);
   expect(event.releases[1].contentHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(event.releases[2].contentHash).toMatch(/^[a-f0-9]{64}$/);
   expect(result.stdout).not.toMatch(/monetary|debtor/i);
 });
 
@@ -71,7 +72,7 @@ it('uai registry lint --report writes the passing release as a schema-valid repo
   expect(result.status, result.stderr).toBe(0);
   const report = registryLintReportSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   expect(report).toMatchObject({ result: 'PASS', code: null, issues: [],
-    releases: [{ version: '0.1.0', tag: 'registry-v0.1.0', contracts: 8 }, { version: '0.2.0', tag: 'registry-v0.2.0', contracts: 11 }] });
+    releases: [{ version: '0.1.0', tag: 'registry-v0.1.0', contracts: 8 }, { version: '0.2.0', tag: 'registry-v0.2.0', contracts: 11 }, { version: '0.3.0', tag: 'registry-v0.3.0', contracts: 11 }] });
 });
 
 it.each([
@@ -95,7 +96,7 @@ it.each([
 
 it('uai registry lint refuses an unrecorded release directory', async () => {
   const repository = await copy();
-  await cp(join(repository, 'registry/releases/0.2.0'), join(repository, 'registry/releases/0.3.0'), { recursive: true });
+  await cp(join(repository, 'registry/releases/0.3.0'), join(repository, 'registry/releases/0.4.0'), { recursive: true });
   const result = run(repository, ['registry', 'lint']);
   expect(result.status).toBe(1);
   expect(result.stderr).toContain('REGISTRY_RELEASE_NOT_RECORDED');

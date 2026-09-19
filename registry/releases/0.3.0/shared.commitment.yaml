@@ -1,0 +1,171 @@
+kind: FRAME
+id: shared.commitment
+version: 0.3.0
+description: >-
+  Represents an actor's promise or undertaking to perform an action. Commitment
+  language ("I will send it by Friday") may create a commitment; consideration
+  language ("I am considering sending it Friday") does not.
+contextPolicy:
+  allowedKinds: [BASE, QUOTED, TEST]
+  defaultKind: BASE
+  quotedRule: >-
+    No rule in this release creates QUOTED context. Reported promises canonicalize
+    into BASE with source attribution. Extractor output cannot select the context kind.
+identityStrategy:
+  kind: SURROGATE
+  matching: >-
+    Surrogate UUIDv7 identity. Prefer an explicit external reference; otherwise
+    latent-cluster matching over promisor, promisee, action and discourse. Only a
+    CONFIRMED_MATCH reuses an existing instance for a material accepted update.
+  descriptivePredicates:
+    - shared.commitment.due_time
+    - shared.commitment.priority
+  newInstanceSignals:
+    - A different action or recipient creates a new candidate instance.
+    - A repeated promise in separate discourse creates a candidate for review, not an automatic merge.
+identityAnchors: [external_reference, promisor, promisee, action]
+roles:
+  - id: promisor
+    valueType: ENTITY
+    required: true
+    description: Actor who makes the promise.
+  - id: action
+    valueType: ACTION
+    required: true
+    description: The promised action or its description.
+  - id: promisee
+    valueType: ENTITY
+    required: false
+    description: Entity to whom the promise is made.
+  - id: related_entity
+    valueType: ENTITY
+    required: false
+    description: Related entity.
+  - id: related_document
+    valueType: EXTERNAL_REFERENCE
+    required: false
+    description: Related document.
+predicates:
+  - id: shared.commitment.action_description
+    frameType: shared.commitment
+    description: Description of the promised action.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: true
+    normalization: Unicode NFC, trimmed whitespace; original wording retained on the claim.
+    allowedModalities: [COMMITTED]
+    slotQualifiers: []
+    temporalBehavior: Valid-time bounded; a changed undertaking opens a later valid period.
+    conflictBehavior: Different descriptions coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: The promisor's own statement is authoritative for the undertaking; others are attributed reports.
+    projectionContracts:
+      - open_commitments_projection.action_description
+    agingPolicy:
+      policyId: aging.shared.commitment.action_description
+      policyVersion: 0.3.0
+      kind: UNRESOLVED
+      frameTypeId: shared.commitment
+      predicateId: shared.commitment.action_description
+      reviewAfterDays: 30
+      verificationTrigger: WHEN_RELEVANT
+      explanation: Review old outstanding terms when relevant. A due date or silence cannot establish completion, cancellation, failure or any other outcome.
+  - id: shared.commitment.due_time
+    frameType: shared.commitment
+    description: Time or interval by which the action is promised, when stated.
+    valueType: TIME_OR_INTERVAL
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: >-
+      ISO 8601 instant with offset or a start/end interval; the temporal
+      interpretation keeps original text, timezone, precision and resolver version.
+    allowedModalities: [COMMITTED]
+    slotQualifiers: []
+    temporalBehavior: >-
+      Passing the due time may set overdue in the projection but never creates a
+      FAILED or MISSED resolution assertion.
+    conflictBehavior: Different due times coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: The promisor or promisee may support; reminders do not change the due time.
+    projectionContracts:
+      - open_commitments_projection.due_time
+      - open_commitments_projection.overdue
+    agingPolicy:
+      policyId: aging.shared.commitment.due_time
+      policyVersion: 0.3.0
+      kind: UNRESOLVED
+      frameTypeId: shared.commitment
+      predicateId: shared.commitment.due_time
+      reviewAfterDays: 30
+      verificationTrigger: WHEN_RELEVANT
+      explanation: Review old outstanding terms when relevant. A due date or silence cannot establish completion, cancellation, failure or any other outcome.
+  - id: shared.commitment.created_at
+    frameType: shared.commitment
+    description: Time the commitment was made.
+    valueType: TIMESTAMP
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: ISO 8601 instant with offset taken from structured source time when available.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Fixed historical instant.
+    conflictBehavior: Different creation times coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Structured source timestamps are preferred over inferred times.
+    projectionContracts:
+      - open_commitments_projection.last_material_update
+    agingPolicy:
+      policyId: aging.shared.commitment.created_at
+      policyVersion: 0.3.0
+      kind: STABLE
+      frameTypeId: shared.commitment
+      predicateId: shared.commitment.created_at
+      reviewAfterDays: null
+      verificationTrigger: NEVER
+      explanation: A recorded reference, amount or historical instant remains applicable unless corrected. Scheduled time retains SCHEDULED modality and never proves that an event occurred.
+  - id: shared.commitment.priority
+    frameType: shared.commitment
+    description: Priority of the commitment, only if explicitly stated.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Stated priority wording retained; never inferred.
+    allowedModalities: [COMMITTED]
+    slotQualifiers: []
+    temporalBehavior: Valid-time bounded; an explicit change opens a later valid period.
+    conflictBehavior: Different stated priorities coexist and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Only explicit statements by the promisor or owner may support.
+    projectionContracts: []
+    agingPolicy:
+      policyId: aging.shared.commitment.priority
+      policyVersion: 0.3.0
+      kind: LAST_KNOWN
+      frameTypeId: shared.commitment
+      predicateId: shared.commitment.priority
+      reviewAfterDays: 30
+      verificationTrigger: WHEN_RELEVANT
+      explanation: Last known context needs review when old and relevant. Historical priority or an assumption made at the time remains recorded; review does not refute it.
+allowedModalities: [COMMITTED, ACTUAL]
+slotQualifiers: []
+authorityRules:
+  - Only accepted resolution assertions establish completion; this frame defines no status predicate.
+  - A reminder does not resolve the commitment.
+  - Time passage does not create failure.
+  - Model output may propose but not commit; commits require a Belief Transaction.
+mergePolicy: Merge only by explicit user action or confirmed evidence in a governed transaction; both identifiers remain resolvable through lineage and are never reused.
+splitPolicy: >-
+  Split only through a governed transaction; ambiguous claims become CONTESTED or
+  stay with the retired parent, which remains lineage history.
+transitionContracts:
+  - shared.commitment.resolution
+  - shared.event_occurrence.realization
+projectionConsumers:
+  - open_commitments_projection
+invariants:
+  - Consideration language never creates a commitment.
+  - No parallel outcome status predicate.
+  - Identity is a surrogate UUIDv7, never a hash or fingerprint.
+acceptanceTests:
+  - PRD §44.8 commitment creation and target-less completion
+  - PRD §58 commitment versus consideration language

@@ -1,0 +1,23 @@
+kind: TRANSITION
+id: shared.decision.prediction_review
+version: 0.3.0
+description: >-
+  RESOLVES a decision's PREDICTED expected result against what actually
+  happened. The review is CONFIRMED, REFUTED or PARTIALLY_CONFIRMED; an actual
+  event occurrence may be the target, and an owner review with no separate
+  occurrence is target-less.
+linkKind: RESOLVES
+sourceFrameTypes: [shared.decision]
+targetFrameTypes: [shared.event_occurrence]
+targetRequired: false
+allowedOutcomes: [CONFIRMED, REFUTED, PARTIALLY_CONFIRMED]
+authorityRules:
+  - A review requires a source decision frame, its PREDICTED expected-result proposition and a claim.
+  - Passing the review date alone never creates a review.
+  - A review is proposed by the owner or an evaluator and accepted only through a governed transaction.
+invariants:
+  - The PREDICTED proposition and its claims are never rewritten.
+  - The observed result is recorded in its own ACTUAL slot beside the prediction.
+acceptanceTests:
+  - PRD §44.9 prediction resolved as confirmed, refuted or partially confirmed with the prediction intact
+  - PRD §52 compare prediction with outcome

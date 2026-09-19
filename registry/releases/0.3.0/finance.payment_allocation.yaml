@@ -1,0 +1,107 @@
+kind: FRAME
+id: finance.payment_allocation
+version: 0.3.0
+description: >-
+  Canonical record that a specified amount from a payment transaction was
+  allocated to an obligation. The allocation amount is canonical; coverage is
+  derived and advisory; any unallocated payment remainder stays unknown until
+  separately classified.
+contextPolicy:
+  allowedKinds: [BASE, TEST]
+  defaultKind: BASE
+  quotedRule: QUOTED context is not allowed for allocations in this release.
+identityStrategy:
+  kind: SURROGATE
+  matching: >-
+    Surrogate UUIDv7 identity keyed for lookup by payment transaction reference,
+    obligation reference and allocation reference. Never inferred from amounts.
+  descriptivePredicates:
+    - finance.payment_allocation.allocated_amount
+  newInstanceSignals:
+    - A different allocation sequence or external allocation reference creates a separate allocation.
+identityAnchors: [payment_transaction, obligation, allocation_reference]
+roles:
+  - id: payment_transaction
+    valueType: EXTERNAL_REFERENCE
+    required: true
+    description: Reference to the payment transaction evidence.
+  - id: obligation
+    valueType: FRAME_REFERENCE
+    required: true
+    description: The shared.obligation frame instance receiving the allocation.
+predicates:
+  - id: finance.payment_allocation.allocated_amount
+    frameType: finance.payment_allocation
+    description: Money amount of the payment allocated to the obligation.
+    valueType: MONEY
+    cardinality: FUNCTIONAL
+    required: true
+    normalization: >-
+      Exact positive decimal amount string and ISO 4217 upper-case currency code.
+      No conversion, rounding or arithmetic in the Memory Kernel.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Fixed at allocation; corrections apply over the same valid period.
+    conflictBehavior: Different allocated amounts coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: >-
+      Deterministic transaction data and explicit owner confirmation may support;
+      a model inference alone cannot establish an allocation.
+    projectionContracts:
+      - obligations_projection.total_canonical_allocation
+    agingPolicy:
+      policyId: aging.finance.payment_allocation.allocated_amount
+      policyVersion: 0.3.0
+      kind: STABLE
+      frameTypeId: finance.payment_allocation
+      predicateId: finance.payment_allocation.allocated_amount
+      reviewAfterDays: null
+      verificationTrigger: NEVER
+      explanation: A recorded reference, amount or historical instant remains applicable unless corrected. Scheduled time retains SCHEDULED modality and never proves that an event occurred.
+  - id: finance.payment_allocation.allocation_reference
+    frameType: finance.payment_allocation
+    description: Allocation sequence or stable external allocation reference.
+    valueType: EXTERNAL_REFERENCE
+    cardinality: FUNCTIONAL
+    required: true
+    normalization: Allocation sequence system or connector system identifier plus stable identifier.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Fixed for the allocation.
+    conflictBehavior: A different reference is a separate allocation, not a slot conflict to overwrite.
+    supersessionBehavior: Supersession only through a governed Belief Transaction or instance split.
+    sourceAuthorityPolicy: Deterministic transaction data and the obligations capability may support.
+    projectionContracts:
+      - obligations_projection.source_manifest
+    agingPolicy:
+      policyId: aging.finance.payment_allocation.allocation_reference
+      policyVersion: 0.3.0
+      kind: STABLE
+      frameTypeId: finance.payment_allocation
+      predicateId: finance.payment_allocation.allocation_reference
+      reviewAfterDays: null
+      verificationTrigger: NEVER
+      explanation: A recorded reference, amount or historical instant remains applicable unless corrected. Scheduled time retains SCHEDULED modality and never proves that an event occurred.
+allowedModalities: [ACTUAL]
+slotQualifiers: []
+authorityRules:
+  - Allocation arithmetic is owned by the obligations capability, never the Memory Kernel.
+  - Advisory coverage is a cache and never canonical arithmetic input.
+  - Unallocated remainder is recorded as unknown without invented classification.
+  - Model output may propose but not commit; commits require a Belief Transaction.
+mergePolicy: >-
+  Merge only by explicit user action in a governed transaction; both identifiers
+  remain resolvable through lineage and are never reused.
+splitPolicy: >-
+  Split only through a governed transaction; the retired allocation remains
+  lineage history and dependent projections are rebuilt.
+transitionContracts:
+  - shared.obligation.resolution
+projectionConsumers:
+  - obligations_projection
+invariants:
+  - The allocation amount is canonical and monetary.
+  - Coverage is derived and advisory.
+  - No parallel outcome status predicate.
+acceptanceTests:
+  - PRD §44.1 Daniel obligation evolution allocation of ILS 50 with ILS 10 unknown remainder

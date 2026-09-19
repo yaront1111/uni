@@ -11,11 +11,13 @@ release and migration", route `GET /v1/ops/registry-snapshot`) by ADR 0014; see
 `docs/registry-snapshot-and-contexts.md`.
 
 Registry logic — loading, hashing, linting, publishing — runs only in the
-`@unai/registry` library and its CLI. The deployment holds one registry-shaped
-path: the read-only snapshot view at `GET /v1/ops/registry-snapshot`, rendered
+`@unai/registry` library and its CLI. The deployment's registry UI is the
+read-only snapshot view at `GET /v1/ops/registry-snapshot`, rendered
 at `/ops/registry`. It serves rows the CLI already materialized, accepts no
 mutation and imports no registry code, so no network-reachable registry service
 endpoint exists (CRT-REG-01-B). There is no editing UI.
+Reviewed internal readers also expose bounded immutable contract metadata for
+runtime checks, transition selection and pinned aging policy evaluation.
 
 ## Layout
 
@@ -81,6 +83,16 @@ commit, content hash and correlation ID.
 
 ## Release procedure
 
+Release 0.3.0 adds optional `agingPolicy` metadata to existing predicates (ADR
+0037). Every policy declares its semantic kind, exact frame/predicate mapping,
+version, explicit review interval, verification trigger and explanation. The
+policy version must match the containing release. Changing a policy is a
+`COMPATIBLE_BEHAVIORAL` change, and published release bytes remain immutable.
+Existing 0.1.0 and 0.2.0 policies are unknown rather than retroactively supplied.
+The seven policy kinds are supported by the evaluator; no unregistered personal
+fact is created merely to demonstrate a kind. Runtime reads use the exact pinned
+release through `unai_private.aging_policy`, never a latest-release fallback.
+
 1. Add `registry/releases/<version>/` and its manifest in a pull request.
    `lint` computes the change class against the previous release (ADR 0031 §5).
    An identity-, transition-affecting or breaking release must also carry
@@ -112,6 +124,7 @@ hash identically to Git objects.
 `REGISTRY_CARDINALITY_INVALID`, `OUTCOME_STATUS_PREDICATE_FORBIDDEN`,
 `OBLIGATION_PRINCIPAL_NOT_MONETARY`, `REGISTRY_ID_DUPLICATE`, `REGISTRY_VERSION_MISMATCH`,
 `REGISTRY_PREDICATE_FRAME_MISMATCH`, `REGISTRY_MODALITY_NOT_ALLOWED`,
+`REGISTRY_AGING_APPLICABILITY_MISMATCH`, `REGISTRY_AGING_VERSION_MISMATCH`,
 `REGISTRY_PREDICATE_UNKNOWN`, `REGISTRY_TRANSITION_UNKNOWN`,
 `REGISTRY_TRANSITION_FRAME_MISMATCH`, `REGISTRY_FRAME_UNKNOWN`,
 `REGISTRY_TRANSITION_OUTCOMES_INVALID`, `REGISTRY_TRANSITION_TARGET_INVALID`,

@@ -1,0 +1,21 @@
+kind: TRANSITION
+id: shared.obligation.resolution
+version: 0.3.0
+description: >-
+  RESOLVES an obligation. Target-less owner assertions ("It is settled; I paid
+  him in cash") are valid; a payment allocation may be the target.
+linkKind: RESOLVES
+sourceFrameTypes: [shared.obligation]
+targetFrameTypes: [finance.payment_allocation]
+targetRequired: false
+allowedOutcomes: [FULFILLED, PARTIALLY_FULFILLED, WAIVED, CANCELLED]
+authorityRules:
+  - A resolution assertion requires a source obligation frame and a claim.
+  - A payment transaction alone never creates a resolution; the obligations capability proposes it from canonical allocations.
+  - Advisory coverage is never canonical arithmetic input.
+invariants:
+  - The source obligation and its propositions are never rewritten.
+  - Expiry of a due time creates no resolution.
+acceptanceTests:
+  - PRD §44.1 accepted FULFILLED after confirmed allocation
+  - PRD §44.4 target-less FULFILLED settlement

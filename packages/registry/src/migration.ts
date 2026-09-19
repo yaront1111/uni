@@ -36,7 +36,7 @@ const FRAME_BEHAVIOR_FIELDS = ['description', 'authorityRules', 'projectionConsu
 /** Predicate fields that change a slot descriptor or a proposition's normalized value. */
 const PREDICATE_IDENTITY_FIELDS = ['frameType', 'cardinality', 'normalization', 'allowedModalities', 'slotQualifiers'] as const;
 const PREDICATE_BEHAVIOR_FIELDS = ['description', 'required', 'temporalBehavior', 'conflictBehavior', 'supersessionBehavior',
-  'sourceAuthorityPolicy', 'projectionContracts'] as const;
+  'sourceAuthorityPolicy', 'projectionContracts', 'agingPolicy'] as const;
 const TRANSITION_FIELDS = ['linkKind', 'sourceFrameTypes', 'targetFrameTypes', 'targetRequired', 'allowedOutcomes'] as const;
 const TRANSITION_BEHAVIOR_FIELDS = ['description', 'authorityRules', 'invariants', 'acceptanceTests'] as const;
 

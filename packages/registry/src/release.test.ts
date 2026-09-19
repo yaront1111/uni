@@ -122,7 +122,7 @@ describe('loading by immutable Git tag', () => {
     const { repository } = await taggedRepository();
     git(repository, 'tag', '-d', 'registry-v0.1.0');
     await expect(registry.loadRegistryRelease({ repository, version: '0.1.0' })).rejects.toThrow('REGISTRY_TAG_MISSING');
-    await expect(registry.loadRegistryRelease({ repository, version: '0.3.0' })).rejects.toThrow('REGISTRY_RELEASE_NOT_RECORDED');
+    await expect(registry.loadRegistryRelease({ repository, version: '0.4.0' })).rejects.toThrow('REGISTRY_RELEASE_NOT_RECORDED');
     await expect(registry.loadRegistryRelease({ repository, version: '0.1.0; rm -rf /' })).rejects.toThrow('REGISTRY_VERSION_INVALID');
   });
 
