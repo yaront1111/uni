@@ -196,3 +196,6 @@ export {actionKindSchema,externalActionKindSchema,actionStageSchema,ACTION_STAGE
   type ActionBasis,type CreateDraft,type PublicDraft,type ExecuteAction,type CreateRecommendation,
   type PublicRecommendation,type ToolReceipt,type PublicPluginCapability,type RetentionRule,
   type PermissionsView,type ExportBundle,type CascadeCounts,type DeletionReceipt} from './control.js';
+export { agingKindSchema, freshnessStateSchema, freshnessPrecisionSchema, agingPolicySchema, agingPolicyBindingSchema,
+  freshnessEvidenceSchema, freshnessAssessmentSchema, type AgingKind, type FreshnessState, type AgingPolicy,
+  type AgingPolicyBinding, type FreshnessEvidence, type FreshnessAssessment } from './aging.js';
