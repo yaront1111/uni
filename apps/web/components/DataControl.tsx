@@ -28,7 +28,7 @@ const CASCADE_LABELS: [keyof CascadeCounts, string][] = [
   ['claims', 'Claims'], ['unsupportedBeliefs', 'Beliefs left with no support'], ['embeddings', 'Embeddings'],
   ['summaries', 'Summaries'], ['searchIndexEntries', 'Search index entries'], ['projectionRows', 'Projection rows'],
   ['resolutionAssertions', 'Resolution assertions'], ['threadMemberships', 'Memory thread memberships'],
-  ['aliases', 'Entity aliases taken from it'],
+  ['aliases', 'Entity aliases taken from it'], ['derivedRecords', 'Briefings, questions and reviews that quoted it'],
 ];
 const REFUSAL_TEXT: Record<string, string> = {
   EVIDENCE_NOT_FOUND: 'That item is not in your memory, or it was already deleted.',

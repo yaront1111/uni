@@ -19,7 +19,7 @@ export interface EvidenceObjects {
   put(tx:OwnerTransaction,id:string,bytes:Uint8Array):Promise<void>;
   get(tx:OwnerTransaction,id:string):Promise<Uint8Array>;
   /** Delete one item's raw object: the storage half of the deletion cascade
-   * (PRD §30.7, ADR 0027 §8). Optional so that a read-only double need not
+   * (PRD §30.7, ADR 0030 §8). Optional so that a read-only double need not
    * implement it; the deletion route refuses to run without it. */
   delete?(tx:OwnerTransaction,id:string):Promise<void>;
   /** Recorded on the item's evidence_object_keys row so a later cryptographic
@@ -37,7 +37,7 @@ export async function createEvidenceObjects(config:StorageConfiguration){
     // an assistant's answer as conversation evidence (migration 0021).
     if(operation==='WRITE'&&!OBJECT_WRITE_PURPOSES.has(context.purpose))return null;
     // Only the erasure deletes raw bytes, and only under its own purpose, whose
-    // row policies see the tombstone it has just written (migration 0022).
+    // row policies see the tombstone it has just written (migration 0024).
     if(operation==='DELETE'&&context.purpose!=='data.delete')return null;
     const row=(await tx.query(`SELECT k.object_store_key,s.submitted_by_user_id FROM source_items s
       JOIN evidence_object_keys k ON k.owner_scope_id=s.owner_scope_id AND k.source_item_id=s.id
@@ -249,7 +249,7 @@ export async function ingestAssistantMessage(tx:OwnerTransaction,objects:Evidenc
   return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string};
 }
 
-/** The source type of an authoritative external tool receipt (ADR 0027 §6). */
+/** The source type of an authoritative external tool receipt (ADR 0030 §6). */
 export const TOOL_RECEIPT='TOOL_RECEIPT';
 export interface ToolReceiptRequest {
   /** The receipt exactly as the tool returned it. */

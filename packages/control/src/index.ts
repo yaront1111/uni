@@ -1,11 +1,11 @@
 /**
- * `@unai/control`: governed action and the data-control surface (ADR 0027).
+ * `@unai/control`: governed action and the data-control surface (ADR 0030).
  * Pure functions over an owner transaction the caller opened; no route, no pool.
  */
 export { ControlError, type ControlTransaction } from './transaction.js';
 export { PLUGIN_CAPABILITIES, pluginCapabilityOf, capabilityForAction, type PluginCapability } from './catalog.js';
-export { PERMISSIONS_READ_PURPOSE, PERMISSIONS_MANAGE_PURPOSE, DEFAULT_ATTENTION_BUDGET, listPluginCapabilities,
-  pluginCapabilityGranted, setPluginCapabilities, readAttentionBudget, updateAttentionBudget, admitsClarification,
+export { PERMISSIONS_READ_PURPOSE, PERMISSIONS_MANAGE_PURPOSE, listPluginCapabilities,
+  pluginCapabilityGranted, setPluginCapabilities,
   readRetention, updateRetention, readDomainSensitivity, updateDomainSensitivity, readSensitivityFloor,
   listDataRequests, permissionsView, type Sensitivity } from './permissions.js';
 export { ACTION_READ_PURPOSE, ACTION_DRAFT_PURPOSE, ACTION_EXECUTE_PURPOSE, ACTION_RECOMMEND_PURPOSE,

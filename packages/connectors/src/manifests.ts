@@ -202,7 +202,7 @@ export type StoredSensitivity = (typeof SENSITIVITY_ORDER)[number];
  * (PRD §7.8), audited per §30.6 and effective only for items stored after the
  * change; no request header or body field lowers the floor, and no stored row is
  * rewritten (§42). That consent path is the Permissions surface's
- * (`domain_sensitivity_settings`, ADR 0027 §7): `ownerFloor` is the owner's
+ * (`domain_sensitivity_settings`, ADR 0030 §7): `ownerFloor` is the owner's
  * recorded setting, read at the operation, and it replaces the manifest default.
  */
 export function storedSensitivity(

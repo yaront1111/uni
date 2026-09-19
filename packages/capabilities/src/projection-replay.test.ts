@@ -276,13 +276,21 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     ['owner_append_answer', 'triage_decisions'], ['owner_read_answer', 'triage_decisions']] as const) {
     await admin!.query(`DROP POLICY IF EXISTS ${policy} ON ${table}`);
   }
+  // Migration 0022's briefing editions and items; it adds no function.
+  await admin!.query('DROP TABLE briefing_items, briefing_editions CASCADE');
 
-  // Migration 0022's governed-action and data-control tables, the functions it
+  // Migration 0023's inbox, budget, rule and review tables and the two trigger
+  // functions it created outright.
+  await admin!.query(`DROP TABLE interruption_decisions, clarification_cards, learned_approval_rules, attention_budgets,
+    behavioral_observations, weekly_reviews CASCADE`);
+  await admin!.query('DROP FUNCTION unai_private.learned_rule_transition(), unai_private.clarification_card_identity()');
+
+  // Migration 0024's governed-action and data-control tables, the functions it
   // created outright, and the export and erasure policies it added beside the
   // earlier tables' own. Its replaced trigger functions are CREATE OR REPLACE and
   // re-apply over themselves.
   await admin!.query(`DROP TABLE action_history, drafts, recommendation_artifacts, plugin_capability_grants,
-    attention_budgets, retention_settings, domain_sensitivity_settings, memory_summaries,
+    retention_settings, domain_sensitivity_settings, memory_summaries,
     retention_and_deletion_requests CASCADE`);
   await admin!.query(`DROP FUNCTION unai_private.plugin_grant_identity(), unai_private.recommendation_response_only(),
     unai_private.draft_transition(), unai_private.action_history_subject(), unai_private.erase_evidence(uuid,uuid),
@@ -300,7 +308,8 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
     '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql',
-    '0021_answer_manifests_and_reconsideration.sql', '0022_governed_action_and_data_control.sql']);
+    '0021_answer_manifests_and_reconsideration.sql',
+    '0022_today_briefing.sql', '0023_memory_inbox_and_weekly_review.sql', '0024_governed_action_and_data_control.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

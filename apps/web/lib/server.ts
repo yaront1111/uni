@@ -26,7 +26,7 @@ export async function identity(req:IncomingMessage){
   const token=sessionToken(req.headers.cookie);return token?resolveSession(await authPool(),token):null;
 }
 /** `maxResponseBytes` stays 1 MiB for every screen read; only the owner's export,
- * whose bundle carries raw evidence, is allowed a larger answer (ADR 0027 §9). */
+ * whose bundle carries raw evidence, is allowed a larger answer (ADR 0030 §9). */
 export async function apiRequest(path:string,method:string,headers:Record<string,string>,body?:unknown,maxResponseBytes=1024*1024):Promise<{status:number;body:unknown}>{
   const base=new URL(required('UNAI_API_ORIGIN'));
   if(base.protocol!=='https:'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw new Error('API_TLS_CONFIG_INVALID');

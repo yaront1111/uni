@@ -42,6 +42,12 @@
   idempotency key up before planning, because the planned ids are no longer
   active after the first commit.
 
+## Inbox and weekly review routes (`review.ts`)
+
+- Four surface purposes: `memory.inbox` (inbox read and card decisions), `approval.rules`, `settings.attention`, `review.weekly`. Each route opens its Context Broker read under `memory.read` and a card answer's memory write under `memory.correct` through `purposeWork`, chosen by server code, as the lineage routes do for `memory.project`.
+- `GET /v1/memory/inbox`, `GET /v1/weekly-review` and the card decision require `x-data-purpose` and `x-maximum-sensitivity` (400 `REVIEW_CONTEXT_REQUIRED`): the reads go through the broker, and a decision stores the owner's answer as evidence.
+- `createPlatformApi({clock})` exists for tests that move the inbox across owner-local days; production passes none.
+
 ## Adding a route (local steps on top of the root checklist)
 
 Put it in a `register*Routes(app, work)` module called from `createPlatformApi`. Validate params and body before calling `work` and answer a stable code. Keep SQL for another package's tables in that package: the ops routes contain none and call `@unai/jobs`, which re-checks the purpose with `requirePurpose`. Audit, parse the response through a domain schema, and add the refusal cases `ops.test.ts` has (wrong purpose, foreign owner scope, missing correlation id, missing idempotency key, unknown session). `registry-boundary.test.ts` fails on any route path matching `registr|contract|release` on any file path in this package containing "registr", and on any non-test `.ts`, `.tsx` or `.json` file here that mentions `@unai/registry`, `packages/registry` or `registry/releases`.

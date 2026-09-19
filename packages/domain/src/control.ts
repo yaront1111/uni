@@ -2,12 +2,14 @@ import { z } from 'zod';
 import { dataPurposeSchema, sensitivitySchema } from './evidence.js';
 import { actionRiskSchema } from './context.js';
 import { capabilityIdSchema, connectorStatusSchema, connectorTypeSchema } from './connectors.js';
+import { attentionBudgetSchema } from './review.js';
 
 /**
  * Governed action and the data-control surface (PRD §7.8, §8.4, §27, §29.3,
  * §30.7, §60; design entities `drafts`, `recommendation_artifacts`,
- * `action_history`, `attention_budgets`, `memory_summaries` and
- * `retention_and_deletion_requests`; ADR 0027).
+ * `action_history`, `memory_summaries` and `retention_and_deletion_requests`;
+ * ADR 0030). The attention budget shown on the Permissions surface is the
+ * memory inbox's own (`./review.js`, ADR 0029).
  *
  * Schemas only. The rules they carry: an action-history entry is exactly one of
  * six stages, a draft is a Uai artifact that is never executed, a recommendation
@@ -70,7 +72,7 @@ export const actionBasisSchema = z.strictObject({
 export type ActionBasis = z.infer<typeof actionBasisSchema>;
 
 export const draftKindSchema = z.enum(['EMAIL', 'CALENDAR_EVENT']);
-/** The draft capability of each draft kind (ADR 0027 §2). */
+/** The draft capability of each draft kind (ADR 0030 §2). */
 export const DRAFT_CAPABILITY: Readonly<Record<z.infer<typeof draftKindSchema>, string>> = Object.freeze({
   EMAIL: 'gmail.create_draft', CALENDAR_EVENT: 'calendar.create_draft',
 });
@@ -203,20 +205,6 @@ export const setPluginCapabilitiesSchema = z.strictObject({
   capabilities: z.array(z.strictObject({ capabilityId: capabilityIdSchema, granted: z.boolean() })).min(1).max(16),
 });
 
-export const attentionBudgetSchema = z.strictObject({
-  maxCardsPerDay: z.number().int().min(0).max(50),
-  maxCardsPerSensitivityScopePerDay: z.number().int().min(0).max(50),
-  repeatQuestionSuppressionDays: z.number().int().min(0).max(365),
-  isDefault: z.boolean(),
-  updatedAt: instant.nullable(),
-});
-export type AttentionBudget = z.infer<typeof attentionBudgetSchema>;
-export const attentionBudgetUpdateSchema = z.strictObject({
-  maxCardsPerDay: z.number().int().min(0).max(50).optional(),
-  maxCardsPerSensitivityScopePerDay: z.number().int().min(0).max(50).optional(),
-  repeatQuestionSuppressionDays: z.number().int().min(0).max(365).optional(),
-}).refine(body => Object.keys(body).length > 0, { message: 'NOTHING_TO_CHANGE' });
-
 const retentionDays = z.number().int().min(1).max(36500).nullable();
 export const retentionRuleSchema = z.strictObject({
   sourceType: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/),
@@ -345,6 +333,9 @@ export const cascadeCountsSchema = z.strictObject({
   overlayTextsErased: z.number().int().min(0),
   transactionPayloadsErased: z.number().int().min(0),
   contextPacketsErased: z.number().int().min(0),
+  /** Briefings, clarification cards, weekly reviews and observations that
+   * named a removed object. */
+  derivedRecords: z.number().int().min(0),
 });
 export type CascadeCounts = z.infer<typeof cascadeCountsSchema>;
 export const deletionReceiptSchema = z.strictObject({

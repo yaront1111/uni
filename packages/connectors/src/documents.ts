@@ -70,7 +70,7 @@ export interface DocumentUploadOptions {
   readonly readTriage: (tx: ConnectorTransaction, evidenceId: string)
     => Promise<{ readonly route: string; readonly signals: readonly string[] } | null>;
   /** The owner's own stored sensitivity for uploaded documents, or null for the
-   * manifest default (ADR 0027 §7). */
+   * manifest default (ADR 0030 §7). */
   readonly sensitivityFloor?: 'NORMAL' | 'PRIVATE' | 'RESTRICTED' | null;
 }
 

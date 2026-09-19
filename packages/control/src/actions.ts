@@ -157,7 +157,7 @@ export async function evaluateExternalAction(tx: ControlTransaction, input: {
 }, ports: PolicyPorts = createLocalPolicyAdapters()) {
   requirePurpose(tx, ACTION_POLICY_PURPOSE);
   const capability = capabilityForAction(input.actionKind);
-  // A WRITE capability can never be granted (migration 0022), so the port is
+  // A WRITE capability can never be granted (migration 0024), so the port is
   // told the truth: this action has no capability behind it.
   const request = {
     actorId: tx.context.actorId, ownerScopeId: tx.context.ownerScopeId, purpose: ACTION_POLICY_PURPOSE,

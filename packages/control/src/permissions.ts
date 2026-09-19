@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  attentionBudgetSchema, attentionBudgetUpdateSchema, dataRequestSummarySchema, domainSensitivityEntrySchema,
+  dataRequestSummarySchema, domainSensitivityEntrySchema,
   domainSensitivityUpdateSchema, permissionsViewSchema, publicPluginCapabilitySchema, retentionRuleSchema,
   retentionUpdateSchema, setPluginCapabilitiesSchema,
   type AttentionBudget, type PermissionsView, type PublicConnector, type PublicPluginCapability, type RetentionRule,
@@ -14,7 +14,8 @@ import { PLUGIN_CAPABILITIES, pluginCapabilityOf } from './catalog.js';
  *
  * Every setting here is a row the *next* operation reads: a sync or an upload
  * reads the domain sensitivity it stores at, a draft reads its plugin capability
- * grant, a clarification decision reads the attention budget and a cleanup run
+ * grant, a clarification decision reads the attention budget (the memory
+ * inbox's setting, ADR 0029, shown here) and a cleanup run
  * reads the retention rule. Nothing is cached, so a saved change takes effect on
  * the operation after it and on no operation before it.
  */
@@ -83,71 +84,6 @@ export async function setPluginCapabilities(tx: ControlTransaction, raw: unknown
       [randomUUID(), tx.context.ownerScopeId, entry.capabilityId, entry.access, entry.riskClass, item.granted, now]);
   }
   return listPluginCapabilities(tx);
-}
-
-// ---------------------------------------------------------------------------
-// Attention budgets
-
-/** The design defaults: at most three cards a day, one per sensitivity scope,
- * and the same question not asked again within seven days. */
-export const DEFAULT_ATTENTION_BUDGET = Object.freeze({
-  maxCardsPerDay: 3, maxCardsPerSensitivityScopePerDay: 1, repeatQuestionSuppressionDays: 7,
-});
-
-export async function readAttentionBudget(tx: ControlTransaction): Promise<AttentionBudget> {
-  const row = (await tx.query(
-    `SELECT max_cards_per_day,max_cards_per_sensitivity_scope_per_day,repeat_question_suppression_days,updated_at
-     FROM attention_budgets WHERE owner_scope_id=$1`, [tx.context.ownerScopeId])).rows[0];
-  if (!row) return attentionBudgetSchema.parse({ ...DEFAULT_ATTENTION_BUDGET, isDefault: true, updatedAt: null });
-  return attentionBudgetSchema.parse({
-    maxCardsPerDay: row['max_cards_per_day'], maxCardsPerSensitivityScopePerDay: row['max_cards_per_sensitivity_scope_per_day'],
-    repeatQuestionSuppressionDays: row['repeat_question_suppression_days'], isDefault: false, updatedAt: iso(row['updated_at']),
-  });
-}
-
-export async function updateAttentionBudget(tx: ControlTransaction, raw: unknown): Promise<AttentionBudget> {
-  requirePurpose(tx, PERMISSIONS_MANAGE_PURPOSE);
-  const patch = attentionBudgetUpdateSchema.parse(raw);
-  const current = await readAttentionBudget(tx);
-  const next = {
-    maxCardsPerDay: patch.maxCardsPerDay ?? current.maxCardsPerDay,
-    maxCardsPerSensitivityScopePerDay: patch.maxCardsPerSensitivityScopePerDay ?? current.maxCardsPerSensitivityScopePerDay,
-    repeatQuestionSuppressionDays: patch.repeatQuestionSuppressionDays ?? current.repeatQuestionSuppressionDays,
-  };
-  if (next.maxCardsPerSensitivityScopePerDay > next.maxCardsPerDay) {
-    throw new ControlError('ATTENTION_BUDGET_INVALID', { reason: 'SCOPE_LIMIT_ABOVE_DAILY_LIMIT' });
-  }
-  await tx.query(
-    `INSERT INTO attention_budgets(owner_scope_id,max_cards_per_day,max_cards_per_sensitivity_scope_per_day,
-       repeat_question_suppression_days,updated_at) VALUES($1,$2,$3,$4,now())
-     ON CONFLICT (owner_scope_id) DO UPDATE SET max_cards_per_day=EXCLUDED.max_cards_per_day,
-       max_cards_per_sensitivity_scope_per_day=EXCLUDED.max_cards_per_sensitivity_scope_per_day,
-       repeat_question_suppression_days=EXCLUDED.repeat_question_suppression_days,updated_at=now()`,
-    [tx.context.ownerScopeId, next.maxCardsPerDay, next.maxCardsPerSensitivityScopePerDay, next.repeatQuestionSuppressionDays]);
-  return readAttentionBudget(tx);
-}
-
-/**
- * The attention budget applied to one proposed clarification card (PRD §19.3,
- * §37.4). Pure, so the memory inbox and a test apply the same rule: over the
- * daily or per-scope cap the card is batched for review rather than shown, and a
- * question asked within the suppression window is suppressed unless material new
- * evidence reopened it.
- */
-export function admitsClarification(budget: Pick<AttentionBudget, 'maxCardsPerDay' | 'maxCardsPerSensitivityScopePerDay' | 'repeatQuestionSuppressionDays'>,
-  input: { askedToday: number; askedInScopeToday: number; sameQuestionAskedAt: Date | null; reopenedByNewEvidence: boolean; now: Date }):
-  { decision: 'ASK' | 'BATCH' | 'SUPPRESS'; reason: string } {
-  if (input.sameQuestionAskedAt !== null && !input.reopenedByNewEvidence) {
-    const window = budget.repeatQuestionSuppressionDays * 86_400_000;
-    if (input.now.getTime() - input.sameQuestionAskedAt.getTime() < window) {
-      return { decision: 'SUPPRESS', reason: 'ASKED_WITHIN_SUPPRESSION_WINDOW' };
-    }
-  }
-  if (input.askedToday >= budget.maxCardsPerDay) return { decision: 'BATCH', reason: 'DAILY_BUDGET_EXHAUSTED' };
-  if (input.askedInScopeToday >= budget.maxCardsPerSensitivityScopePerDay) {
-    return { decision: 'BATCH', reason: 'SENSITIVITY_SCOPE_BUDGET_EXHAUSTED' };
-  }
-  return { decision: 'ASK', reason: 'WITHIN_ATTENTION_BUDGET' };
 }
 
 // ---------------------------------------------------------------------------

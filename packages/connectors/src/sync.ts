@@ -159,7 +159,7 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
   readonly ingest: SourceIngest;
   /** The owner's own stored sensitivity for this connector type, set on the
    * Permissions surface; null keeps the manifest default. Read by the caller at
-   * sync time, so a changed setting applies to the next sync (ADR 0027 §7). */
+   * sync time, so a changed setting applies to the next sync (ADR 0030 §7). */
   readonly sensitivityFloor?: StoredSensitivity | null;
 }): Promise<SyncResult> {
   if (tx.context.purpose !== CONNECTOR_SYNC_PURPOSE) {

@@ -26,7 +26,7 @@ const SAVED_TEXT: Record<NonNullable<PermissionsProps['saved']>, string> = {
 };
 const REFUSAL_TEXT: Record<string, string> = {
   PLUGIN_CAPABILITY_WRITE_REFUSED: 'That capability is an external write. Uai V0 refuses it, so nothing was changed.',
-  ATTENTION_BUDGET_INVALID: 'The per-scope limit cannot be higher than the daily limit. Nothing was changed.',
+  REVIEW_INPUT_INVALID: 'Those attention budget values are not allowed. Nothing was changed.',
   CONTROL_REQUEST_INVALID: 'That value is not allowed. Nothing was changed.',
 };
 const SENSITIVITIES = ['NORMAL', 'PRIVATE', 'RESTRICTED'] as const;
@@ -104,7 +104,7 @@ export function Permissions(props: PermissionsProps) {
         </section>
 
         <AttentionBudgetEditor view={view} busy={busy} onSave={body =>
-          save('ATTENTION_BUDGET', 'settings/attention-budgets', 'permissions.manage', body, 'PATCH')}/>
+          save('ATTENTION_BUDGET', 'settings/attention-budgets', 'settings.attention', body, 'PATCH')}/>
 
         <RetentionEditor view={view} busy={busy} onSave={body =>
           save('RETENTION', 'settings/retention', 'permissions.manage', body, 'PATCH')}/>
@@ -136,7 +136,7 @@ function AttentionBudgetEditor(props: {view: PermissionsView; busy: boolean; onS
       <label htmlFor="budget-scope">Most cards per sensitivity scope per day</label>
       <input id="budget-scope" type="number" min={0} max={50} value={scope} onChange={event => setScope(Number(event.target.value))}/>
       <label htmlFor="budget-repeat">Days before the same question may be asked again</label>
-      <input id="budget-repeat" type="number" min={0} max={365} value={repeat} onChange={event => setRepeat(Number(event.target.value))}/>
+      <input id="budget-repeat" type="number" min={1} max={365} value={repeat} onChange={event => setRepeat(Number(event.target.value))}/>
       <button type="submit" disabled={props.busy}>Save attention budget</button>
     </form>
   </section>;

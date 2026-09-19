@@ -12,14 +12,14 @@ import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 // only this test publishes the pinned release, through the package's own source.
 import { loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
 import { actionHistoryEntrySchema, exportBundleSchema, permissionsViewSchema } from '@unai/domain';
-import { admitsClarification } from '@unai/control';
+import { decideInterruption } from '@unai/review';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
 
 /**
  * Governed action and the data-control surface over the real boundary, the real
  * owner transaction, the real Context Broker and the real pinned registry release
- * 0.1.0 (ADR 0027).
+ * 0.1.0 (ADR 0030).
  *
  *  - CRT-CON-08-A: email send, calendar create and update, money movement and
  *    trading are refused with a recorded EvaluateMemoryAction decision, and a draft
@@ -504,20 +504,25 @@ it('CRT-UX-09-A: the Permissions surface shows and changes sources, scopes, sens
     expect(afterRefusal.pluginCapabilities.find(entry => entry.capabilityId === 'gmail.create_draft')!.granted).toBe(true);
     expect(afterRefusal.pluginCapabilities.find(entry => entry.capabilityId === 'gmail.send')!.granted).toBe(false);
 
-    // Attention budget: the saved cap is the one the next clarification decision applies.
-    const tooWide = await app.inject({ method: 'PATCH', url: '/v1/settings/attention-budgets', headers: headers(o, 'permissions.manage'),
-      payload: { maxCardsPerDay: 1, maxCardsPerSensitivityScopePerDay: 2 } });
-    expect(tooWide.statusCode).toBe(400);
-    const decisionInput = { askedToday: 1, askedInScopeToday: 0, sameQuestionAskedAt: null, reopenedByNewEvidence: false, now: new Date() };
-    expect(admitsClarification(first.attentionBudget, decisionInput).decision).toBe('ASK');
-    const budget = await app.inject({ method: 'PATCH', url: '/v1/settings/attention-budgets', headers: headers(o, 'permissions.manage'),
+    // Attention budget: the memory inbox's setting (ADR 0029), changed from this
+    // surface through its own route, and the saved cap is the one the next
+    // interruption decision applies.
+    const decide = (budget: typeof first.attentionBudget, askedToday: number, lastAskedAt: Date | null) => decideInterruption({
+      risk: { errorProbability: 0.9, consequence: 'HIGH', irreversibility: 'IRREVERSIBLE', urgency: 'HIGH', interruptionCost: 'LOW' },
+      sensitivityScope: 'FINANCE/PRIVATE', budget, ownerLocalDate: '2026-09-19', timeZone: 'UTC', now: new Date(),
+      askedToday, askedInScopeToday: 0, lastAskedAt, suppressedUntil: null, materialNewEvidenceIds: [], learnedApprovalRuleId: null,
+    });
+    expect(decide(first.attentionBudget, 1, null).decision).toBe('ASK');
+    const wrongPurpose = await app.inject({ method: 'PATCH', url: '/v1/settings/attention-budgets', headers: headers(o, 'permissions.manage'),
+      payload: { maxCardsPerDay: 1 } });
+    expect(wrongPurpose.statusCode).toBe(403);
+    const budget = await app.inject({ method: 'PATCH', url: '/v1/settings/attention-budgets', headers: headers(o, 'settings.attention'),
       payload: { maxCardsPerDay: 1, repeatQuestionSuppressionDays: 3 } });
     expect(budget.statusCode, budget.body).toBe(200);
     const saved = (await view()).attentionBudget;
     expect(saved).toMatchObject({ maxCardsPerDay: 1, maxCardsPerSensitivityScopePerDay: 1, repeatQuestionSuppressionDays: 3, isDefault: false });
-    expect(admitsClarification(saved, decisionInput)).toEqual({ decision: 'BATCH', reason: 'DAILY_BUDGET_EXHAUSTED' });
-    expect(admitsClarification(saved, { ...decisionInput, askedToday: 0,
-      sameQuestionAskedAt: new Date(Date.now() - 4 * 86_400_000) }).decision).toBe('ASK');
+    expect(decide(saved, 1, null)).toMatchObject({ decision: 'BATCH', reason: 'DAILY_BUDGET_EXHAUSTED' });
+    expect(decide(saved, 0, new Date(Date.now() - 4 * 86_400_000)).decision).toBe('ASK');
 
     // Domain sensitivity: the next upload is stored at the owner's setting, in
     // either direction, and an item already stored is never rewritten.
@@ -568,7 +573,7 @@ it('CRT-UX-09-A: the Permissions surface shows and changes sources, scopes, sens
     // Every change is audited with field names only.
     const audited = (await admin.query(`SELECT objects_and_fields_accessed FROM audit_events WHERE owner_scope_id=$1 AND purpose='permissions.manage'
       AND result='SUCCESS'`, [o.owner])).rows.map(row => JSON.stringify(row.objects_and_fields_accessed));
-    for (const table of ['plugin_capability_grants', 'attention_budgets', 'domain_sensitivity_settings', 'retention_settings']) {
+    for (const table of ['plugin_capability_grants', 'domain_sensitivity_settings', 'retention_settings']) {
       expect(audited.some(text => text.includes('"' + table + '"')), table).toBe(true);
     }
   } finally { await app.close(); }
@@ -686,6 +691,49 @@ it('CRT-NFR-04-A and CRT-SEC-06-A: export carries raw evidence and canonical mem
     // --- Deletion: the preview says what will go and removes nothing.
     const packet = await search();
     expect(packet.currentBeliefs.map((item: { propositionId: string }) => item.propositionId)).toContain(principal.propositionId);
+    // Records other nodes compose from memory (migrations 0022 and 0023): one of
+    // each names the doomed item's frame, claim or evidence and must go with it;
+    // one of each names nothing deleted and must stay.
+    const composed = async (named: string, evidenceId: string) => {
+      const edition = randomUUID(), card = randomUUID(), observation = randomUUID(), review = randomUUID();
+      await admin.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,timezone,utc_offset,
+        generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+        VALUES($1,$2,$3,'2026-09-19','UTC','+00:00',now(),$4,$5,'{}','briefing-ranking-0.1.0')`,
+        [edition, o.owner, o.actor, packet.packetId, 'e'.repeat(64)]);
+      await admin.query(`INSERT INTO briefing_items(id,owner_scope_id,briefing_edition_id,item_object_type,item_object_id,domain_section,
+        headline,why_surfaced,rank_components,rank_score,priority,certainty_label,past_target,outcome_state,material_fingerprint,rank_position)
+        VALUES($1,$2,$3,'frame_instance',$4,'FINANCE','Obligation','Due today',
+        '{"consequence":1,"urgency":1,"goalRelevance":0.5,"confidence":1,"effort":0.5,"reversibility":0.2,"attentionBudget":1}',
+        0.9,'HIGH','CONFIRMED',false,'UNRESOLVED',$5,1)`, [randomUUID(), o.owner, edition, named, 'd'.repeat(64)]);
+      await admin.query(`INSERT INTO clarification_cards(id,owner_scope_id,situation_key,situation_kind,title,facts,why_it_matters,choices,
+        grouped_ambiguity_ids,ambiguities,sensitivity_scope,policy_inputs,evidence_ids,context_packet_id)
+        VALUES($1,$2,$3,'GENERAL','Unconfirmed details','[]','Answers about it are marked uncertain.','[{},{}]',ARRAY[$4::uuid],'[]',
+        'FINANCE/PRIVATE','{}',ARRAY[$5::uuid],$6)`, [card, o.owner, 'frame:' + randomUUID(), randomUUID(), evidenceId, packet.packetId]);
+      await admin.query(`INSERT INTO interruption_decisions(id,owner_scope_id,clarification_card_id,candidate_ambiguity_id,ambiguity_kind,
+        policy_inputs,decision,reason,owner_local_date,policy_version)
+        VALUES($1,$2,$3,$4,'UNCONFIRMED_INTERPRETATION','{"errorProbability":0.4,"consequence":"HIGH","irreversibility":"REVERSIBLE","urgency":"LOW","interruptionCost":"LOW","budget":{}}',
+        'ASK','WITHIN_ATTENTION_BUDGET','2026-09-19','interruption-policy-0.1.0')`, [randomUUID(), o.owner, card, randomUUID()]);
+      await admin.query(`INSERT INTO behavioral_observations(id,owner_scope_id,pattern_kind,statement,supporting_episode_ids,supporting_episodes,
+        counterexample_search,observation_window_start,observation_window_end,confidence,review_or_expiry_date,context_packet_id)
+        VALUES($1,$2,'REPEATED_POSTPONEMENT','Due dates were moved later 2 times.',ARRAY[$3::uuid,$4::uuid],'[{},{}]',
+        '{"searched":"x","counterexamplesFound":0,"counterexampleIds":[]}','2026-08-01T00:00:00Z','2026-09-01T00:00:00Z',1,'2026-10-01',$5)`,
+        [observation, o.owner, named, randomUUID(), packet.packetId]);
+      await admin.query(`INSERT INTO weekly_reviews(id,owner_scope_id,week_start,week_end,time_zone,priority_versus_calendar,
+        commitments_versus_resolutions,decisions_versus_outcomes,planned_versus_observed_spending,material_changes,repeated_postponement,
+        behavioral_observation_ids,context_packet_id,packet_hash,manifest,statement_count,review_version)
+        VALUES($1,$2,'2026-09-14','2026-09-20','UTC','{}',$3,'{}','{}','{}','{}',ARRAY[$4::uuid],$5,$6,'{}',0,'weekly-review-0.1.0')`,
+        [review, o.owner, JSON.stringify({ claimIds: [named] }), observation, packet.packetId, 'e'.repeat(64)]);
+      return { edition, card, observation, review };
+    };
+    const quoting = await composed(danaFrame.frame, doomed.evidenceId);
+    const unrelated = await composed(randomUUID(), kept.evidenceId);
+    const composedRows = async (rows: { edition: string; card: string; observation: string; review: string }) => [
+      await count('SELECT count(*) AS n FROM briefing_editions WHERE id=$1', [rows.edition]),
+      await count('SELECT count(*) AS n FROM briefing_items WHERE briefing_edition_id=$1', [rows.edition]),
+      await count('SELECT count(*) AS n FROM clarification_cards WHERE id=$1', [rows.card]),
+      await count('SELECT count(*) AS n FROM interruption_decisions WHERE clarification_card_id=$1', [rows.card]),
+      await count('SELECT count(*) AS n FROM behavioral_observations WHERE id=$1', [rows.observation]),
+      await count('SELECT count(*) AS n FROM weekly_reviews WHERE id=$1', [rows.review])];
     const preview = await app.inject({ method: 'POST', url: '/v1/data/deletions/preview', headers: headers(o, 'data.delete'),
       payload: { evidenceIds: [doomed.evidenceId] } });
     expect(preview.statusCode, preview.body).toBe(200);
@@ -757,6 +805,10 @@ it('CRT-NFR-04-A and CRT-SEC-06-A: export carries raw evidence and canonical mem
       ['SELECT count(*) AS n FROM entity_aliases WHERE source_item_id=$1', doomed.evidenceId],
     ] as const) expect(await count(sql, [value]), sql).toBe(0);
     expect(await count('SELECT count(*) AS n FROM claims WHERE id=$1', [survivor.claimId])).toBe(1);
+    // The composed records that named it are gone; the others are untouched.
+    expect(await composedRows(quoting)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(await composedRows(unrelated)).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(receipt.cascade.derivedRecords).toBe(6);
     expect((await admin.query('SELECT raw_text FROM owner_overlay_deltas WHERE source_evidence_id=$1', [doomed.evidenceId])).rows[0].raw_text).toBe('[erased]');
     expect(await count("SELECT count(*) AS n FROM context_packets WHERE owner_scope_id=$1 AND packet::text LIKE '%'||$2||'%'",
       [o.owner, principal.propositionId])).toBe(0);

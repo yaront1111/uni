@@ -2,9 +2,9 @@
 
 `@unai/control` owns governed action and the data-control surface: drafts,
 recommendations, the action history, plugin capability grants, the owner's
-settings (attention budget, retention, domain sensitivity), export, the deletion
+settings (retention, domain sensitivity; the attention budget is `@unai/review`'s), export, the deletion
 cascade and semantic-index regeneration. Report: `docs/governed-action-and-data-control.md`;
-decisions: `docs/adr/0027-governed-action-and-data-control.md`.
+decisions: `docs/adr/0030-governed-action-and-data-control.md`.
 
 ## Local invariants
 
@@ -24,7 +24,7 @@ decisions: `docs/adr/0027-governed-action-and-data-control.md`.
   role holds no DELETE on any canonical or evidence table (the isolation suite
   asserts it under `data.delete` too). Do not add DELETE grants to make a cascade
   step easier; extend the definer, and extend the immutability-trigger branches
-  in migration 0022 only for an erasure-shaped update.
+  in migration 0024 only for an erasure-shaped update.
 
 ## Traps
 

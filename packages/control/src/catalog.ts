@@ -1,7 +1,7 @@
 import type { ActionKind } from '@unai/domain';
 
 /**
- * Uai's own plugin capabilities (PRD §27.1; ADR 0027 §2).
+ * Uai's own plugin capabilities (PRD §27.1; ADR 0030 §2).
  *
  * One entry per discrete capability, each with its own risk class, exactly as
  * the connector manifests do for reads. A DRAFT capability produces a Uai

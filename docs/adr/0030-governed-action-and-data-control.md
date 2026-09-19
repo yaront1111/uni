@@ -1,4 +1,4 @@
-# ADR 0027: Governed action, the Permissions surface, export and the deletion cascade
+# ADR 0030: Governed action, the Permissions surface, export and the deletion cascade
 
 Date: 2026-09-19
 Status: Accepted
@@ -128,10 +128,12 @@ TRADE recommendation would be blocked whatever its memory said.
 
 ## 7. The owner's settings are rows, read by the next operation
 
-- `attention_budgets`: one row per owner scope, defaults 3 / 1 / 7 when absent.
-  `readAttentionBudget` and `admitsClarification` are what a clarification
-  decision reads, so a change applies to the next one. The inbox itself belongs
-  to `memory-inbox-attention-budgets-and-weekly-review`.
+- `attention_budgets` is the memory inbox's (migration 0023, ADR 0029 §5): the
+  Permissions view reads it under `settings.attention` and the screen changes it
+  through `PATCH /v1/settings/attention-budgets`. Every interruption decision
+  reads it in its own transaction, so a change applies to the next one. (An
+  earlier draft of this node created its own table; the merge with master
+  replaced it with that one.)
 - `retention_settings`: per source type, raw retention days and derived-data
   retention days (null = keep). `POST /v1/data/retention/cleanup` erases every item
   past its source type's raw retention through the same cascade as a deletion,

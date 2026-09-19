@@ -4,7 +4,7 @@ import { ControlError, requirePurpose, type ControlTransaction } from './transac
 
 /**
  * The deletion cascade and retention (PRD §30.7, §34 invariant 10; design entity
- * `retention_and_deletion_requests`; CRT-SEC-06-A; ADR 0027 §8).
+ * `retention_and_deletion_requests`; CRT-SEC-06-A; ADR 0030 §8).
  *
  * The cascade itself is `unai_private.erase_evidence`, one bounded definer the
  * application role may call under `data.delete` and nothing else: the role holds
@@ -63,7 +63,7 @@ export function cascadeCounts(erased: readonly ErasedEvidence[], rawObjectsDelet
     searchIndexEntries: sum('anchors') + sum('embeddings'), projectionRows: sum('projectionRows'),
     threadMemberships: sum('threadMemberships'), aliases: sum('aliases'), extractionRuns: sum('extractionRuns'),
     overlayTextsErased: sum('overlayTextsErased'), transactionPayloadsErased: sum('transactionPayloadsErased'),
-    contextPacketsErased: sum('contextPacketsErased'),
+    contextPacketsErased: sum('contextPacketsErased'), derivedRecords: sum('derivedRecords'),
   });
 }
 

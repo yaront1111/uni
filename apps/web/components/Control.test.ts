@@ -10,7 +10,7 @@ import {RecommendationDetail} from './RecommendationDetail';
 
 /** One assertion per state the design draws for "Permissions and integrations",
  * "Export and delete my data", "Action history", "Draft approval" and
- * "Recommendation detail" (ADR 0027). The components render statically, so every
+ * "Recommendation detail" (ADR 0030). The components render statically, so every
  * state is reachable from props alone. */
 
 const ID = (n: number) => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
@@ -60,7 +60,8 @@ it('Permissions and integrations: sources with read and write scopes, sensitivit
 
 const counts = {rawObjects: 1, parsedContent: 1, anchors: 2, claims: 1, unsupportedBeliefs: 2, beliefAssessments: 2,
   supportRows: 2, resolutionAssertions: 0, links: 0, embeddings: 1, summaries: 1, searchIndexEntries: 3, projectionRows: 1,
-  threadMemberships: 1, aliases: 1, extractionRuns: 0, overlayTextsErased: 1, transactionPayloadsErased: 0, contextPacketsErased: 1};
+  threadMemberships: 1, aliases: 1, extractionRuns: 0, overlayTextsErased: 1, transactionPayloadsErased: 0, contextPacketsErased: 1,
+  derivedRecords: 1};
 const receipt = (status: 'PREVIEW' | 'COMPLETED'): DeletionReceipt => ({requestId: status === 'PREVIEW' ? null : ID(7), status,
   trigger: 'OWNER_REQUEST', evidenceIds: [ID(5)], cascade: counts,
   projectionsRebuilt: status === 'PREVIEW' ? [] : ['obligations_projection'], auditRetainsPayload: false});

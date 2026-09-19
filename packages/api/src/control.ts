@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
 import {
-  PROJECTION_NAMES, attentionBudgetUpdateSchema, createDraftSchema, createRecommendationSchema, DRAFT_CAPABILITY,
+  PROJECTION_NAMES, createDraftSchema, createRecommendationSchema, DRAFT_CAPABILITY,
   deletionPreviewRequestSchema, deletionReceiptSchema, deletionRequestSchema, domainSensitivityUpdateSchema,
   draftDecisionSchema, executeActionSchema, exportRequestSchema, observedActionSchema, regenerateEmbeddingsSchema,
   regenerationReceiptSchema, respondRecommendationSchema, retentionCleanupSchema, retentionUpdateSchema,
@@ -19,15 +19,16 @@ import {
   buildExportBundle, cascadeCounts, decideDraft, dropSemanticIndex, eraseEvidence, evaluateActionBasis,
   evaluateExternalAction, expireDerivedData, insertDraft, insertRecommendation, listActionHistory, listDataRequests,
   listDrafts, listExpiredEvidence, listPluginCapabilities, listRecommendations, permissionsView,
-  pluginCapabilityGranted, readAttentionBudget, readDomainSensitivity, readRecommendation, readRetention,
+  pluginCapabilityGranted, readDomainSensitivity, readRecommendation, readRetention,
   recordDataRequest, recordObservedAction, recordReceiptEntry, regenerateSemanticIndex, respondToRecommendation,
-  setPluginCapabilities, updateAttentionBudget, updateDomainSensitivity, updateRetention,
+  setPluginCapabilities, updateDomainSensitivity, updateRetention,
   type ErasedEvidence,
 } from '@unai/control';
+import { ATTENTION_SETTINGS_PURPOSE, readAttentionBudget } from '@unai/review';
 import { ingestOwnerStatement, ingestToolReceipt, type EvidenceObjects } from './evidence.js';
 
 /**
- * Governed action and the data-control surface (ADR 0027; design routes
+ * Governed action and the data-control surface (ADR 0030; design routes
  * `GET /v1/permissions`, `PATCH /v1/settings/*`, `POST /v1/drafts`,
  * `POST /v1/actions/execute`, `GET /v1/action-history`, `POST /v1/export` and the
  * deletion workflow).
@@ -54,7 +55,6 @@ export function controlPurposeFor(method: string, url: string | undefined): stri
   switch (url) {
     case '/v1/permissions': return PERMISSIONS_READ_PURPOSE;
     case '/v1/plugin-capabilities':
-    case '/v1/settings/attention-budgets':
     case '/v1/settings/retention':
     case '/v1/settings/domain-sensitivity': return PERMISSIONS_MANAGE_PURPOSE;
     case '/v1/drafts': return method === 'GET' ? ACTION_READ_PURPOSE : ACTION_DRAFT_PURPOSE;
@@ -80,7 +80,7 @@ export const CONTROL_PURPOSES: readonly string[] = Object.freeze([PERMISSIONS_RE
 
 const REFUSAL_STATUS = new Map<string, number>([
   ['CONTROL_REQUEST_INVALID', 400], ['PLUGIN_CAPABILITY_UNKNOWN', 400], ['PLUGIN_CAPABILITY_WRITE_REFUSED', 403],
-  ['ATTENTION_BUDGET_INVALID', 400], ['DRAFT_CAPABILITY_INVALID', 400], ['DRAFT_CAPABILITY_NOT_GRANTED', 403],
+['DRAFT_CAPABILITY_INVALID', 400], ['DRAFT_CAPABILITY_NOT_GRANTED', 403],
   ['DRAFT_POLICY_DENIED', 403], ['DRAFT_CONFIRMATION_REQUIRED', 409], ['DRAFT_NOT_FOUND', 404],
   ['DRAFT_TRANSITION_REFUSED', 409], ['EXTERNAL_ACTION_REFUSED', 403], ['RECOMMENDATION_NOT_FOUND', 404],
   ['RECOMMENDATION_BLOCKED', 409], ['RECOMMENDATION_ALREADY_ANSWERED', 409], ['EVIDENCE_NOT_FOUND', 404],
@@ -134,10 +134,14 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
 
   app.get('/v1/permissions', async (request, reply) => guarded(request, reply, async () => {
     const connectors = await work(request, tx => listConnectors(tx), CONNECTOR_READ_PURPOSE) as Awaited<ReturnType<typeof listConnectors>>;
+    // The attention budget is the memory inbox's setting (ADR 0029 §5), read here
+    // under its own purpose and changed through its own PATCH route.
+    const attentionBudget = await work(request, tx => readAttentionBudget(tx, { ownerScopeId: tx.context.ownerScopeId }),
+      ATTENTION_SETTINGS_PURPOSE) as Awaited<ReturnType<typeof readAttentionBudget>>;
     return work(request, async tx => {
       const view = permissionsView({
         connectors, domainSensitivity: await readDomainSensitivity(tx), pluginCapabilities: await listPluginCapabilities(tx),
-        attentionBudget: await readAttentionBudget(tx), retention: await readRetention(tx),
+        attentionBudget, retention: await readRetention(tx),
         dataRequests: await listDataRequests(tx),
       });
       await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [
@@ -163,9 +167,6 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
   settingsRoute('/v1/plugin-capabilities', setPluginCapabilitiesSchema,
     async (tx, body) => ({ pluginCapabilities: await setPluginCapabilities(tx, body) }),
     'plugin_capability_grants', ['capability_id', 'granted', 'granted_at', 'revoked_at'], 'POST');
-  settingsRoute('/v1/settings/attention-budgets', attentionBudgetUpdateSchema,
-    async (tx, body) => ({ attentionBudget: await updateAttentionBudget(tx, body) }),
-    'attention_budgets', ['max_cards_per_day', 'max_cards_per_sensitivity_scope_per_day', 'repeat_question_suppression_days'], 'PATCH');
   settingsRoute('/v1/settings/retention', retentionUpdateSchema,
     async (tx, body) => ({ retention: await updateRetention(tx, body) }),
     'retention_settings', ['source_type', 'raw_retention_days', 'derived_retention_days'], 'PATCH');

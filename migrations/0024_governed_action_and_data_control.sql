@@ -1,8 +1,9 @@
 -- Governed action and the data-control surface (design entities `drafts`,
--- `recommendation_artifacts`, `action_history`, `attention_budgets`,
--- `memory_summaries` and `retention_and_deletion_requests`; PRD §7.8, §8.4,
--- §27, §29.3, §30.7, §33.13, §60). ADR 0027 records the decisions below before
--- the code.
+-- `recommendation_artifacts`, `action_history`, `memory_summaries` and
+-- `retention_and_deletion_requests`; PRD §7.8, §8.4, §27, §29.3, §30.7, §33.13,
+-- §60). ADR 0030 records the decisions below before the code. The attention
+-- budget the Permissions surface shows and changes is migration 0023's
+-- `attention_budgets`, under its own `settings.attention` purpose.
 --
 -- Five rules are carried by the schema rather than by application code:
 --
@@ -264,14 +265,6 @@ CREATE TRIGGER action_history_immutable BEFORE UPDATE ON action_history
 
 -- ---------------------------------------------------------------------------
 -- The owner's settings, each read by the next operation that needs it.
-CREATE TABLE attention_budgets (
- owner_scope_id uuid PRIMARY KEY REFERENCES owner_scopes(id),
- max_cards_per_day integer NOT NULL DEFAULT 3 CHECK(max_cards_per_day BETWEEN 0 AND 50),
- max_cards_per_sensitivity_scope_per_day integer NOT NULL DEFAULT 1 CHECK(max_cards_per_sensitivity_scope_per_day BETWEEN 0 AND 50),
- repeat_question_suppression_days integer NOT NULL DEFAULT 7 CHECK(repeat_question_suppression_days BETWEEN 0 AND 365),
- updated_at timestamptz NOT NULL DEFAULT now(),
- CONSTRAINT attention_budget_scope_within_day CHECK(max_cards_per_sensitivity_scope_per_day<=max_cards_per_day)
-);
 CREATE TABLE retention_settings (
  owner_scope_id uuid NOT NULL REFERENCES owner_scopes(id),
  source_type text NOT NULL CHECK(source_type ~ '^[A-Z][A-Z0-9_]{0,63}$'),
@@ -288,15 +281,10 @@ CREATE TABLE domain_sensitivity_settings (
  updated_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(owner_scope_id,source_type)
 );
-ALTER TABLE attention_budgets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE attention_budgets FORCE ROW LEVEL SECURITY;
 ALTER TABLE retention_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE retention_settings FORCE ROW LEVEL SECURITY;
 ALTER TABLE domain_sensitivity_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE domain_sensitivity_settings FORCE ROW LEVEL SECURITY;
-CREATE POLICY owner_read ON attention_budgets FOR SELECT TO unai_app
- USING(unai_private.has_owner_access(owner_scope_id)
- AND current_setting('unai.purpose',true) IN ('permissions.read','permissions.manage','data.export'));
 CREATE POLICY owner_read ON retention_settings FOR SELECT TO unai_app
  USING(unai_private.has_owner_access(owner_scope_id)
  AND current_setting('unai.purpose',true) IN ('permissions.read','permissions.manage','data.export','data.delete'));
@@ -307,7 +295,7 @@ CREATE POLICY owner_read ON domain_sensitivity_settings FOR SELECT TO unai_app
 DO $$
 DECLARE t text;
 BEGIN
- FOREACH t IN ARRAY ARRAY['attention_budgets','retention_settings','domain_sensitivity_settings'] LOOP
+ FOREACH t IN ARRAY ARRAY['retention_settings','domain_sensitivity_settings'] LOOP
   EXECUTE format('CREATE POLICY owner_set ON %I FOR INSERT TO unai_app WITH CHECK(unai_private.has_owner_access(owner_scope_id) AND current_setting(''unai.purpose'',true)=''permissions.manage'')', t);
   EXECUTE format('CREATE POLICY owner_change ON %I FOR UPDATE TO unai_app USING(unai_private.has_owner_access(owner_scope_id) AND current_setting(''unai.purpose'',true)=''permissions.manage'') WITH CHECK(unai_private.has_owner_access(owner_scope_id) AND current_setting(''unai.purpose'',true)=''permissions.manage'')', t);
   EXECUTE format('GRANT SELECT,INSERT,UPDATE ON %I TO unai_app', t);
@@ -403,7 +391,7 @@ END $$;
 
 -- The erasure reads the evidence rows it erases, tombstones included, and the
 -- private object location, so the raw object can be deleted from storage in the
--- same transaction after the database erasure (ADR 0027 §8). It reads nothing
+-- same transaction after the database erasure (ADR 0030 §8). It reads nothing
 -- else through the row policies: the cascade itself runs in `erase_evidence`.
 CREATE POLICY data_erasure_read ON source_items FOR SELECT TO unai_app
  USING(unai_private.has_owner_access(owner_scope_id) AND current_setting('unai.purpose',true)='data.delete');
@@ -428,14 +416,20 @@ CREATE POLICY data_erasure_read ON evidence_object_keys FOR SELECT TO unai_app
 -- the evidence row itself (a tombstone), its object key (`deleted_at`), the
 -- owner's words on an overlay delta that quotes it, the operation payloads of any
 -- belief transaction built on it, and every stored context packet that carried a
--- removed object. It answers counts and identifiers only.
+-- removed object. The records a read composed from memory -- Today briefing
+-- editions and their items, clarification cards with their interruption
+-- decisions, weekly reviews and behavioral observations (migrations 0022 and
+-- 0023) -- are deleted whenever they name a removed object or a frame whose
+-- projection row was removed: each can quote what was deleted, and none is
+-- anyone's history. It answers counts and identifiers only.
 CREATE FUNCTION unai_private.erase_evidence(owner uuid, evidence uuid) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE
  raw_ref text;
  anchor_ids uuid[]; run_ids uuid[]; claim_ids uuid[]; proposition_ids uuid[] := '{}'; added uuid[];
  frame_ids uuid[]; link_ids uuid[]; resolution_ids uuid[]; erased_ids uuid[];
- counts jsonb := '{}'::jsonb; n integer;
+ edition_ids uuid[]; card_ids uuid[]; named_ids text[];
+ counts jsonb := '{}'::jsonb; n integer; derived integer := 0;
 BEGIN
  IF NOT unai_private.has_owner_access(owner) OR current_setting('unai.purpose',true) IS DISTINCT FROM 'data.delete' THEN
   RAISE EXCEPTION 'ERASURE_NOT_AUTHORIZED' USING ERRCODE='42501';
@@ -561,6 +555,33 @@ BEGIN
   WHERE p.owner_scope_id=owner AND p.packet<>'{"erased":true}'::jsonb
    AND EXISTS(SELECT 1 FROM unnest(erased_ids) AS i(id) WHERE strpos(p.packet::text, i.id::text)>0);
  GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('contextPacketsErased', n);
+
+ -- Records composed from memory that name a removed object: the whole row is
+ -- searched as text, so an id held in a manifest, a fact list or a supporting
+ -- episode counts as well as one in a column.
+ named_ids := ARRAY(SELECT unnest(erased_ids || frame_ids)::text);
+ SELECT coalesce(array_agg(e.id),'{}') INTO edition_ids FROM public.briefing_editions e
+  WHERE e.owner_scope_id=owner AND (EXISTS(SELECT 1 FROM unnest(named_ids) AS i(id) WHERE strpos(to_jsonb(e)::text, i.id)>0)
+   OR EXISTS(SELECT 1 FROM public.briefing_items b WHERE b.owner_scope_id=owner AND b.briefing_edition_id=e.id
+    AND EXISTS(SELECT 1 FROM unnest(named_ids) AS i(id) WHERE strpos(to_jsonb(b)::text, i.id)>0)));
+ DELETE FROM public.briefing_items WHERE owner_scope_id=owner AND briefing_edition_id=ANY(edition_ids);
+ GET DIAGNOSTICS n = ROW_COUNT; derived := derived+n;
+ DELETE FROM public.briefing_editions WHERE owner_scope_id=owner AND id=ANY(edition_ids);
+ GET DIAGNOSTICS n = ROW_COUNT; derived := derived+n;
+ SELECT coalesce(array_agg(c.id),'{}') INTO card_ids FROM public.clarification_cards c
+  WHERE c.owner_scope_id=owner AND (c.reopened_by_evidence_id=evidence
+   OR EXISTS(SELECT 1 FROM unnest(named_ids) AS i(id) WHERE strpos(to_jsonb(c)::text, i.id)>0));
+ DELETE FROM public.interruption_decisions WHERE owner_scope_id=owner AND clarification_card_id=ANY(card_ids);
+ GET DIAGNOSTICS n = ROW_COUNT; derived := derived+n;
+ DELETE FROM public.clarification_cards WHERE owner_scope_id=owner AND id=ANY(card_ids);
+ GET DIAGNOSTICS n = ROW_COUNT; derived := derived+n;
+ DELETE FROM public.weekly_reviews w WHERE w.owner_scope_id=owner
+  AND EXISTS(SELECT 1 FROM unnest(named_ids) AS i(id) WHERE strpos(to_jsonb(w)::text, i.id)>0);
+ GET DIAGNOSTICS n = ROW_COUNT; derived := derived+n;
+ DELETE FROM public.behavioral_observations o WHERE o.owner_scope_id=owner
+  AND EXISTS(SELECT 1 FROM unnest(named_ids) AS i(id) WHERE strpos(to_jsonb(o)::text, i.id)>0);
+ GET DIAGNOSTICS n = ROW_COUNT; derived := derived+n;
+ counts := counts || jsonb_build_object('derivedRecords', derived);
 
  UPDATE public.source_items SET deleted_at=clock_timestamp(), external_id='erased:'||id::text,
    idempotency_key='erased:'||id::text, content_hash=encode(sha256(convert_to('erased:'||id::text,'UTF8')),'hex'),
@@ -712,23 +733,4 @@ BEGIN
  END IF;
  RAISE EXCEPTION 'CANONICALIZATION_RECORD_IMMUTABLE' USING ERRCODE='55000';
 END
-$$;
-
--- ---------------------------------------------------------------------------
--- One lock order for the registry snapshot: releases, then contracts.
---
--- Publishing inserts a release and then its contracts, and the snapshot suite's
--- refused TRUNCATE lists `registry_releases` first for the same reason. This
--- reader named `registry_contracts` first, so a read running beside that TRUNCATE
--- could hold the contracts lock while waiting for releases -- a deadlock that
--- surfaced as an unexplained 500 or 503 on whichever read PostgreSQL chose as the
--- victim. Same question, same answer, same purposes as migration 0019; only the
--- order in which the two relations are opened changes.
-CREATE OR REPLACE FUNCTION unai_private.registry_contract_present(release_id uuid, contract text, kind text) RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT unai_private.owner_id() IS NOT NULL
-  AND current_setting('unai.purpose',true) = ANY(ARRAY['memory.govern','memory.canonicalize','memory.inspect','memory.read'])
-  AND EXISTS(SELECT 1 FROM public.registry_releases r
-    JOIN public.registry_contracts c ON c.registry_release_id=r.id
-    WHERE r.id=release_id AND r.lifecycle='RELEASED' AND c.contract_id=contract AND c.contract_kind=kind)
 $$;

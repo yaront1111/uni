@@ -4,15 +4,15 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `drafts-actions-permissions-export-and-deletion-workflow`. This node owns
 CRT-AI-04-A, CRT-CON-08-A, CRT-NFR-04-A, CRT-SEC-06-A, CRT-SEC-11-A,
-CRT-UX-09-A and CRT-UX-13-A. ADR 0027 records its decisions before the code.
+CRT-UX-09-A and CRT-UX-13-A. ADR 0030 records its decisions before the code.
 The branch was brought up to master `11869e1`, which carries the dependency
 `connector-capabilities-required-connectors-and-lifecycle`.
 
 ## Design entities implemented here
 
-Added by `migrations/0022_governed_action_and_data_control.sql`, each with forced
+Added by `migrations/0024_governed_action_and_data_control.sql`, each with forced
 row-level security, owner-scoped policies and a classification in
-`packages/postgres/src/ownership.ts` (64 application tables now):
+`packages/postgres/src/ownership.ts` (71 application tables now):
 
 - **`drafts`** — a Uai artifact, `CREATED → AWAITING_APPROVAL → APPROVED` or
   `DISCARDED`; no executed status exists. `policy_decision_id` is NOT NULL: a draft
@@ -23,12 +23,11 @@ row-level security, owner-scoped policies and a classification in
 - **`action_history`** — one `stage` column with the six labels; append-only;
   `EXECUTED`/`RECEIVED_CONFIRMATION` need a live `TOOL_RECEIPT` evidence row; an
   entry about a draft may only be `DRAFTED` or `REQUESTED_APPROVAL`.
-- **`attention_budgets`** — defaults 3 / 1 / 7 when absent.
 - **`memory_summaries`** — the derived cache the deletion cascade must reach.
 - **`retention_and_deletion_requests`** — export and deletion requests with a
   receipt of counts and identifiers only.
 
-Supporting tables, recorded in ADR 0027: `plugin_capability_grants` (Uai's own
+Supporting tables, recorded in ADR 0030: `plugin_capability_grants` (Uai's own
 plugin capabilities, one row each; a granted WRITE row is unrepresentable),
 `retention_settings` and `domain_sensitivity_settings`.
 
@@ -54,7 +53,7 @@ Every drawn state is reachable from props and asserted in
 | --- | --- | --- |
 | `GET /v1/permissions` | `permissions.read` | sources with read and write scopes, domain sensitivity, plugin capabilities, attention budget, retention, recent requests |
 | `POST /v1/plugin-capabilities` | `permissions.manage` | refused whole, `403 PLUGIN_CAPABILITY_WRITE_REFUSED`, if any entry grants a write |
-| `PATCH /v1/settings/attention-budgets` | `permissions.manage` | `400 ATTENTION_BUDGET_INVALID` when the scope cap exceeds the daily cap |
+| `PATCH /v1/settings/attention-budgets` | `settings.attention` | the memory inbox's route (ADR 0029 §5), which this surface calls; the Permissions view reads the same row |
 | `PATCH /v1/settings/retention` | `permissions.manage` | a rule with neither limit returns the type to "keep" |
 | `PATCH /v1/settings/domain-sensitivity` | `permissions.manage` | replaces the manifest floor for items stored after it |
 | `POST /v1/drafts`, `GET /v1/drafts` | `action.draft`, `action.read` | `403 DRAFT_CAPABILITY_NOT_GRANTED`, `403 DRAFT_POLICY_DENIED`, `409 DRAFT_CONFIRMATION_REQUIRED` |
@@ -113,8 +112,8 @@ Context Broker and the real pinned registry release 0.1.0, unless noted.
   scopes empty), all five sources' sensitivity, the plugin capabilities with risk
   classes, the default budget and the retention rules. Then each change is shown
   taking effect on the next operation: a new read capability widens the next
-  view's scopes; the saved attention budget turns the next clarification decision
-  from ASK to BATCH; the next upload is stored RESTRICTED, then NORMAL, while the
+  view's scopes; the attention budget saved through the inbox's own route turns
+  the next interruption decision (`decideInterruption`) from ASK to BATCH; the next upload is stored RESTRICTED, then NORMAL, while the
   earlier item keeps its level; a cleanup with no rule removes nothing and the next
   one after the rule is saved erases both uploads. Export and deletion are
   triggered from the surface and listed on it.
@@ -138,11 +137,12 @@ Context Broker and the real pinned registry release 0.1.0, unless noted.
 
 ## What this node does not claim
 
-- **The attention budget is enforced by a rule, not yet by an inbox.**
-  `admitsClarification` is the rule a clarification decision applies and it reads
-  the saved budget; the memory inbox that calls it belongs to
-  `memory-inbox-attention-budgets-and-weekly-review`, which is not a dependency of
-  this node.
+- **The attention budget is the memory inbox's.** `attention_budgets`, its
+  `settings.attention` purpose, `PATCH /v1/settings/attention-budgets` and the
+  interruption policy that enforces it belong to
+  `memory-inbox-attention-budgets-and-weekly-review` (ADR 0029). This node shows
+  it on the Permissions surface and changes it through that route; it keeps no
+  table, rule or route of its own for it.
 - **No executor exists.** V0 refuses every external write; a port that answered
   ALLOW would still get `EXTERNAL_ACTION_REFUSED`, because there is nothing to call.
 - **The web shell's shared chrome.** `web-shell-labels-today-briefing-and-ask-surface`
@@ -162,20 +162,22 @@ Context Broker and the real pinned registry release 0.1.0, unless noted.
 
 ## Changes outside this node's feature scope
 
-- **Registry lock order** (`migrations/0022`, last statement). With this node's
-  suite added, the full run failed intermittently (4 of 8 runs) with a 500 or 503
-  in unrelated suites (`ask`, `memory`, the isolation governor check). The
-  PostgreSQL log showed `deadlock detected` between the registry snapshot suite's
-  refused `TRUNCATE registry_releases, registry_contracts` and
-  `unai_private.registry_contract_present`, which opened `registry_contracts`
-  before `registry_releases`. The function is re-declared with the join reversed:
-  the same question, answer and purposes as migration 0019. After it, no deadlock
-  appeared and four consecutive `pnpm test` runs passed.
+- **Registry lock order.** This node first re-declared
+  `unai_private.registry_contract_present` with `registry_releases` opened before
+  `registry_contracts`, to stop a deadlock against the registry snapshot suite's
+  refused `TRUNCATE`. Migration 0023 landed the identical re-declaration first, so
+  migration 0024 no longer repeats it.
+- **Merge with master.** The migration is numbered 0024 and the ADR 0030, after
+  master's 0022/0023 and ADR 0027–0029. The deletion cascade also removes the
+  records master's nodes compose from memory -- briefing editions and items,
+  clarification cards with their interruption decisions, weekly reviews and
+  behavioral observations -- whenever one names a removed object, counted as
+  `derivedRecords`.
 - **Projection replay teardown** (`packages/capabilities/src/projection-replay.test.ts`)
-  drops what migration 0022 creates and expects it among the re-applied files, as
+  drops what migration 0024 creates and expects it among the re-applied files, as
   every migration since 0017 has done.
 - **Isolation suite** (`packages/postgres/src/isolation.test.ts`): the table count
-  is 64, and the new tables have their cross-owner fixture; the one TOOL_RECEIPT
+  is 71, and the new tables have their cross-owner fixture; the one TOOL_RECEIPT
   evidence row it needs lives inside a rolled-back transaction so no other
   fixture count moves.
 

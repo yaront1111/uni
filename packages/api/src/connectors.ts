@@ -222,7 +222,7 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
           [request.params.id, tx.context.ownerScopeId])).rows[0];
         if (!connector) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId: request.params.id });
         // The owner's stored-sensitivity setting is read here, at the sync, so a
-        // change saved on the Permissions surface applies to this run (ADR 0027 §7).
+        // change saved on the Permissions surface applies to this run (ADR 0030 §7).
         const sensitivityFloor = await readSensitivityFloor(tx, connector.connector_type as string);
         assertCeilingAdmitsFloor(connector.connector_type as string, authority.maximum, parsed.data.sensitivity, sensitivityFloor);
         const client = await options.connectorClient!({
