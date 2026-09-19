@@ -102,13 +102,13 @@ beforeAll(async () => {
 
   danielId = randomUUID();
   await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,canonical_label) VALUES($1,$2,'PERSON','Daniel')", [danielId, owner]);
+  await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id,created_at)
+    VALUES($1,$2,$3,'DISPLAY_NAME','Daniel','daniel',$4,$5)`, [randomUUID(), owner, danielId, sharedEvidence, RECORDED_AT]);
 
   obligationFrame = randomUUID();
   const commitmentFrame = randomUUID();
   await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.obligation',$3),($4,$2,'shared.commitment',$3)",
     [obligationFrame, owner, contextSpaceId, commitmentFrame]);
-  await admin.query("INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id) VALUES($1,$2,$3,'creditor',$4)",
-    [randomUUID(), owner, obligationFrame, danielId]);
 
   principalSlot = randomUUID();
   const restrictedSlot = randomUUID();
@@ -119,6 +119,10 @@ beforeAll(async () => {
   // Two live values in one slot: the conflict the packet reports.
   acceptedProposition = await proposition({ beliefSlotId: principalSlot, value: { amount: '50.00', currency: 'ILS' },
     anchorId: shared.anchorId, assessment: 'ACCEPTED', transactionId });
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id,created_at)
+    SELECT $1,$2,$3,'creditor',$4,c.id,$6 FROM claims c
+    WHERE c.owner_scope_id=$2 AND c.proposition_id=$5 ORDER BY c.id LIMIT 1`,
+    [randomUUID(), owner, obligationFrame, danielId, acceptedProposition, RECORDED_AT]);
   competingProposition = await proposition({ beliefSlotId: principalSlot, value: { amount: '60.00', currency: 'ILS' },
     anchorId: second.anchorId, assessment: 'PROVISIONAL', transactionId });
   // A value whose only support is RESTRICTED.

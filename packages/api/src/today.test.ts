@@ -9,6 +9,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { applyProjectionDelta } from '@unai/capabilities';
+import { createLocalPolicyAdapters, type PolicyPorts } from '@unai/belief';
 import { todayBriefingSchema, whySourcesSchema, type BriefingItem, type TodayBriefing } from '@unai/domain';
 // The registry library stays out of the API's manifest (registry-boundary.test.ts);
 // only this test publishes the pinned release, through the package's own source.
@@ -112,7 +113,8 @@ async function role(frameInstanceId: string, roleId: string, entityId: string) {
 /** One value in one slot: the proposition, a claim anchored in `anchorId`, and --
  * unless `status` is null -- the assessment that stands over it. */
 async function value(frameInstanceId: string, predicateId: string, modality: string, normalized: unknown, anchorId: string,
-  status: string | null, origin = 'USER_STATEMENT', assertedBy: string | null = maya) {
+  status: string | null, origin = 'USER_STATEMENT', assertedBy: string | null = maya,
+  validFrom = new Date(RECORDED.getTime() - 24 * HOUR)) {
   let slot = (await admin.query(`SELECT id FROM belief_slots WHERE owner_scope_id=$1 AND frame_instance_id=$2 AND predicate_id=$3`,
     [owner, frameInstanceId, predicateId])).rows[0]?.id as string | undefined;
   if (!slot) {
@@ -126,11 +128,11 @@ async function value(frameInstanceId: string, predicateId: string, modality: str
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at,
     asserted_by_entity_id,extraction_confidence,temporal_resolution_confidence)
     VALUES($1,$2,$3,$4,$5,'PROVISIONAL',$6,$7,$8,0.93,0.88)`,
-    [claimId, owner, anchorId, propositionId, origin, new Date(RECORDED.getTime() - 24 * HOUR), RECORDED, assertedBy]);
+    [claimId, owner, anchorId, propositionId, origin, validFrom, RECORDED, assertedBy]);
   if (status) {
     await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,recorded_at,
       policy_version,decision_reason,transaction_id) VALUES($1,$2,$3,$4,$5,$6,'local-policy-0.1.0','{"code":"FIXTURE"}',$7)`,
-      [uuidV7(), owner, propositionId, status, new Date(RECORDED.getTime() - 24 * HOUR), RECORDED, transactionId]);
+      [uuidV7(), owner, propositionId, status, validFrom, RECORDED, transactionId]);
   }
   return { propositionId, claimId };
 }
@@ -177,6 +179,9 @@ beforeAll(async () => {
   maya = await person('Maya'); daniel = await person('Daniel'); dana = await person('Dana');
 
   const personal = [ASSISTANCE], work = [ASSISTANCE, 'WORK_ASSISTANCE'], finance = [ASSISTANCE, 'PERSONAL_FINANCE'];
+  const mayaName = await source('owner-name', 'CONVERSATION', 'My name is Maya.', personal);
+  await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id,created_at)
+    VALUES($1,$2,$3,'DISPLAY_NAME','Maya','maya',$4,$5)`, [uuidV7(), owner, maya, mayaName.evidenceId, RECORDED]);
   const chat = await source('chat-lease', 'CONVERSATION', 'I will send Daniel the signed lease by this afternoon, it is urgent.', personal);
   const drill = await source('chat-drill', 'CONVERSATION', 'I promised to return the drill to Dana by the weekend.', personal);
   const passport = await source('chat-passport', 'CONVERSATION', 'Renew the passport next month.', personal);
@@ -258,10 +263,22 @@ beforeAll(async () => {
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
-function api() {
-  const app = createPlatformApi({ authPool: admin, appPool, registryReleaseId, registryRelease: '0.1.0', todayClock: () => clock });
+function api(policyPorts?: PolicyPorts) {
+  const app = createPlatformApi({ authPool: admin, appPool, registryReleaseId, registryRelease: '0.1.0', todayClock: () => clock,
+    ...(policyPorts ? { policyPorts } : {}) });
   app.addHook('onRequest', async request => { Object.defineProperty(request.raw.socket, 'encrypted', { value: true }); });
   return app;
+}
+function redactValues(propositionIds: readonly string[], enabled: () => boolean): PolicyPorts {
+  const local = createLocalPolicyAdapters();
+  return { ...local, evaluateMemoryRead: async request => {
+    const verdict = await local.evaluateMemoryRead(request);
+    if (!enabled() || verdict.outcome === 'DENY') return verdict;
+    return { ...verdict, outcome: 'REDACT', reason: 'FIELD_LEVEL_REDACTION_REQUIRED',
+      redactions: [...verdict.redactions, ...propositionIds.map(objectId => ({
+        objectType: 'propositions', objectId, fields: ['normalizedValue'], reason: 'FIELD_WITHHELD_BY_POLICY',
+      }))] };
+  } };
 }
 const headers = (purpose: string, extra: Record<string, string> = {}) => ({
   cookie: SESSION_COOKIE + '=' + token, 'x-owner-scope-id': owner, 'x-purpose': purpose, 'x-correlation-id': randomUUID(),
@@ -526,7 +543,7 @@ it('refuses a Today request that declares no purpose or ceiling, or no timezone,
   } finally { await app.close(); }
 });
 
-it.each(['sensitivity', 'purpose'] as const)('keeps Today projection fields within the packet\'s %s authority', async boundary => {
+it.each(['sensitivity', 'purpose', 'redaction'] as const)('keeps Today projection fields within the packet\'s %s authority', async boundary => {
   const purpose = 'TODAY_PRIVACY_' + boundary.toUpperCase();
   const authorizedPurpose = boundary === 'purpose' ? purpose + '_FULL' : purpose;
   const publicSource = await source('today-public-' + boundary, 'CONVERSATION',
@@ -553,7 +570,7 @@ it.each(['sensitivity', 'purpose'] as const)('keeps Today projection fields with
   const publicDescription = await value(obligationId, 'shared.obligation.description', 'ACTUAL',
     { text: 'ordinary administrative payment' }, publicSource.anchorId, 'ACCEPTED');
   await value(obligationId, 'shared.obligation.due_time', 'ACTUAL', { time: at(4).toISOString() }, publicSource.anchorId, 'ACCEPTED');
-  await value(obligationId, 'shared.obligation.principal_amount', 'ACTUAL',
+  const hiddenPrincipal = await value(obligationId, 'shared.obligation.principal_amount', 'ACTUAL',
     { amount: secretAmount, currency: 'ILS' }, hiddenSource.anchorId, 'ACCEPTED');
   // A permitted alias remains useful even if the entity's preferred label is
   // private. Merely admitting its id cannot authorize the canonical label.
@@ -571,7 +588,8 @@ it.each(['sensitivity', 'purpose'] as const)('keeps Today projection fields with
       await applyProjectionDelta(tx, { ownerScopeId: owner, projectionName, asOf: NOW });
     }
   });
-  const app = api();
+  let redact = boundary === 'redaction';
+  const app = api(redactValues([hiddenAction.propositionId, hiddenPrincipal.propositionId], () => redact));
   const read = async (dataPurpose: string, ceiling: string) => {
     const response = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE,
       headers: headers('memory.read', { 'x-data-purpose': dataPurpose, 'x-maximum-sensitivity': ceiling }) });
@@ -594,11 +612,204 @@ it.each(['sensitivity', 'purpose'] as const)('keeps Today projection fields with
     }
     // The negative assertions must not pass by dropping the frame or every
     // field: the same real route returns restricted values when authorized.
+    redact = false;
     const authorized = await read(authorizedPurpose, 'RESTRICTED');
     expect(itemFor(authorized, commitmentId)?.headline).toContain(secretDescription);
     expect(itemFor(authorized, commitmentId)?.headline).toContain(secretName);
     expect(itemFor(authorized, obligationId)?.headline).toContain('ILS ' + secretAmount);
     expect(itemFor(authorized, obligationId)?.headline).toContain(publicAlias);
     expect(JSON.stringify(authorized)).not.toContain(privateCanonical);
+  } finally { await app.close(); }
+});
+
+it.each(['sensitivity', 'purpose', 'redaction'] as const)('does not restore withheld Today due or start times from projections after %s filtering', async boundary => {
+  const purpose = 'TODAY_TIME_' + boundary.toUpperCase();
+  const authorizedPurpose = boundary === 'purpose' ? purpose + '_FULL' : purpose;
+  const visible = await source('today-time-public-' + boundary, 'CONVERSATION',
+    'Prepare a report, review a payment and attend an event; their times are separate.', [...new Set([purpose, authorizedPurpose])]);
+  const hidden = await source('today-time-hidden-' + boundary, 'DOCUMENT', 'Private timing details.',
+    [authorizedPurpose], boundary === 'sensitivity' ? 'RESTRICTED' : 'PRIVATE');
+  const specifications = [
+    { type: 'shared.commitment', description: 'shared.commitment.action_description', predicate: 'shared.commitment.due_time',
+      modality: 'COMMITTED', words: 'prepare a report', instant: at(7), normalized: { time: at(7).toISOString() } },
+    { type: 'shared.obligation', description: 'shared.obligation.description', predicate: 'shared.obligation.due_time',
+      modality: 'ACTUAL', words: 'review a payment', instant: at(8), normalized: { time: at(8).toISOString() } },
+    { type: 'shared.event_occurrence', description: 'shared.event_occurrence.description', predicate: 'shared.event_occurrence.occurrence_time',
+      modality: 'SCHEDULED', words: 'attend an event', instant: at(9), normalized: { start: at(9).toISOString(), end: at(10).toISOString() } },
+  ];
+  const targets: Array<{ frameId: string; propositionId: string; instant: Date; words: string }> = [];
+  for (const entry of specifications) {
+    const frameId = await frame(entry.type, RECORDED);
+    await value(frameId, entry.description, entry.modality, { text: entry.words }, visible.anchorId, 'ACCEPTED');
+    const time = await value(frameId, entry.predicate, entry.modality, entry.normalized, hidden.anchorId, 'ACCEPTED');
+    targets.push({ frameId, propositionId: time.propositionId, instant: entry.instant, words: entry.words });
+  }
+  const control = await commitment({ action: 'an authorized timed control', due: at(11), createdAt: RECORDED, anchorId: visible.anchorId });
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.project', correlationId: randomUUID() }, async tx => {
+    for (const projectionName of ['open_commitments_projection', 'obligations_projection', 'schedule_projection'] as const) {
+      await applyProjectionDelta(tx, { ownerScopeId: owner, projectionName, asOf: NOW });
+    }
+  });
+  let redact = boundary === 'redaction';
+  const app = api(redactValues(targets.map(entry => entry.propositionId), () => redact));
+  const read = async (dataPurpose: string, ceiling: string) => {
+    const response = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE,
+      headers: headers('memory.read', { 'x-data-purpose': dataPurpose, 'x-maximum-sensitivity': ceiling }) });
+    expect(response.statusCode, response.body).toBe(200);
+    return todayBriefingSchema.parse(response.json());
+  };
+  try {
+    const limited = await read(purpose, 'PRIVATE');
+    expect(itemFor(limited, control.id)?.targetTime).toBe(at(11).toISOString());
+    const stored = (await admin.query('SELECT item_object_id,headline,target_time FROM briefing_items WHERE briefing_edition_id=$1',
+      [limited.briefingEditionId])).rows;
+    const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1',
+      [limited.packetManifest.contextPacketId])).rows[0].packet;
+    for (const target of targets) {
+      // The frame's public description is supplied, but a hidden time is not
+      // grounds for calling the frame imminent or for displaying its schedule.
+      expect(limited.packetManifest.frameInstanceIds).toContain(target.frameId);
+      expect(JSON.stringify(packet)).toContain(target.words);
+      expect.soft(itemFor(limited, target.frameId)).toBeUndefined();
+      for (const surface of [limited, stored, packet]) {
+        expect.soft(JSON.stringify(surface), target.words).not.toContain(target.instant.toISOString());
+      }
+    }
+    redact = false;
+    const authorized = await read(authorizedPurpose, 'RESTRICTED');
+    for (const target of targets) {
+      expect(itemFor(authorized, target.frameId)?.targetTime).toBe(target.instant.toISOString());
+      expect(itemFor(authorized, target.frameId)?.headline).toContain(target.words);
+    }
+  } finally { await app.close(); }
+});
+
+it('does not recover an actual due time from the projection before its valid interval starts', async () => {
+  const purpose = 'TODAY_FUTURE_VALIDITY';
+  const evidence = await source('today-future-validity', 'CONVERSATION',
+    'An obligation has a new due time that becomes applicable later today.', [purpose]);
+  const frameId = await frame('shared.obligation', RECORDED);
+  await value(frameId, 'shared.obligation.description', 'ACTUAL', { text: 'future-effective obligation' }, evidence.anchorId, 'ACCEPTED');
+  await value(frameId, 'shared.obligation.due_time', 'ACTUAL', { time: at(20).toISOString() }, evidence.anchorId,
+    'ACCEPTED', 'USER_STATEMENT', maya, at(12));
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.project', correlationId: randomUUID() }, tx =>
+    applyProjectionDelta(tx, { ownerScopeId: owner, projectionName: 'obligations_projection', asOf: NOW }));
+  const app = api();
+  const read = async () => {
+    const response = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE,
+      headers: headers('memory.read', { 'x-data-purpose': purpose }) });
+    expect(response.statusCode, response.body).toBe(200);
+    return todayBriefingSchema.parse(response.json());
+  };
+  try {
+    const before = await read();
+    expect(before.packetManifest.frameInstanceIds).toContain(frameId);
+    expect.soft(itemFor(before, frameId)).toBeUndefined();
+    const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1',
+      [before.packetManifest.contextPacketId])).rows[0].packet;
+    expect(JSON.stringify(packet.currentBeliefs)).not.toContain(at(20).toISOString());
+    clock = at(13);
+    const after = await read();
+    expect(itemFor(after, frameId)?.targetTime).toBe(at(20).toISOString());
+  } finally { clock = NOW; await app.close(); }
+});
+
+async function acceptedResolution(frameId: string, anchorId: string, outcome: string): Promise<string> {
+  const claimId = uuidV7(), resolutionId = uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,valid_from,recorded_at,asserted_by_entity_id)
+    VALUES($1,$2,$3,'USER_STATEMENT','CANDIDATE',$4,$5,$6)`, [claimId, owner, anchorId, at(-1), RECORDED, maya]);
+  await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,effective_at,
+    asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,creation_transaction_id,recorded_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,'shared.commitment.resolution','ACCEPTED',$8,$9)`,
+    [resolutionId, owner, frameId, outcome, at(-1), maya, claimId, transactionId, RECORDED]);
+  return resolutionId;
+}
+
+it.each(['resolution', 'pending', 'conflict', 'suppression'] as const)('keeps Today metadata within the authorized packet for %s', async kind => {
+  const purpose = 'TODAY_METADATA_' + kind.toUpperCase();
+  const visible = await source('today-metadata-public-' + kind, 'CONVERSATION', 'Deliver the public report by this afternoon.', [purpose]);
+  const hiddenText = 'Confidential ' + kind + ' detail';
+  const hidden = await source('today-metadata-hidden-' + kind, 'DOCUMENT', hiddenText, [purpose], 'RESTRICTED');
+  const target = await commitment({ action: 'deliver the public report', due: at(4), createdAt: RECORDED, anchorId: visible.anchorId });
+  const control = await commitment({ action: 'prepare the authorized control', due: at(6), createdAt: RECORDED, anchorId: visible.anchorId });
+  let hiddenId: string;
+  if (kind === 'resolution') hiddenId = await acceptedResolution(target.id, hidden.anchorId, 'FULFILLED');
+  else if (kind === 'conflict') {
+    hiddenId = (await value(target.id, 'shared.commitment.action_description', 'COMMITTED',
+      { text: hiddenText }, hidden.anchorId, 'ACCEPTED')).propositionId;
+  } else {
+    hiddenId = uuidV7();
+    await admin.query(`INSERT INTO owner_overlay_deltas(id,owner_scope_id,owner_sequence,source_evidence_id,raw_text,delta_kind,
+      lifecycle,target_object_type,target_object_id,attached_frame_instance_id,created_at)
+      VALUES($1,$2,$3,$4,$5,$6,'USER_ASSERTED','frame_instance',$7,$7,$8)`,
+      [hiddenId, owner, kind === 'pending' ? 100 : 101, hidden.evidenceId, hiddenText,
+        kind === 'suppression' ? 'SUPPRESSION' : 'USER_ASSERTION', target.id, RECORDED]);
+  }
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.project', correlationId: randomUUID() }, tx =>
+    applyProjectionDelta(tx, { ownerScopeId: owner, projectionName: 'open_commitments_projection', asOf: NOW }));
+  const app = api();
+  const read = async (ceiling: string) => {
+    const response = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE,
+      headers: headers('memory.read', { 'x-data-purpose': purpose, 'x-maximum-sensitivity': ceiling }) });
+    expect(response.statusCode, response.body).toBe(200);
+    return todayBriefingSchema.parse(response.json());
+  };
+  try {
+    const limited = await read('PRIVATE');
+    expect(itemFor(limited, control.id)?.headline).toContain('prepare the authorized control');
+    if (kind === 'suppression') {
+      // Owner suppression is a retrieval control even when its explanation is
+      // private: lowering the ceiling must not revive an intentionally hidden item.
+      expect.soft(limited.packetManifest.frameInstanceIds).not.toContain(target.id);
+      expect.soft(itemFor(limited, target.id)).toBeUndefined();
+    } else {
+      expect(limited.packetManifest.frameInstanceIds).toContain(target.id);
+      expect.soft(itemFor(limited, target.id)).toMatchObject({ outcomeState: 'UNRESOLVED', certaintyLabel: 'CONFIRMED', decisionAffectingConflict: false });
+    }
+    expect(JSON.stringify(limited)).not.toContain(hiddenText);
+    const recorded = (await admin.query(`SELECT outcome_state,certainty_label FROM briefing_items
+      WHERE briefing_edition_id=$1 AND item_object_id=$2`, [limited.briefingEditionId, target.id])).rows[0];
+    if (kind === 'suppression') expect.soft(recorded).toBeUndefined();
+    else expect.soft(recorded).toEqual({ outcome_state: 'UNRESOLVED', certainty_label: 'CONFIRMED' });
+
+    const authorized = await read('RESTRICTED');
+    expect(itemFor(authorized, control.id)?.headline).toContain('prepare the authorized control');
+    if (kind === 'resolution' || kind === 'suppression') {
+      expect(itemFor(authorized, target.id)).toBeUndefined();
+      if (kind === 'resolution') expect(authorized.packetManifest.resolutionAssertionIds).toContain(hiddenId);
+    } else {
+      expect(itemFor(authorized, target.id)).toMatchObject({
+        certaintyLabel: kind === 'pending' ? 'PENDING_OWNER_ASSERTION' : 'CONTESTED',
+        decisionAffectingConflict: kind === 'conflict',
+      });
+      expect(itemFor(authorized, target.id)?.sourceRefs).toContainEqual({
+        objectType: kind === 'pending' ? 'owner_overlay_deltas' : 'propositions', objectId: hiddenId,
+      });
+    }
+  } finally { await app.close(); }
+});
+
+it.each([
+  { name: 'partial fulfillment', outcomes: ['PARTIALLY_FULFILLED'], expected: 'PARTIALLY_RESOLVED' },
+  { name: 'partial then complete fulfillment', outcomes: ['PARTIALLY_FULFILLED', 'FULFILLED'], expected: 'RESOLVED' },
+  { name: 'conflicting final outcomes', outcomes: ['FULFILLED', 'CANCELLED'], expected: 'CONTESTED' },
+])('preserves the outcome semantics of $name in Today', async ({ name, outcomes, expected }) => {
+  const purpose = 'TODAY_OUTCOME_' + expected;
+  const evidence = await source('today-outcome-' + expected, 'CONVERSATION', name, [purpose]);
+  const target = await commitment({ action: 'finish the approved report', due: at(5), createdAt: RECORDED, anchorId: evidence.anchorId });
+  const resolutions = [];
+  for (const outcome of outcomes) resolutions.push(await acceptedResolution(target.id, evidence.anchorId, outcome));
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.project', correlationId: randomUUID() }, tx =>
+    applyProjectionDelta(tx, { ownerScopeId: owner, projectionName: 'open_commitments_projection', asOf: NOW }));
+  const app = api();
+  try {
+    const response = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE,
+      headers: headers('memory.read', { 'x-data-purpose': purpose }) });
+    expect(response.statusCode, response.body).toBe(200);
+    const briefing = todayBriefingSchema.parse(response.json());
+    expect(briefing.packetManifest.resolutionAssertionIds).toEqual(expect.arrayContaining(resolutions));
+    if (expected === 'RESOLVED') expect(itemFor(briefing, target.id)).toBeUndefined();
+    else expect(itemFor(briefing, target.id)).toMatchObject({ outcomeState: expected,
+      certaintyLabel: expected === 'CONTESTED' ? 'CONTESTED' : 'CONFIRMED', decisionAffectingConflict: expected === 'CONTESTED' });
   } finally { await app.close(); }
 });

@@ -45,7 +45,7 @@ import { listThreadsForObject } from './threads.js';
  * completeness and watermarks are all present rather than implied (CRT-RD-05-A).
  */
 
-export const BROKER_VERSION = 'context-broker-0.1.0';
+export const BROKER_VERSION = 'context-broker-0.2.0';
 export const SELECTOR_VERSION = SELECTION_VERSION;
 /** The route purpose the broker runs under. It appears in no INSERT, UPDATE or
  * DELETE policy on any canonical table: this path cannot write memory. */
@@ -344,8 +344,30 @@ async function assemble(
   const admitted = labels.filter(label => authorization.admitted.includes(label.evidenceId));
   const redactions = redactionIndex(verdict);
   const withheldEvidence = new Set(labels
-    .filter(label => SENSITIVITY_ORDER.indexOf(label.sensitivity) > SENSITIVITY_ORDER.indexOf(request.maximumSensitivity))
+    .filter(label => !authorization.admitted.includes(label.evidenceId)
+      || SENSITIVITY_ORDER.indexOf(label.sensitivity) > SENSITIVITY_ORDER.indexOf(request.maximumSensitivity)
+      || redactions.objects.has(label.evidenceId))
     .map(label => label.evidenceId));
+  const readableEvidenceIds = admitted.filter(label => !withheldEvidence.has(label.evidenceId)).map(label => label.evidenceId);
+  const historicalRecall = new Set<AnswerType>(['HISTORICAL_BELIEF_STATE', 'CORRECTED_HISTORICAL_VALUE',
+    'DECISION_RECONSTRUCTION', 'EPISODE_RECALL', 'CAUSAL_EXPLANATION', 'SOURCE_LOOKUP',
+    'PATTERN_REVIEW', 'PREDICTION_VERSUS_OUTCOME']).has(answerType);
+  // Removal is present access authority, independent of permission to read the
+  // owner's explanation or the historical instant being queried. Read only the
+  // control targets here; private correction text still uses the bounded overlay.
+  const removalRows = (await tx.query(
+    `SELECT target_object_id FROM owner_overlay_deltas WHERE owner_scope_id=$1
+       AND (delta_kind IN ('SUPPRESSION','DELETION') OR (delta_kind='ARCHIVE' AND $2))
+       AND lifecycle NOT IN ('WITHDRAWN','REJECTED_AS_INTERPRETATION')
+       AND target_object_id IS NOT NULL`, [request.ownerScopeId, !historicalRecall])).rows;
+  const removedFromRetrieval = new Set(removalRows.map(row => row['target_object_id'] as string));
+  if (removedFromRetrieval.size > 0) {
+    const removedValues = (await tx.query(
+      `SELECT p.id FROM propositions p JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
+       WHERE p.owner_scope_id=$1 AND (s.id=ANY($2::uuid[]) OR s.frame_instance_id=ANY($2::uuid[]))`,
+      [request.ownerScopeId, [...removedFromRetrieval]])).rows;
+    for (const row of removedValues) removedFromRetrieval.add(row['id'] as string);
+  }
 
   const unknowns: Array<z.infer<typeof contextUnknownSchema>> = [];
   // An object the owner holds and this request may not see is an unknown *and* a
@@ -354,7 +376,10 @@ async function assemble(
   for (const evidenceId of withheldEvidence) {
     unknowns.push(contextUnknownSchema.parse({
       kind: 'EVIDENCE_WITHHELD', objectType: 'source_items', objectId: evidenceId,
-      detail: 'ABOVE_MAXIMUM_SENSITIVITY',
+      detail: !authorization.admitted.includes(evidenceId) ? 'SOURCE_PURPOSE_WITHHELD'
+        : labels.some(label => label.evidenceId === evidenceId
+          && SENSITIVITY_ORDER.indexOf(label.sensitivity) > SENSITIVITY_ORDER.indexOf(request.maximumSensitivity))
+          ? 'ABOVE_MAXIMUM_SENSITIVITY' : 'EVIDENCE_REDACTED_BY_POLICY',
     }));
   }
 
@@ -396,6 +421,7 @@ async function assemble(
   // alone would drop the finance-and-family item from the family view even though
   // one evidence row admits both purposes (CRT-MEM-02-A).
   const frames = frameRows
+    .filter(row => !removedFromRetrieval.has(row['id'] as string))
     .map(row => ({ frameInstanceId: row['id'] as string, frameTypeId: row['frame_type_id'] as string }));
   const frameIds = frames.map(frame => frame.frameInstanceId);
   const frameTypeById = new Map(frames.map(frame => [frame.frameInstanceId, frame.frameTypeId]));
@@ -426,8 +452,10 @@ async function assemble(
           AND b.proposition_id=p.id AND b.recorded_at<=$3
           AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
           ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_valid_to,
-       (SELECT min(c.valid_from) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id) AS valid_from,
-       (SELECT max(c.valid_to) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id) AS valid_to,
+       (SELECT min(c.valid_from) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
+          AND c.recorded_at<=$3) AS valid_from,
+       (SELECT max(c.valid_to) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
+          AND c.recorded_at<=$3) AS valid_to,
        coalesce((SELECT array_agg(DISTINCT c.id) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id
           AND c.proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_ids,
        (SELECT count(*)::int FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id
@@ -436,10 +464,13 @@ async function assemble(
           JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
           WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id AND c.recorded_at<=$3),'{}') AS evidence_ids,
        coalesce((SELECT array_agg(DISTINCT c.claim_origin) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id
-          AND c.proposition_id=p.id),'{}') AS claim_origins
+          AND c.proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_origins
      FROM propositions p
      JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
      WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[])
+       AND (EXISTS(SELECT 1 FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id AND c.recorded_at<=$3)
+         OR EXISTS(SELECT 1 FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
+           AND b.proposition_id=p.id AND b.recorded_at<=$3))
      ORDER BY s.frame_instance_id,s.id,p.id`,
     [request.ownerScopeId, frameIds, knowledgeTime])).rows;
 
@@ -460,6 +491,7 @@ async function assemble(
     const slotId = row['belief_slot_id'] as string;
     bySlot.set(slotId, [...(bySlot.get(slotId) ?? []), row]);
     const propositionId = row['proposition_id'] as string;
+    if (removedFromRetrieval.has(propositionId)) { outOfView.add(propositionId); continue; }
     if (redactions.objects.has(propositionId)) continue;
     const frameInstanceId = row['frame_instance_id'] as string;
     const frameTypeId = frameTypeById.get(frameInstanceId) ?? '';
@@ -503,6 +535,10 @@ async function assemble(
       }, redactions.fields.get(propositionId))));
       continue;
     }
+    // A known actual assertion whose interval has not begun is neither current
+    // nor historical at this world time. An explicit query for its applicable
+    // future interval may still retrieve it.
+    if (validFrom !== null && validFrom.getTime() > worldTime.getTime()) continue;
     // The redaction is applied to the record before it is parsed, so a withheld
     // field is absent from the packet rather than present and emptied.
     const belief = contextBeliefSchema.parse(withoutFields({
@@ -529,8 +565,8 @@ async function assemble(
   // the world time as well: a value whose verdict closed its period before then
   // was superseded by a change, which is history, not a disagreement.
   const heldAtWorldTime = (row: Record<string, unknown>) => {
-    const from = (row['assessment_valid_from'] as Date | null) ?? null;
-    const to = (row['assessment_valid_to'] as Date | null) ?? null;
+    const from = (row['assessment_valid_from'] as Date | null) ?? (row['valid_from'] as Date | null) ?? null;
+    const to = (row['assessment_valid_to'] as Date | null) ?? (row['valid_to'] as Date | null) ?? null;
     return (from === null || from.getTime() <= worldTime.getTime()) && (to === null || to.getTime() > worldTime.getTime());
   };
   const conflicts = [];
@@ -538,7 +574,8 @@ async function assemble(
     const live = rows.filter(row => {
       const status = (row['assessment_status'] as string | null) ?? null;
       return row['proposition_lifecycle'] !== 'RETIRED' && status !== 'REJECTED' && status !== 'SUPERSEDED'
-        && heldAtWorldTime(row) && !redactions.objects.has(row['proposition_id'] as string);
+        && heldAtWorldTime(row) && !redactions.objects.has(row['proposition_id'] as string)
+        && !removedFromRetrieval.has(row['proposition_id'] as string);
     });
     if (live.length < 2) continue;
     const first = live[0]!;
@@ -570,7 +607,7 @@ async function assemble(
   }
 
   // Step 5: the owner's overlay, including the deltas that have no frame yet.
-  const overlay = await readOwnerOverlay(tx, { ownerScopeId: request.ownerScopeId });
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: request.ownerScopeId, knowledgeTime, readableEvidenceIds });
   const attachedToPacket = new Set(frameIds);
   const relevant = overlay.deltas.filter(delta =>
     (delta.attachedFrameInstanceId !== null && attachedToPacket.has(delta.attachedFrameInstanceId))
@@ -592,7 +629,8 @@ async function assemble(
      ORDER BY owner_sequence`,
     [request.ownerScopeId, [...request.entityHints], [...request.worldlineHints],
       [...request.discourseAnchors], [...request.frameTypeHints]])).rows;
-  const unattachedIds = new Set(unattachedRows.map(row => row['id'] as string));
+  const eligibleOverlayIds = new Set(overlay.deltas.map(delta => delta.overlayDeltaId));
+  const unattachedIds = new Set(unattachedRows.map(row => row['id'] as string).filter(id => eligibleOverlayIds.has(id)));
   const ownerOverlayDeltas = [...relevant, ...overlay.deltas.filter(delta => unattachedIds.has(delta.overlayDeltaId))]
     .filter((delta, index, all) => all.findIndex(other => other.overlayDeltaId === delta.overlayDeltaId) === index)
     .filter(delta => !redactions.objects.has(delta.overlayDeltaId));
@@ -615,14 +653,20 @@ async function assemble(
       worldTime: worldTime.toISOString(), knowledgeTime: knowledgeTime.toISOString(),
       modalities: modalitiesForAnswerType(answerType), admitProvisional: request.requiredCertainty.includes('PROVISIONAL'),
     },
-    withheldPropositionIds: redactions.objects, outOfViewPropositionIds: outOfView, overlayDeltas: overlay.deltas,
+    withheldPropositionIds: redactions.objects, outOfViewPropositionIds: outOfView, overlayDeltas: ownerOverlayDeltas,
   })).map(selection => {
+    // A readable proposition may have both readable and withheld support. Its
+    // citations still have to obey the source policy applied to the packet.
+    const authorizedSelection = { ...selection,
+      ...(selection.evidenceIds === undefined ? {} : {
+        evidenceIds: selection.evidenceIds.filter(id => !withheldEvidence.has(id)),
+      }) };
     // A field-level redaction over the selected value reaches the selection too,
     // or the selection would state what the belief was not allowed to.
     const fields = selection.selectedPropositionId ? redactions.fields.get(selection.selectedPropositionId) : undefined;
-    if (!fields || fields.size === 0) return selection;
+    if (!fields || fields.size === 0) return authorizedSelection;
     const withheldFields = new Set([...fields].map(name => name === 'normalizedValue' ? 'selectedValue' : name));
-    return withoutFields(selection, withheldFields);
+    return withoutFields(authorizedSelection, withheldFields);
   });
   const registeredBySlot = new Map(selections.map(selection => [selection.beliefSlotId, selection.predicateRegistered]));
 
@@ -644,18 +688,23 @@ async function assemble(
   });
   // What the owner removed from normal retrieval, or a verdict withheld, is not
   // recalled by similarity either. Dropping after ranking only ever narrows.
-  const removedFromRetrieval = new Set([...overlay.suppressedTargets, ...overlay.deletedTargets].map(target => target.objectId));
   const semanticSearch = semantic === null ? null : {
     ...semantic,
     matches: semantic.matches.filter(match => !removedFromRetrieval.has(match.objectId)
+      && !redactions.objects.has(match.objectId)
+      && !match.evidenceIds.some(id => withheldEvidence.has(id))
       && !(match.propositionId !== null && (removedFromRetrieval.has(match.propositionId) || redactions.objects.has(match.propositionId)))),
   };
   const semanticEvidence = new Set((semanticSearch?.matches ?? []).flatMap(match => match.evidenceIds));
 
   // Steps 3 and 4: the typed projection state, with its completeness and its
   // watermarks carried rather than implied.
+  const suppliedFrameIds = [...new Set([...currentBeliefs, ...historicalBeliefs, ...futureClaims]
+    .map(belief => belief.frameInstanceId))];
   const projectionFragments = await readProjectionFragments(tx, {
-    ownerScopeId: request.ownerScopeId, asOf: worldTime, frameInstanceIds: frameIds.length > 0 ? frameIds : null,
+    ownerScopeId: request.ownerScopeId, asOf: worldTime,
+    frameInstanceIds: suppliedFrameIds,
+    authorizedOverlayDeltas: ownerOverlayDeltas,
   });
   for (const fragment of projectionFragments) {
     if (fragment.isComplete) continue;
@@ -667,11 +716,19 @@ async function assemble(
 
   // Step 8: the accepted outcome authority over those frames.
   const resolutionRows = frameIds.length === 0 ? [] : (await tx.query(
-    `SELECT id,source_frame_instance_id,target_frame_instance_id,outcome_code,effective_at,lifecycle,transition_contract_id
-     FROM resolution_assertions WHERE owner_scope_id=$1
-       AND (source_frame_instance_id=ANY($2::uuid[]) OR target_frame_instance_id=ANY($2::uuid[]))
-     ORDER BY effective_at,id`, [request.ownerScopeId, frameIds])).rows;
-  const resolutionAssertions = resolutionRows.map(row => contextResolutionSchema.parse({
+    `SELECT r.id,r.source_frame_instance_id,r.target_frame_instance_id,r.outcome_code,r.effective_at,r.lifecycle,r.transition_contract_id
+     FROM resolution_assertions r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE r.owner_scope_id=$1
+       AND (r.source_frame_instance_id=ANY($2::uuid[]) OR r.target_frame_instance_id=ANY($2::uuid[]))
+       AND r.recorded_at<=$3 AND c.recorded_at<=$3 AND r.effective_at<=$4
+       AND a.source_item_id=ANY($5::uuid[])
+     ORDER BY r.effective_at,r.id`, [request.ownerScopeId, frameIds, knowledgeTime, worldTime, readableEvidenceIds])).rows;
+  const resolutionAssertions = resolutionRows.filter(row => !redactions.objects.has(row['id'] as string)
+    && !removedFromRetrieval.has(row['id'] as string)
+    && !removedFromRetrieval.has(row['source_frame_instance_id'] as string)
+    && !removedFromRetrieval.has(row['target_frame_instance_id'] as string))
+    .map(row => contextResolutionSchema.parse({
     resolutionAssertionId: row['id'], sourceFrameInstanceId: row['source_frame_instance_id'],
     targetFrameInstanceId: (row['target_frame_instance_id'] as string | null) ?? null,
     outcomeCode: row['outcome_code'], effectiveAt: (row['effective_at'] as Date).toISOString(),
@@ -707,7 +764,7 @@ async function assemble(
   // can move from a value to the situation it belongs to.
   const memoryThreads = [];
   const seenThreads = new Set<string>();
-  for (const frameInstanceId of frameIds) {
+  for (const frameInstanceId of suppliedFrameIds) {
     for (const thread of await listThreadsForObject(tx, {
       ownerScopeId: request.ownerScopeId, objectType: 'frame_instance', objectId: frameInstanceId,
     })) {

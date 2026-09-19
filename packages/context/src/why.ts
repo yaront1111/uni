@@ -26,13 +26,26 @@ import { describeContract, describeValue } from './wording.js';
  * of being shown.
  */
 
-export const WHY_PANEL_VERSION = 'why-sources-0.1.0';
+export const WHY_PANEL_VERSION = 'why-sources-0.2.0';
 const EXCERPT_LENGTH = 600;
 const MODEL_ORIGINS = new Set(['MODEL_EXTRACTION', 'MODEL_INFERENCE', 'MODEL_RECOMMENDATION', 'MODEL_PREDICTION']);
 const OWNER_OR_AUTHORITY = new Set(['USER_STATEMENT', 'USER_CONFIRMATION', 'USER_CORRECTION',
   'STRUCTURED_CONNECTOR_OBSERVATION', 'TOOL_EXECUTION_RECEIPT']);
 const PENDING_LIFECYCLES = new Set(['RECEIVED', 'USER_ASSERTED', 'AWAITING_INSTANCE_RESOLUTION', 'CANONICALIZATION_PENDING']);
 const SOURCE_WITHHELD = 'SOURCE_NOT_READABLE_FOR_THIS_REQUEST';
+
+/** A hidden source cannot become readable through the statement describing it. */
+function withheldPanel(subject: WhyRef, subjectKind: WhySources['subjectKind'], readAt: Date): WhySources {
+  return whySourcesSchema.parse({
+    subject, subjectKind, label: 'UNKNOWN', statement: 'This statement is withheld because its source is not readable for this request.',
+    modality: null, assessmentStatus: null, effectiveTime: { from: null, to: null, recordedAt: null },
+    confidence: { extraction: null, entityResolution: null, temporalResolution: null, instanceResolution: null, assessmentStatus: null },
+    claims: [], claimingActors: [], sources: [], redactions: [{ claimId: null, reason: SOURCE_WITHHELD }],
+    conflict: { status: 'NO_CONFLICT', competing: [], relations: [] },
+    derivation: { isInferred: false, steps: [], modelClaims: [] }, resolutions: [], explainPath: null,
+    panelVersion: WHY_PANEL_VERSION, readAt: readAt.toISOString(),
+  });
+}
 
 type Row = Record<string, unknown>;
 const iso = (value: unknown): string | null => value instanceof Date ? value.toISOString() : null;
@@ -42,14 +55,17 @@ const unit = (value: unknown): number | null => {
   return Number.isFinite(number) ? number : null;
 };
 
-/** Who claimed it, in words. An asserting entity with a label is named; a claim
- * with none is described by its origin rather than left blank. */
+/** A withheld name does not change who asserted the claim. Use the recorded
+ * actor kind without a name; only claims with no actor fall back to origin. */
 function claimingActor(row: Row, sourceType: string | null) {
   const entityId = (row['asserted_by_entity_id'] as string | null) ?? null;
   const label = (row['entity_label'] as string | null) ?? null;
   const kind = (row['entity_kind'] as string | null) ?? null;
-  if (entityId && label) {
-    return { kind: kind === 'ORGANIZATION' ? 'ORGANIZATION' as const : 'PERSON' as const, label, entityId };
+  if (entityId) {
+    if (kind === 'PERSON') return { kind: 'PERSON' as const, label: label ?? 'A person', entityId };
+    if (kind === 'ORGANIZATION') return { kind: 'ORGANIZATION' as const, label: label ?? 'An organization', entityId };
+    if (kind === 'DOCUMENT') return { kind: 'DOCUMENT' as const, label: label ?? 'A document', entityId };
+    return { kind: 'UNKNOWN' as const, label: label ?? 'Not recorded', entityId };
   }
   const origin = row['claim_origin'] as string;
   if (origin.startsWith('USER_')) return { kind: 'OWNER' as const, label: 'You', entityId };
@@ -85,37 +101,48 @@ function excerptOf(anchor: Row) {
   };
 }
 
-/** Claims with their asserting entity's label, confidences and anchors. */
-async function readClaims(tx: MemoryTransaction, ownerScopeId: string, where: { propositionId?: string; claimIds?: readonly string[] }) {
+/** Claims with a sourced, readable name for the asserting entity. Canonical
+ * labels have no provenance of their own and cannot authorize a displayed name. */
+async function readClaims(tx: MemoryTransaction, ownerScopeId: string,
+  where: { propositionId?: string; claimIds?: readonly string[] }, readAt: Date) {
   const rows = (await tx.query(
     `SELECT c.id,c.claim_origin,c.asserted_by_entity_id,c.recorded_at,c.valid_from,c.valid_to,c.source_anchor_id,
        c.extraction_run_id,c.extraction_confidence,c.entity_resolution_confidence,c.temporal_resolution_confidence,
-       c.instance_resolution_confidence,e.canonical_label AS entity_label,e.entity_kind,
+       c.instance_resolution_confidence,e.entity_kind,
+       (SELECT a.alias_value FROM entity_aliases a
+          JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+          WHERE a.owner_scope_id=c.owner_scope_id AND a.entity_id=c.asserted_by_entity_id
+            AND a.alias_type IN ('DISPLAY_NAME','FULL_NAME','GIVEN_NAME','NICKNAME') AND a.created_at<=$4
+            AND (a.valid_from IS NULL OR a.valid_from<=$4) AND (a.valid_to IS NULL OR a.valid_to>$4)
+          ORDER BY a.alias_type,a.id LIMIT 1) AS entity_label,
        r.model_id,r.prompt_version
      FROM claims c
      LEFT JOIN entities e ON e.owner_scope_id=c.owner_scope_id AND e.id=c.asserted_by_entity_id
      LEFT JOIN extraction_runs r ON r.owner_scope_id=c.owner_scope_id AND r.id=c.extraction_run_id
      WHERE c.owner_scope_id=$1 AND (c.proposition_id=$2 OR c.id=ANY($3::uuid[]))
      ORDER BY c.recorded_at,c.id`,
-    [ownerScopeId, where.propositionId ?? null, [...(where.claimIds ?? [])]])).rows;
+    [ownerScopeId, where.propositionId ?? null, [...(where.claimIds ?? [])], readAt])).rows;
   const anchors = await readAnchors(tx, ownerScopeId, rows.map(row => row['source_anchor_id'] as string));
   const redactions: Array<{ claimId: string | null; reason: string }> = [];
-  const claims = rows.map(row => {
+  const claims = rows.flatMap(row => {
     const anchor = anchors.get(row['source_anchor_id'] as string) ?? null;
-    if (!anchor) redactions.push({ claimId: row['id'] as string, reason: SOURCE_WITHHELD });
-    return {
+    if (!anchor) {
+      redactions.push({ claimId: row['id'] as string, reason: SOURCE_WITHHELD });
+      return [];
+    }
+    return [{
       row,
       value: {
         claimId: row['id'] as string, claimOrigin: row['claim_origin'] as string,
-        claimingActor: claimingActor(row, anchor ? anchor['source_type'] as string : null),
+        claimingActor: claimingActor(row, anchor['source_type'] as string),
         recordedAt: iso(row['recorded_at'])!, validFrom: iso(row['valid_from']), validTo: iso(row['valid_to']),
         confidence: {
           extraction: unit(row['extraction_confidence']), entityResolution: unit(row['entity_resolution_confidence']),
           temporalResolution: unit(row['temporal_resolution_confidence']), instanceResolution: unit(row['instance_resolution_confidence']),
         },
-        source: anchor ? excerptOf(anchor) : null,
+        source: excerptOf(anchor),
       },
-    };
+    }];
   });
   return { claims, redactions };
 }
@@ -148,14 +175,19 @@ async function propositionStatement(tx: MemoryTransaction, ownerScopeId: string,
     `SELECT p.id,p.normalized_value,s.predicate_id,f.frame_type_id FROM propositions p
      JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
      JOIN frame_instances f ON f.owner_scope_id=s.owner_scope_id AND f.id=s.frame_instance_id
-     WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])`, [ownerScopeId, [...new Set(ids)]])).rows;
+     WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])
+       AND EXISTS(SELECT 1 FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+         WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id)`, [ownerScopeId, [...new Set(ids)]])).rows;
   return new Map(rows.map(row => [row['id'] as string,
     describeContract(row['frame_type_id'] as string, row['predicate_id'] as string) + ': ' + describeValue(row['normalized_value'])]));
 }
 
 async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: string; propositionId: string; readAt: Date }): Promise<WhySources> {
   const explanation = await explainProposition(tx, { ownerScopeId: input.ownerScopeId, propositionId: input.propositionId, readAt: input.readAt });
-  const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { propositionId: input.propositionId });
+  const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { propositionId: input.propositionId }, input.readAt);
+  if (claims.length === 0) {
+    return withheldPanel({ objectType: 'propositions', objectId: input.propositionId }, 'BELIEF', input.readAt);
+  }
   const origins = claims.map(claim => claim.value.claimOrigin);
 
   // The derivation path: the recorded dependencies of a derived value, and any
@@ -166,7 +198,9 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
   const derivedSupport = explanation.supportGraph.filter(support => support.supportKind === 'DERIVATION' && support.supportingPropositionId);
   const inputClaimIds = dependencies.flatMap(row => row['input_claim_ids'] as string[]);
   const inputClaimRows = inputClaimIds.length === 0 ? [] : (await tx.query(
-    'SELECT id,proposition_id,claim_origin FROM claims WHERE owner_scope_id=$1 AND id=ANY($2::uuid[])',
+    `SELECT c.id,c.proposition_id,c.claim_origin FROM claims c
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE c.owner_scope_id=$1 AND c.id=ANY($2::uuid[])`,
     [input.ownerScopeId, [...new Set(inputClaimIds)]])).rows;
   const statements = await propositionStatement(tx, input.ownerScopeId, [
     ...dependencies.flatMap(row => row['input_proposition_ids'] as string[]),
@@ -210,9 +244,19 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
   const contested = competing.length > 0 || status === 'CONTESTED'
     || explanation.contradictions.some(entry => entry.kind === 'CONTESTED_OVERLAY_DELTA' || entry.kind === 'MEMORY_LINK');
   const corrected = explanation.contradictions.some(entry => entry.kind === 'CLAIM_RELATION');
-  const resolutions = explanation.resolutionLinks.filter(link => link.objectType === 'resolution_assertion' && link.outcomeCode && link.effectiveAt)
+  const resolutionIds = explanation.resolutionLinks.filter(link => link.objectType === 'resolution_assertion').map(link => link.objectId);
+  const readableResolutionIds = new Set((await tx.query(
+    `SELECT r.id FROM resolution_assertions r
+     JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE r.owner_scope_id=$1 AND r.id=ANY($2::uuid[])`, [input.ownerScopeId, resolutionIds])).rows.map(row => row['id'] as string));
+  const resolutions = explanation.resolutionLinks.filter(link => link.objectType === 'resolution_assertion'
+    && readableResolutionIds.has(link.objectId) && link.outcomeCode && link.effectiveAt)
     .map(link => ({ resolutionAssertionId: link.objectId, outcomeCode: link.outcomeCode!, effectiveAt: link.effectiveAt!, lifecycle: link.lifecycle }));
-  const pending = explanation.ownerOverlayDeltas.some(delta => PENDING_LIFECYCLES.has(delta.lifecycle));
+  const readableEvidenceIds = new Set((await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
+    [input.ownerScopeId])).rows.map(row => row['id'] as string));
+  const pending = explanation.ownerOverlayDeltas.some(delta => readableEvidenceIds.has(delta.sourceEvidenceId)
+    && PENDING_LIFECYCLES.has(delta.lifecycle));
 
   const label: MemoryLabel = contested ? 'CONTESTED'
     : resolutions.some(resolution => resolution.lifecycle === 'ACCEPTED') ? 'RESOLVED'
@@ -261,6 +305,9 @@ async function whyOverlayDelta(tx: MemoryTransaction, input: { ownerScopeId: str
     [input.ownerScopeId, delta.sourceEvidenceId])).rows;
   const anchors = await readAnchors(tx, input.ownerScopeId, anchorRows.map(row => row['id'] as string));
   const sources = [...anchors.values()].map(excerptOf);
+  if (sources.length === 0) {
+    return withheldPanel({ objectType: 'owner_overlay_deltas', objectId: input.overlayDeltaId }, 'OWNER_ASSERTION', input.readAt);
+  }
   const owner = { kind: 'OWNER' as const, label: 'You', entityId: null };
   const contested = delta.lifecycle === 'CONTESTED';
   const reason = contested && typeof delta.contestedReason?.['code'] === 'string' ? delta.contestedReason['code'] as string
@@ -288,7 +335,10 @@ async function whyResolution(tx: MemoryTransaction, input: { ownerScopeId: strin
     `SELECT id,outcome_code,effective_at,lifecycle,claim_id,recorded_at,source_frame_instance_id FROM resolution_assertions
      WHERE owner_scope_id=$1 AND id=$2`, [input.ownerScopeId, input.resolutionAssertionId])).rows[0];
   if (!row) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
-  const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { claimIds: [row['claim_id'] as string] });
+  const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { claimIds: [row['claim_id'] as string] }, input.readAt);
+  if (claims.length === 0) {
+    return withheldPanel({ objectType: 'resolution_assertions', objectId: input.resolutionAssertionId }, 'RESOLUTION', input.readAt);
+  }
   const accepted = row['lifecycle'] === 'ACCEPTED';
   const outcome = (row['outcome_code'] as string).toLowerCase().replaceAll('_', ' ');
   const effectiveAt = iso(row['effective_at'])!;

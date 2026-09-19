@@ -109,9 +109,9 @@ async function belief(input:{frame:string;predicate:string;modality:string;value
   return {slot,propositionId,claimId};
 }
 async function role(frameId:string,roleId:string,claimId:string,fill:{entityId?:string;typedValue?:unknown}){
-  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,typed_value,claim_id)
-    VALUES($1,$2,$3,$4,$5,$6,$7)`,[randomUUID(),owner,frameId,roleId,fill.entityId??null,
-    fill.typedValue===undefined?null:JSON.stringify(fill.typedValue),claimId]);
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,typed_value,claim_id,created_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[randomUUID(),owner,frameId,roleId,fill.entityId??null,
+    fill.typedValue===undefined?null:JSON.stringify(fill.typedValue),claimId,RECORDED]);
 }
 async function resolution(input:{frame:string;outcome:string;claim:string;by:string;contract:string;at:string;coverage?:number}){
   const id=randomUUID();
@@ -158,6 +158,12 @@ beforeAll(async()=>{
   const danielSays=await evidence('GMAIL_THREAD','Daniel: you owe me ILS 550 with the booking fee','2026-03-02T08:00:00.000Z');
   const transfer=await evidence('UPLOADED_DOCUMENT','Bank transfer to Daniel: ILS 300','2026-03-10T08:00:00.000Z');
   const promise=await evidence('CONVERSATION','I will send Daniel the remaining money by Friday','2026-03-11T08:00:00.000Z');
+  for(const [entityId,label,anchor] of [[people.me,'Me',loan],[people.daniel,'Daniel',danielSays],
+    [people.receipt,'Bank transfer receipt',transfer]] as const){
+    await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id,created_at)
+      SELECT $1,$2,$3,'DISPLAY_NAME',$4,$4,a.source_item_id,$6 FROM source_anchors a WHERE a.owner_scope_id=$2 AND a.id=$5`,
+      [randomUUID(),owner,entityId,label,anchor,RECORDED]);
+  }
   frames.obligation=await frame('shared.obligation');
   const principal=await belief({frame:frames.obligation,predicate:'shared.obligation.principal_amount',modality:'ACTUAL',
     value:{amount:'500.00',currency:'ILS'},anchor:loan,origin:'USER_STATEMENT',assertedBy:people.me,assessment:'ACCEPTED'});
