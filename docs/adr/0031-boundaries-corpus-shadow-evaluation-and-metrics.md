@@ -1,4 +1,4 @@
-# ADR 0027: Package boundaries, the gold corpus, shadow evaluation, registry migration governance and metrics
+# ADR 0031: Package boundaries, the gold corpus, shadow evaluation, registry migration governance and metrics
 
 Date: 2026-09-19
 Status: Accepted
@@ -10,7 +10,11 @@ CRT-REG-02-A, CRT-REG-05-A, CRT-WRT-01-A, CRT-WRT-09-A, CRT-WRT-10-A.
 
 Recorded before the implementing change, per PRD §0.7. The node's branch was
 brought up to master (connector capabilities, semantic index and Ask, merge and
-split, answer manifests) before this work, so its migration is 0022.
+split, answer manifests) before this work. It was merged with master again
+before delivery (Today and Ask, commitments and correction controls, memory
+inbox and weekly review, governed action and data control); those nodes took
+ADRs 0027–0030 and migrations 0022–0024, so this ADR is 0031 and its migration
+is 0025.
 
 ## 1. Boundaries are checked by what code reaches, and each check is proven able to fail
 

@@ -11,11 +11,13 @@
     "@unai/capabilities": "workspace:*",
     "@unai/connectors": "workspace:*",
     "@unai/context": "workspace:*",
+    "@unai/control": "workspace:*",
     "@unai/domain": "workspace:*",
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/memory": "workspace:*",
     "@unai/postgres": "workspace:*",
+    "@unai/review": "workspace:*",
     "@unai/secrets": "workspace:*",
     "fastify": "^5.12.4",
     "pg": "^8.16.0"

@@ -8,7 +8,7 @@ Nothing imports this package today. The only consumers are the root scripts `pnp
 
 There are two loaders with one shared verifier (`assemble` in `src/release.ts`). `loadRegistryRelease` is the runtime loader: it resolves `refs/tags/registry-v<version>` and reads blobs from Git objects, so working-tree edits are invisible to it. `lintRegistryCheckout` and `lintRegistryRepository` read the working tree, return `source: 'CHECKOUT'` with `gitCommit: null`, and exist only for CI. In both cases `registry/releases.yaml` is read from the working tree; it is the deployer's pin, which is why a re-tagged commit with different bytes is refused.
 
-## Evaluation tooling (ADR 0027)
+## Evaluation tooling (ADR 0031)
 
 This package is also the never-deployed evaluation tooling behind the same `uai` CLI:
 
@@ -54,4 +54,4 @@ These three need no database. `src/evaluation.test.ts` needs none either (it bui
 - ADR 0011 writes `uai registry publish --tag`; the implemented flag is `--version`.
 - `src/snapshot.ts` imports `uuidV7` from the root lane by relative path (`../../../src/kernel/identities.js`), so moving either file breaks publishing.
 - `src/cli.test.ts` asserts that lint prints exactly one release with 8 contracts, so recording a second release requires updating that expectation.
-- The snapshot test's TRUNCATE must list `registry_releases` first, because parallel suites publish releases then contracts; the reverse order deadlocks (40P01).
+- The snapshot test's TRUNCATE must list `registry_releases` first, because parallel suites publish releases then contracts; the reverse order deadlocks (40P01). Every reader keeps the same order too: migration 0023 re-declares `unai_private.registry_contract_present` to open `registry_releases` before `registry_contracts`, because a reader that opened contracts first was chosen as the deadlock victim beside that TRUNCATE and failed an unrelated suite with a 500 or 503. A new reader of the snapshot must name `registry_releases` first.

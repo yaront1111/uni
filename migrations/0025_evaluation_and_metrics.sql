@@ -2,7 +2,7 @@
 -- record, and the registry migration manifest snapshot (design entities
 -- `shadow_evaluation_runs`, `economic_and_quality_metrics`,
 -- `registry_migration_manifests`; PRD §17.7, §20.6, §22.2, §22.4, §43.5, §45).
--- ADR 0027 records the decisions below before the code.
+-- ADR 0031 records the decisions below before the code.
 --
 -- Four rules are carried by the schema rather than by convention:
 --

@@ -2,7 +2,7 @@
 
 This folder owns the `pnpm test` harness (`test.mjs` plus its storage and TLS helpers), the manual `verifier-rehearsal.mjs` diagnostic and `install-git-hooks.mjs`. It must not own product code or test cases: nothing under `packages/`, `apps/` or `src/` imports from here, and the only entry points are the `test`, `prepare` and `hooks:install` scripts in the root `package.json` and `node scripts/verifier-rehearsal.mjs`.
 
-`install-git-hooks.mjs` runs on every `pnpm install` (the `prepare` script), so it must never fail an install: it sets `core.hooksPath=.githooks` only inside a Git work tree that has `.githooks/pre-commit` and only when no other hooks path is configured, and otherwise prints why it did nothing and exits 0. The hook it activates refuses commits under `corpus/private-local/` (ADR 0027 §3).
+`install-git-hooks.mjs` runs on every `pnpm install` (the `prepare` script), so it must never fail an install: it sets `core.hooksPath=.githooks` only inside a Git work tree that has `.githooks/pre-commit` and only when no other hooks path is configured, and otherwise prints why it did nothing and exits 0. The hook it activates refuses commits under `corpus/private-local/` (ADR 0031 §3).
 
 ## Conventions a change must keep
 

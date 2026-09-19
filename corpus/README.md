@@ -1,6 +1,6 @@
 # Gold corpus
 
-PRD §43.4 and §46; decisions in `docs/adr/0027-boundaries-corpus-shadow-evaluation-and-metrics.md` §3.
+PRD §43.4 and §46; decisions in `docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md` §3.
 
 ```
 corpus/synthetic/threads/       committed synthetic Gmail threads (raw export shape)
@@ -43,6 +43,15 @@ propositions with one observation per span, commitments and resolutions, and
 unknowns and non-memory items. At least ten real threads, together covering
 every category, are required before any production keying rule counts as
 evaluated on real data.
+
+## Status: real corpus not recorded
+
+No real thread has been imported or labelled, and
+`corpus/expected/real-corpus-results.json` does not exist. `pnpm uai corpus verify`
+therefore fails with `REAL_CORPUS_EVALUATION_REQUIRED` / `REAL_RESULTS_MISSING`,
+and so does `pnpm check:phase-exit`. Neither the Phase 0 exit (PRD §46) nor the
+Phase 1 real-corpus threshold exit (PRD §47) is claimed. The owner steps are in
+`docs/evaluation-and-boundaries.md` under "What this node does not claim".
 
 The synthetic threads are sanitized equivalents with invented people and
 addresses under `example.test`; they are committed so CI can score them, and they

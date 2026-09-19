@@ -5,13 +5,13 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 `architecture-boundaries-corpus-shadow-eval-and-metrics`. This node owns
 CRT-CON-09-A, CRT-NFR-08-A, CRT-QA-02-A, CRT-QA-03-A, CRT-RD-01-A,
 CRT-REG-02-A, CRT-REG-05-A, CRT-WRT-01-A, CRT-WRT-09-A and CRT-WRT-10-A. ADR
-0027 records its decisions; ADRs 0001–0026 and every delivered slice were
+0031 records its decisions; ADRs 0001–0030 and every delivered slice were
 inspected and retained.
 
 ## Design entities implemented here
 
 - **`shadow_evaluation_runs`** and **`economic_and_quality_metrics`**, owner
-  scoped, added by `migrations/0022_evaluation_and_metrics.sql` with forced RLS,
+  scoped, added by `migrations/0025_evaluation_and_metrics.sql` with forced RLS,
   purpose-gated policies (`evaluation.shadow` writes a run, `ops.shadow.read`
   reads one; `ops.metrics.read` reads and records metrics) and triggers that
   refuse any update or delete, for every principal.
@@ -60,6 +60,11 @@ definer reader `unai_private.economic_and_quality_inputs`.
 
 ## What this node does not claim
 
+- **Phase exits.** Neither the Phase 0 exit (PRD §46) nor the Phase 1
+  real-corpus threshold exit (PRD §47) is claimed. Both need real-corpus results
+  that do not exist yet, and `pnpm check:phase-exit` fails until the owner
+  records them (below). Nothing here weakens, skips or soft-fails that gate, and
+  no synthetic run is recorded as a real one.
 - **Real Gmail threads.** PRD §43.4 requires at least ten real, user-selected,
   manually labelled threads. They must come from the owner's own mailbox and be
   labelled by a person; no agent may select, generate, sanitize into or relabel
@@ -114,7 +119,7 @@ definer reader `unai_private.economic_and_quality_inputs`.
   | Ingestion, projection read and packet assembly P95 | The load harness's `performance_measurements`. |
 - **Annotation editor.** The CLI and file-based editor is the accepted design:
   annotation happens locally through `uai corpus annotate`, not in the web
-  application (ADR 0027 §3). The Corpus and evaluation screen says so, shows the
+  application (ADR 0031 §3). The Corpus and evaluation screen says so, shows the
   commands, and shows label coverage by category from the
   `uai corpus status --report` output, which holds counts only. No route, proxy
   mapping or server module reads under `corpus/private-local/` or

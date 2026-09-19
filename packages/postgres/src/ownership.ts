@@ -32,6 +32,13 @@ const classifiedTables=new Map([
   ['frame_instance_lineage','owner_scope_id'],['proposition_lineage','owner_scope_id'],
   ['memory_embeddings','owner_scope_id'],
   ['answer_manifests','owner_scope_id'],['reconsideration_candidates','owner_scope_id'],
+  ['briefing_editions','owner_scope_id'],['briefing_items','owner_scope_id'],
+  ['attention_budgets','owner_scope_id'],['learned_approval_rules','owner_scope_id'],['clarification_cards','owner_scope_id'],
+  ['interruption_decisions','owner_scope_id'],['weekly_reviews','owner_scope_id'],['behavioral_observations','owner_scope_id'],
+  ['plugin_capability_grants','owner_scope_id'],['recommendation_artifacts','owner_scope_id'],['drafts','owner_scope_id'],
+  ['action_history','owner_scope_id'],['retention_settings','owner_scope_id'],
+  ['domain_sensitivity_settings','owner_scope_id'],['memory_summaries','owner_scope_id'],
+  ['retention_and_deletion_requests','owner_scope_id'],
   ['shadow_evaluation_runs','owner_scope_id'],['economic_and_quality_metrics','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
@@ -40,7 +47,7 @@ const classifiedTables=new Map([
  * unexamined. */
 export const OWNER_SCOPED_TABLES:readonly string[]=Object.freeze([...classifiedTables.keys()]);
 /** Global Git registry snapshot (ADR 0011) and the migration manifests published
- * with it (ADR 0027): not owner data, so they must stay forced-RLS and completely
+ * with it (ADR 0031): not owner data, so they must stay forced-RLS and completely
  * inaccessible to the application role.
  */
 const globalReferenceTables=new Set(['registry_releases','registry_contracts','registry_migration_manifests']);

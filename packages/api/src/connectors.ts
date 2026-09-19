@@ -14,6 +14,7 @@ import {
 import type { SecretsManager } from '@unai/secrets';
 import { readTriageDecision } from '@unai/extraction';
 import { importSource, type EvidenceObjects } from './evidence.js';
+import { readSensitivityFloor } from '@unai/control';
 
 /**
  * Connected sources, capability grants, sync, disconnect and document upload
@@ -133,9 +134,10 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
    * answer: the alternative is lowering the floor to fit the ceiling, which is
    * exactly what the floor exists to prevent, or letting the row policy fail with
    * a message about a purpose rather than about sensitivity. */
-  function assertCeilingAdmitsFloor(connectorType: string, ceiling: StoredSensitivity, requested: StoredSensitivity): void {
+  function assertCeilingAdmitsFloor(connectorType: string, ceiling: StoredSensitivity, requested: StoredSensitivity,
+    ownerFloor: StoredSensitivity | null): void {
     const manifest = manifestFor(connectorType);
-    const stored = storedSensitivity(manifest, requested);
+    const stored = storedSensitivity(manifest, requested, ownerFloor);
     if (!ceilingAdmits(ceiling, stored)) {
       throw new ConnectorError('CONNECTOR_SENSITIVITY_CEILING_TOO_LOW',
         { connectorType, maximumSensitivity: ceiling, storedSensitivity: stored });
@@ -219,13 +221,16 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
           'SELECT connector_type,secret_ref FROM connectors WHERE id=$1 AND owner_scope_id=$2',
           [request.params.id, tx.context.ownerScopeId])).rows[0];
         if (!connector) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId: request.params.id });
-        assertCeilingAdmitsFloor(connector.connector_type as string, authority.maximum, parsed.data.sensitivity);
+        // The owner's stored-sensitivity setting is read here, at the sync, so a
+        // change saved on the Permissions surface applies to this run (ADR 0030 §7).
+        const sensitivityFloor = await readSensitivityFloor(tx, connector.connector_type as string);
+        assertCeilingAdmitsFloor(connector.connector_type as string, authority.maximum, parsed.data.sensitivity, sensitivityFloor);
         const client = await options.connectorClient!({
           connectorType: connector.connector_type as string,
           secretRef: (connector.secret_ref as string | null) ?? null,
         });
         const result = await runConnectorSync(tx, {
-          connectorId: request.params.id, request: parsed.data, client, ingest,
+          connectorId: request.params.id, request: parsed.data, client, ingest, sensitivityFloor,
         });
         await tx.audit({
           policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
@@ -270,9 +275,10 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
       const declared: { authority: { purpose: string; maximum: 'NORMAL' | 'PRIVATE' | 'RESTRICTED' } | null } = { authority: null };
       const receipt = await work(request, async tx => {
         declared.authority = await declareEvidenceAuthority(tx, request);
-        assertCeilingAdmitsFloor('DOCUMENT', declared.authority.maximum, parsed.data.sensitivity);
+        const sensitivityFloor = await readSensitivityFloor(tx, 'DOCUMENT');
+        assertCeilingAdmitsFloor('DOCUMENT', declared.authority.maximum, parsed.data.sensitivity, sensitivityFloor);
         const stored = await uploadDocument(tx, parsed.data, {
-          ingest,
+          ingest, sensitivityFloor,
           readTriage: async (transaction, evidenceId) => {
             const decision = await readTriageDecision(transaction as unknown as OwnerTransaction, {
               ownerScopeId: transaction.context.ownerScopeId, sourceItemId: evidenceId,

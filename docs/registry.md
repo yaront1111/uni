@@ -51,7 +51,7 @@ owner sample and `projection-replay` as real CLI processes over TLS inside
 `pnpm test` (`packages/registry/src/evaluation-db.test.ts`). `test` exercises
 every frame contract through the ten areas of PRD §43.3; `shadow-diff` writes the
 seven diffs of PRD §43.5 and, for an owner sample, records a
-`shadow_evaluation_runs` row without changing a production table (ADR 0027 §4).
+`shadow_evaluation_runs` row without changing a production table (ADR 0031 §4).
 `--registry-version` pins a replay report to the release a migration manifest
 names.
 
@@ -82,7 +82,7 @@ commit, content hash and correlation ID.
 ## Release procedure
 
 1. Add `registry/releases/<version>/` and its manifest in a pull request.
-   `lint` computes the change class against the previous release (ADR 0027 §5).
+   `lint` computes the change class against the previous release (ADR 0031 §5).
    An identity-, transition-affecting or breaking release must also carry
    `migration.yaml` in its directory (kind, from, to, changeClass, description,
    shadowDiff, projectionReplay, rollbackPlan, pinnedTests), with the named

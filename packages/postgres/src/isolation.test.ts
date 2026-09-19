@@ -181,6 +181,43 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query(`INSERT INTO reconsideration_candidates(id,owner_scope_id,changed_object_type,changed_object_id,
         answer_manifest_id,change_kind,change_ref) VALUES($1,$2,'proposition',$3,$4,'BELIEF_ASSESSMENT_CHANGED',$5)`,
         [randomUUID(),owner,proposition,manifest,randomUUID()]);
+      // The Today briefing: one edition over that packet, and the item it ranked.
+      const edition=randomUUID();
+      await pool.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,timezone,utc_offset,
+        generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+        VALUES($1,$2,$3,'2026-09-19','Asia/Jerusalem','+03:00',now(),$4,$5,'{}','briefing-ranking-0.1.0')`,
+        [edition,owner,actor,packet,'e'.repeat(64)]);
+      await pool.query(`INSERT INTO briefing_items(id,owner_scope_id,briefing_edition_id,item_object_type,item_object_id,domain_section,
+        headline,why_surfaced,rank_components,rank_score,priority,certainty_label,past_target,outcome_state,material_fingerprint,rank_position)
+        VALUES($1,$2,$3,'frame_instance',$4,'FINANCE','Obligation to Daniel','Due today',
+        '{"consequence":1,"urgency":1,"goalRelevance":0.5,"confidence":1,"effort":0.5,"reversibility":0.2,"attentionBudget":1}',
+        0.9,'HIGH','CONFIRMED',false,'UNRESOLVED',$5,1)`,[randomUUID(),owner,edition,instance,'d'.repeat(64)]);
+      // Proactive clarification and the weekly review (migration 0023): a budget,
+      // a proposed rule, a card with its logged decision, and a review with the
+      // observation it holds, all resting on the packet above.
+      const card=randomUUID(),review=randomUUID(),observation=randomUUID();
+      await pool.query('INSERT INTO attention_budgets(owner_scope_id,max_cards_per_day,updated_by_user_id) VALUES($1,4,$2)',[owner,actor]);
+      await pool.query(`INSERT INTO learned_approval_rules(id,owner_scope_id,rule_text,scope,rule_signature,proposed_from_card_ids)
+        VALUES($1,$2,'Always link transfers with the exact memo "Daniel dinner" to the matching open obligation.','{}',$3,ARRAY[$4::uuid,$5::uuid])`,
+        [randomUUID(),owner,'c'.repeat(64),randomUUID(),randomUUID()]);
+      await pool.query(`INSERT INTO clarification_cards(id,owner_scope_id,situation_key,situation_kind,title,facts,why_it_matters,choices,
+        grouped_ambiguity_ids,ambiguities,sensitivity_scope,policy_inputs,context_packet_id)
+        VALUES($1,$2,$3,'GENERAL','Unconfirmed details: obligation','[]','Until it is settled, answers about it are marked uncertain.',
+        '[{},{}]',ARRAY[$4::uuid],'[]','FINANCE/PRIVATE','{}',$5)`,[card,owner,'frame:'+instance,proposition,packet]);
+      await pool.query(`INSERT INTO interruption_decisions(id,owner_scope_id,clarification_card_id,candidate_ambiguity_id,ambiguity_kind,
+        policy_inputs,decision,reason,owner_local_date,policy_version)
+        VALUES($1,$2,$3,$4,'UNCONFIRMED_INTERPRETATION','{"errorProbability":0.4,"consequence":"HIGH","irreversibility":"REVERSIBLE","urgency":"LOW","interruptionCost":"LOW","budget":{}}',
+        'ASK','WITHIN_ATTENTION_BUDGET','2026-03-02','interruption-policy-0.1.0')`,[randomUUID(),owner,card,proposition]);
+      await pool.query(`INSERT INTO behavioral_observations(id,owner_scope_id,pattern_kind,statement,supporting_episode_ids,supporting_episodes,
+        counterexample_search,observation_window_start,observation_window_end,confidence,review_or_expiry_date,context_packet_id)
+        VALUES($1,$2,'REPEATED_POSTPONEMENT','Due dates were moved later 2 times.',ARRAY[$3::uuid,$4::uuid],'[{},{}]',
+        '{"searched":"x","counterexamplesFound":0,"counterexampleIds":[]}','2026-02-09T00:00:00Z','2026-03-09T00:00:00Z',1,'2026-04-05',$5)`,
+        [observation,owner,randomUUID(),randomUUID(),packet]);
+      await pool.query(`INSERT INTO weekly_reviews(id,owner_scope_id,week_start,week_end,time_zone,priority_versus_calendar,
+        commitments_versus_resolutions,decisions_versus_outcomes,planned_versus_observed_spending,material_changes,repeated_postponement,
+        behavioral_observation_ids,context_packet_id,packet_hash,manifest,statement_count,review_version)
+        VALUES($1,$2,'2026-03-02','2026-03-08','UTC','{}','{}','{}','{}','{}','{}',ARRAY[$3::uuid],$4,$5,'{}',0,'weekly-review-0.1.0')`,
+        [review,owner,observation,packet,'e'.repeat(64)]);
       // Merge lineage: an older instance and proposition merged into the ones
       // above. Lineage is accepted only from a MERGE or SPLIT transaction that is
       // committing in the same database transaction, so the fixture does what the
@@ -221,6 +258,34 @@ describe('real PostgreSQL owner isolation', () => {
         window_start,window_end,metrics_version,correlation_id)
         VALUES($1,$2,'cost_per_source_item','MICROUNITS_PER_ITEM',12.5,25,2,now()-interval '1 day',now(),'metrics-0.1.0',$3)`,
         [randomUUID(),owner,randomUUID()]);
+      // Governed action and the data-control surface (migration 0024): one row per
+      // owner in each of its tables, so the sweep below covers them too.
+      const actionDecision=randomUUID(),recommendation=randomUUID(),draft=randomUUID();
+      await pool.query(`INSERT INTO policy_decisions(id,owner_scope_id,port,request,outcome,reason,policy_version,correlation_id)
+        VALUES($1,$2,'EvaluateMemoryAction','{}','ALLOW','ACTION_WITHIN_LOCAL_POLICY','local-policy-0.1.0',$3)`,
+        [actionDecision,owner,randomUUID()]);
+      await pool.query(`INSERT INTO plugin_capability_grants(id,owner_scope_id,capability_id,access_kind,risk_class,granted,granted_at)
+        VALUES($1,$2,'gmail.create_draft','DRAFT','MEDIUM',true,now()),($3,$2,'gmail.send','WRITE','HIGH',false,NULL)`,
+        [randomUUID(),owner,randomUUID()]);
+      await pool.query(`INSERT INTO recommendation_artifacts(id,owner_scope_id,recommendation_text,recommended_action_kind,
+        action_risk,supporting_packet_id,supporting_assessment,projection_complete,status,policy_decision_id)
+        VALUES($1,$2,'Selling 100 shares would reduce concentration.','TRADE','HIGH',$3,'ACCEPTED',true,'ACTIVE',$4)`,
+        [recommendation,owner,packet,actionDecision]);
+      await pool.query(`INSERT INTO drafts(id,owner_scope_id,draft_kind,capability_id,content,recommendation_id,
+        supporting_packet_id,policy_decision_id) VALUES($1,$2,'EMAIL','gmail.create_draft','{"body":"Draft"}',$3,$4,$5)`,
+        [draft,owner,recommendation,packet,actionDecision]);
+      await pool.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id,
+        recommendation_id,policy_decision_id) VALUES
+        ($1,$2,'SUGGESTED','TRADE','recommendation',$3,$3,$4),($5,$2,'DRAFTED','DRAFT','draft',$6,$3,$4)`,
+        [randomUUID(),owner,recommendation,actionDecision,randomUUID(),draft]);
+      await pool.query("INSERT INTO retention_settings(owner_scope_id,source_type,raw_retention_days) VALUES($1,'GMAIL',365)",[owner]);
+      await pool.query("INSERT INTO domain_sensitivity_settings(owner_scope_id,source_type,sensitivity) VALUES($1,'DOCUMENT','RESTRICTED')",[owner]);
+      await pool.query(`INSERT INTO memory_summaries(id,owner_scope_id,summary_text,source_object_manifest,source_object_ids,
+        model_id,prompt_version) VALUES($1,$2,'Owes Daniel 50','[]',ARRAY[$3::uuid],'fixture-model','summary-0.1.0')`,
+        [randomUUID(),owner,claim]);
+      await pool.query(`INSERT INTO retention_and_deletion_requests(id,owner_scope_id,request_kind,trigger,scope,status,
+        cascade_receipt,requested_by_user_id,requested_at,completed_at)
+        VALUES($1,$2,'EXPORT','OWNER_REQUEST','{}','COMPLETED','{}',$3,now(),now())`,[randomUUID(),owner,actor]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -707,7 +772,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(58);
+    expect(rows.length).toBe(74);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -900,6 +965,45 @@ describe('real PostgreSQL owner isolation', () => {
     await expect(pool.query("UPDATE reconsideration_candidates SET change_kind='CLAIM_CORRECTED' WHERE owner_scope_id=$1",[a]))
       .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A briefing queries and keeps the edition history immutable',async()=>{
+    const briefing=['briefing_editions','briefing_items'];
+    for(const purpose of ['memory.read','memory.inspect']){
+      await asOwner(a,alice,async c=>{
+        for(const table of briefing){
+          const rows=(await readUnfiltered(c,table)).rows;
+          expect(rows.length,table).toBeGreaterThan(0);
+          expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+        }
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        for(const table of briefing) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+    }
+    // Purpose-bound: an unrelated product purpose reads none of it.
+    await asOwner(a,alice,async c=>{
+      for(const table of briefing) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // Only the briefing read writes an edition, and only for the session's actor
+    // over the owner's own packet; nobody deletes or rewrites one, because the
+    // history is what suppresses tomorrow's unchanged repeat.
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,
+      timezone,utc_offset,generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+      SELECT gen_random_uuid(),owner_scope_id,requesting_actor_id,owner_local_date,timezone,utc_offset,generated_at,
+      context_packet_id,packet_hash,packet_manifest,ranking_version FROM briefing_editions`).then(()=>{}),'memory.inspect'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,bob,c=>c.query(`INSERT INTO briefing_editions(id,owner_scope_id,requesting_actor_id,owner_local_date,
+      timezone,utc_offset,generated_at,context_packet_id,packet_hash,packet_manifest,ranking_version)
+      VALUES(gen_random_uuid(),$1,$2,'2026-09-20','UTC','+00:00',now(),gen_random_uuid(),$3,'{}','briefing-ranking-0.1.0')`,
+      [a,alice,'e'.repeat(64)]).then(()=>{}),'memory.read')).rejects.toBeTruthy();
+    for(const table of briefing){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.read'),table).rejects.toMatchObject({code:'42501'});
+      await expect(asOwner(a,alice,c=>c.query('UPDATE '+table+' SET created_at=now()').then(()=>{}),'memory.read'),table).rejects.toMatchObject({code:'42501'});
+    }
+    await expect(pool.query("UPDATE briefing_items SET suppressed_as_unchanged=false WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE briefing_editions SET timezone='UTC' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+  });
   it('CRT-SEC-01-A and CRT-RD-04-A: hides B from unfiltered owner A semantic-index queries and applies the evidence gate to every row',async()=>{
     await asOwner(a,alice,async c=>{
       const rows=(await readUnfiltered(c,'memory_embeddings')).rows;
@@ -946,6 +1050,84 @@ describe('real PostgreSQL owner isolation', () => {
       const anchors=(await pool.query('SELECT id FROM source_anchors WHERE owner_scope_id=$1',[a])).rows.map(row=>row.id);
       expect((await c.query('SELECT * FROM unai_private.anchor_evidence_scope($1,$2)',[a,anchors])).rows).toEqual([]);
     },'memory.read');
+  });
+  it('CRT-SEC-01-A, CRT-CON-08-A and CRT-UX-13-A: hides B from unfiltered owner A governed-action and data-control queries and holds their rules in the schema',async()=>{
+    const tables:[string,string][]=[['plugin_capability_grants','permissions.read'],['recommendation_artifacts','action.read'],
+      ['drafts','action.read'],['action_history','action.read'],
+      ['retention_settings','permissions.read'],['domain_sensitivity_settings','permissions.read'],
+      ['memory_summaries','memory.inspect'],['retention_and_deletion_requests','permissions.read']];
+    for(const [table,purpose] of tables){
+      await asOwner(a,alice,async c=>{
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+      // Purpose-bound: an unrelated product purpose reads none of it.
+      await asOwner(a,alice,async c=>{
+        expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      });
+    }
+    // No external write capability can be granted, by anyone (CRT-CON-08-A).
+    await expect(pool.query("UPDATE plugin_capability_grants SET granted=true,granted_at=now() WHERE owner_scope_id=$1 AND capability_id='gmail.send'",[a]))
+      .rejects.toMatchObject({constraint:'plugin_capability_grants_no_external_write'});
+    // A draft is never labelled executed, even with a real receipt beside it,
+    // and execution needs a receipt (CRT-UX-13-A). The receipt lives only inside
+    // this rolled-back transaction, so no other fixture count changes.
+    const draft=(await pool.query('SELECT id FROM drafts WHERE owner_scope_id=$1',[a])).rows[0].id;
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      const receipt=randomUUID();
+      await client.query(`INSERT INTO source_items(id,owner_scope_id,source_type,external_id,actor_ref,submitted_by_user_id,
+        raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+        VALUES($1,$2,'TOOL_RECEIPT','order-1','{"type":"EXTERNAL","id":"broker"}',$3,$4,$5,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],
+        'evidence-json-v1',$6)`,[receipt,a,alice,randomUUID(),'c'.repeat(64),randomUUID()]);
+      await client.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id,
+        receipt_evidence_id) VALUES(gen_random_uuid(),$1,'EXECUTED','TRADE','evidence',$2,$2)`,[a,receipt]);
+      await client.query('SAVEPOINT draft_executed');
+      await expect(client.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,
+        subject_object_id,receipt_evidence_id) VALUES(gen_random_uuid(),$1,'EXECUTED','DRAFT','draft',$2,$3)`,[a,draft,receipt]))
+        .rejects.toMatchObject({constraint:'action_history_draft_never_executed'});
+      await client.query('ROLLBACK TO SAVEPOINT draft_executed');
+    }finally{await client.query('ROLLBACK');client.release();}
+    await expect(pool.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id)
+      VALUES(gen_random_uuid(),$1,'EXECUTED','TRADE','recommendation',(SELECT id FROM recommendation_artifacts WHERE owner_scope_id=$1))`,[a]))
+      .rejects.toMatchObject({constraint:'action_history_execution_receipted'});
+    // Only an authoritative TOOL_RECEIPT can stand behind an execution fact.
+    const ordinary=(await pool.query("SELECT id FROM source_items WHERE owner_scope_id=$1 AND source_type='DOCUMENT'",[a])).rows[0].id;
+    await expect(pool.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id,
+      receipt_evidence_id) VALUES(gen_random_uuid(),$1,'EXECUTED','TRADE','evidence',$2,$2)`,[a,ordinary]))
+      .rejects.toThrow('ACTION_RECEIPT_NOT_AUTHORITATIVE');
+    await expect(pool.query("UPDATE drafts SET status='APPROVED' WHERE owner_scope_id=$1",[a])).rejects.toThrow('DRAFT_TRANSITION_REFUSED');
+    await expect(pool.query("UPDATE action_history SET stage='EXECUTED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE recommendation_artifacts SET semantics='INTENT' WHERE owner_scope_id=$1",[a])).rejects.toThrow();
+    // The history is append-only for the application too.
+    await expect(asOwner(a,alice,c=>c.query('DELETE FROM action_history').then(()=>{}),'action.read')).rejects.toMatchObject({code:'42501'});
+    // The erasure cascade is one definer, callable only under `data.delete` and
+    // only for the caller's own owner scope; the application still holds no
+    // DELETE on any canonical or evidence table under that purpose.
+    const foreign=(await pool.query("SELECT id FROM source_items WHERE owner_scope_id=$1 AND source_type='DOCUMENT'",[b])).rows[0].id;
+    await expect(asOwner(a,alice,c=>c.query('SELECT unai_private.erase_evidence($1,$2)',[b,foreign]).then(()=>{}),'data.delete'))
+      .rejects.toThrow('ERASURE_NOT_AUTHORIZED');
+    await expect(asOwner(a,alice,c=>c.query('SELECT unai_private.erase_evidence($1,$2)',[a,ordinary]).then(()=>{}),'memory.govern'))
+      .rejects.toThrow('ERASURE_NOT_AUTHORIZED');
+    for(const table of ['claims','propositions','source_items','source_anchors','memory_embeddings']){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'data.delete'),table).rejects.toMatchObject({code:'42501'});
+    }
+    await expect(asOwner(a,alice,c=>c.query('SELECT unai_private.drop_semantic_index($1)',[b]).then(()=>{}),'memory.reindex'))
+      .rejects.toThrow('REINDEX_NOT_AUTHORIZED');
+    // Export reads the owner's memory and nothing of another owner's.
+    await asOwner(a,alice,async c=>{
+      for(const table of ['source_items','claims','propositions','memory_summaries']){
+        const rows=(await c.query('SELECT owner_scope_id FROM '+table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'data.export');
   });
   it('refuses an elevated application database connection',async()=>{
     await expect(withOwnerTransaction(pool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId:randomUUID()},async()=>{})).rejects.toThrow('DATABASE_ROLE_UNSAFE');
@@ -1049,6 +1231,66 @@ describe('real PostgreSQL owner isolation', () => {
       await client.query('BEGIN'); await client.query('SET LOCAL ROLE unai_app');
       await expect(client.query('SELECT * FROM registry_migration_manifests')).rejects.toMatchObject({code:'42501'});
     }finally{await client.query('ROLLBACK');client.release();}
+  });
+
+  it('CRT-SEC-01-A: hides B from unfiltered owner A inbox and review queries, gates each on its purpose and keeps the records immutable',async()=>{
+    const inboxTables=['attention_budgets','learned_approval_rules','clarification_cards','interruption_decisions'];
+    const reviewTables=['weekly_reviews','behavioral_observations'];
+    for(const [tables,purpose] of [[inboxTables,'memory.inbox'],[reviewTables,'review.weekly']] as const){
+      await asOwner(a,alice,async c=>{
+        for(const table of tables){
+          const rows=(await readUnfiltered(c,table)).rows;
+          expect(rows.length,table).toBeGreaterThan(0);
+          expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+        }
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        for(const table of tables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+      // Purpose-bound: the model read path and an unrelated purpose see none of it.
+      for(const other of ['memory.read','evidence.read']){
+        await asOwner(a,alice,async c=>{
+          for(const table of tables) expect((await c.query('SELECT * FROM '+table)).rows,table+' '+other).toEqual([]);
+        },other);
+      }
+    }
+    // The inbox may propose a rule and nothing more; approving one is the rules
+    // surface's, in the owner's own name.
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO learned_approval_rules(id,owner_scope_id,rule_text,scope,rule_signature,status,
+      proposed_from_card_ids,approved_by_user_id,approved_at) VALUES(gen_random_uuid(),$1,'x','{}',$2,'APPROVED',ARRAY[gen_random_uuid(),gen_random_uuid()],$3,now())`,
+      [a,'d'.repeat(64),alice]).then(()=>{}),'memory.inbox')).rejects.toMatchObject({code:'42501'});
+    await asOwner(a,alice,async c=>{
+      // No update policy admits the inbox purpose: the row is not there to change.
+      expect((await c.query("UPDATE learned_approval_rules SET status='APPROVED',approved_by_user_id=$1,approved_at=now()",[alice])).rowCount).toBe(0);
+    },'memory.inbox');
+    await expect(asOwner(a,alice,c=>c.query("UPDATE learned_approval_rules SET status='APPROVED',approved_by_user_id=$1,approved_at=now()",[bob]).then(()=>{}),'approval.rules'))
+      .rejects.toThrow();
+    await asOwner(a,alice,async c=>{
+      await c.query("UPDATE learned_approval_rules SET status='REVOKED',revoked_at=now()");
+      // Revoked is final: no rule comes back.
+      await expect(c.query("UPDATE learned_approval_rules SET status='APPROVED',approved_by_user_id=$1,approved_at=now(),revoked_at=NULL",[alice]))
+        .rejects.toMatchObject({code:'55000'});
+    },'approval.rules');
+    // Only the settings surface changes the budget, in the owner's own name.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('UPDATE attention_budgets SET max_cards_per_day=9')).rowCount).toBe(0);
+    },'memory.inbox');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('UPDATE attention_budgets SET max_cards_per_day=5,updated_by_user_id=$1 RETURNING max_cards_per_day',[alice])).rows)
+        .toEqual([{max_cards_per_day:5}]);
+    },'settings.attention');
+    // A logged decision, a review and an observation are statements about one moment.
+    for(const [table,purpose] of [['interruption_decisions','memory.inbox'],['weekly_reviews','review.weekly'],['behavioral_observations','review.weekly']] as const){
+      await expect(asOwner(a,alice,c=>c.query('UPDATE '+table+' SET owner_scope_id=owner_scope_id').then(()=>{}),purpose),table)
+        .rejects.toMatchObject({code:expect.stringMatching(/^(42501|55000)$/)});
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),purpose),table).rejects.toMatchObject({code:'42501'});
+    }
+    // An observation cannot be stored from one episode.
+    await expect(pool.query(`INSERT INTO behavioral_observations(id,owner_scope_id,pattern_kind,statement,supporting_episode_ids,supporting_episodes,
+      counterexample_search,observation_window_start,observation_window_end,confidence,review_or_expiry_date,context_packet_id)
+      SELECT gen_random_uuid(),owner_scope_id,'REPEATED_POSTPONEMENT','One postponement.',ARRAY[gen_random_uuid()],'[{}]',
+      '{"searched":"x","counterexamplesFound":0,"counterexampleIds":[]}','2026-02-09T00:00:00Z','2026-03-09T00:00:00Z',1,'2026-04-05',context_packet_id
+      FROM behavioral_observations WHERE owner_scope_id=$1 LIMIT 1`,[a])).rejects.toMatchObject({code:'23514'});
   });
 
   it('CRT-SEC-01-A: covers every classified owner-scoped table with an unfiltered cross-owner query',async()=>{

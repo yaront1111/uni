@@ -1,4 +1,4 @@
-import { S3Client, GetBucketEncryptionCommand, PutObjectCommand, GetObjectCommand, type GetObjectCommandOutput } from '@aws-sdk/client-s3';
+import { S3Client, GetBucketEncryptionCommand, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, type GetObjectCommandOutput } from '@aws-sdk/client-s3';
 import { requestContextSchema, type RequestContext } from '@unai/domain';
 
 export interface StorageConfiguration {
@@ -8,7 +8,7 @@ export interface StorageConfiguration {
   kmsKeyId: string;
 }
 
-export type AuthorizedKeyResolver = (context: RequestContext, publicId: string, operation: 'READ' | 'WRITE') => Promise<string | null>;
+export type AuthorizedKeyResolver = (context: RequestContext, publicId: string, operation: 'READ' | 'WRITE' | 'DELETE') => Promise<string | null>;
 
 /** Credentials use the SDK credential chain, configured by the deployment identity system.
  * The resolver must perform application ownership AND purpose checks against canonical data.
@@ -35,7 +35,7 @@ export async function createEncryptedS3Store(configuration: StorageConfiguration
     throw new Error('STORAGE_ENCRYPTION_REQUIRED');
   }
   let closed = false;
-  async function keyFor(input: RequestContext, publicId: string, operation: 'READ' | 'WRITE') {
+  async function keyFor(input: RequestContext, publicId: string, operation: 'READ' | 'WRITE' | 'DELETE') {
     if (closed) throw new Error('STORAGE_CLOSED');
     const context = Object.freeze(requestContextSchema.parse(input));
     if (!requestContextSchema.shape.actorId.safeParse(publicId).success) throw new Error('STORAGE_PUBLIC_ID_INVALID');
@@ -76,6 +76,15 @@ export async function createEncryptedS3Store(configuration: StorageConfiguration
           try { body.destroy(); } catch { /* Preserve the sanitized operation outcome. */ }
         }
       }
+    },
+    /** Delete one object, for the deletion cascade (PRD §30.7). The resolver
+     * decides whether this context may delete it, exactly as for a read or a
+     * write. S3 answers success whether or not the key still existed, so a
+     * retried deletion is indistinguishable from the first. */
+    async delete(context: RequestContext, id: string): Promise<void> {
+      const key = await keyFor(context, id, 'DELETE');
+      try { await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key })); }
+      catch { throw new Error('STORAGE_OPERATION_FAILED'); }
     },
     close() { closed = true; client.destroy(); },
   });

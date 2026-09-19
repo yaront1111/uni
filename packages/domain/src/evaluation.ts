@@ -347,7 +347,7 @@ export type ShadowRunsView = z.infer<typeof shadowRunsViewSchema>;
 // ---------------------------------------------------------------------------
 
 /** The closed metric vocabulary of the design entity, matching the SQL CHECK in
- * migration 0022. */
+ * migration 0025. */
 export const METRIC_KEYS = Object.freeze([
   'cost_per_source_item', 'cost_per_canonical_claim', 'cost_per_accepted_belief', 'cost_per_belief_later_retrieved',
   'extracted_claims_never_used', 'tier_routing_distribution', 'user_confirmation_rate', 'user_correction_rate',

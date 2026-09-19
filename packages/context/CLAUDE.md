@@ -16,6 +16,11 @@ answer manifests and reconsideration read (`manifests.ts`) and the shared
 statement wording (`wording.ts`). Report: `docs/answer-provenance.md`;
 decisions: `docs/adr/0026-answer-manifests-grounding-and-reconsideration.md`.
 
+It also holds the Today briefing (`today.ts`, route `packages/api/src/today.ts`),
+its pure ranking (`ranking.ts`) and the Why? / Sources panel read (`why.ts`).
+Report: `docs/today-and-ask.md`; decisions:
+`docs/adr/0027-web-shell-labels-today-briefing-and-ask.md`.
+
 ## Local invariants
 
 - **Everything here is a read.** `memory.read` appears in no INSERT, UPDATE or
@@ -60,7 +65,17 @@ decisions: `docs/adr/0026-answer-manifests-grounding-and-reconsideration.md`.
 - **The only memory read path for models and plugins.** `src/boundaries.test.ts`
   stops its walk at this package, so a narrow read a plugin needs (such as
   `listOpenThreadIds` for `@unai/connectors`) is added here rather than in the
-  plugin runtime (CRT-RD-01-A, ADR 0027 §2).
+  plugin runtime (CRT-RD-01-A, ADR 0031 §2).
+- **A briefing surfaces only what its packet supplied.** `buildTodayBriefing`
+  reads the typed projection rows *for the frames the packet carries* and no
+  others; reading the projections first and the packet second would let a frame
+  above the ceiling into Today. The edition and its items are written under
+  `memory.read`, like the packet, and are immutable: the history decides what is
+  suppressed tomorrow.
+- **Ranking never sees a recording time.** `rankBriefing` is pure and its seven
+  components carry no timestamp; tie-breaks are past-target, then the sooner
+  target, then the id. Adding `created_at` or `lastMaterialUpdate` to the score
+  would reintroduce "newest first" (CRT-UX-02-A).
 
 ## Traps
 
@@ -99,6 +114,14 @@ decisions: `docs/adr/0026-answer-manifests-grounding-and-reconsideration.md`.
   selector.** Fixtures leave `owner_overlay_deltas.created_at` at the wall clock;
   filtering the packet's overlay by knowledge time would hide them from every
   test that pins `now` in the past.
+- **A suppression fingerprint must not contain the day.** `materialFingerprintOf`
+  hashes the material state only. Putting the headline (which says "due in
+  20 hours") or the rank score in it makes every item look changed every day,
+  and nothing is ever suppressed.
+- **The Why? panel's excerpt is evidence.** It is read from `source_anchors`
+  through the evidence policies, so the route must declare `unai.data_purpose`
+  and `unai.maximum_sensitivity` first; without them every excerpt reads as
+  withheld.
 - **A thread owns nothing.** `memory_thread_members` carries no evidence column.
   Attaching an object to a second thread writes one row naming a row that already
   exists; if a change here starts creating evidence, claims or propositions,

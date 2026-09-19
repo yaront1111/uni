@@ -42,10 +42,16 @@
   idempotency key up before planning, because the planned ids are no longer
   active after the first commit.
 
+## Inbox and weekly review routes (`review.ts`)
+
+- Four surface purposes: `memory.inbox` (inbox read and card decisions), `approval.rules`, `settings.attention`, `review.weekly`. Each route opens its Context Broker read under `memory.read` and a card answer's memory write under `memory.correct` through `purposeWork`, chosen by server code, as the lineage routes do for `memory.project`.
+- `GET /v1/memory/inbox`, `GET /v1/weekly-review` and the card decision require `x-data-purpose` and `x-maximum-sensitivity` (400 `REVIEW_CONTEXT_REQUIRED`): the reads go through the broker, and a decision stores the owner's answer as evidence.
+- `createPlatformApi({clock})` exists for tests that move the inbox across owner-local days; production passes none.
+
 ## Metrics and shadow-run routes (`metrics.ts`)
 
 `GET /v1/ops/metrics` (`ops.metrics.read`) reads counts only through the definer
-function `unai_private.economic_and_quality_inputs` (migration 0022), computes each
+function `unai_private.economic_and_quality_inputs` (migration 0025), computes each
 metric with integer arithmetic (`exactRatio`; a zero denominator is null, never
 zero), appends one `economic_and_quality_metrics` row per value and audits them.
 Metrics without recorded inputs are returned in `notMeasured`, never as numbers.

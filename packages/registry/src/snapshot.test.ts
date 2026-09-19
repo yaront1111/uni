@@ -94,24 +94,25 @@ it('refuses update, delete and truncate of the snapshot, even for the privileged
   await expect(pool.query("UPDATE registry_releases SET lifecycle='RELEASED'")).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
   await expect(pool.query('DELETE FROM registry_contracts')).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
   await expect(pool.query("UPDATE registry_contracts SET content='{}'")).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
-  // Lock order: parallel suites publish releases then contracts, so the TRUNCATE lists them
-  // in that order. Suites also read both tables through the definer readers while this
-  // runs, so the TRUNCATE waits for its locks only briefly (lock_timeout, far below the
-  // deadlock detector's delay) and backs off, so a concurrent reader is never chosen as a
-  // deadlock victim. Only a lock timeout (55P03) or a deadlock (40P01) is retried, and a
-  // retry never counts as a pass; the attempt is rolled back whatever happens.
+  // Parallel suites read contracts joined to releases (registry_contract_present) in either
+  // order, so a TRUNCATE that waited for its second lock while holding the first could
+  // deadlock them, and the victim could be the other suite. Both locks are therefore taken
+  // NOWAIT before the TRUNCATE: this test never waits while holding a lock, so it is never
+  // in a cycle. Only lock_not_available (55P03) or a deadlock (40P01) is retried, at most
+  // 50 times, and neither ever counts as a pass.
   let outcome: unknown;
   for (let attempt = 0; attempt < 50; attempt++) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SET LOCAL lock_timeout = '200ms'");
-      outcome = await client.query('TRUNCATE registry_releases, registry_contracts').then(() => undefined, (error: unknown) => error);
+      outcome = await client.query('LOCK TABLE registry_releases, registry_contracts IN ACCESS EXCLUSIVE MODE NOWAIT')
+        .then(() => client.query('TRUNCATE registry_releases, registry_contracts'))
+        .then(() => undefined, (error: unknown) => error);
       await client.query('ROLLBACK');
     } finally { client.release(); }
     const code = (outcome as { code?: string } | undefined)?.code;
-    if (code !== '40P01' && code !== '55P03') break;
-    await new Promise(done => setTimeout(done, 100));
+    if (code !== '55P03' && code !== '40P01') break;
+    await new Promise(resolve => setTimeout(resolve, 25));
   }
   expect(outcome).toBeInstanceOf(Error);
   expect((outcome as Error).message).toContain('REGISTRY_SNAPSHOT_IMMUTABLE');

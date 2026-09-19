@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { syncRequestSchema, syncResultSchema, type ConnectorCursor, type SyncRequest, type SyncResult }
   from '@unai/domain';
-import { ConnectorError, storedSensitivity } from './manifests.js';
+import { ConnectorError, storedSensitivity, type StoredSensitivity } from './manifests.js';
 import {
   CONNECTOR_SYNC_PURPOSE, grantedCapabilities, loadConnector, type ConnectorTransaction,
 } from './grants.js';
@@ -157,6 +157,10 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
   readonly request: SyncRequest;
   readonly client: ConnectorClient;
   readonly ingest: SourceIngest;
+  /** The owner's own stored sensitivity for this connector type, set on the
+   * Permissions surface; null keeps the manifest default. Read by the caller at
+   * sync time, so a changed setting applies to the next sync (ADR 0030 §7). */
+  readonly sensitivityFloor?: StoredSensitivity | null;
 }): Promise<SyncResult> {
   if (tx.context.purpose !== CONNECTOR_SYNC_PURPOSE) {
     throw new ConnectorError('CONNECTOR_PURPOSE_REFUSED', { purpose: tx.context.purpose });
@@ -189,7 +193,8 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
   const resumedFromCursor: ConnectorCursor | null = request.mode === 'BACKFILL' ? null : connector.cursor;
   // The manifest's declared default is a floor the request may raise and may not
   // lower, so a caller cannot store Gmail content at NORMAL by asking for it.
-  const sensitivity = storedSensitivity(connector.manifest, request.sensitivity);
+  // Only the owner's explicit setting replaces that floor.
+  const sensitivity = storedSensitivity(connector.manifest, request.sensitivity, input.sensitivityFloor ?? null);
 
   let cursor = resumedFromCursor;
   let pagesFetched = 0, itemsIngested = 0, duplicatesSuppressed = 0;

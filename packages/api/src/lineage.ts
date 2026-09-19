@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
 import {
@@ -5,14 +6,15 @@ import {
   entitySplitResultSchema, frameInstanceMergeRequestSchema, frameInstanceMergeResultSchema, frameInstanceSplitRequestSchema,
   frameInstanceSplitResultSchema, mergeSplitReviewSchema,
   type BeliefOperation, type EntityMergeDetail, type EntitySplitDetail, type FrameMergeDetail, type FrameSplitDetail,
-  type LineageObjectType, type ProjectionRebuildReceipt, type ResolvedIdentity,
+  type LineageObjectType, type ProjectionRebuildReceipt, type ResolvedIdentity, type TargetObjectRef,
 } from '@unai/domain';
 import {
   BELIEF_PURPOSES, BeliefTransactionError, commitBeliefTransaction, proposeBeliefTransaction,
   type BeliefTransactionRunner, type GovernorRequest,
 } from '@unai/belief';
-import { listRecentLineage, readLineageForTransaction, resolveIdentity } from '@unai/memory';
+import { listRecentLineage, readLineageForTransaction, recordMemoryOperation, resolveIdentity } from '@unai/memory';
 import { PROJECTION_PURPOSE, rebuildProjectionsAfterLineageChange } from '@unai/capabilities';
+import { ingestOwnerStatement, type EvidenceObjects } from './evidence.js';
 
 /**
  * Governed merge and split (PRD §14, §35.11; design routes
@@ -32,6 +34,11 @@ import { PROJECTION_PURPOSE, rebuildProjectionsAfterLineageChange } from '@unai/
  * answers from what it stored -- the operation results, the lineage and the
  * receipts already recorded for it -- so the same request always answers the
  * same body and nothing is merged or rebuilt twice.
+ *
+ * The Merge and Split correction controls are these endpoints. Each committed
+ * merge or split is also recorded as a `memory_operations` row of kind MERGE or
+ * SPLIT, beside the owner's statement stored as evidence, so every one of the ten
+ * controls leaves its own persisted kind (ADR 0028 §3; CRT-UX-10-A).
  */
 
 export const LINEAGE_WRITE_PURPOSE = BELIEF_PURPOSES.govern;
@@ -62,7 +69,15 @@ export interface LineageRouteOptions {
   /** The release a merge or split transaction is pinned to, supplied by the
    * caller exactly as the correction routes receive it. */
   readonly registryReleaseId?: string | undefined;
+  /** Where the owner's statement behind a merge or split is stored. Without one
+   * the endpoints refuse before proposing anything, as the correction endpoints
+   * do: a merge is never committed without the record of the request. */
+  readonly evidenceObjects?: EvidenceObjects | undefined;
 }
+
+/** The correction write path's purpose, under which the MERGE and SPLIT
+ * operation records are written (migration 0014 admits no other). */
+const OPERATION_PURPOSE = 'memory.correct';
 
 interface Plan {
   readonly transactionKind: 'MERGE' | 'SPLIT';
@@ -110,6 +125,7 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
     try {
       if (typeof idempotencyKey !== 'string') throw new LineageRefusal(400, 'LINEAGE_INPUT_INVALID');
       if (!options.registryReleaseId) throw new LineageRefusal(503, 'REGISTRY_RELEASE_NOT_CONFIGURED');
+      if (!options.evidenceObjects) throw new LineageRefusal(503, 'STORAGE_UNAVAILABLE');
       return await run({ ...bound, idempotencyKey, registryReleaseId: options.registryReleaseId });
     } catch (error) {
       const code = error instanceof LineageRefusal || error instanceof BeliefTransactionError ? error.message : 'LINEAGE_UNAVAILABLE';
@@ -180,6 +196,47 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
     }) as { lineage: Awaited<ReturnType<typeof readLineageForTransaction>>; resolution: ResolvedIdentity[] };
   }
 
+  /**
+   * Record the Merge or Split control the owner used: their statement as a new
+   * evidence row and one MERGE or SPLIT memory operation naming the committed
+   * transaction. Written under `memory.correct`, chosen here and never read from
+   * a header. No overlay delta: the change is already canonical, and a delta on
+   * the frame would be one no projection can fold (ADR 0028 §3). A retry finds the
+   * operation already recorded for the transaction and writes nothing.
+   */
+  async function recordOperation(request: FastifyRequest, input: {
+    kind: 'MERGE' | 'SPLIT'; target: TargetObjectRef; transactionId: string; reason: string | undefined; idempotencyKey: string;
+  }): Promise<string> {
+    const objects = options.evidenceObjects!;
+    const dataPurpose = dataPurposeSchema.parse(request.headers['x-data-purpose']);
+    const maximumSensitivity = sensitivitySchema.parse(request.headers['x-maximum-sensitivity']);
+    return await work(request, async tx => {
+      const owner = tx.context.ownerScopeId;
+      const existing = (await tx.query(
+        'SELECT id FROM memory_operations WHERE owner_scope_id=$1 AND transaction_id=$2 AND operation_kind=$3 ORDER BY created_at,id LIMIT 1',
+        [owner, input.transactionId, input.kind])).rows[0];
+      if (existing) return existing['id'] as string;
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+        [dataPurpose, maximumSensitivity]);
+      const digest = (prefix: string) => createHash('sha256').update(prefix + ':' + owner + ':' + input.idempotencyKey).digest('hex');
+      const evidence = await ingestOwnerStatement(tx, objects, {
+        text: input.reason ?? (input.kind === 'MERGE' ? 'Merge' : 'Split'),
+        externalId: input.kind.toLowerCase() + ':' + digest('external').slice(0, 32),
+        idempotencyKey: digest(input.kind),
+        sensitivity: maximumSensitivity, allowedPurposes: [dataPurpose],
+        deterministicMetadata: { memoryOperationKind: input.kind, targetObjectType: input.target.objectType },
+      });
+      const id = await recordMemoryOperation(tx, {
+        ownerScopeId: owner, operationKind: input.kind, target: input.target, evidenceId: evidence.evidenceId,
+        requestedByActorId: tx.context.actorId, overlayDeltaId: null, transactionId: input.transactionId,
+        detail: { reason: input.reason ?? null },
+      });
+      await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
+        objects: [{ type: 'memory_operations', id, fields: ['operation_kind', 'target_object_id', 'transaction_id'] }] });
+      return id;
+    }, OPERATION_PURPOSE) as string;
+  }
+
   async function audited<T>(request: FastifyRequest, objects: { type: string; id: string; fields: string[] }[], body: T): Promise<T> {
     await work(request, tx => tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: objects.slice(0, 100) }));
     return body;
@@ -241,11 +298,13 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
       lineage: lineage.frameInstances, propositionLineage: lineage.propositions, merges,
       projectionRebuildReceipts: receipts, resolution,
     });
+    const memoryOperationId = await recordOperation(request, { kind: 'MERGE', target: { objectType: 'frame_instance', objectId: survivorId },
+      transactionId: body.transactionId, reason: input.reason, idempotencyKey: bound.idempotencyKey });
     return audited(request, [
       { type: 'belief_transactions', id: body.transactionId, fields: ['commit_receipt'] },
       ...body.lineage.map(record => ({ type: 'frame_instance_lineage', id: record.lineageId, fields: ['lineage_kind'] })),
       ...body.projectionRebuildReceipts.map(receipt => ({ type: 'projection_rebuild_receipts', id: receipt.projectionRebuildReceiptId, fields: ['trigger'] })),
-    ], body);
+    ], { ...body, memoryOperationId });
   }));
 
   app.post<{ Params: { id: string } }>('/v1/memory/frame-instances/:id/split', async (request, reply) => guarded(request, reply, async bound => {
@@ -282,12 +341,14 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
       lineage: lineage.frameInstances, propositionLineage: lineage.propositions, split,
       projectionRebuildReceipts: receipts, resolution,
     });
+    const memoryOperationId = await recordOperation(request, { kind: 'SPLIT', target: { objectType: 'frame_instance', objectId: parentId },
+      transactionId: body.transactionId, reason: input.reason, idempotencyKey: bound.idempotencyKey });
     return audited(request, [
       { type: 'belief_transactions', id: body.transactionId, fields: ['commit_receipt'] },
       ...body.lineage.map(record => ({ type: 'frame_instance_lineage', id: record.lineageId, fields: ['lineage_kind'] })),
       ...body.split.contestedClaims.map(claim => ({ type: 'claims', id: claim.claimId, fields: ['lifecycle'] })),
       ...body.projectionRebuildReceipts.map(receipt => ({ type: 'projection_rebuild_receipts', id: receipt.projectionRebuildReceiptId, fields: ['trigger'] })),
-    ], body);
+    ], { ...body, memoryOperationId });
   }));
 
   app.post('/v1/memory/entities/merge', async (request, reply) => guarded(request, reply, async bound => {
@@ -326,11 +387,13 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
       survivorEntityId: survivorId, mergedEntityIds: mergedIds, merges,
       lineage: lineage.entities, projectionRebuildReceipts: receipts, resolution,
     });
+    const memoryOperationId = await recordOperation(request, { kind: 'MERGE', target: { objectType: 'entity', objectId: survivorId },
+      transactionId: body.transactionId, reason: input.reason, idempotencyKey: bound.idempotencyKey });
     return audited(request, [
       { type: 'belief_transactions', id: body.transactionId, fields: ['commit_receipt'] },
       ...body.lineage.map(record => ({ type: 'entity_lineage', id: record.lineageId, fields: ['lineage_kind'] })),
       ...body.projectionRebuildReceipts.map(receipt => ({ type: 'projection_rebuild_receipts', id: receipt.projectionRebuildReceiptId, fields: ['trigger'] })),
-    ], body);
+    ], { ...body, memoryOperationId });
   }));
 
   app.post<{ Params: { id: string } }>('/v1/memory/entities/:id/split', async (request, reply) => guarded(request, reply, async bound => {
@@ -364,11 +427,13 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
       transactionId: committed.transactionId, committedAt: committed.committedAt,
       split, lineage: lineage.entities, projectionRebuildReceipts: receipts, resolution,
     });
+    const memoryOperationId = await recordOperation(request, { kind: 'SPLIT', target: { objectType: 'entity', objectId: parentId },
+      transactionId: body.transactionId, reason: input.reason, idempotencyKey: bound.idempotencyKey });
     return audited(request, [
       { type: 'belief_transactions', id: body.transactionId, fields: ['commit_receipt'] },
       ...body.lineage.map(record => ({ type: 'entity_lineage', id: record.lineageId, fields: ['lineage_kind'] })),
       ...body.projectionRebuildReceipts.map(receipt => ({ type: 'projection_rebuild_receipts', id: receipt.projectionRebuildReceiptId, fields: ['trigger'] })),
-    ], body);
+    ], { ...body, memoryOperationId });
   }));
 
   /**
