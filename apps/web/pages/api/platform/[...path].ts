@@ -16,7 +16,9 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       /^ops\/dead-letter\/[0-9a-f-]{36}\/retry$/i.test(path)?'ops.dead_letter.retry':
       /^memory\/(frame-instances|entities)\/(merge|[0-9a-f-]{36}\/split)$/i.test(path)?'memory.govern':
       /^memory\/inbox\/cards\/[0-9a-f-]{36}\/decide$/i.test(path)?'memory.inbox':
-      /^approval-rules\/[0-9a-f-]{36}\/(approve|revoke)$/i.test(path)?'approval.rules':null;
+      /^approval-rules\/[0-9a-f-]{36}\/(approve|revoke)$/i.test(path)?'approval.rules':
+      path==='goals'||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path)?'goals.manage':
+      path==='decisions'||/^decisions\/[0-9a-f-]{36}\/review$/i.test(path)?'decisions.record':null;
     if(!purpose||req.headers['x-purpose']!==purpose)return res.status(403).json({code:'PURPOSE_REFUSED'});
     const correlation=req.headers['x-correlation-id'],key=req.headers['idempotency-key'];
     if(typeof correlation!=='string'||typeof key!=='string')return res.status(400).json({code:'REQUEST_CONTEXT_REQUIRED'});
@@ -26,11 +28,15 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     // the same declared data purpose and sensitivity ceiling the evidence route
     // carries.
     const evidencePath=path==='evidence'||path==='documents'||/^connectors\/[0-9a-f-]{36}\/sync$/i.test(path);
-    const response=await apiRequest('/v1/'+path,'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
+    // The browser only ever POSTs here; a priority change is the PATCH the API
+    // expects for it, so the method is chosen by the path, never by the browser.
+    const method=/^goals\/[0-9a-f-]{36}\/priority$/i.test(path)?'PATCH':'POST';
+    const response=await apiRequest('/v1/'+path,method,{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
       // A merge or split (whose governed commit reads the evidence behind the
       // claims it reassigns) passes the evidence gate with the same pinned context,
-      // and so does an answer to an inbox card, which is stored as evidence.
-      ...(evidencePath||purpose==='memory.govern'||purpose==='memory.inbox'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{})},body);
+      // and so does an answer to an inbox card, which is stored as evidence, and a
+      // decision or its review, whose words are stored as evidence too.
+      ...(evidencePath||purpose==='memory.govern'||purpose==='memory.inbox'||purpose==='decisions.record'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{})},body);
     return res.status(response.status).json(response.body);
   }catch{return res.status(503).json({code:'SERVICE_UNAVAILABLE'});}
 }
