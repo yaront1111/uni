@@ -126,3 +126,17 @@ export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJ
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';
 
+export {actionKindSchema,externalActionKindSchema,actionStageSchema,ACTION_STAGE_LABELS,actionHistoryEntrySchema,
+  actionHistoryViewSchema,actionBasisSchema,draftKindSchema,DRAFT_CAPABILITY,draftContentSchema,createDraftSchema,
+  draftStatusSchema,publicDraftSchema,draftsViewSchema,draftDecisionSchema,executeActionSchema,
+  recommendationStatusSchema,recommendationResponseSchema,createRecommendationSchema,publicRecommendationSchema,
+  recommendationsViewSchema,respondRecommendationSchema,toolReceiptSchema,observedActionSchema,
+  pluginCapabilityAccessSchema,publicPluginCapabilitySchema,setPluginCapabilitiesSchema,attentionBudgetSchema,
+  attentionBudgetUpdateSchema,retentionRuleSchema,retentionUpdateSchema,domainSensitivityEntrySchema,
+  domainSensitivityUpdateSchema,dataRequestSummarySchema,permissionsViewSchema,exportRequestSchema,
+  exportEvidenceSchema,exportBundleSchema,deletionRequestSchema,deletionPreviewRequestSchema,cascadeCountsSchema,
+  deletionReceiptSchema,retentionCleanupSchema,regenerateEmbeddingsSchema,regenerationReceiptSchema,
+  type ActionKind,type ExternalActionKind,type ActionStage,type ActionHistoryEntry,type ActionHistoryView,
+  type ActionBasis,type CreateDraft,type PublicDraft,type ExecuteAction,type CreateRecommendation,
+  type PublicRecommendation,type ToolReceipt,type PublicPluginCapability,type AttentionBudget,type RetentionRule,
+  type PermissionsView,type ExportBundle,type CascadeCounts,type DeletionReceipt} from './control.js';

@@ -1,0 +1,15 @@
+{
+  "name": "@unai/control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@unai/belief": "workspace:*",
+    "@unai/connectors": "workspace:*",
+    "@unai/context": "workspace:*",
+    "@unai/domain": "workspace:*",
+    "@unai/memory": "workspace:*",
+    "zod": "^4.6.2"
+  }
+}

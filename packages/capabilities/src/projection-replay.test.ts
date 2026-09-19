@@ -277,12 +277,30 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     await admin!.query(`DROP POLICY IF EXISTS ${policy} ON ${table}`);
   }
 
+  // Migration 0022's governed-action and data-control tables, the functions it
+  // created outright, and the export and erasure policies it added beside the
+  // earlier tables' own. Its replaced trigger functions are CREATE OR REPLACE and
+  // re-apply over themselves.
+  await admin!.query(`DROP TABLE action_history, drafts, recommendation_artifacts, plugin_capability_grants,
+    attention_budgets, retention_settings, domain_sensitivity_settings, memory_summaries,
+    retention_and_deletion_requests CASCADE`);
+  await admin!.query(`DROP FUNCTION unai_private.plugin_grant_identity(), unai_private.recommendation_response_only(),
+    unai_private.draft_transition(), unai_private.action_history_subject(), unai_private.erase_evidence(uuid,uuid),
+    unai_private.expire_derived_data(uuid,text,timestamptz), unai_private.drop_semantic_index(uuid)`);
+  for (const table of ['source_items', 'source_anchors', 'entities', 'entity_aliases', 'frame_instances', 'frame_instance_roles',
+    'belief_slots', 'propositions', 'claims', 'belief_assessments', 'belief_support', 'claim_relations',
+    'resolution_assertions', 'memory_links', 'derived_proposition_dependencies']) {
+    await admin!.query(`DROP POLICY IF EXISTS data_export_read ON ${table}`);
+  }
+  await admin!.query(`DROP POLICY IF EXISTS data_erasure_read ON source_items;
+    DROP POLICY IF EXISTS data_erasure_read ON evidence_object_keys`);
+
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
     '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql',
-    '0021_answer_manifests_and_reconsideration.sql']);
+    '0021_answer_manifests_and_reconsideration.sql', '0022_governed_action_and_data_control.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

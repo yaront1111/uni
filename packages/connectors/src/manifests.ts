@@ -201,12 +201,14 @@ export type StoredSensitivity = (typeof SENSITIVITY_ORDER)[number];
  * explicit per-connector consent action on the Permission management surface
  * (PRD §7.8), audited per §30.6 and effective only for items stored after the
  * change; no request header or body field lowers the floor, and no stored row is
- * rewritten (§42). That consent path is the permissions slice's work, not this one's.
+ * rewritten (§42). That consent path is the Permissions surface's
+ * (`domain_sensitivity_settings`, ADR 0027 §7): `ownerFloor` is the owner's
+ * recorded setting, read at the operation, and it replaces the manifest default.
  */
 export function storedSensitivity(
-  manifest: ConnectorManifest, requested: StoredSensitivity,
+  manifest: ConnectorManifest, requested: StoredSensitivity, ownerFloor: StoredSensitivity | null = null,
 ): StoredSensitivity {
-  const floor = manifest.sensitivity.default as StoredSensitivity;
+  const floor = ownerFloor ?? manifest.sensitivity.default as StoredSensitivity;
   return SENSITIVITY_ORDER.indexOf(requested) > SENSITIVITY_ORDER.indexOf(floor) ? requested : floor;
 }
 

@@ -13,6 +13,7 @@ import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
+import {registerControlRoutes,controlPurposeFor,CONTROL_PURPOSES} from './control.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
 import {ConnectorError} from '@unai/connectors';
@@ -52,7 +53,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
     CONTEXT_READ_PURPOSE,ASK_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
-    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
+    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',
+    // Governed action and the data-control surface (ADR 0027).
+    ...CONTROL_PURPOSES]);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -98,7 +101,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
       request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
       request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
-      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':null;
+      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':
+      controlPurposeFor(request.method,request.routeOptions.url);
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   /** `purpose` lets a route open one transaction under a purpose its server code
@@ -192,5 +196,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,phraser:options.answerPhraser,
     purposeWork:(request,purpose,run)=>deviceWork(request,tx=>run(tx),purpose)});
   registerAnswerRoutes(app,deviceWork);
+  registerControlRoutes(app,deviceWork,{
+    ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null,
+    evidenceObjects:options.evidenceObjects});
   return app;
 }

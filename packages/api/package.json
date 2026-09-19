@@ -11,6 +11,7 @@
     "@unai/capabilities": "workspace:*",
     "@unai/connectors": "workspace:*",
     "@unai/context": "workspace:*",
+    "@unai/control": "workspace:*",
     "@unai/domain": "workspace:*",
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
