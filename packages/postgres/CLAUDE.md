@@ -8,6 +8,7 @@
 - `withOwnerTransaction` and the `OwnerTransaction` type are consumed by `@unai/api` (`platform.ts`, `evidence.ts`, `ops.ts`) and `@unai/jobs`.
 - `runMigrations` is imported by every database-backed test file, and `scripts/test.mjs` imports `src/migrations.ts` by path, so that file must stay loadable without `index.ts`.
 - `assertOwnershipCoverage` runs only in `migrate-cli.ts` and `isolation.test.ts`; `OWNER_SCOPED_TABLES` is exported solely to drive that test.
+- `assertDatabaseEncryptionAtRest(pool)` (`encryption.ts`) is called by `packages/api/src/server.ts` before it listens: the database must carry `unai.encryption_at_rest` (`volume-kms:`, `tde:` or `managed:` plus a reference), set with `ALTER DATABASE`, or startup fails `DATABASE_ENCRYPTION_AT_REST_REQUIRED` (ADR 0032 §4). `tx.audit` writes `event_kind` (the event's, else `auditEventKindFor(purpose)`) and an optional `policy_decision_id`.
 
 ## Invariants a change must keep
 

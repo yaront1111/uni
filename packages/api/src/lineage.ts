@@ -13,7 +13,7 @@ import {
   type BeliefTransactionRunner, type GovernorRequest,
 } from '@unai/belief';
 import { listRecentLineage, readLineageForTransaction, recordMemoryOperation, resolveIdentity } from '@unai/memory';
-import { PROJECTION_PURPOSE, rebuildProjectionsAfterLineageChange } from '@unai/capabilities';
+import { PROJECTION_PURPOSE, REDUCER_VERSION, rebuildProjectionsAfterLineageChange } from '@unai/capabilities';
 import { ingestOwnerStatement, type EvidenceObjects } from './evidence.js';
 
 /**
@@ -175,9 +175,16 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
    * chosen here, by server code, never by a header (ADR 0025 §4). */
   async function rebuild(request: FastifyRequest, trigger: 'MERGE' | 'SPLIT', transactionId: string,
     frameInstanceIds: readonly string[]): Promise<ProjectionRebuildReceipt[]> {
-    return await work(request, tx => rebuildProjectionsAfterLineageChange(tx, {
-      ownerScopeId: tx.context.ownerScopeId, trigger, transactionId, frameInstanceIds, asOf: new Date(),
-    }), PROJECTION_PURPOSE) as ProjectionRebuildReceipt[];
+    return await work(request, async tx => {
+      const receipts = await rebuildProjectionsAfterLineageChange(tx, {
+        ownerScopeId: tx.context.ownerScopeId, trigger, transactionId, frameInstanceIds, asOf: new Date(),
+      });
+      // Every projection rebuild is audited (CRT-SEC-07-A), under the rebuild's purpose.
+      await tx.audit({ policyDecision: 'ALLOW', codeVersion: REDUCER_VERSION, result: 'SUCCESS',
+        objects: receipts.slice(0, 100).map(receipt => ({ type: 'projection_rebuild_receipts', id: receipt.projectionRebuildReceiptId,
+          fields: ['projection_name', 'trigger', 'rows_rebuilt', 'equals_incremental'] })) });
+      return receipts;
+    }, PROJECTION_PURPOSE) as ProjectionRebuildReceipt[];
   }
 
   async function answer(request: FastifyRequest, committed: Committed, identities: readonly { objectType: LineageObjectType; id: string }[]) {

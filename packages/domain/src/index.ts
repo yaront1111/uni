@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import { auditEventKindSchema } from './audit.js';
+
+export {AUDIT_EVENT_KINDS,AUDIT_READ_PURPOSES,AUDIT_LOG_MAX_LIMIT,auditEventKindSchema,auditEventKindFor,auditObjectSchema,
+  publicAuditEventSchema,auditLogQuerySchema,auditLogSchema,
+  type AuditEventKind,type PublicAuditEvent,type AuditLogQuery,type AuditLog} from './audit.js';
 
 export const requestContextSchema = z.strictObject({
   actorId: z.uuid(),
@@ -9,7 +14,13 @@ export const requestContextSchema = z.strictObject({
 export type RequestContext = Readonly<z.infer<typeof requestContextSchema>>;
 
 export const auditEventSchema = z.strictObject({
+  /** Read, write, projection rebuild, export, deletion or external action. The
+   * owner transaction derives it from the purpose when the caller does not name
+   * it, and the API boundary from the HTTP method (migration 0027). */
+  eventKind: auditEventKindSchema.optional(),
   policyDecision: z.enum(['ALLOW','DENY']),
+  /** The recorded policy-port decision this event acted under, where one exists. */
+  policyDecisionId: z.uuid().optional(),
   codeVersion: z.string().regex(/^[a-zA-Z0-9_.:@/-]{1,120}$/),
   result: z.enum(['SUCCESS','FAILURE','REFUSED']),
   objects: z.array(z.strictObject({

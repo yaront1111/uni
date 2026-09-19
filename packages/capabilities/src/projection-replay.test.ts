@@ -317,6 +317,15 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   await admin!.query(`DROP POLICY IF EXISTS data_erasure_read ON source_items;
     DROP POLICY IF EXISTS data_erasure_read ON evidence_object_keys`);
 
+  // Migration 0027's audit-trail columns, indexes, triggers and functions. The
+  // audit rows themselves stay: dropping the columns is DDL, which the
+  // row-level immutability trigger does not govern.
+  await admin!.query(`DROP TRIGGER audit_event_defaults ON audit_events; DROP TRIGGER audit_event_immutable ON audit_events;
+    DROP TRIGGER audit_event_no_truncate ON audit_events;
+    ALTER TABLE audit_events DROP COLUMN event_kind, DROP COLUMN policy_decision_id;
+    DROP INDEX audit_events_objects;
+    DROP FUNCTION unai_private.audit_event_defaults(), unai_private.audit_event_immutable(), unai_private.audit_event_kind(text)`);
+
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
@@ -324,7 +333,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql',
     '0021_answer_manifests_and_reconsideration.sql',
     '0022_today_briefing.sql', '0023_memory_inbox_and_weekly_review.sql', '0024_governed_action_and_data_control.sql',
-    '0025_evaluation_and_metrics.sql', '0026_goals_decisions_and_mentor.sql']);
+    '0025_evaluation_and_metrics.sql', '0026_goals_decisions_and_mentor.sql', '0027_audit_trail.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry
