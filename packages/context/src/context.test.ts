@@ -962,3 +962,14 @@ it.each(['sensitivity', 'purpose'])('Why actor names require readable alias sour
   expect(allowed.claimingActors).toContainEqual({ kind: 'PERSON', label: alias, entityId });
   expect(JSON.stringify(allowed)).not.toContain(canonicalLabel);
 });
+
+it('bounds evidence anchor references explicitly without failing or deleting a large source',async()=>{
+  const source=await evidence({sensitivity:'PRIVATE',allowedPurposes:[FINANCE_PURPOSE],externalId:'large-anchor-source'});
+  for(let index=0;index<65;index++)await admin.query(`INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor)
+    VALUES($1,$2,$3,'MESSAGE_SPAN',$4)`,[randomUUID(),owner,source.evidenceId,JSON.stringify({start:index,end:index+1})]);
+  const expected=(await admin.query('SELECT id FROM source_anchors WHERE source_item_id=$1 ORDER BY id LIMIT 64',[source.evidenceId])).rows.map(row=>row.id);
+  const packet=await readContextPacket(readRunner,request({includeEvidence:'ALWAYS'}),brokerOptions());
+  expect(packet.evidenceRefs.find(ref=>ref.evidenceId===source.evidenceId)?.anchorIds).toEqual(expected);
+  expect(packet.unknowns).toContainEqual({kind:'EVIDENCE_WITHHELD',objectType:'source_anchors',objectId:null,detail:'EVIDENCE_ANCHOR_LIMIT_REACHED'});
+  expect((await admin.query('SELECT count(*)::int AS count FROM source_anchors WHERE source_item_id=$1',[source.evidenceId])).rows[0].count).toBe(66);
+});
