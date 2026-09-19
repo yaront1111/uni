@@ -5,7 +5,7 @@ import {
 } from './ranking.js';
 
 /**
- * The briefing's pure rules, with no database (ADR 0026): the owner-local date,
+ * The briefing's pure rules, with no database (ADR 0027): the owner-local date,
  * the material filter, the order, repeat suppression, the attention budget and
  * the recommendation cap. `packages/api/src/today.test.ts` runs the same rules
  * end to end over the Context Broker.

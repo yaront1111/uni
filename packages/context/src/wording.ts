@@ -3,7 +3,7 @@ import { canonicalJson } from '@unai/memory';
 
 /** How an answer words a packet object (PRD §24.5). Shared by the deterministic
  * composer, which writes statements this way, and the grounding validator, which
- * rewrites a downgraded statement this way (ADR 0025 §3), so a downgrade reads
+ * rewrites a downgraded statement this way (ADR 0026 §3), so a downgrade reads
  * exactly like the composer's own wording for the same object. */
 
 /** "shared.obligation.principal_amount" -> "obligation principal amount". */

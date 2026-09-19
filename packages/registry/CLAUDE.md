@@ -43,3 +43,4 @@ These three need no database. `release.test.ts` builds real tagged repositories 
 - ADR 0011 writes `uai registry publish --tag`; the implemented flag is `--version`.
 - `src/snapshot.ts` imports `uuidV7` from the root lane by relative path (`../../../src/kernel/identities.js`), so moving either file breaks publishing.
 - `src/cli.test.ts` asserts that lint prints exactly one release with 8 contracts, so recording a second release requires updating that expectation.
+- The snapshot test's TRUNCATE must list `registry_releases` first, because parallel suites publish releases then contracts; the reverse order deadlocks (40P01).

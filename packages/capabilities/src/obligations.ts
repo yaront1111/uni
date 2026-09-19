@@ -2,7 +2,7 @@ import {
   amountConflictSchema, obligationCalculationSchema,
   type AmountConflict, type Money, type ObligationCalculation, type PendingAssertion,
 } from '@unai/domain';
-import type { MemoryTransaction } from '@unai/memory';
+import { resolveFrameInstanceSurvivors, type MemoryTransaction } from '@unai/memory';
 import {
   listFrameInstances, readResolutions, readRoles, readSlotValues, roleValue, selectSlotValue,
   type SlotValue,
@@ -101,10 +101,17 @@ export async function readAllocations(tx: MemoryTransaction, input: {
     predicateId: ALLOCATED_AMOUNT_PREDICATE, modality: 'ACTUAL',
   });
   const wanted = new Set(input.obligationFrameInstanceIds);
+  // An allocation recorded against an obligation that was later merged applies to
+  // the survivor; one against a split obligation applies to neither half until
+  // the owner says which (ADR 0025 §3).
+  const survivors = await resolveFrameInstanceSurvivors(tx, { ownerScopeId: input.ownerScopeId,
+    frameInstanceIds: frames.map(frame => readFrameReference(roleValue(roles, frame.frameInstanceId, 'obligation')))
+      .filter((id): id is string => id !== null) });
 
   const readings: AllocationReading[] = [];
   for (const frame of frames) {
-    const obligation = readFrameReference(roleValue(roles, frame.frameInstanceId, 'obligation'));
+    const referenced = readFrameReference(roleValue(roles, frame.frameInstanceId, 'obligation'));
+    const obligation = referenced === null ? null : survivors.get(referenced) ?? referenced;
     if (obligation === null || !wanted.has(obligation)) continue;
     const values = amounts.filter(value => value.frameInstanceId === frame.frameInstanceId);
     const payment = roleValue(roles, frame.frameInstanceId, 'payment_transaction');

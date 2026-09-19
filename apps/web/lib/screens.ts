@@ -3,7 +3,7 @@ import {askAnswerSchema,todayBriefingSchema,whySourcesSchema,type AskAnswer,type
 
 /**
  * The reads behind the Today and Ask screens, as plain functions over an API
- * call (ADR 0026). `getServerSideProps` passes `apiRequest` from `lib/server.ts`;
+ * call (ADR 0027). `getServerSideProps` passes `apiRequest` from `lib/server.ts`;
  * the end-to-end test passes the same API over an in-process transport. Nothing
  * here touches a database or knows the transport: every read is an HTTPS call to
  * `@unai/api`, and every body is parsed through its `@unai/domain` schema.

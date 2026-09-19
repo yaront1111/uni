@@ -48,7 +48,7 @@ export const routingReasonSchema = z.strictObject({
     'STRUCTURED_SOURCE_FIELDS', 'MEMORY_WORTHY_SIGNALS', 'PARTICIPANTS_ONLY',
     'LAZY_DOCUMENT_EXTRACTION', 'TIER1_ROUTER_UNAVAILABLE',
     // PRD §24.1-24.2: an assistant's own message is conversation evidence only and
-    // is never extracted into claims about the owner (CRT-AI-01-A, ADR 0024 §4).
+    // is never extracted into claims about the owner (CRT-AI-01-A, ADR 0026 §4).
     'ASSISTANT_AUTHORED',
   ]),
   routerVersion: version,

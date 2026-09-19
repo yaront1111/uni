@@ -2,7 +2,7 @@ import { deltaContestRecordSchema, type DeltaContestRecord } from '@unai/domain'
 import { contestOverlayDelta, type MemoryTransaction } from '@unai/memory';
 
 /**
- * Later evidence against a pending owner delta (PRD §21.7; CRT-RYW-05-A; ADR 0025 §6).
+ * Later evidence against a pending owner delta (PRD §21.7; CRT-RYW-05-A; ADR 0026 §6).
  *
  * A delta the owner wrote is visible at once and canonicalized later. When
  * evidence that arrives afterwards contradicts it, the delta becomes CONTESTED --

@@ -14,12 +14,12 @@ decisions: `docs/adr/0024-deterministic-selection-semantic-index-and-ask.md`.
 It also holds answer provenance: the grounding validator (`grounding.ts`), the
 answer manifests and reconsideration read (`manifests.ts`) and the shared
 statement wording (`wording.ts`). Report: `docs/answer-provenance.md`;
-decisions: `docs/adr/0025-answer-manifests-grounding-and-reconsideration.md`.
+decisions: `docs/adr/0026-answer-manifests-grounding-and-reconsideration.md`.
 
 It also holds the Today briefing (`today.ts`, route `packages/api/src/today.ts`),
 its pure ranking (`ranking.ts`) and the Why? / Sources panel read (`why.ts`).
 Report: `docs/today-and-ask.md`; decisions:
-`docs/adr/0026-web-shell-labels-today-briefing-and-ask.md`.
+`docs/adr/0027-web-shell-labels-today-briefing-and-ask.md`.
 
 ## Local invariants
 

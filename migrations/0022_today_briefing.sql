@@ -1,6 +1,6 @@
 -- The Today briefing: one edition per briefing read and the items it ranked
 -- (design entities `briefing_editions` and `briefing_items`; PRD §7.1, §24.5,
--- §26; ADR 0026 records the decisions below before the code).
+-- §26; ADR 0027 records the decisions below before the code).
 --
 -- Four rules are carried by the schema rather than by convention:
 --

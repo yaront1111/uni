@@ -19,7 +19,7 @@ import { createPlatformApi } from './platform.js';
 /**
  * The Today briefing and the Why? / Sources panel over the real boundary, the
  * real owner transaction, the real Context Broker, the real typed projection
- * reducers and the real pinned registry release 0.1.0 (ADR 0026).
+ * reducers and the real pinned registry release 0.1.0 (ADR 0027).
  *
  * The fixture owner lives in Asia/Tokyo and the briefing is built at 20:00 UTC,
  * which is 05:00 on the *next* calendar day in Tokyo: a briefing that used the

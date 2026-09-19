@@ -3,20 +3,21 @@
 Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `web-shell-labels-today-briefing-and-ask-surface`. This node owns CRT-UX-01-A,
-CRT-UX-01-B, CRT-UX-02-A, CRT-UX-03-A, CRT-UX-11-A and CRT-UX-12-A. ADR 0026
-records its decisions; ADRs 0001–0025 and every delivered slice before it were
+CRT-UX-01-B, CRT-UX-02-A, CRT-UX-03-A, CRT-UX-11-A and CRT-UX-12-A. ADR 0027
+records its decisions; ADRs 0001–0026 and every delivered slice before it were
 inspected and retained.
 
-The branch was cut before its dependency chain landed, so it first merges the
+The branch was cut before its dependency chain landed, so it first merged the
 selection/Ask node (which carries master's connector capabilities) and the
-answer-manifests node; the latter's migration becomes
-`0020_answer_manifests_and_reconsideration.sql` and its ADR 0025, unchanged in
-content (ADR 0026 §preamble).
+answer-manifests node, then master once governed merge and split and answer
+provenance landed there (migrations 0020 and 0021, ADRs 0025 and 0026, taken
+from master unchanged); this node's own migration and ADR became 0022 and 0027
+(ADR 0027 preamble).
 
 ## Design entities implemented here
 
 **`briefing_editions`** and **`briefing_items`**, added by
-`migrations/0021_today_briefing.sql`: forced RLS, owner policies gated on
+`migrations/0022_today_briefing.sql`: forced RLS, owner policies gated on
 `memory.read` (write and read) and `memory.inspect` (read), composite owner
 foreign keys (an edition to its `context_packets` row and to the session member,
 an item to its edition), immutability triggers and no DELETE grant. Beside the
@@ -27,7 +28,7 @@ version; an item carries its headline, score, priority, target time, whether its
 target passed, its outcome state, its **material fingerprint** (what "unchanged"
 means for repeat suppression), its Why? / Sources references and whether it was
 shown, suppressed as an unchanged repeat, or deferred by the attention budget.
-There are now 55 application tables, 53 of them owner-scoped.
+There are now 57 application tables, 55 of them owner-scoped.
 
 No other design entity is implemented here. `recommendation_artifacts` belongs to
 the Recommendation detail screen, which this node does not draw; a briefing's
@@ -128,7 +129,7 @@ POST-only write proxy is not extended.
 
 - **No goal model**: goal relevance is a recorded constant until
   `goals-decisions-prediction-review-and-mentor` exists.
-- **One data purpose per edition** (ADR 0026, Consequences).
+- **One data purpose per edition** (ADR 0027, Consequences).
 - **No keyboard-walkthrough CI artifact or automated accessibility scan**: the
   screens use native landmarks, labelled controls, native disclosures and a live
   region, but the CI accessibility checks belong to

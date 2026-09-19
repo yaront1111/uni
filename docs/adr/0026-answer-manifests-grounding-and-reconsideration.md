@@ -1,4 +1,4 @@
-# ADR 0025: Answer manifests, the grounding validator and reconsideration
+# ADR 0026: Answer manifests, the grounding validator and reconsideration
 
 Date: 2026-09-19
 Status: Accepted
@@ -11,6 +11,12 @@ CRT-RYW-05-A.
 Recorded before the implementing change, per PRD §0.7 and §46. It builds on the
 Ask pipeline of ADR 0024, which this node's dependency delivered; the delivered
 commit (`f0c307b`) was verified by the daemon and is the base of this work.
+
+Written as ADR 0025 and renumbered 0026 when master landed ADR 0025 for governed
+merge and split; its migration moved from 0020 to
+`migrations/0021_answer_manifests_and_reconsideration.sql` for the same reason,
+since master's `0020_merge_split_lineage.sql` is landed and immutable. This
+node's migration had never landed under the old number.
 
 ## 1. A manifest is derived from the persisted packet, never from memory
 

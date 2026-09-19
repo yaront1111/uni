@@ -11,7 +11,7 @@ import { FUTURE_LABEL, FUTURE_WORDING, describeContract, describeValue } from '.
 
 /**
  * Question answering (PRD §8.2, §23.6, §24.6; design POST /v1/ask; CRT-RD-12-A,
- * CRT-RD-06-A, CRT-RD-08-A). ADR 0024 §5, ADR 0025.
+ * CRT-RD-06-A, CRT-RD-08-A). ADR 0024 §5, ADR 0026.
  *
  *  1. Classify the requested answer type -- one of the eight of §8.2 -- and the
  *     §23.3 query mode it is planned under.
@@ -62,7 +62,7 @@ export interface AnswerPhrasingRequest {
  * A model that phrases an answer from a packet. This package depends on no
  * gateway: the implementation is supplied by the caller, and every call it makes
  * must go through the LLM gateway, which validates the output against
- * `answerCandidateSchema` and records the call (ADR 0024 §3).
+ * `answerCandidateSchema` and records the call (ADR 0026 §3).
  */
 export interface AnswerPhraser {
   readonly modelProvider: string;
@@ -90,7 +90,7 @@ export interface AnswerRecording {
 
 /** Stores the presented answer as assistant conversation evidence and records its
  * manifest; answers the manifest id. The API opens its own `answer.record`
- * transaction for this (ADR 0024 §4). */
+ * transaction for this (ADR 0026 §4). */
 export type AnswerRecorder = (recording: AnswerRecording) => Promise<{ answerManifestId: string }>;
 
 export interface AskOptions extends ContextBrokerOptions {

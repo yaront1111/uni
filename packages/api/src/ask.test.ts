@@ -26,7 +26,7 @@ const RECORDED_AT = new Date('2026-02-01T09:00:00.000Z');
 let owner = '', token = '', actor = '';
 const evidenceIds: string[] = [];
 /** Every answer is recorded as assistant conversation evidence before it is
- * returned (ADR 0024), so the route needs somewhere to store it, as the
+ * returned (ADR 0026), so the route needs somewhere to store it, as the
  * deployment's encrypted store is. */
 const stored = new Map<string, Uint8Array>();
 const evidenceObjects: EvidenceObjects = {

@@ -49,7 +49,16 @@ export {tier1RouteSchema,tier1SignalSchema,routingReasonSchema,tier0ParseSchema,
   extractionOutputSchema,modelCallOutcomeSchema,modelCallRecordSchema,DEEP_EXTRACTION_ROUTES,
   type Tier1Route,type Tier1Signal,type RoutingReason,type Tier0Parse,type TriageDecision,
   type ExtractionRun,type ExtractedClaim,type ExtractionOutput,type ModelCallRecord} from './extraction.js';
-export {objectRefSchema,beliefTransactionKindSchema,beliefTransactionStatusSchema,writeRiskSchema,admissionModeSchema,
+export {frameInstanceLineageKindSchema,propositionLineageKindSchema,lineageObjectTypeSchema,partitionKeySchema,
+  frameInstanceMergeRequestSchema,frameInstanceSplitRequestSchema,entityMergeRequestSchema,entitySplitRequestSchema,
+  lineageRecordSchema,resolvedIdentitySchema,frameMergeDetailSchema,frameSplitDetailSchema,entityMergeDetailSchema,
+  entitySplitDetailSchema,frameInstanceMergeResultSchema,frameInstanceSplitResultSchema,entityMergeResultSchema,
+  entitySplitResultSchema,frameMergeCandidateSchema,entityMergeCandidateSchema,mergeSplitReviewSchema,
+  type LineageObjectType,type FrameInstanceMergeRequest,type FrameInstanceSplitRequest,type EntityMergeRequest,
+  type EntitySplitRequest,type LineageRecord,type ResolvedIdentity,type FrameMergeDetail,type FrameSplitDetail,
+  type EntityMergeDetail,type EntitySplitDetail,type FrameInstanceMergeResult,type FrameInstanceSplitResult,
+  type EntityMergeResult,type EntitySplitResult,type MergeSplitReview} from './lineage.js';
+export {mergeTargetTypeSchema,objectRefSchema,beliefTransactionKindSchema,beliefTransactionStatusSchema,writeRiskSchema,admissionModeSchema,
   autoAcceptConditionSchema,assessmentStatusSchema,supportKindSchema,independenceGroupSchema,beliefOperationKindSchema,
   beliefOperationSchema,proposeBeliefTransactionSchema,policyPortSchema,writePolicyOutcomeSchema,readPolicyOutcomeSchema,
   actionPolicyOutcomeSchema,policyVerdictSchema,validationDecisionSchema,validationReportSchema,commitReceiptSchema,
@@ -96,6 +105,13 @@ export {questionTypeSchema,historicalModeSchema,certaintyLabelSchema,REQUIRED_AS
   askSourceLinkSchema,askStatementKindSchema,askStatementSchema,askAnswerSchema,
   type QuestionType,type HistoricalMode,type CertaintyLabel,type RequiredAskField,type AskRequest,
   type AskSourceLink,type AskStatement,type AskAnswer} from './ask.js';
+export {GROUNDING_RULES,groundingRuleSchema,groundingViolationActionSchema,groundingActionSchema,candidateSourceSchema,
+  groundingViolationSchema,groundingAttemptSchema,groundingResultSchema,answerCandidateStatementSchema,
+  answerCandidateSchema,SUPPLIED_CONTEXT_STATEMENT,suppliedContextSchema,reconsiderationChangeSchema,
+  publicAnswerManifestSchema,reconsiderationCandidatesViewSchema,deltaContestRecordSchema,
+  type GroundingRule,type GroundingAction,type GroundingViolation,type GroundingResult,
+  type AnswerCandidateStatement,type AnswerCandidate,type SuppliedContext,type ReconsiderationChange,
+  type PublicAnswerManifest,type ReconsiderationCandidatesView,type DeltaContestRecord} from './answers.js';
 export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityAccessSchema,capabilityRiskClassSchema,
   capabilityContextProfileSchema,manifestCapabilitySchema,connectorManifestSchema,connectorCursorSchema,
   connectCapabilityRequestSchema,createConnectorSchema,grantCapabilitiesSchema,publicCapabilityGrantSchema,
@@ -106,13 +122,6 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
-export {GROUNDING_RULES,groundingRuleSchema,groundingViolationActionSchema,groundingActionSchema,candidateSourceSchema,
-  groundingViolationSchema,groundingAttemptSchema,groundingResultSchema,answerCandidateStatementSchema,
-  answerCandidateSchema,SUPPLIED_CONTEXT_STATEMENT,suppliedContextSchema,reconsiderationChangeSchema,
-  publicAnswerManifestSchema,reconsiderationCandidatesViewSchema,deltaContestRecordSchema,
-  type GroundingRule,type GroundingAction,type GroundingViolation,type GroundingResult,
-  type AnswerCandidateStatement,type AnswerCandidate,type SuppliedContext,type ReconsiderationChange,
-  type PublicAnswerManifest,type ReconsiderationCandidatesView,type DeltaContestRecord} from './answers.js';
 export {memoryLabelSchema,type MemoryLabel} from './labels.js';
 export {timeZoneSchema,todayRequestSchema,briefingDomainSchema,briefingPrioritySchema,briefingOutcomeStateSchema,
   briefingItemKindSchema,rankComponentsSchema,whyObjectTypeSchema,whyRefSchema,briefingItemSchema,

@@ -9,7 +9,7 @@ import {
 /**
  * The Today briefing and the Why? / Sources panel (design GET /v1/today; screens
  * "Today briefing" and "Why? / Sources panel"; CRT-UX-01-A, CRT-UX-01-B,
- * CRT-UX-02-A, CRT-UX-11-A). ADR 0026.
+ * CRT-UX-02-A, CRT-UX-11-A). ADR 0027.
  *
  *  - `GET /v1/today` runs under the Context Broker's read purpose, because the
  *    briefing's only memory read is a broker packet, and the edition it records

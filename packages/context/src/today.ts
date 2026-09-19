@@ -17,7 +17,7 @@ import { describeValue } from './wording.js';
 /**
  * The Today briefing (PRD §7.1, §26; design GET /v1/today, screen "Today
  * briefing"; entities `briefing_editions` and `briefing_items`; CRT-UX-01-A,
- * CRT-UX-01-B, CRT-UX-02-A). ADR 0026.
+ * CRT-UX-01-B, CRT-UX-02-A). ADR 0027.
  *
  * No product surface reads memory except through the Context Broker (design
  * "Open decisions"), so the briefing is built in three steps:

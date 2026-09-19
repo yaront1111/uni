@@ -1,7 +1,7 @@
 -- Answer provenance: the manifest of what each answer's model was supplied, the
 -- assistant conversation evidence every answer is stored as, and the derived
 -- reconsideration candidates (design entities `answer_manifests` and
--- `reconsideration_candidates`; PRD §21.7, §23.6, §23.7, §24; ADR 0025 records
+-- `reconsideration_candidates`; PRD §21.7, §23.6, §23.7, §24; ADR 0026 records
 -- the decisions below before the code).
 --
 -- Four rules are carried by the schema rather than by convention:
@@ -22,9 +22,8 @@
 
 -- The recording purpose reads and writes evidence, so it joins the purposes the
 -- evidence gate admits; the data purpose and the sensitivity ceiling still decide.
--- `connector.sync` is listed although no route of this branch holds it: the
--- connector node's migration admits it, and replacing this function must never
--- narrow what another delivered migration admitted.
+-- `connector.sync` is migration 0018's, which replaced this function before it;
+-- replacing it again must never narrow what an earlier migration admitted.
 CREATE OR REPLACE FUNCTION unai_private.evidence_access(purposes text[], sensitivity text) RETURNS boolean
 LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
  SELECT current_setting('unai.purpose',true) IN ('evidence.ingest','evidence.read','connector.read','connector.sync','memory.extract','memory.canonicalize','memory.govern','memory.correct','memory.read','memory.inspect','answer.record')
@@ -69,7 +68,7 @@ CREATE POLICY owner_read_answer ON triage_decisions FOR SELECT TO unai_app
  AND EXISTS(SELECT 1 FROM source_items s WHERE s.owner_scope_id=triage_decisions.owner_scope_id AND s.id=source_item_id));
 
 -- The manifest is derived from the persisted packet, so the recording purpose
--- reads it back (ADR 0025 §1). It cannot write one.
+-- reads it back (ADR 0026 §1). It cannot write one.
 CREATE POLICY owner_read_answer ON context_packets FOR SELECT TO unai_app
  USING(unai_private.has_owner_access(owner_scope_id) AND unai_private.memory_purpose(ARRAY['answer.record']));
 

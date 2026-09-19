@@ -10,15 +10,16 @@ import {registerCorrectionRoutes,CORRECTION_PURPOSE} from './corrections.js';
 import {registerOpsRoutes} from './ops.js';
 import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
+import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
+import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
+import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
 import {ConnectorError} from '@unai/connectors';
 import {enqueueJob,JOB_PURPOSES} from '@unai/jobs';
 import {EXTRACTION_JOB_KIND} from '@unai/extraction';
 import {createHash} from 'node:crypto';
-import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
-import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import type {PolicyPorts} from '@unai/belief';
 import type {AnswerPhraser} from '@unai/context';
 
@@ -28,6 +29,10 @@ import type {AnswerPhraser} from '@unai/context';
 const CORRECTION_URLS=new Set(['/v1/memory/overlay-deltas','/v1/memory/corrections','/v1/memory/state-changes',
   '/v1/memory/confirmations','/v1/memory/rejections','/v1/memory/keep-uncertain','/v1/memory/suppressions',
   '/v1/memory/archives','/v1/memory/deletions']);
+/** Governed merge and split (PRD §35.11). Each is a belief transaction, so each
+ * runs under the governing purpose like every other governed write. */
+const LINEAGE_URLS=new Set(['/v1/memory/frame-instances/merge','/v1/memory/frame-instances/:id/split',
+  '/v1/memory/entities/merge','/v1/memory/entities/:id/split']);
 
 export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];
   evidenceObjects?:EvidenceObjects;registryReleaseId?:string;registryRelease?:string;
@@ -35,15 +40,15 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
    * adapters are the default; a deployment that installs Cordum supplies them
    * here and no route changes (PRD §29.4). */
   policyPorts?:PolicyPorts;
+  /** The model that phrases Ask answers (`createGatewayAnswerPhraser`). Without
+   * one the deterministic composer answers; either way the grounding validator
+   * decides what is presented and a manifest is recorded (ADR 0026). */
+  answerPhraser?:AnswerPhraser;
   /** The connector runtime's ports: the read-only provider clients, the token
    * revoker a disconnect calls, and the extraction enqueue a FULL document plan
    * uses. A deployment without them still serves the inspection routes and
    * refuses a sync rather than pretending to run one. */
   connectors?:ConnectorRouteOptions;
-  /** The model that phrases Ask answers (`createGatewayAnswerPhraser`). Without
-   * one the deterministic composer answers; either way the grounding validator
-   * decides what is presented and a manifest is recorded (ADR 0025). */
-  answerPhraser?:AnswerPhraser;
   /** The instant a Today briefing is built for; only tests pin it. */
   todayClock?:TodayRouteOptions['clock']}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
@@ -90,6 +95,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
       request.routeOptions.url==='/v1/answers/:id/manifest'?ANSWER_READ_PURPOSE:
       request.routeOptions.url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
+      request.routeOptions.url&&LINEAGE_URLS.has(request.routeOptions.url)?LINEAGE_WRITE_PURPOSE:
+      request.routeOptions.url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
       request.routeOptions.url&&CORRECTION_URLS.has(request.routeOptions.url)?CORRECTION_PURPOSE:
       request.routeOptions.url?.startsWith('/v1/projections/')?PROJECTION_READ_PURPOSE:
       request.routeOptions.url==='/v1/ops/projections'?PROJECTION_HEALTH_PURPOSE:
@@ -99,15 +106,17 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':null;
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
-  async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>,
-    /** A fixed purpose other than the route's, for the one transaction a route
-     * runs on its own behalf -- recording an Ask answer under `answer.record`.
-     * The session, owner scope and actor stay the request's. */
-    purpose?:string){
+  /** `purpose` lets a route open one transaction under a purpose its server code
+   * names -- the projection rebuild after a merge runs under `memory.project`
+   * (ADR 0025 §4), and an Ask answer is recorded under `answer.record` (ADR 0026).
+   * It is never read from a header, and the session, owner scope and actor stay
+   * the request's: the session is re-verified exactly as for every other transaction. */
+  async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>,purpose?:string){
     const token=sessionToken(request.headers.cookie);
     const session=token?await resolveSession(options.authPool,token):null;
     if(!session||session.ownerScopeId!==request.ownerContext!.ownerScopeId)throw new Error('SESSION_EXPIRED');
-    return withOwnerTransaction(options.appPool,purpose?{...request.ownerContext!,purpose}:request.ownerContext!,async tx=>{
+    const context=purpose===undefined?request.ownerContext!:{...request.ownerContext!,purpose};
+    return withOwnerTransaction(options.appPool,context,async tx=>{
       const live=await tx.query('SELECT id FROM auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp() FOR UPDATE',[session.id]);
       if(live.rowCount!==1)throw new Error('SESSION_EXPIRED');
       return run(tx,session.id);
@@ -176,6 +185,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   });
   registerMemoryGovernorRoutes(app,deviceWork);
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
+  registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId});
   registerOpsRoutes(app,deviceWork);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{

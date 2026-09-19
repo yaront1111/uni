@@ -1,4 +1,4 @@
-# ADR 0026: The web shell, the uncertainty labels, the Today briefing and the Ask screen
+# ADR 0027: The web shell, the uncertainty labels, the Today briefing and the Ask screen
 
 Date: 2026-09-19
 Status: Accepted
@@ -10,12 +10,13 @@ CRT-UX-12-A.
 
 Recorded before the implementing change, per PRD §0.7 and §46. It builds on the
 Context Broker (ADR 0022), the Ask pipeline (ADR 0024) and answer provenance
-(ADR 0025). This node's branch was cut before those two nodes landed, so it
-merges their delivered branches (and master's connector capabilities) first;
-the answer-manifests migration moves from 0019 to
-`migrations/0020_answer_manifests_and_reconsideration.sql` and its ADR from 0024
-to 0025, bytes and meaning unchanged, exactly as the selection node's merge moved
-its own when master landed 0018.
+(ADR 0026). This node's branch was cut before those nodes landed, so it merged
+their delivered branches (and master's connector capabilities) first. Written as
+ADR 0026 over migration 0021; renumbered 0027 over
+`migrations/0022_today_briefing.sql` when master landed governed merge and split
+(ADR 0025, migration 0020) and answer provenance (ADR 0026, migration 0021).
+Master's landed migrations are taken byte for byte; this node's migration had
+never landed under the old number.
 
 ## 1. The briefing's only memory read is a Context Broker packet
 
@@ -85,7 +86,7 @@ target time, label, dispute, pending state, stated values and whether its time
 has passed, and nothing that depends on the day's wording. A change to any of
 those, or a rise out of LOW priority, shows it again. Because the history decides
 what is suppressed, `briefing_editions` and `briefing_items` are immutable and
-grant no DELETE (migration 0021).
+grant no DELETE (migration 0022).
 
 ## 5. Scheduled is never "happened"
 
@@ -129,9 +130,9 @@ no route for it; the inspector's explain route is kept unchanged.
 
 ## Consequences
 
-- Two owner-scoped tables (55 forced-RLS tables in all), classified in
+- Two owner-scoped tables (57 forced-RLS tables in all), classified in
   `ownership.ts` with cross-owner fixtures in `isolation.test.ts`.
-- The projection replay test tears down and re-expects migration 0021.
+- The projection replay test tears down and re-expects migration 0022.
 - Open: a briefing reads one data purpose per edition. An owner whose evidence
   admits only domain purposes (`PERSONAL_FINANCE`, `WORK_ASSISTANCE`) and not
   `PERSONAL_ASSISTANCE` gets those items only from a request declaring that

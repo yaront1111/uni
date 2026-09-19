@@ -7,7 +7,7 @@ import { canonicalJson } from '@unai/memory';
 /**
  * The Today briefing's selection and ranking (PRD §7.1, §26; design "today view
  * and briefing ranking service", "briefing edition history for low-priority
- * repeat suppression"; CRT-UX-01-A, CRT-UX-01-B, CRT-UX-02-A). ADR 0026.
+ * repeat suppression"; CRT-UX-01-A, CRT-UX-01-B, CRT-UX-02-A). ADR 0027.
  *
  * Pure: no transaction, no clock of its own, no model. `today.ts` reads the
  * candidates from a Context Broker packet and the typed projections, hands them

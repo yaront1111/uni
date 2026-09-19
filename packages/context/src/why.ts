@@ -9,7 +9,7 @@ import { describeContract, describeValue } from './wording.js';
 
 /**
  * The Why? / Sources panel (design screen "Why? / Sources panel"; PRD §24.5,
- * §37.1; CRT-UX-11-A). ADR 0026.
+ * §37.1; CRT-UX-11-A). ADR 0027.
  *
  * Activating Why?/Sources on a material statement -- a Today item or an Ask
  * statement -- opens the object the statement rests on: a belief, the owner's

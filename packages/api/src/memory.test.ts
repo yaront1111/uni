@@ -121,8 +121,8 @@ it('refuses a governed write without a purpose, without the evidence context, or
 
     // An operation kind another node owns is named, not half-applied.
     const notDelivered = await app.inject({ method: 'POST', url: '/v1/memory/transactions/propose', headers: headers(key),
-      payload: { transactionKind: 'MERGE', registryReleaseId: randomUUID(), risk: 'LOW',
-        operations: [{ kind: 'MERGE', target: randomUUID(), survivor: randomUUID() }] } });
+      payload: { transactionKind: 'ARCHIVE', registryReleaseId: randomUUID(), risk: 'LOW',
+        operations: [{ kind: 'ARCHIVE', target: randomUUID(), targetObjectType: 'proposition' }] } });
     expect(notDelivered.statusCode).toBe(400);
     expect(notDelivered.json()).toMatchObject({ code: 'BELIEF_OPERATION_NOT_DELIVERED' });
 

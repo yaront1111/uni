@@ -7,6 +7,7 @@ import { claimOriginSchema, claimLifecycleSchema, memoryLinkKindSchema, memoryLi
   type StoredResolutionAssertion, type TransitionContract } from '@unai/domain';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { recordClaim } from './claims.js';
+import { listMergedFrameMembers } from './lineage.js';
 import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
 
 /** Resolution assertions and protocol links: the sole canonical outcome authority
@@ -547,14 +548,19 @@ const isPartial = (code: OutcomeCode) => PARTIAL_OUTCOME_CODES.includes(code);
  * accepted at once is a contradiction the owner has to see -- an event both
  * OCCURRED and CANCELLED is not a progression -- while a partial followed by a
  * settling code is one, so only the settling codes are compared for conflict.
+ *
+ * A survivor of a merge answers for every frame merged into it: a resolution
+ * asserted against the old id still settles the situation that id now names
+ * (PRD §14.1, ADR 0025 §3). With no lineage the member set is the frame itself.
  */
 export async function frameOutcomeProjection(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceId: string;
 }): Promise<OutcomeProjection> {
+  const members = await listMergedFrameMembers(tx, { ownerScopeId: input.ownerScopeId, frameInstanceIds: [input.frameInstanceId] });
   const rows = (await tx.query(
     `SELECT id,outcome_code FROM resolution_assertions
-     WHERE owner_scope_id=$1 AND source_frame_instance_id=$2 AND lifecycle='ACCEPTED'
-     ORDER BY effective_at,recorded_at,id`, [input.ownerScopeId, input.frameInstanceId])).rows;
+     WHERE owner_scope_id=$1 AND source_frame_instance_id=ANY($2::uuid[]) AND lifecycle='ACCEPTED'
+     ORDER BY effective_at,recorded_at,id`, [input.ownerScopeId, [...members.keys()]])).rows;
   const accepted = rows.map(row => outcomeCodeSchema.parse(row.outcome_code));
   const settling = [...new Set(accepted.filter(code => !isPartial(code)))].sort();
   const state = accepted.length === 0 ? 'UNRESOLVED'
