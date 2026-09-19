@@ -1,3 +1,4 @@
+import {traceStage} from '@unai/observability';
 import { z } from 'zod';
 import { claimOriginSchema, claimLifecycleSchema, modalitySchema, temporalInterpretationSchema,
   type SlotDescriptor } from '@unai/domain';
@@ -191,7 +192,7 @@ export interface CanonicalizedClaim {
  * here accepts a belief -- the claim is recorded as evidence of an assertion and
  * the write governor decides what to believe about it.
  */
-export async function canonicalizeClaim(tx: MemoryTransaction, request: CanonicalizationRequest): Promise<CanonicalizedClaim> {
+async function canonicalizeClaimImpl(tx: MemoryTransaction, request: CanonicalizationRequest): Promise<CanonicalizedClaim> {
   if (request.contextKind !== undefined || request.contextSpaceId !== undefined) {
     throw new MemoryStoreError('EXTRACTOR_CONTEXT_SELECTION_REFUSED');
   }
@@ -268,4 +269,8 @@ export async function canonicalizeClaim(tx: MemoryTransaction, request: Canonica
     beliefSlotId: slotLookup.beliefSlotId, slotLookup, propositionId: propositionLookup.propositionId,
     propositionLookup, claimId, descriptor,
   });
+}
+
+export function canonicalizeClaim(...args:Parameters<typeof canonicalizeClaimImpl>):ReturnType<typeof canonicalizeClaimImpl>{
+  return traceStage('memory.canonicalize',args[0].context??{ownerScopeId:args[1].ownerScopeId,correlationId:'INVALID'},()=>canonicalizeClaimImpl(...args),{registryReleaseId:args[1].registryReleaseId});
 }

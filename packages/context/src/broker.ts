@@ -1,3 +1,4 @@
+import {traceStage} from '@unai/observability';
 import { createHash } from 'node:crypto';
 import type { z } from 'zod';
 import {
@@ -273,7 +274,7 @@ function allowsRetrieval(authorization: ContextAuthorization): boolean {
  * the authority that was recorded. A denial is therefore durable before it is
  * raised, and no retrieval ever runs ahead of the verdict that permitted it.
  */
-export async function readContextPacket(
+async function readContextPacketImpl(
   runner: ContextRunner, raw: unknown, options: ContextBrokerOptions,
 ): Promise<ContextPacket> {
   const request = parseContextRequest(raw);
@@ -858,3 +859,7 @@ async function assemble(
   return { packet };
 }
 
+
+export function readContextPacket(...args:Parameters<typeof readContextPacketImpl>):ReturnType<typeof readContextPacketImpl>{
+  return traceStage('context.assemble',{ownerScopeId:parseContextRequest(args[1]).ownerScopeId,correlationId:args[2].correlationId},()=>readContextPacketImpl(...args),{registryReleaseId:args[2].registryReleaseId,componentVersion:BROKER_VERSION});
+}

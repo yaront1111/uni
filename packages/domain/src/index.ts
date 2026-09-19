@@ -164,7 +164,7 @@ export {PRODUCTION_KEYING_RULES,keyingRuleSchema,corpusKindSchema,instanceMatchS
   ruleThresholdSchema,identityThresholdsSchema,keyingRuleResultSchema,LABEL_CATEGORIES,corpusResultsSchema,corpusStatusSchema,
   shadowRunKindSchema,SHADOW_DIFF_NAMES,shadowDiffEntrySchema,shadowDiffSchema,costAndLatencyDiffSchema,
   shadowSampleRefSchema,evaluationVersionsSchema,shadowReportSchema,publicShadowRunSchema,shadowRunsViewSchema,
-  METRIC_KEYS,metricKeySchema,metricUnitSchema,metricValueSchema,metricsViewSchema,
+  METRIC_KEYS,metricKeySchema,metricUnitSchema,metricValueSchema,metricsViewSchema,performanceMeasurementSchema,type PerformanceMeasurement,
   type KeyingRule,type CorpusKind,type CorpusAnnotation,type IdentityThresholds,type KeyingRuleResult,type LabelCategory,
   type CorpusResults,type CorpusStatus,type ShadowDiff,type ShadowReport,type PublicShadowRun,type ShadowRunsView,
   type MetricKey,type MetricValue,type MetricsView} from './evaluation.js';

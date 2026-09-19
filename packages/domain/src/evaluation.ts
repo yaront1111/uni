@@ -372,11 +372,20 @@ export const metricValueSchema = z.strictObject({
 });
 export type MetricValue = z.infer<typeof metricValueSchema>;
 
+export const performanceMeasurementSchema = z.strictObject({
+  id:z.uuid(), runId:z.uuid(),
+  scenario:z.enum(['EVIDENCE_INGESTION_ACK','TYPED_PROJECTION_READ','CONTEXT_PACKET_ASSEMBLY']),
+  p95Ms:z.number().finite().nonnegative(), sampleCount:z.number().int().positive(),
+  concurrency:z.number().int().positive(), excludesLlmGeneration:z.literal(true), recordedAt:z.iso.datetime(),
+});
+export type PerformanceMeasurement = z.infer<typeof performanceMeasurementSchema>;
+
 export const metricsViewSchema = z.strictObject({
   windowStart: z.iso.datetime(),
   windowEnd: z.iso.datetime(),
   metricsVersion: versionLabel,
   metrics: z.array(metricValueSchema).max(METRIC_KEYS.length),
+  performance:z.array(performanceMeasurementSchema).max(3).optional(),
   /** Metrics the backend cannot compute yet because the rows they are derived
    * from are not recorded by any delivered component. Listed, never faked. */
   notMeasured: z.array(z.strictObject({ metricKey: metricKeySchema, reason: code })).max(METRIC_KEYS.length),

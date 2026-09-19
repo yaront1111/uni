@@ -71,6 +71,20 @@ it('renders trust, attention cost and performance metrics that are not measured 
   expect(html).toContain('no load harness run is recorded');
 });
 
+it('renders recorded performance with strict target results and sample provenance',()=>{
+  const measured={...view,performance:[
+    {id:'01900000-0000-7000-8000-000000000001',runId:'01900000-0000-7000-8000-000000000002',scenario:'EVIDENCE_INGESTION_ACK',p95Ms:123.5,sampleCount:100,concurrency:4,excludesLlmGeneration:true,recordedAt:'2026-09-19T12:00:00.000Z'},
+    {id:'01900000-0000-7000-8000-000000000003',runId:'01900000-0000-7000-8000-000000000002',scenario:'TYPED_PROJECTION_READ',p95Ms:500,sampleCount:100,concurrency:4,excludesLlmGeneration:true,recordedAt:'2026-09-19T12:00:00.000Z'},
+  ]};
+  const html=render({view:measured as typeof view});
+  expect(html).toContain('123.50 ms');
+  expect(html).toContain('Target met');
+  expect(html).toContain('Target missed');
+  expect(html).toContain('100 samples');
+  expect(html).toContain('LLM generation excluded');
+  expect(html).toContain('Context packet assembly');
+});
+
 it('renders the empty and error states',()=>{
   expect(render({})).toContain('No metrics have been computed');
   expect(render({error:'The metrics could not be read. Please reload to retry.'})).toContain('role="alert"');

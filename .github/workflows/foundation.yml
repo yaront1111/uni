@@ -62,5 +62,7 @@ jobs:
             shadow-diff-report.json
             corpus-report.json
             corpus-status.json
+            test-results/acceptance/
+            test-results/performance/
           if-no-files-found: ignore
 

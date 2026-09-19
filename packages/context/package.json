@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@unai/observability": "workspace:*",
     "@unai/belief": "workspace:*",
     "@unai/capabilities": "workspace:*",
     "@unai/domain": "workspace:*",

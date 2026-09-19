@@ -58,7 +58,7 @@ function principalAmountDescriptor(frameInstanceId: string): SlotDescriptor {
   return { frameInstanceId, predicateId: 'shared.obligation.principal_amount', contextSpaceId, modality: 'ACTUAL', qualifiers: {} };
 }
 
-it('CRT-MEM-11-B: evidence from two different people named Daniel yields two separate entities', async () => {
+it('[AC44.12] CRT-MEM-11-B: evidence from two different people named Daniel yields two separate entities', async () => {
   const first = await write(tx => resolveEntity(tx, { ownerScopeId: owner, entityKind: 'PERSON', canonicalLabel: 'Daniel',
     aliases: [{ aliasType: 'DISPLAY_NAME', aliasValue: 'Daniel', sourceItemId, confidence: 0.9 }] }));
   expect(first).toMatchObject({ outcome: 'NEW_ENTITY', created: true, identityEstablished: false, candidates: [] });

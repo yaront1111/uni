@@ -1,4 +1,5 @@
 import type { ZodType } from 'zod';
+import {traceStage} from '@unai/observability';
 import { modelCallRecordSchema, type ModelCallRecord } from '@unai/domain';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 
@@ -62,6 +63,7 @@ export interface ModelInvocation<T> {
 }
 
 export interface ModelInvocationRequest<T> {
+  readonly attempt?:number;
   readonly ownerScopeId: string;
   /** The product purpose the call serves; recorded, never widened. */
   readonly purpose: string;
@@ -120,6 +122,8 @@ export function createModelGateway(options: {
     providerId: provider.providerId,
     modelId: provider.defaultModelId,
     async invoke<T>(request: ModelInvocationRequest<T>): Promise<ModelInvocation<T>> {
+      let spent:number|undefined;
+      return traceStage('model.generate',request,async()=>{
       if (!(request.maxCostMicrounits > 0)) throw new ModelGatewayError('MODEL_COST_BUDGET_REQUIRED');
       const modelId = request.modelId ?? provider.defaultModelId;
       const extractionRunId = request.extractionRunId ?? null;
@@ -139,6 +143,7 @@ export function createModelGateway(options: {
         throw new ModelGatewayError('MODEL_PROVIDER_FAILED');
       }
       const latencyMs = clock() - started;
+      spent=result.costMicrounits;
       const served = result.modelId || modelId;
 
       let parsed: unknown;
@@ -159,6 +164,7 @@ export function createModelGateway(options: {
       // be built on the answer, not whether the money was spent.
       if (call.costMicrounits > request.maxCostMicrounits) throw new ModelGatewayError('MODEL_COST_BUDGET_EXCEEDED');
       return { value: validated.data, record: call };
+      },{attempt:request.attempt,componentVersion:request.promptVersion,costMicrounits:()=>spent});
     },
   };
 }

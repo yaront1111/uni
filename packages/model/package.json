@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@unai/observability": "workspace:*",
     "@unai/domain": "workspace:*",
     "@unai/secrets": "workspace:*",
     "zod": "^4.6.2"

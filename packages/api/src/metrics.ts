@@ -3,6 +3,7 @@ import type {OwnerTransaction} from '@unai/postgres';
 import {metricsViewSchema,publicShadowRunSchema,shadowRunsViewSchema,
   type MetricKey,type MetricValue,type MetricsView} from '@unai/domain';
 import {uuidV7} from '../../../src/kernel/identities.js';
+import {readPerformance} from './performance.js';
 
 type Work=(request:FastifyRequest,run:(tx:OwnerTransaction,sessionId:string)=>Promise<unknown>)=>Promise<unknown>;
 
@@ -97,7 +98,8 @@ export async function readEconomicAndQualityMetrics(tx:OwnerTransaction,window:{
   await tx.audit({policyDecision:'ALLOW',codeVersion:METRICS_VERSION,result:'SUCCESS',
     objects:ids.map(id=>({type:'economic_and_quality_metrics',id,fields:['metric_key','value','numerator','denominator']}))});
   return metricsViewSchema.parse({windowStart:window.windowStart.toISOString(),windowEnd:window.windowEnd.toISOString(),
-    metricsVersion:METRICS_VERSION,metrics,notMeasured:[...NOT_MEASURED],recordedAt:recordedAt.toISOString()});
+    metricsVersion:METRICS_VERSION,metrics,performance:await readPerformance(tx,window.windowStart,window.windowEnd),
+    notMeasured:[...NOT_MEASURED],recordedAt:recordedAt.toISOString()});
 }
 
 function instant(value:unknown):Date|null{

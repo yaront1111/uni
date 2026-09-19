@@ -277,6 +277,10 @@ describe('real PostgreSQL owner isolation', () => {
         window_start,window_end,metrics_version,correlation_id)
         VALUES($1,$2,'cost_per_source_item','MICROUNITS_PER_ITEM',12.5,25,2,now()-interval '1 day',now(),'metrics-0.1.0',$3)`,
         [randomUUID(),owner,randomUUID()]);
+      await pool.query(`INSERT INTO performance_measurements(id,owner_scope_id,run_id,scenario,p95_ms,sample_count,
+        concurrency,samples_ms,excludes_llm_generation,harness_version,correlation_id)
+        VALUES($1,$2,$3,'EVIDENCE_INGESTION_ACK',1,20,1,$4,true,'load-harness-0.1.0',$5)`,
+        [randomUUID(),owner,randomUUID(),Array(20).fill(1),randomUUID()]);
       // Governed action and the data-control surface (migration 0024): one row per
       // owner in each of its tables, so the sweep below covers them too.
       const actionDecision=randomUUID(),recommendation=randomUUID(),draft=randomUUID();
@@ -791,7 +795,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(78);
+    expect(rows.length).toBe(79);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -1205,7 +1209,7 @@ describe('real PostgreSQL owner isolation', () => {
 
 
   it('CRT-SEC-01-A and CRT-WRT-09-A: hides B from unfiltered owner A evaluation queries and keeps both records append-only',async()=>{
-    const reads:Record<string,string>={shadow_evaluation_runs:'ops.shadow.read',economic_and_quality_metrics:'ops.metrics.read'};
+    const reads:Record<string,string>={shadow_evaluation_runs:'ops.shadow.read',economic_and_quality_metrics:'ops.metrics.read',performance_measurements:'ops.metrics.read'};
     for(const [table,purpose] of Object.entries(reads)){
       await asOwner(a,alice,async c=>{
         const rows=(await readUnfiltered(c,table)).rows;

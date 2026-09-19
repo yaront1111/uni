@@ -150,7 +150,7 @@ async function rowsNamed(ids: readonly string[]): Promise<Array<{ table: string;
   return found.sort((left, right) => left.id.localeCompare(right.id) || left.table.localeCompare(right.table));
 }
 
-it('CRT-MEM-10-A: merging two obligation instances keeps both old ids resolvable to the survivor, reuses neither, and produces rebuild receipts', async () => {
+it('[AC44.13] CRT-MEM-10-A: merging two obligation instances keeps both old ids resolvable to the survivor, reuses neither, and produces rebuild receipts', async () => {
   const app = api();
   try {
     // PRD §44.13: the owner says two obligations were one.
@@ -250,7 +250,7 @@ it('CRT-MEM-10-A: merging two obligation instances keeps both old ids resolvable
   } finally { await app.close(); }
 });
 
-it('CRT-MEM-10-A: a merge carries every fact of the merged instance to the survivor and exposes a value conflict instead of choosing', async () => {
+it('[AC44.13] CRT-MEM-10-A: a merge carries every fact of the merged instance to the survivor and exposes a value conflict instead of choosing', async () => {
   const app = api();
   try {
     const kept = await obligation('50.00');
@@ -293,7 +293,7 @@ it('CRT-MEM-10-A: a merge carries every fact of the merged instance to the survi
   } finally { await app.close(); }
 });
 
-it('CRT-MEM-10-A: a merge may survive into a new canonical instance', async () => {
+it('[AC44.13] CRT-MEM-10-A: a merge may survive into a new canonical instance', async () => {
   const app = api();
   try {
     const left = await obligation('10.00'), right = await obligation('10.00');
@@ -313,7 +313,7 @@ it('CRT-MEM-10-A: a merge may survive into a new canonical instance', async () =
   } finally { await app.close(); }
 });
 
-it('CRT-MEM-10-B: splitting one combined obligation contests the claims that cannot be safely assigned, keeps them on the retired parent, and rebuilds projections', async () => {
+it('[AC44.14] CRT-MEM-10-B: splitting one combined obligation contests the claims that cannot be safely assigned, keeps them on the retired parent, and rebuilds projections', async () => {
   const app = api();
   try {
     // PRD §44.14: the owner says one combined obligation was actually two.

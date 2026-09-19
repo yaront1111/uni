@@ -78,7 +78,7 @@ async function person(label: string, mailbox: string): Promise<string> {
   return resolved.entityId;
 }
 
-it('CRT-REG-06-A: "Daniel says" and "Daniel believes" both canonicalize into the BASE context with source attribution, and extractor-chosen context is refused', async () => {
+it('[AC44.16] CRT-REG-06-A: "Daniel says" and "Daniel believes" both canonicalize into the BASE context with source attribution, and extractor-chosen context is refused', async () => {
   const daniel = await person('Daniel Reported', 'daniel.reported@example.test');
   const me = await person('Owner Reported', 'owner.reported@example.test');
   const shared = {
@@ -148,7 +148,7 @@ it('CRT-REG-06-A: "Daniel says" and "Daniel believes" both canonicalize into the
   }
 });
 
-it('CRT-MEM-11-A: "Daniel lent me another ILS 50" creates a separate candidate obligation instance', async () => {
+it('[AC44.02] CRT-MEM-11-A: "Daniel lent me another ILS 50" creates a separate candidate obligation instance', async () => {
   const daniel = await person('Daniel Lender', 'daniel.lender@example.test');
   const me = await person('Owner Borrower', 'owner.borrower@example.test');
   const roles = [{ roleId: 'creditor', entityId: daniel }, { roleId: 'debtor', entityId: me }];
@@ -245,7 +245,7 @@ it('CRT-MEM-11-C: a PROBABLE_MATCH or POSSIBLE_MATCH never reuses an existing in
   expect(scoreInstanceMatch({}).outcome).toBe('NEW_INSTANCE');
 });
 
-it('CRT-PRJ-06-A: "Actually, it was ILS 60" leaves one slot with two propositions and the original ILS 50 claim retrievable', async () => {
+it('[AC44.03] CRT-PRJ-06-A: "Actually, it was ILS 60" leaves one slot with two propositions and the original ILS 50 claim retrievable', async () => {
   const daniel = await person('Daniel Corrected', 'daniel.corrected@example.test');
   const me = await person('Owner Corrected', 'owner.corrected@example.test');
   const first = await write(tx => canonicalizeClaim(tx, {
@@ -368,7 +368,7 @@ it('CRT-MEM-09-A: a correction restates one valid interval while a change opens 
   expect(classifyTemporalUpdate('55,000').kind).toBe('AMBIGUOUS');
 });
 
-it('CRT-MEM-06-A and CRT-MEM-06-B: the §44.10 late-arriving correction answers three query modes differently for August 7', async () => {
+it('[AC44.10] CRT-MEM-06-A and CRT-MEM-06-B: the §44.10 late-arriving correction answers three query modes differently for August 7', async () => {
   // Uai learns on August 10 that the obligation changed on August 5.
   const validFrom = new Date('2025-08-01T00:00:00.000Z');
   const changedAt = new Date('2025-08-05T00:00:00.000Z');

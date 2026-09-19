@@ -194,7 +194,7 @@ it('CRT-OUT-01-B: a negated or future statement is not read as an outcome', asyn
   expect(await read(tx => listResolutionAssertions(tx, { ownerScopeId: owner, sourceFrameInstanceId: obligation }))).toEqual([]);
 });
 
-it('CRT-OUT-02-A: "It is settled; I paid him in cash" creates a resolution assertion with a source obligation frame, null target, outcome FULFILLED and a required claim ID', async () => {
+it('[AC44.04] CRT-OUT-02-A: "It is settled; I paid him in cash" creates a resolution assertion with a source obligation frame, null target, outcome FULFILLED and a required claim ID', async () => {
   const obligation = await frame('shared.obligation');
   const principal = await statedValue({
     frameInstanceId: obligation, predicateId: 'shared.obligation.principal_amount',
@@ -243,7 +243,7 @@ it('CRT-OUT-02-A: "It is settled; I paid him in cash" creates a resolution asser
   });
 });
 
-it('CRT-OUT-03-A: a calendar event stays SCHEDULED, attendance creates an actual occurrence with REALIZES and RESOLVES (OCCURRED) links, a cancellation creates a CANCELLED resolution, and an elapsed calendar event creates no occurrence', async () => {
+it('[AC44.07] CRT-OUT-03-A: a calendar event stays SCHEDULED, attendance creates an actual occurrence with REALIZES and RESOLVES (OCCURRED) links, a cancellation creates a CANCELLED resolution, and an elapsed calendar event creates no occurrence', async () => {
   const scheduledFor = new Date('2026-04-07T10:00:00Z');
   const attended = await frame('shared.event_occurrence');
   const schedule = await statedValue({
@@ -398,7 +398,7 @@ it('CRT-OUT-04-A: a resolution whose outcome the referenced transition contract 
   }))).toEqual([]);
 });
 
-it('CRT-OUT-05-A: a predicted release date and its claims remain unchanged and retrievable after a CONFIRMED, REFUTED or PARTIALLY_CONFIRMED resolution', async () => {
+it('[AC44.09] CRT-OUT-05-A: a predicted release date and its claims remain unchanged and retrievable after a CONFIRMED, REFUTED or PARTIALLY_CONFIRMED resolution', async () => {
   for (const outcomeCode of ['CONFIRMED', 'REFUTED', 'PARTIALLY_CONFIRMED'] as const) {
     const predicted = await frame('shared.event_occurrence');
     const prediction = await statedValue({
