@@ -41,6 +41,7 @@ describe('real PostgreSQL owner isolation', () => {
       await pool.query("INSERT INTO evidence_object_keys(id,owner_scope_id,source_item_id,object_store_key,encryption_key_ref) VALUES($1,$2,$3,$4,'kms:test')",[randomUUID(),owner,source,'raw/'+randomUUID()]);
       await pool.query("INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor) VALUES($1,$2,$3,'CONNECTOR_JSON_PATH','{\"path\":\"$.text\"}')",[randomUUID(),owner,source]);
       await pool.query('INSERT INTO evidence_ingestion_receipts(owner_scope_id,idempotency_key,source_item_id) VALUES($1,$2,$3)',[owner,retry,source]);
+      await pool.query("INSERT INTO evidence_processing(id,owner_scope_id,source_item_id,actor_id,data_purpose,maximum_sensitivity) VALUES($1,$2,$3,$4,'PERSONAL_ASSISTANCE','PRIVATE')",[randomUUID(),owner,source,actor]);
       await pool.query("INSERT INTO auth_identities(owner_scope_id,user_id,issuer,subject) VALUES($1,$2,'https://accounts.google.com',$3)",[owner,actor,actor]);
       await pool.query("INSERT INTO auth_sessions(owner_scope_id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')",[owner,actor,actor!.replaceAll('-','').repeat(2)]);
       await pool.query("INSERT INTO audit_events (owner_scope_id,actor,purpose,objects_and_fields_accessed,policy_decision,model_or_code_version,result,correlation_id) VALUES ($1,$2,'test','[]','ALLOW','test','SUCCESS',$3)",[owner,actor,randomUUID()]);
@@ -169,6 +170,17 @@ describe('real PostgreSQL owner isolation', () => {
         answer_type_classification,request,packet,packet_hash,selection_reason)
         VALUES($1,$2,'PERSONAL_ASSISTANCE',$3,'CURRENT_VALUE','{}','{}',$4,'{}')`,
         [packet,owner,actor,'e'.repeat(64)]);
+      // Explicit watches and content-free receipts are owner and source scoped.
+      const watch=randomUUID(),prerequisite=randomUUID();
+      await pool.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.commitment',$3)",[prerequisite,owner,context]);
+      await pool.query(`INSERT INTO initiative_settings(owner_scope_id,actor_id,time_zone,local_time,data_purpose,maximum_sensitivity)
+        VALUES($1,$2,'UTC','09:00','PERSONAL_ASSISTANCE','PRIVATE')`,[owner,actor]);
+      await pool.query(`INSERT INTO initiative_watches(id,owner_scope_id,source_item_id,source_anchor_id,scheduled_frame_id,prerequisite_frame_id)
+        VALUES($1,$2,$3,$4,$5,$6)`,[watch,owner,source,anchor,instance,prerequisite]);
+      await pool.query(`INSERT INTO initiative_receipts(id,owner_scope_id,watch_id,state_digest,threshold,owner_local_date,
+        source_evidence_ids,packet_id,attention_decision,attention_reason,attention_inputs,preparation)
+        VALUES($1,$2,$3,$4,'UPCOMING','2026-09-19',ARRAY[$5::uuid],$6,'ASK','FIXTURE','{}','NOT_REQUESTED')`,
+        [randomUUID(),owner,watch,'f'.repeat(64),source,packet]);
       // Answer provenance: the manifest of the context that packet supplied, and
       // the reconsideration candidate a later change to its belief derives.
       const manifest=randomUUID();
@@ -363,7 +375,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('CRT-SEC-01-A: hides B from unfiltered owner A canonical identity queries and refuses them under another purpose',async()=>{
     const memoryTables=['entities','entity_aliases','entity_lineage','frame_instances','frame_instance_roles',
-      'belief_slots','slot_fingerprints','propositions','proposition_fingerprints','claims'];
+      'belief_slots','slot_fingerprints','propositions','proposition_fingerprints','claims','memory_object_state_history'];
     await asOwner(a,alice,async c=>{
       for(const table of memoryTables){
         const rows=(await readUnfiltered(c,table)).rows;
@@ -408,6 +420,11 @@ describe('real PostgreSQL owner isolation', () => {
       .rejects.toThrow('CANONICAL_IDENTITY_IMMUTABLE');
   });
   it('CRT-SEC-01-A: hides B from unfiltered owner A triage, extraction and model-call queries',async()=>{
+    await asOwner(a,alice,async c=>{
+      const rows=(await readUnfiltered(c,'evidence_processing')).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every(row=>row.owner_scope_id===a)).toBe(true);
+    },'memory.inspect');
     const modelPathTables=['triage_decisions','extraction_runs','model_call_records'];
     await asOwner(a,alice,async c=>{
       for(const table of modelPathTables){
@@ -795,7 +812,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(79);
+    expect(rows.length).toBe(84);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -1371,6 +1388,26 @@ describe('real PostgreSQL owner isolation', () => {
     await asOwner(a,alice,async c=>{
       expect((await c.query('DELETE FROM decision_projection')).rowCount).toBe(0);
     },'projection.read');
+  });
+
+  it('CRT-SEC-01-A: initiative rows hide other owners and source-scoped watches and receipts obey declared reads',async()=>{
+    const tables=['initiative_settings','initiative_watches','initiative_receipts'];
+    for(const [owner,actor] of [[a,alice],[b,bob]]) await asOwner(owner!,actor!,async c=>{
+      for(const table of tables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===owner),table).toBe(true);
+      }
+    },'memory.inspect');
+    await asOwner(b,alice,async c=>{
+      for(const table of tables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.inspect');
+    for(const [purpose,ceiling] of [['FAMILY_COORDINATION','RESTRICTED'],['PERSONAL_ASSISTANCE','NORMAL']]) {
+      await asOwner(a,alice,async c=>{
+        await c.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",[purpose,ceiling]);
+        for(const table of ['initiative_watches','initiative_receipts']) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },'memory.inspect');
+    }
   });
 
   it('CRT-SEC-01-A: covers every classified owner-scoped table with an unfiltered cross-owner query',async()=>{

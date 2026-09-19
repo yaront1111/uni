@@ -326,7 +326,22 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     DROP INDEX audit_events_objects;
     DROP FUNCTION unai_private.audit_event_defaults(), unai_private.audit_event_immutable(), unai_private.audit_event_kind(text)`);
 
+  await admin!.query('DROP TABLE initiative_receipts,initiative_watches,initiative_settings CASCADE');
   await admin!.query('DROP TABLE performance_measurements CASCADE');
+  await admin!.query(`DROP TRIGGER triage_processing_intent ON triage_decisions;
+    DROP FUNCTION unai_private.record_processing_intent(),unai_private.processing_release_version(uuid);
+    DROP TABLE evidence_processing CASCADE;
+    ALTER TABLE extraction_runs DROP COLUMN processing_key,DROP COLUMN unknown_count`);
+  for (const table of ['entities','frame_instances','belief_slots','propositions','claims','owner_overlay_deltas',
+    'resolution_assertions','memory_links','memory_threads','context_spaces']) {
+    await admin!.query(`DO $$ BEGIN IF to_regclass('public.${table}') IS NOT NULL THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS record_temporal_state ON ${table}'; END IF; END $$`);
+  }
+  await admin!.query(`DROP TABLE memory_object_state_history CASCADE;
+    DROP FUNCTION unai_private.object_state_at(uuid,text,uuid,timestamptz),
+      unai_private.capture_memory_object_state(),unai_private.memory_object_state(text,jsonb),
+      unai_private.any_memory_object_removed(uuid,uuid[]),unai_private.stored_outcomes_readable(uuid,uuid[]),unai_private.aging_policy(uuid,text),
+      unai_private.active_goal_priorities(uuid,uuid[],timestamptz,timestamptz),unai_private.proactive_attention_counts(uuid,date)`);
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
@@ -335,7 +350,9 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0021_answer_manifests_and_reconsideration.sql',
     '0022_today_briefing.sql', '0023_memory_inbox_and_weekly_review.sql', '0024_governed_action_and_data_control.sql',
     '0025_evaluation_and_metrics.sql', '0026_goals_decisions_and_mentor.sql', '0027_audit_trail.sql', '0028_performance_measurements.sql',
-    '0029_derived_evidence_erasure.sql']);
+    '0029_derived_evidence_erasure.sql', '0030_memory_object_state_history.sql', '0031_durable_evidence_processing.sql',
+    '0032_contextual_aging_policy_reader.sql', '0033_durable_owner_initiative.sql', '0034_goal_context_read_authority.sql',
+    '0035_shared_attention_counts.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry
@@ -365,4 +382,22 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // And the rebuild is on the record.
   const receipts = (await admin!.query('SELECT projection_name,trigger,rows_rebuilt,reducer_version FROM projection_rebuild_receipts WHERE owner_scope_id=$1 ORDER BY projection_name', [owner])).rows;
   expect(receipts.map((row: { trigger: string }) => row.trigger)).toEqual(['DROP_AND_REBUILD', 'DROP_AND_REBUILD', 'DROP_AND_REBUILD']);
+});
+
+it('refuses privileged registry snapshot TRUNCATE with the exact production immutability trigger', async () => {
+  if (unavailable) throw new Error('SCRATCH_DATABASE_UNAVAILABLE: ' + unavailable);
+  // This file owns its database: no parallel reader can prevent the statement
+  // from reaching the trigger. A real release and contract make the refusal
+  // observable without risking another test's immutable published snapshot.
+  const client = await admin!.connect(), releaseId = randomUUID();
+  try {
+    await client.query('BEGIN');
+    await client.query(`INSERT INTO registry_releases(id,semantic_version,git_tag,git_commit,content_hash,lifecycle,released_at,manifest,correlation_id)
+      VALUES($1,'9998.0.3','registry-v9998.0.3',$2,$3,'RELEASED',now(),'{}',$4)`, [releaseId, 'a'.repeat(40), 'b'.repeat(64), randomUUID()]);
+    await client.query(`INSERT INTO registry_contracts(id,registry_release_id,contract_id,contract_version,contract_kind,content,content_hash)
+      VALUES($1,$2,'shared.commitment','9998.0.3','FRAME','{}',$3)`, [randomUUID(), releaseId, 'c'.repeat(64)]);
+    expect((await client.query('SELECT count(*)::int AS n FROM registry_contracts WHERE registry_release_id=$1', [releaseId])).rows[0].n).toBe(1);
+    await expect(client.query('TRUNCATE registry_releases,registry_contracts'))
+      .rejects.toMatchObject({ code: '42501', message: 'REGISTRY_SNAPSHOT_IMMUTABLE' });
+  } finally { await client.query('ROLLBACK'); client.release(); }
 });

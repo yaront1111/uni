@@ -8,3 +8,9 @@ corpus/** -text
 # New migrations keep identical hashed bytes across Windows worktrees.
 # Applied migrations retain their existing checkout behavior.
 migrations/0029_derived_evidence_erasure.sql text eol=lf
+migrations/0030_memory_object_state_history.sql text eol=lf
+migrations/0031_durable_evidence_processing.sql text eol=lf
+migrations/0032_contextual_aging_policy_reader.sql text eol=lf
+migrations/0033_durable_owner_initiative.sql text eol=lf
+migrations/0034_goal_context_read_authority.sql text eol=lf
+migrations/0035_shared_attention_counts.sql text eol=lf

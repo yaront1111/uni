@@ -5,7 +5,17 @@
 **Tech Stack:** TypeScript, Zod, Fastify, Next.js, PostgreSQL/pgvector, encrypted S3, the existing model gateway and Git-versioned semantic registry.
 
 **Date:** 2026-09-19. **Inspected baseline:** `fbce0aa`.
-**Status:** Two Task A implementation tranches are delivered; see [privacy and temporal read boundaries](../privacy-and-temporal-read-boundaries.md) and [derived evidence and inspector privacy](../derived-evidence-privacy.md) for reproduced defects, verification, and remaining audit scope. Task A is not fully exited; Tasks B–E remain planned. The table below records the initial inspected baseline, not the current implementation. The earlier review mentioned in the product direction was not supplied.
+**Status:** Tasks A-E are implemented in the free-agent worktree and undergoing final combined verification and integration. The table below records the initial baseline, not current behavior. Earlier privacy work is documented in [privacy and temporal read boundaries](../privacy-and-temporal-read-boundaries.md) and [derived evidence and inspector privacy](../derived-evidence-privacy.md).
+
+Current implementation:
+
+- **A:** Recorded lifecycle history and source-authorized saved answers, inspector, explanation, thread, lineage, overlay, and outcome reads. Unknown pre-journal history remains explicit.
+- **B:** Seven contextual aging policies, immutable registry release `0.3.0`, original-source provenance, and separate freshness wording and grounding. See [memory aging](../memory-aging.md).
+- **C:** Source-authorized candidate refill, relevant old values and unfinished work before answer budgets, incomplete-result reporting, packet-derived personal understanding, recorded changes and decision rationale, and active-goal authority.
+- **D:** Durable processing intent, runnable owner-scoped worker, stage recovery, governed provisional canonicalization, and visible processing status. See [runtime setup](../processing-runtime.md).
+- **E:** Old and undated unfinished work in Today, the five Ask routes, and owner-enabled initiative with explicit prerequisite watches, current-state notice checks, shared attention limits, and authorized draft preparation.
+
+The full set of canonical birthdate, employment, salary, health, and preference contracts is outside this slice. Missing contracts or source context remain unknown. The first processing path supports directly anchored first-person commitments; ambiguous or unsupported interpretations need review. Ask resolves relative change windows in UTC and says so; initiative uses the owner's configured time zone. Real-corpus readiness, observed service activation, and measured reductions in owner effort require separate evidence. V0 remains read/draft only.
 
 The changed product authority is [PRD.md](../../PRD.md), particularly §§8.5–8.6, 12.7–12.10, 23.8, and 44.21–44.28. Existing phase order remains in force: a later feature does not excuse a missing earlier correctness gate. Deliver each task as a separate, reviewable change; do not implement this whole roadmap in one patch.
 
@@ -180,4 +190,4 @@ pnpm build
 
 `check:phase-exit` includes typecheck, the full test harness, registry lint/contracts, synthetic corpus, and real-corpus verification. Real-corpus verification requires owner-local results over at least ten real Gmail threads. If that evidence is unavailable, report that specific unmet gate; do not substitute seeded examples or call the phase complete.
 
-This documentation change requires link/path checks, review of the PRD diff for contradictions, and `git diff --check`. It does not establish any runtime test result, fix the listed defects, launch services, or authorize publishing or external actions.
+Record final command results and the publication commit separately. Automated tests and repository publication do not establish deployed service activation or the real-corpus gate; external actions remain outside V0.
