@@ -46,11 +46,16 @@ it('materializes the tag-loaded release immutably with public UUIDv7 identifiers
   // the correlation id of the publication that created the row.
   const prior = (await pool.query('SELECT correlation_id FROM registry_releases')).rows[0]?.correlation_id as string | undefined;
   const outcome = await registry.publishRegistryRelease(pool, release, correlationId);
-  expect(outcome.outcome).toBe(prior ? 'ALREADY_PUBLISHED' : 'PUBLISHED');
+  if (prior) expect(outcome.outcome).toBe('ALREADY_PUBLISHED');
   expect(outcome.releaseId).toMatch(uuidV7);
   const row = (await pool.query('SELECT *, current_user AS principal FROM registry_releases')).rows[0];
   expect(row).toMatchObject({ id: outcome.releaseId, semantic_version: '0.1.0', git_tag: 'registry-v0.1.0', git_commit: release.gitCommit,
-    content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: prior ?? correlationId });
+    content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: prior ?? row.correlation_id });
+  // PUBLISHED exactly when this call created the row. Other suites that need the
+  // pinned release publish the identical tag when this file has not yet, so one
+  // can land between the read above and the publish; the row then carries that
+  // publication's correlation id and this call must answer ALREADY_PUBLISHED.
+  expect(outcome.outcome === 'PUBLISHED').toBe(row.correlation_id === correlationId);
   expect(row.published_by).toBe(row.principal);
   expect(row.released_at).toBeInstanceOf(Date);
   expect(row.id).not.toContain(release.contentHash.slice(0, 8));
@@ -89,17 +94,29 @@ it('refuses update, delete and truncate of the snapshot, even for the privileged
   await expect(pool.query("UPDATE registry_releases SET lifecycle='RELEASED'")).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
   await expect(pool.query('DELETE FROM registry_contracts')).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
   await expect(pool.query("UPDATE registry_contracts SET content='{}'")).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
-  // Lock order: parallel suites publish releases then contracts, so the TRUNCATE lists them
-  // in that order; the RLS read of contracts joined to releases leaves a small window, so
-  // only a deadlock (40P01) is retried, at most 5 times, and never counts as a pass.
+  // Parallel suites read contracts joined to releases (registry_contract_present) in either
+  // order, so a TRUNCATE that waited for its second lock while holding the first could
+  // deadlock them, and the victim could be the other suite. Both locks are therefore taken
+  // NOWAIT before the TRUNCATE: this test never waits while holding a lock, so it is never
+  // in a cycle. Only lock_not_available (55P03) or a deadlock (40P01) is retried, at most
+  // 50 times, and neither ever counts as a pass.
   let outcome: unknown;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    outcome = await pool.query('TRUNCATE registry_releases, registry_contracts').then(() => undefined, (error: unknown) => error);
-    if ((outcome as { code?: string } | undefined)?.code !== '40P01') break;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      outcome = await client.query('LOCK TABLE registry_releases, registry_contracts IN ACCESS EXCLUSIVE MODE NOWAIT')
+        .then(() => client.query('TRUNCATE registry_releases, registry_contracts'))
+        .then(() => undefined, (error: unknown) => error);
+      await client.query('ROLLBACK');
+    } finally { client.release(); }
+    const code = (outcome as { code?: string } | undefined)?.code;
+    if (code !== '55P03' && code !== '40P01') break;
+    await new Promise(resolve => setTimeout(resolve, 25));
   }
   expect(outcome).toBeInstanceOf(Error);
   expect((outcome as Error).message).toContain('REGISTRY_SNAPSHOT_IMMUTABLE');
-});
+}, 30000);
 
 it('grants the application role no registry snapshot read or write access', async () => {
   const client = await pool.connect();

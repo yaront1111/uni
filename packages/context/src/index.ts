@@ -19,8 +19,9 @@ export { BROKER_VERSION, SELECTOR_VERSION, CONTEXT_READ_PURPOSE, CONTEXT_ACTION_
   assembleContextPacket,
   type ContextAuthorization, type ContextBrokerOptions, type ContextRunner, type EvidenceLabel } from './broker.js';
 export { EXPLANATION_VERSION, explainProposition } from './explain.js';
+export { INSPECTOR_VERSION, inspectMemory, readRelatedFrames } from './inspector.js';
 export { THREAD_SERVICE_VERSION, MemoryThreadError, createMemoryThread, addThreadMember, listThreadsForObject,
-  readMemoryThread } from './threads.js';
+  readMemoryThread, listOpenThreadIds } from './threads.js';
 export { SELECTION_VERSION, modalitiesForAnswerType, selectSlotState, selectCurrentStates, selectionsDigest,
   type SelectorSlot, type SelectorProposition, type SelectorAssessment, type SelectorClaim, type SelectorRelation,
   type SelectorOverlayDelta, type SlotSelectionInput, type SelectionParameters } from './selector.js';

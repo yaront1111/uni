@@ -8,13 +8,16 @@ import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
 import {registerMemoryGovernorRoutes} from './memory.js';
 import {registerCorrectionRoutes,CORRECTION_PURPOSE} from './corrections.js';
 import {registerOpsRoutes} from './ops.js';
+import {registerMetricsRoutes,METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE} from './metrics.js';
 import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
+import {registerInspectionRoutes,INSPECTION_PURPOSE,INSPECTION_URLS} from './inspection.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
-import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
+import {registerControlRoutes,controlPurposeFor,CONTROL_PURPOSES} from './control.js';
 import {registerReviewRoutes,INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE} from './review.js';
+import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import {registerDecisionRoutes,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,
   MENTOR_PURPOSE} from './decisions.js';
 import type {TransitionContract} from '@unai/domain';
@@ -69,7 +72,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
     INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
     GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,MENTOR_PURPOSE,
-    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
+    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE,
+    // Governed action and the data-control surface (ADR 0030).
+    ...CONTROL_PURPOSES]);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -107,6 +112,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
+      request.routeOptions.url&&INSPECTION_URLS.includes(request.routeOptions.url)?INSPECTION_PURPOSE:
       request.routeOptions.url==='/v1/answers/:id/manifest'?ANSWER_READ_PURPOSE:
       request.routeOptions.url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
       request.routeOptions.url==='/v1/memory/inbox'?INBOX_PURPOSE:
@@ -131,7 +137,10 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
       request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
       request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
-      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':null;
+      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':
+      request.routeOptions.url==='/v1/ops/metrics'?METRICS_READ_PURPOSE:
+      request.routeOptions.url==='/v1/ops/shadow-evaluations'?SHADOW_READ_PURPOSE:
+      controlPurposeFor(request.method,request.routeOptions.url);
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   /** `purpose` lets a route open one transaction under a purpose its server code
@@ -213,8 +222,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   });
   registerMemoryGovernorRoutes(app,deviceWork);
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
-  registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId});
+  registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId,evidenceObjects:options.evidenceObjects});
   registerOpsRoutes(app,deviceWork);
+  registerMetricsRoutes(app,deviceWork);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
@@ -225,12 +235,13 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,phraser:options.answerPhraser,
     purposeWork:(request,purpose,run)=>deviceWork(request,tx=>run(tx),purpose)});
   registerAnswerRoutes(app,deviceWork);
+  registerInspectionRoutes(app,deviceWork,{registryRelease:options.registryRelease??null});
   registerTodayRoutes(app,deviceWork,{
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
     ...(options.todayClock?{clock:options.todayClock}:{}),
     registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null});
   // The Memory inbox, learned approval rules, attention budgets and the weekly
-  // review (ADR 0028). Their broker reads and their answer writes run under
+  // review (ADR 0029). Their broker reads and their answer writes run under
   // `memory.read` and `memory.correct`, named here by server code.
   registerReviewRoutes(app,deviceWork,{
     purposeWork:<T,>(request:import('fastify').FastifyRequest,purpose:string,run:(tx:import('@unai/postgres').OwnerTransaction)=>Promise<T>)=>
@@ -249,5 +260,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     registryRelease:options.registryRelease??null,...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
     ...(options.transitionContracts?{transitionContracts:options.transitionContracts}:{}),
     ...(options.clock?{now:options.clock}:{})});
+  registerControlRoutes(app,deviceWork,{
+    ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null,
+    evidenceObjects:options.evidenceObjects});
   return app;
 }

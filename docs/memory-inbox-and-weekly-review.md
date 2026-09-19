@@ -3,7 +3,7 @@
 Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node
 `memory-inbox-attention-budgets-and-weekly-review`. Decisions:
-`docs/adr/0028-memory-inbox-attention-budgets-and-weekly-review.md`.
+`docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md`.
 
 ## Delivered
 
@@ -38,6 +38,11 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
   statement from the packet as persisted, checks each statement's grounds
   against that packet's manifest, and records the review and any behavioral
   observation.
+- The Weekly review screen loads through `apps/web/lib/review.ts`, whose loader
+  takes the API call as a parameter. Every belief a statement or an observation
+  rests on carries Inspect and Correct links (`BeliefRefLinks`), and
+  `apps/web/e2e/memory.test.ts` renders the review for a fixture week, follows
+  every link into the Memory inspector and persists a correction from each.
 
 ## Acceptance evidence
 
@@ -74,13 +79,13 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 
 - **Goals.** "Stated priorities" are the owner's explicit
   `shared.commitment.priority` values until the goal model of
-  `goals-decisions-prediction-review-and-mentor` exists (ADR 0028 §7).
+  `goals-decisions-prediction-review-and-mentor` exists (ADR 0029 §7).
 - **Decisions versus outcomes** is reported `NOT_AVAILABLE_IN_THIS_RELEASE`: the
   decision frame arrives with registry release 0.2.0.
 - **Batch review screen.** Deferred cards are counted and re-evaluated on later
   days; there is no separate weekly batch surface.
 - **Budget editor UI.** The attention-budget editor is a state of the
   Permissions screen, which another node draws; this node delivers its API.
-- **Unattached owner assertions** are not inbox questions (ADR 0028 §1).
+- **Unattached owner assertions** are not inbox questions (ADR 0029 §1).
 - Time zones are request-declared (`?timeZone=`); the web pages declare UTC
   until an owner time-zone setting exists.

@@ -6,7 +6,7 @@ import type { MemoryTransaction } from '@unai/memory';
 
 /**
  * Attention budgets (PRD §19.3; design entity `attention_budgets`, PATCH
- * /v1/settings/attention-budgets; ADR 0028 §5).
+ * /v1/settings/attention-budgets; ADR 0029 §5).
  *
  * One row per owner scope at most. No row is the PRD default, reported with
  * `isDefault: true` so a reader can tell "never configured" from "configured to

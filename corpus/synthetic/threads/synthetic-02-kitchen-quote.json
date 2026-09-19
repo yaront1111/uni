@@ -1,0 +1,113 @@
+{
+  "id": "thr-syn-02",
+  "historyId": "902",
+  "messages": [
+    {
+      "id": "msg-syn-02-1",
+      "threadId": "thr-syn-02",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-02-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Dana Katz <dana.katz@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Kitchen renovation quote"
+          }
+        ],
+        "body": {
+          "size": 121,
+          "text": "The contractor quoted ILS 18,400 for the kitchen. I said we would confirm by Friday.\n-- Dana Katz, dana.katz@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-02-2",
+      "threadId": "thr-syn-02",
+      "internalDate": "1788170400000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-02-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-02-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Dana Katz <dana.katz@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Kitchen renovation quote"
+          }
+        ],
+        "body": {
+          "size": 104,
+          "text": "That is over the budget we agreed. Maybe we could split out the tiling.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-02-3",
+      "threadId": "thr-syn-02",
+      "internalDate": "1788181200000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-02-3@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-02-2@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Dana Katz <dana.katz@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Kitchen renovation quote"
+          }
+        ],
+        "body": {
+          "size": 122,
+          "text": "Tiling split out brings it to ILS 14,900. I will confirm with them on Friday morning.\n-- Dana Katz, dana.katz@example.test"
+        }
+      }
+    }
+  ]
+}

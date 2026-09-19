@@ -88,3 +88,15 @@ it('records an observation with its episodes, counterexample search, window, con
 it('shows a failure as an alert',()=>{
   expect(render({error:'The weekly review could not be prepared. Please reload to retry.'})).toContain('role="alert"');
 });
+
+it('links every belief a statement or an observation rests on to the Memory inspector and the Correction controls',()=>{
+  const html=render({review:review(observed)});
+  for(const n of [1,2,20,30]){
+    expect(html).toContain('href="/memory/inspector/proposition/'+id(n)+'"');
+    expect(html).toContain('href="/memory/correct/proposition/'+id(n)+'"');
+  }
+  // A source item is a ground, but not something the inspector opens.
+  const sourceOnly=review({...base,materialChanges:{...base.materialChanges,statements:[{...base.materialChanges.statements[0]!,
+    grounds:[{objectType:'source_item',objectId:id(70)}]}]}});
+  expect(render({review:sourceOnly})).not.toContain(id(70));
+});

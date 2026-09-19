@@ -35,6 +35,11 @@ const classifiedTables=new Map([
   ['briefing_editions','owner_scope_id'],['briefing_items','owner_scope_id'],
   ['attention_budgets','owner_scope_id'],['learned_approval_rules','owner_scope_id'],['clarification_cards','owner_scope_id'],
   ['interruption_decisions','owner_scope_id'],['weekly_reviews','owner_scope_id'],['behavioral_observations','owner_scope_id'],
+  ['plugin_capability_grants','owner_scope_id'],['recommendation_artifacts','owner_scope_id'],['drafts','owner_scope_id'],
+  ['action_history','owner_scope_id'],['retention_settings','owner_scope_id'],
+  ['domain_sensitivity_settings','owner_scope_id'],['memory_summaries','owner_scope_id'],
+  ['retention_and_deletion_requests','owner_scope_id'],
+  ['shadow_evaluation_runs','owner_scope_id'],['economic_and_quality_metrics','owner_scope_id'],
   ['goals','owner_scope_id'],['goal_priority_history','owner_scope_id'],['decision_projection','owner_scope_id'],
   ['mentor_cards','owner_scope_id'],
 ]);
@@ -43,10 +48,11 @@ const classifiedTables=new Map([
  * new owner table with no unfiltered fixture fails the suite rather than passing
  * unexamined. */
 export const OWNER_SCOPED_TABLES:readonly string[]=Object.freeze([...classifiedTables.keys()]);
-/** Global Git registry snapshot (ADR 0011): not owner data, so it must stay
- * forced-RLS and completely inaccessible to the application role.
+/** Global Git registry snapshot (ADR 0011) and the migration manifests published
+ * with it (ADR 0031): not owner data, so they must stay forced-RLS and completely
+ * inaccessible to the application role.
  */
-const globalReferenceTables=new Set(['registry_releases','registry_contracts']);
+const globalReferenceTables=new Set(['registry_releases','registry_contracts','registry_migration_manifests']);
 
 export async function assertOwnershipCoverage(pool:Pool):Promise<void>{
   const rows=(await pool.query(`SELECT n.nspname AS schema,c.relname,c.relrowsecurity,c.relforcerowsecurity,

@@ -89,3 +89,22 @@ it('refuses in fixed words when no purpose or an unpermitted purpose was declare
   expect(render({state:'refused',question:'x',refusal:'ASK_REQUEST_INCOMPLETE'})).toContain('such as its purpose');
   expect(render({state:'error',question:'x'})).toContain('could not be answered');
 });
+
+it('links every belief a statement rests on to the Memory inspector and the Correction controls (CRT-UX-10-B)',()=>{
+  const html=render({state:'answered',question:answer.question,answer,why:{}});
+  expect(html).toContain('<a href="/memory/inspector/proposition/'+id(301)+'">Inspect');
+  expect(html).toContain('<a href="/memory/correct/owner_overlay_delta/'+id(303)+'">Correct');
+  expect(html).toContain('<a href="/memory/inspector/resolution_assertion/'+id(304)+'">Inspect');
+  // A statement resting on several beliefs numbers them; a belief slot is not linked.
+  const several=askAnswerSchema.parse({...answer,statements:[statement(1,{kind:'CONFLICT',label:'CONFLICTING',
+    objectRefs:[{objectType:'belief_slots',objectId:id(9)},{objectType:'propositions',objectId:id(310)},{objectType:'propositions',objectId:id(311)}]})]});
+  const listed=render({state:'answered',question:answer.question,answer:several,why:{}});
+  expect(listed).toContain('<ul class="belief-refs" aria-label="Memory behind this">');
+  expect(listed).toContain('Memory 2: <span class="belief-links"><a href="/memory/inspector/proposition/'+id(311)+'">');
+  expect(listed).not.toContain(id(9));
+  // A statement about the absence of memory names nothing and links nothing.
+  const nothing=askAnswerSchema.parse({...answer,statements:[statement(1,{kind:'NOTHING_FOUND',label:'UNKNOWN',
+    text:'Nothing in the memory this request could read answers this question.',objectRefs:[],sourceEvidenceIds:[],explainPath:null})]});
+  expect(render({state:'answered',question:answer.question,answer:nothing,why:{}})).not.toContain('/memory/inspector/');
+  expect(readingPath(html)).not.toMatch(UUID);
+});

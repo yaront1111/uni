@@ -1,0 +1,39 @@
+{
+  "id": "thr-syn-12",
+  "historyId": "912",
+  "messages": [
+    {
+      "id": "msg-syn-12-1",
+      "threadId": "thr-syn-12",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-12-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "ParcelGo <updates@parcelgo.example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Your parcel is on its way"
+          }
+        ],
+        "body": {
+          "size": 108,
+          "text": "Parcel PG-55120 is out for delivery. Tracking status: in transit.\n-- ParcelGo, updates@parcelgo.example.test"
+        }
+      }
+    }
+  ]
+}

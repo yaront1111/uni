@@ -1,0 +1,63 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-03-newsletter",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-03-newsletter.json",
+    "contentHash": "a44a86f76636ee710590bea5ef6aef45049e86cd8ba36f6285976271eaf566c0"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "newsletter",
+      "messageExternalId": "msg-syn-03-1",
+      "start": 0,
+      "end": 57,
+      "quote": "Ten plants that love shade, and a recipe for basil pesto."
+    },
+    {
+      "spanRef": "news-sig",
+      "messageExternalId": "msg-syn-03-1",
+      "start": 84,
+      "end": 130,
+      "quote": "Weekly Garden, news@weekly-garden.example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "org:weekly-garden",
+      "entityKind": "ORGANIZATION",
+      "mentions": [
+        {
+          "spanRef": "news-sig",
+          "aliases": [
+            {
+              "aliasType": "DISPLAY_NAME",
+              "aliasValue": "Weekly Garden"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "news@weekly-garden.example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [],
+  "instanceMatchCases": [],
+  "expectedSlotsAndPropositions": [],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [
+    {
+      "spanRef": "newsletter",
+      "kind": "NON_MEMORY"
+    }
+  ],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

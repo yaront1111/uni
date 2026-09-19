@@ -14,7 +14,7 @@ import { DAY_MS, addLocalDays, ownerLocalDate, startOfLocalDate } from './time.j
 
 /**
  * The Memory inbox (PRD §7.7, §19.3, §37.4; design GET /v1/memory/inbox,
- * clarification_cards and interruption_decisions; ADR 0028 §2-§5).
+ * clarification_cards and interruption_decisions; ADR 0029 §2-§5).
  *
  * `evaluateInbox` takes the card drafts composed from one Context Broker packet
  * and decides, card by card, whether each is asked, deferred to batch review or
@@ -90,7 +90,7 @@ function cardRow(row: Record<string, unknown>): CardRow {
 const SELECT_CARD = `SELECT ${CARD_COLUMNS} FROM clarification_cards`;
 
 /** The owner's proactive items today, per sensitivity scope: asked clarification
- * cards and the mentor's emitted cards (migration 0024), because the attention
+ * cards and the mentor's emitted cards (migration 0026), because the attention
  * budget is one budget (ADR 0029 §7). `@unai/mentor` counts through the same union. */
 const PROACTIVE_TODAY = `SELECT sensitivity_scope,count(*)::int AS n FROM (
     SELECT sensitivity_scope FROM clarification_cards WHERE owner_scope_id=$1 AND asked_on=$2::date
@@ -154,7 +154,7 @@ export interface InboxEvaluation {
 }
 
 /**
- * Evaluate the owner's cards against the drafts of one packet (ADR 0028 §4).
+ * Evaluate the owner's cards against the drafts of one packet (ADR 0029 §4).
  *
  * Each card is evaluated at most once per owner-local day unless evidence it
  * had not seen arrives, so reloading the inbox spends no budget and floods no

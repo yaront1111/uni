@@ -1,0 +1,76 @@
+{
+  "id": "thr-syn-11",
+  "historyId": "911",
+  "messages": [
+    {
+      "id": "msg-syn-11-1",
+      "threadId": "thr-syn-11",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-11-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Skyway Airlines <bookings@skyway.example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Booking SK315 confirmed"
+          }
+        ],
+        "body": {
+          "size": 116,
+          "text": "Flight SK315 departs 20 September 2026 at 06:40. Booking ref QZ7P2.\n-- Skyway Airlines, bookings@skyway.example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-11-2",
+      "threadId": "thr-syn-11",
+      "internalDate": "1788526800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-11-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-11-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Skyway Airlines <bookings@skyway.example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Booking SK315 confirmed"
+          }
+        ],
+        "body": {
+          "size": 111,
+          "text": "Schedule change for booking QZ7P2: SK315 now departs at 07:10.\n-- Skyway Airlines, bookings@skyway.example.test"
+        }
+      }
+    }
+  ]
+}

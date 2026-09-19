@@ -5,13 +5,13 @@ import {
 import type { CardRisk } from './ambiguities.js';
 
 /**
- * The interruption decision (PRD §19.3, §19.4; ADR 0028 §4).
+ * The interruption decision (PRD §19.3, §19.4; ADR 0029 §4).
  *
  * §19.4 weighs probability of error x consequence x irreversibility x urgency
  * against interruption cost, and allows V0 to do so qualitatively provided the
  * inputs and the reason are logged. The scale below is fixed and public, so a
  * logged decision can be recomputed from its own inputs. The order of the
- * checks is the order of ADR 0028 §4 and is part of the contract: a learned rule
+ * checks is the order of ADR 0029 §4 and is part of the contract: a learned rule
  * wins over everything, a repeat is withheld before any budget is spent on it,
  * and the budget caps come last so they only ever withhold questions worth
  * asking.

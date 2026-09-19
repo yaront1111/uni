@@ -1,5 +1,6 @@
 import React,{useState} from 'react';
 import type {AskAnswer,AskStatement,MemoryLabel,WhySources as WhySourcesPanel} from '@unai/domain';
+import {BeliefRefLinks} from './BeliefLinks';
 import {CertaintyBadge,LabelKey,displayLabelOf,withoutIdentifiers} from './Labels';
 import {Shell} from './Shell';
 import {WhySources} from './WhySources';
@@ -61,6 +62,7 @@ function Statement({statement,answer,panel}:{statement:AskStatement;answer:AskAn
       <a href={'/sources?evidence='+link.evidenceId}>{sourceName(link,answer.sourceLinks.indexOf(link))}</a></li>)}</ul>
       :<p className="muted">No source is linked to this statement.</p>}
     {panel!==undefined?<WhySources about={statement.text} panel={panel}/>:null}
+    <BeliefRefLinks refs={statement.objectRefs} about={withoutIdentifiers(statement.text)}/>
   </li>;
 }
 

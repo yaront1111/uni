@@ -18,6 +18,10 @@ const IMPORT_PURPOSES=new Set(['evidence.ingest','connector.sync']);
 export interface EvidenceObjects {
   put(tx:OwnerTransaction,id:string,bytes:Uint8Array):Promise<void>;
   get(tx:OwnerTransaction,id:string):Promise<Uint8Array>;
+  /** Delete one item's raw object: the storage half of the deletion cascade
+   * (PRD §30.7, ADR 0030 §8). Optional so that a read-only double need not
+   * implement it; the deletion route refuses to run without it. */
+  delete?(tx:OwnerTransaction,id:string):Promise<void>;
   /** Recorded on the item's evidence_object_keys row so a later cryptographic
    * deletion knows which key protected these bytes. Never a key value. */
   readonly encryptionKeyRef:string;
@@ -32,6 +36,9 @@ export async function createEvidenceObjects(config:StorageConfiguration){
     // canonical is proposed (migration 0014, CRT-RYW-06-A), and the recording of
     // an assistant's answer as conversation evidence (migration 0021).
     if(operation==='WRITE'&&!OBJECT_WRITE_PURPOSES.has(context.purpose))return null;
+    // Only the erasure deletes raw bytes, and only under its own purpose, whose
+    // row policies see the tombstone it has just written (migration 0024).
+    if(operation==='DELETE'&&context.purpose!=='data.delete')return null;
     const row=(await tx.query(`SELECT k.object_store_key,s.submitted_by_user_id FROM source_items s
       JOIN evidence_object_keys k ON k.owner_scope_id=s.owner_scope_id AND k.source_item_id=s.id
       WHERE s.raw_object_ref=$1 AND s.owner_scope_id=$2`,[id,context.ownerScopeId])).rows[0];
@@ -42,6 +49,7 @@ export async function createEvidenceObjects(config:StorageConfiguration){
     encryptionKeyRef:'kms:'+config.kmsKeyId,
     async put(tx:OwnerTransaction,id:string,bytes:Uint8Array){await transactions.run(tx,()=>store.put(tx.context,id,bytes));},
     async get(tx:OwnerTransaction,id:string){return transactions.run(tx,()=>store.get(tx.context,id));},
+    async delete(tx:OwnerTransaction,id:string){await transactions.run(tx,()=>store.delete(tx.context,id));},
     close(){store.close();},
   };
 }
@@ -255,6 +263,39 @@ export async function ingestAssistantMessage(tx:OwnerTransaction,objects:Evidenc
     [tx.context.ownerScopeId,result.evidenceId])).rows[0];
   if(!anchor)throw new Refusal(503,'EVIDENCE_UNAVAILABLE');
   return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string};
+}
+
+/** The source type of an authoritative external tool receipt (ADR 0030 §6). */
+export const TOOL_RECEIPT='TOOL_RECEIPT';
+export interface ToolReceiptRequest {
+  /** The receipt exactly as the tool returned it. */
+  readonly receipt:Record<string,unknown>;
+  readonly toolId:string;
+  readonly externalActionRef:string;
+  readonly occurredAt:string|null;
+  readonly idempotencyKey:string;
+  readonly sensitivity:EvidenceInput['sensitivity'];
+  readonly allowedPurposes:readonly string[];
+}
+/** Store an external tool's receipt as evidence (PRD §60: only the authoritative
+ * receipt establishes what was executed; CRT-AI-04-A).
+ *
+ * It goes through the same `ingest` as every other item -- content hash, receipt,
+ * durable object and a recorded triage route -- attributed to the external tool,
+ * never to the owner, and anchored as one JSON path over the whole receipt so an
+ * execution fact can point at it. */
+export async function ingestToolReceipt(tx:OwnerTransaction,objects:EvidenceObjects,request:ToolReceiptRequest):
+  Promise<{evidenceId:string;stored:boolean}>{
+  if(tx.context.purpose!=='evidence.ingest')throw new Refusal(403,'EVIDENCE_POLICY_REFUSED');
+  const input=evidenceInputSchema.parse({
+    ownerScopeId:tx.context.ownerScopeId,connectorId:null,sourceType:TOOL_RECEIPT,externalId:request.externalActionRef,
+    actorRef:{type:'EXTERNAL',id:request.toolId},occurredAt:request.occurredAt,content:request.receipt,
+    deterministicMetadata:{toolId:request.toolId},sensitivity:request.sensitivity,
+    allowedPurposes:[...request.allowedPurposes],idempotencyKey:request.idempotencyKey,
+  });
+  const result=await ingest(tx,input,objects);
+  await writeAnchors(tx,result.evidenceId,[{kind:'CONNECTOR_JSON_PATH',anchor:{path:'$'},normalizedText:null}]);
+  return {evidenceId:result.evidenceId,stored:result.stored};
 }
 
 async function readAnchors(tx:OwnerTransaction,sourceItemId:string):Promise<ParsedSourceAnchor[]>{

@@ -62,6 +62,10 @@ Report: `docs/today-and-ask.md`; decisions:
   a category means adding a rule there — never a migration, never a second copy
   of the data (CRT-MEM-02-A).
 
+- **The only memory read path for models and plugins.** `src/boundaries.test.ts`
+  stops its walk at this package, so a narrow read a plugin needs (such as
+  `listOpenThreadIds` for `@unai/connectors`) is added here rather than in the
+  plugin runtime (CRT-RD-01-A, ADR 0031 §2).
 - **A briefing surfaces only what its packet supplied.** `buildTodayBriefing`
   reads the typed projection rows *for the frames the packet carries* and no
   others; reading the projections first and the packet second would let a frame

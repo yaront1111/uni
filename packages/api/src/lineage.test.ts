@@ -12,6 +12,7 @@ import {
 import { applyProjectionDelta, readProjectionRows } from '@unai/capabilities';
 import type { ObligationProjectionRow } from '@unai/domain';
 import { createPlatformApi } from './platform.js';
+import type { EvidenceObjects } from './evidence.js';
 
 /**
  * Governed merge and split over the real boundary (PRD §14, §35.11, §44.13,
@@ -112,8 +113,16 @@ const project = () => as('memory.project', tx => applyProjectionDelta(tx, { owne
 const obligationRows = () => as('memory.project', async tx =>
   await readProjectionRows(tx, { ownerScopeId: owner, projectionName: 'obligations_projection' }) as ObligationProjectionRow[]);
 
+/** Where the owner's statement behind each merge or split is stored. */
+const stored = new Map<string, Uint8Array>();
+const evidenceObjects: EvidenceObjects = {
+  encryptionKeyRef: 'kms:test-double',
+  async put(_tx, id, bytes) { stored.set(id, bytes); },
+  async get(_tx, id) { return stored.get(id)!; },
+};
+
 function api() {
-  const app = createPlatformApi({ authPool: admin, appPool, registryReleaseId });
+  const app = createPlatformApi({ authPool: admin, appPool, registryReleaseId, evidenceObjects });
   app.addHook('onRequest', async request => { Object.defineProperty(request.raw.socket, 'encrypted', { value: true }); });
   return app;
 }
@@ -230,6 +239,14 @@ it('CRT-MEM-10-A: merging two obligation instances keeps both old ids resolvable
     expect(retry.statusCode, retry.body).toBe(200);
     expect(retry.json()).toEqual(body);
     expect((await admin.query("SELECT count(*)::int n FROM frame_instance_lineage WHERE from_frame_instance_id=$1", [second.frameInstanceId])).rows[0].n).toBe(1);
+
+    // The Merge correction control's own persisted kind, recorded once for the
+    // transaction with the owner's reason as new evidence (ADR 0028 §3).
+    const operations = (await admin.query(`SELECT o.id,o.operation_kind,o.target_object_type,o.target_object_id,o.overlay_delta_id,
+      s.source_type FROM memory_operations o JOIN source_items s ON s.owner_scope_id=o.owner_scope_id AND s.id=o.evidence_id
+      WHERE o.transaction_id=$1`, [body.transactionId])).rows;
+    expect(operations).toEqual([{ id: body.memoryOperationId, operation_kind: 'MERGE', target_object_type: 'frame_instance',
+      target_object_id: first.frameInstanceId, overlay_delta_id: null, source_type: 'CONVERSATION' }]);
   } finally { await app.close(); }
 });
 

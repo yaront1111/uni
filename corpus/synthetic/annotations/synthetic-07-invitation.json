@@ -1,0 +1,63 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-07-invitation",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-07-invitation.json",
+    "contentHash": "06c08058f0929c632ebc2b14f6089e8f0d5490361df9b208acc39ab76e223d8e"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "thinking",
+      "messageExternalId": "msg-syn-07-1",
+      "start": 0,
+      "end": 68,
+      "quote": "I am thinking about sending the invitations next week, not sure yet."
+    },
+    {
+      "spanRef": "owner-sig6",
+      "messageExternalId": "msg-syn-07-1",
+      "start": 72,
+      "end": 101,
+      "quote": "Noa Bar, noa.bar@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig6",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [],
+  "instanceMatchCases": [],
+  "expectedSlotsAndPropositions": [],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [
+    {
+      "spanRef": "thinking",
+      "kind": "CONSIDERATION_ONLY"
+    }
+  ],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

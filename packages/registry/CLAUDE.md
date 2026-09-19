@@ -8,6 +8,17 @@ Nothing imports this package today. The only consumers are the root scripts `pnp
 
 There are two loaders with one shared verifier (`assemble` in `src/release.ts`). `loadRegistryRelease` is the runtime loader: it resolves `refs/tags/registry-v<version>` and reads blobs from Git objects, so working-tree edits are invisible to it. `lintRegistryCheckout` and `lintRegistryRepository` read the working tree, return `source: 'CHECKOUT'` with `gitCommit: null`, and exist only for CI. In both cases `registry/releases.yaml` is read from the working tree; it is the deployer's pin, which is why a re-tagged commit with different bytes is refused.
 
+## Evaluation tooling (ADR 0031)
+
+This package is also the never-deployed evaluation tooling behind the same `uai` CLI:
+
+- `migration.ts`: `classifyRegistryChange` computes a release's change class against the one before it; `checkMigrationEvidence` is the CRT-REG-05-A gate `uai registry lint` runs. A governed release carries `migration.yaml` inside its directory (hashed with it; `assemble` excludes it from the contract list) naming evidence under `registry/evidence/<version>/`. `publish` writes `registry_migration_manifests` from it, after the base release.
+- `contract-tests.ts`: `uai registry test`, the ten PRD §43.3 areas per frame contract, over production code and the synthetic corpus.
+- `shadow.ts` (pure engine, seven diffs) and `shadow-store.ts` (owner sample read in READ ONLY transactions, production digest, the run record under `evaluation.shadow`): `uai registry shadow-diff`.
+- `corpus.ts`: the gold corpus, `uai corpus import|annotate|run|verify|status`. Scoring calls the production keying rules; `KEYING_RULE_VERSIONS` must name the version constant each rule runs at.
+
+Runtime dependencies now include `@unai/domain`, `@unai/memory`, `@unai/belief` and `@unai/capabilities`; the CLI imports the evaluation modules dynamically, so `uai registry lint` still loads no memory package. Diff entries, lint issues and corpus results carry codes, references and counts only -- never contract, corpus or memory content.
+
 ## Invariants a change must keep
 
 - `assemble` checks in a fixed order: file names and size, then `releaseContentHash` against the recorded hash, then the manifest, then lint. A byte change therefore always reports `REGISTRY_CONTENT_HASH_MISMATCH` and never reaches lint. A test that wants lint issues from a modified file must re-record the hash (see `rerecord` in `src/cli.test.ts`) or call `lintContractDocuments` directly.
@@ -35,7 +46,7 @@ Run from the repository root, because the tests resolve `registry/`, `migrations
 pnpm exec vitest run packages/registry/src/lint.test.ts packages/registry/src/release.test.ts packages/registry/src/cli.test.ts
 ```
 
-These three need no database. `release.test.ts` builds real tagged repositories in the temp directory, and `cli.test.ts` spawns the CLI through `tsx` for each case. Do not pass the bare `packages/registry` path, not even with a `-t` filter, because it also collects `src/snapshot.test.ts`, which throws at import without `UNAI_TEST_DATABASE_URL` and fails the run. That test connects as the privileged principal and commits its fixture repository with a fixed identity and fixed author and committer dates so the tag resolves to the same commit on every run.
+These three need no database. `src/evaluation.test.ts` needs none either (it builds throwaway Git repositories and spawns the CLI); `src/evaluation-db.test.ts` needs the harness and spawns the CLI over a TLS terminator it runs in-process, so it must use async `spawn`, never `spawnSync`. `release.test.ts` builds real tagged repositories in the temp directory, and `cli.test.ts` spawns the CLI through `tsx` for each case. Do not pass the bare `packages/registry` path, not even with a `-t` filter, because it also collects `src/snapshot.test.ts`, which throws at import without `UNAI_TEST_DATABASE_URL` and fails the run. That test connects as the privileged principal and commits its fixture repository with a fixed identity and fixed author and committer dates so the tag resolves to the same commit on every run.
 
 ## Traps
 
@@ -43,4 +54,4 @@ These three need no database. `release.test.ts` builds real tagged repositories 
 - ADR 0011 writes `uai registry publish --tag`; the implemented flag is `--version`.
 - `src/snapshot.ts` imports `uuidV7` from the root lane by relative path (`../../../src/kernel/identities.js`), so moving either file breaks publishing.
 - `src/cli.test.ts` asserts that lint prints exactly one release with 8 contracts, so recording a second release requires updating that expectation.
-- The snapshot test's TRUNCATE must list `registry_releases` first, because parallel suites publish releases then contracts; the reverse order deadlocks (40P01).
+- The snapshot test's TRUNCATE must list `registry_releases` first, because parallel suites publish releases then contracts; the reverse order deadlocks (40P01). Every reader keeps the same order too: migration 0023 re-declares `unai_private.registry_contract_present` to open `registry_releases` before `registry_contracts`, because a reader that opened contracts first was chosen as the deadlock victim beside that TRUNCATE and failed an unrelated suite with a 500 or 503. A new reader of the snapshot must name `registry_releases` first.

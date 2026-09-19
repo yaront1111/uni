@@ -741,6 +741,23 @@ export async function applyProjectionDelta(tx: MemoryTransaction, input: ApplyPr
   });
 }
 
+/**
+ * The rows a replay would write, computed by the same reducer and returned
+ * without writing them.
+ *
+ * The shadow evaluation (ADR 0031) compares what canonical memory projects with
+ * what is stored inside a READ ONLY transaction, so this path must stay free of
+ * any statement that writes: a projection version is minted in memory, never
+ * recorded.
+ */
+export async function computeProjectionRows(tx: MemoryTransaction, input: {
+  ownerScopeId: string; projectionName: ProjectionName; asOf: Date;
+}): Promise<AnyRow[]> {
+  const projection = projectionNameSchema.parse(input.projectionName);
+  const context = await buildContext(tx, input.ownerScopeId, input.asOf);
+  return buildRows(tx, context, projection);
+}
+
 export interface ReplayProjectionInput {
   readonly ownerScopeId: string;
   readonly projectionName: ProjectionName;

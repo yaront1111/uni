@@ -1,0 +1,76 @@
+{
+  "id": "thr-syn-08",
+  "historyId": "908",
+  "messages": [
+    {
+      "id": "msg-syn-08-1",
+      "threadId": "thr-syn-08",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-08-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Ruth Adler <ruth.adler@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "March rent"
+          }
+        ],
+        "body": {
+          "size": 90,
+          "text": "The March rent of ILS 3,600 is due on 1 March 2026.\n-- Ruth Adler, ruth.adler@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-08-2",
+      "threadId": "thr-syn-08",
+      "internalDate": "1788274800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-08-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-08-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Ruth Adler <ruth.adler@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: March rent"
+          }
+        ],
+        "body": {
+          "size": 115,
+          "text": "Paid ILS 1,200 toward the March rent today, transfer TX-88213. The rest next week.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    }
+  ]
+}

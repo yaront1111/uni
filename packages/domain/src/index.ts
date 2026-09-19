@@ -32,8 +32,9 @@ export {sourceAnchorKindSchema,parsedSourceAnchorSchema,parsedSourceItemSchema,p
   type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType} from './sources.js';
 export {registryVersionSchema,registryContentHashSchema,registryContractKindSchema,publicRegistryContractSchema,
   loadedRegistryReleaseSchema,registrySnapshotViewSchema,registryLintIssueSchema,registryLintedReleaseSchema,
-  registryLintReportSchema,
-  type PublicRegistryContract,type LoadedRegistryRelease,type RegistrySnapshotView,type RegistryLintReport} from './registry.js';
+  registryLintReportSchema,registryMigrationStatusSchema,
+  type PublicRegistryContract,type LoadedRegistryRelease,type RegistrySnapshotView,type RegistryLintReport,
+  type RegistryMigrationStatus} from './registry.js';
 export {entityKindSchema,entityLifecycleSchema,entityAliasTypeSchema,entityLineageKindSchema,entityMatchOutcomeSchema,
   modalitySchema,polaritySchema,claimOriginSchema,claimLifecycleSchema,temporalPrecisionSchema,temporalInterpretationSchema,
   slotDescriptorSchema,propositionDescriptorSchema,slotLookupOutcomeSchema,propositionLookupOutcomeSchema,storedClaimSchema,
@@ -122,6 +123,10 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
+export {inspectableObjectTypeSchema,inspectorEntitySchema,inspectorEvidenceSchema,inspectorInferenceSchema,
+  inspectorThreadSchema,inspectorAccessSchema,inspectorClaimConfidenceSchema,inspectorOperationSchema,
+  memoryInspectorSchema,relatedResolutionSchema,relatedFrameSchema,relatedFramesSchema,
+  type InspectableObjectType,type MemoryInspector,type RelatedFrame,type RelatedFrames} from './inspection.js';
 export {memoryLabelSchema,type MemoryLabel} from './labels.js';
 export {timeZoneSchema,todayRequestSchema,briefingDomainSchema,briefingPrioritySchema,briefingOutcomeStateSchema,
   briefingItemKindSchema,rankComponentsSchema,whyObjectTypeSchema,whyRefSchema,briefingItemSchema,
@@ -144,6 +149,14 @@ export {DEFAULT_ATTENTION_BUDGET,attentionBudgetSchema,attentionBudgetPatchSchem
   type ClarificationCard,type MemoryInboxView,type CardDecisionInput,type CardDecisionResult,type LearnedRuleScope,
   type LearnedApprovalRule,type LearnedApprovalRulesView,type ReviewGround,type ReviewStatement,type ReviewSection,
   type PostponementEpisode,type BehavioralObservation,type ReviewManifest,type WeeklyReview} from './review.js';
+export {PRODUCTION_KEYING_RULES,keyingRuleSchema,corpusKindSchema,instanceMatchSignalsSchema,corpusAnnotationSchema,
+  ruleThresholdSchema,identityThresholdsSchema,keyingRuleResultSchema,LABEL_CATEGORIES,corpusResultsSchema,corpusStatusSchema,
+  shadowRunKindSchema,SHADOW_DIFF_NAMES,shadowDiffEntrySchema,shadowDiffSchema,costAndLatencyDiffSchema,
+  shadowSampleRefSchema,evaluationVersionsSchema,shadowReportSchema,publicShadowRunSchema,shadowRunsViewSchema,
+  METRIC_KEYS,metricKeySchema,metricUnitSchema,metricValueSchema,metricsViewSchema,
+  type KeyingRule,type CorpusKind,type CorpusAnnotation,type IdentityThresholds,type KeyingRuleResult,type LabelCategory,
+  type CorpusResults,type CorpusStatus,type ShadowDiff,type ShadowReport,type PublicShadowRun,type ShadowRunsView,
+  type MetricKey,type MetricValue,type MetricsView} from './evaluation.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';
@@ -158,3 +171,17 @@ export {goalPrioritySchema,goalChangeKindSchema,goalPriorityHistoryEntrySchema,t
   type GoalPriorityChange,type RecordDecision,type DecisionProjectionRow,type DecisionProjectionView,type DecisionSource,
   type DecisionRationaleItem,type DecisionRationale,type DecisionReviewInput,type PredictionComparison,type DecisionDetail,
   type DecisionReviewResult,type MentorGround,type MentorCard,type MentorView} from './decisions.js';
+export {actionKindSchema,externalActionKindSchema,actionStageSchema,ACTION_STAGE_LABELS,actionHistoryEntrySchema,
+  actionHistoryViewSchema,actionBasisSchema,draftKindSchema,DRAFT_CAPABILITY,draftContentSchema,createDraftSchema,
+  draftStatusSchema,publicDraftSchema,draftsViewSchema,draftDecisionSchema,executeActionSchema,
+  recommendationStatusSchema,recommendationResponseSchema,createRecommendationSchema,publicRecommendationSchema,
+  recommendationsViewSchema,respondRecommendationSchema,toolReceiptSchema,observedActionSchema,
+  pluginCapabilityAccessSchema,publicPluginCapabilitySchema,setPluginCapabilitiesSchema,
+  retentionRuleSchema,retentionUpdateSchema,domainSensitivityEntrySchema,
+  domainSensitivityUpdateSchema,dataRequestSummarySchema,permissionsViewSchema,exportRequestSchema,
+  exportEvidenceSchema,exportBundleSchema,deletionRequestSchema,deletionPreviewRequestSchema,cascadeCountsSchema,
+  deletionReceiptSchema,retentionCleanupSchema,regenerateEmbeddingsSchema,regenerationReceiptSchema,
+  type ActionKind,type ExternalActionKind,type ActionStage,type ActionHistoryEntry,type ActionHistoryView,
+  type ActionBasis,type CreateDraft,type PublicDraft,type ExecuteAction,type CreateRecommendation,
+  type PublicRecommendation,type ToolReceipt,type PublicPluginCapability,type RetentionRule,
+  type PermissionsView,type ExportBundle,type CascadeCounts,type DeletionReceipt} from './control.js';

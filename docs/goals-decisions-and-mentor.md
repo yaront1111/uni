@@ -9,7 +9,7 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 
 | Design item | Where |
 |---|---|
-| Entities `goals`, `goal_priority_history`, `decision_projection` (plus `mentor_cards`, ADR 0029 §7) | `migrations/0024_goals_decisions_and_mentor.sql` |
+| Entities `goals`, `goal_priority_history`, `decision_projection` (plus `mentor_cards`, ADR 0029 §7) | `migrations/0026_goals_decisions_and_mentor.sql` |
 | Registry release 0.2.0: `shared.decision`, `shared.decision.prediction_review`, `shared.decision.realization` | `registry/releases/0.2.0/` |
 | `GET /v1/goals`, `POST /v1/goals`, `PATCH /v1/goals/{id}/priority` | `packages/api/src/decisions.ts` (purposes `goals.read`, `goals.manage`) |
 | `POST /v1/decisions`, `GET /v1/decisions/{id}`, `POST /v1/decisions/{id}/review` | same (purposes `decisions.record`, `decisions.read`) |

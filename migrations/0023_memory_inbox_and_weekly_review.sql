@@ -1,7 +1,7 @@
 -- Proactive clarification and the weekly review (design entities
 -- `attention_budgets`, `learned_approval_rules`, `clarification_cards`,
 -- `interruption_decisions`, `weekly_reviews`, `behavioral_observations`;
--- PRD §19.3, §19.4, §19.5, §37.4, §39). ADR 0028 records the decisions below
+-- PRD §19.3, §19.4, §19.5, §37.4, §39). ADR 0029 records the decisions below
 -- before the code.
 --
 -- Five rules are carried by the schema rather than by convention:
@@ -81,7 +81,7 @@ CREATE TABLE clarification_cards (
  rule_signature text CHECK(rule_signature IS NULL OR rule_signature ~ '^[a-f0-9]{64}$'),
  rule_scope jsonb CHECK(rule_scope IS NULL OR jsonb_typeof(rule_scope)='object'),
  -- The evidence behind the card when it was last asked: an id outside this set is
- -- material new evidence (ADR 0028 §4).
+ -- material new evidence (ADR 0029 §4).
  known_evidence_ids uuid[] NOT NULL DEFAULT '{}',
  evidence_ids uuid[] NOT NULL DEFAULT '{}',
  policy_inputs jsonb NOT NULL CHECK(jsonb_typeof(policy_inputs)='object'),
@@ -300,7 +300,7 @@ CREATE TRIGGER behavioral_observations_immutable BEFORE UPDATE ON behavioral_obs
 -- read asks this question; reading contracts first let a reader hold the
 -- contracts lock while waiting on releases, which deadlocks against anything
 -- that locks releases then contracts (a publish, or the refused TRUNCATE the
--- snapshot suite asserts). Same purposes, same inputs, same boolean (ADR 0028 §10).
+-- snapshot suite asserts). Same purposes, same inputs, same boolean (ADR 0029 §10).
 CREATE OR REPLACE FUNCTION unai_private.registry_contract_present(release_id uuid, contract text, kind text) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT unai_private.owner_id() IS NOT NULL

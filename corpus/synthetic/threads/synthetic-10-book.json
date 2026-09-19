@@ -1,0 +1,76 @@
+{
+  "id": "thr-syn-10",
+  "historyId": "910",
+  "messages": [
+    {
+      "id": "msg-syn-10-1",
+      "threadId": "thr-syn-10",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-10-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Tom Shaked <tom.shaked@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Your book"
+          }
+        ],
+        "body": {
+          "size": 71,
+          "text": "I'll return your book by Sunday.\n-- Tom Shaked, tom.shaked@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-10-2",
+      "threadId": "thr-syn-10",
+      "internalDate": "1788310800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-10-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-10-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Tom Shaked <tom.shaked@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Your book"
+          }
+        ],
+        "body": {
+          "size": 78,
+          "text": "Just a reminder about that book, no pressure.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    }
+  ]
+}

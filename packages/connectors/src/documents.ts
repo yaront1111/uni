@@ -3,6 +3,7 @@ import {
   type DocumentReceipt, type DocumentSearchResult, type DocumentUpload, type ExtractionPlanReason,
 } from '@unai/domain';
 import { ConnectorError, manifestFor, storedSensitivity } from './manifests.js';
+import { listOpenThreadIds } from '@unai/context';
 import { hasCapability, type ConnectorTransaction } from './grants.js';
 import type { SourceIngest } from './sync.js';
 
@@ -69,6 +70,9 @@ export interface DocumentUploadOptions {
    * regular expression that could disagree with them. */
   readonly readTriage: (tx: ConnectorTransaction, evidenceId: string)
     => Promise<{ readonly route: string; readonly signals: readonly string[] } | null>;
+  /** The owner's own stored sensitivity for uploaded documents, or null for the
+   * manifest default (ADR 0030 §7). */
+  readonly sensitivityFloor?: 'NORMAL' | 'PRIVATE' | 'RESTRICTED' | null;
 }
 
 export async function uploadDocument(
@@ -81,7 +85,7 @@ export async function uploadDocument(
   }
   // The documents manifest's declared default is a floor here too: an upload
   // may be stored more privately than the request asked, never less.
-  const sensitivity = storedSensitivity(manifestFor('DOCUMENT'), upload.sensitivity);
+  const sensitivity = storedSensitivity(manifestFor('DOCUMENT'), upload.sensitivity, options.sensitivityFloor ?? null);
   const imported = await options.ingest(tx, {
     sourceType: 'DOCUMENT', connectorId: upload.connectorId,
     payload: {
@@ -126,10 +130,9 @@ export async function uploadDocument(
  * the owner closed does not, which is what keeps the trigger from meaning
  * "anything ever mentioned". */
 async function hasOpenThread(tx: ConnectorTransaction, threadIds: readonly string[]): Promise<boolean> {
-  const rows = (await tx.query(
-    `SELECT id FROM memory_threads WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) AND lifecycle='OPEN'`,
-    [tx.context.ownerScopeId, [...threadIds]])).rows;
-  return rows.length > 0;
+  // Memory is read through the Context Broker's package, never by this runtime
+  // itself (CRT-RD-01-A).
+  return (await listOpenThreadIds(tx, { ownerScopeId: tx.context.ownerScopeId, threadIds })).length > 0;
 }
 
 /**

@@ -1,0 +1,113 @@
+{
+  "id": "thr-syn-05",
+  "historyId": "905",
+  "messages": [
+    {
+      "id": "msg-syn-05-1",
+      "threadId": "thr-syn-05",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-05-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Maya Ron <maya.ron@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Q3 report"
+          }
+        ],
+        "body": {
+          "size": 89,
+          "text": "Can you get me the Q3 report before the board meeting?\n-- Maya Ron, maya.ron@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-05-2",
+      "threadId": "thr-syn-05",
+      "internalDate": "1788174000000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-05-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-05-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Maya Ron <maya.ron@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Q3 report"
+          }
+        ],
+        "body": {
+          "size": 117,
+          "text": "Sure. I will send the Q3 report by Thursday. I will also send the Q4 plan by Monday.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-05-3",
+      "threadId": "thr-syn-05",
+      "internalDate": "1788346800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-05-3@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-05-2@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Maya Ron <maya.ron@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Q3 report"
+          }
+        ],
+        "body": {
+          "size": 64,
+          "text": "Done, I sent you the Q3 report.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    }
+  ]
+}

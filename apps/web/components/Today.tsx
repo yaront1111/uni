@@ -1,5 +1,6 @@
 import React,{useEffect} from 'react';
 import type {BriefingItem,MemoryLabel,TodayBriefing,WhySources as WhySourcesPanel} from '@unai/domain';
+import {BeliefRefLinks} from './BeliefLinks';
 import {CertaintyBadge,LabelKey,withoutIdentifiers} from './Labels';
 import {Shell} from './Shell';
 import {WhySources} from './WhySources';
@@ -65,6 +66,8 @@ function Item({item,panel,timeZone}:{item:BriefingItem;panel:WhySourcesPanel|nul
       </table>
     </details>
     <WhySources about={item.headline} panel={panel} timeZone={timeZone}/>
+    <BeliefRefLinks refs={item.sourceRefs.length>0?item.sourceRefs:[{objectType:item.itemObjectType,objectId:item.itemObjectId}]}
+      about={withoutIdentifiers(item.headline)}/>
   </li>;
 }
 

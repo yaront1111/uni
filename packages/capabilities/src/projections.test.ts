@@ -605,11 +605,9 @@ it('CRT-PRJ-02-A: a full replay equals the incrementally maintained projection o
     expect(second.rowsRebuilt).toBe(again.length);
   }
   expect(seed).not.toBe(seedInitial);
-  // Twenty committed steps, each reduced, then two full replays of three
-  // projections: over four seconds alone, so vitest's five-second default fails it
-  // whenever the suite's other database files run beside it. Latency is measured by
-  // the load harness (CRT-NFR-01-A), never by this equality check.
-}, 30_000);
+  // Several seconds of generated transactions even on an idle machine: an explicit
+  // budget, so a busy full-suite run cannot fail it on the 5 s default timeout.
+}, 30000);
 
 it('records a rebuild receipt the Projection health screen reads, with the computed comparison verdict', async () => {
   const result = await reduce(tx => runProjectionReplay(tx, { ownerScopeId: owner, asOf: NOW, trigger: 'MANUAL_REPLAY' }));

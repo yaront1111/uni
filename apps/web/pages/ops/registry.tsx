@@ -1,7 +1,7 @@
 import type {GetServerSideProps} from 'next';
 import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {registrySnapshotViewSchema,registryLintReportSchema} from '@unai/domain';
+import {registrySnapshotViewSchema,registryLintReportSchema,shadowRunsViewSchema} from '@unai/domain';
 import {Registry} from '../../components/Registry';
 import {apiRequest,identity} from '../../lib/server';
 export default Registry;
@@ -23,14 +23,19 @@ export const getServerSideProps:GetServerSideProps=async({req,res})=>{
   const session=await identity(req);
   if(!session)return {redirect:{destination:req.headers.cookie?'/signin?reason=expired':'/signin',permanent:false}};
   const lint=await lintReport();
+  const read=(path:string,purpose:string)=>apiRequest(path,'GET',{cookie:req.headers.cookie??'',
+    'x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':randomUUID()});
+  // The recorded shadow runs are a separate read: when they fail the loaded
+  // release is still shown, with the runs reported as unreadable.
+  const shadowRuns=await read('/v1/ops/shadow-evaluations','ops.shadow.read').then(response=>
+    response.status===200?shadowRunsViewSchema.parse(response.body).runs:null,()=>null);
   try{
-    const response=await apiRequest('/v1/ops/registry-snapshot','GET',{cookie:req.headers.cookie??'',
-      'x-owner-scope-id':session.ownerScopeId,'x-purpose':'ops.registry.read','x-correlation-id':randomUUID()});
+    const response=await read('/v1/ops/registry-snapshot','ops.registry.read');
     if(response.status===401)return {redirect:{destination:'/signin?reason=expired',permanent:false}};
-    if(response.status!==200)return {props:{release:null,contracts:[],lint,error:'The loaded release could not be read. Please reload to retry.'}};
+    if(response.status!==200)return {props:{release:null,contracts:[],lint,shadowRuns,error:'The loaded release could not be read. Please reload to retry.'}};
     const view=registrySnapshotViewSchema.parse(response.body);
-    return {props:{...view,lint}};
+    return {props:{...view,lint,shadowRuns}};
   }catch{
-    return {props:{release:null,contracts:[],lint,error:'The loaded release could not be read. Please reload to retry.'}};
+    return {props:{release:null,contracts:[],lint,shadowRuns,error:'The loaded release could not be read. Please reload to retry.'}};
   }
 };

@@ -40,7 +40,7 @@ export { SCHEDULE_CAPABILITY_VERSION, SCHEDULE_FRAME_TYPE, OCCURRENCE_TIME_PREDI
   OCCURRENCE_REFERENCE_PREDICATE, readScheduleState, listScheduledFrameInstanceIds, acceptedResolutionId,
   type ScheduleCanonicalState } from './schedule.js';
 export { REDUCER_VERSION, PROJECTION_PURPOSE, PROJECTION_READ_PURPOSE, ProjectionError, parseMoneyText,
-  applyProjectionDelta, replayProjection, recordRebuildReceipt, listRebuildReceipts, readProjectionRows,
+  applyProjectionDelta, replayProjection, computeProjectionRows, recordRebuildReceipt, listRebuildReceipts, readProjectionRows,
   projectionRowContent, readCommitmentsProjection, readObligationsProjection, readScheduleProjection,
   readProjectionHealth, rebuildProjectionsAfterLineageChange,
   type ApplyProjectionInput, type ReplayProjectionInput, type ProjectionReadFilters, type LineageRebuildInput } from './projections.js';

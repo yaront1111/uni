@@ -5,7 +5,7 @@ import { lifeCategorySchema } from './context.js';
 /** Proactive clarification and the weekly review (PRD §19.3, §19.4, §19.5, §37.4,
  * §39; design entities `clarification_cards`, `attention_budgets`,
  * `interruption_decisions`, `learned_approval_rules`, `weekly_reviews`,
- * `behavioral_observations`; ADR 0028).
+ * `behavioral_observations`; ADR 0029).
  *
  * Schemas only, as every file in this package. The closed enums are the contract
  * migration 0023's CHECK lists hold to.
@@ -46,12 +46,12 @@ export type AttentionBudgetPatch = z.infer<typeof attentionBudgetPatchSchema>;
 // Ambiguities, cards and interruption decisions (PRD §19.3, §19.4, §37.4)
 // ---------------------------------------------------------------------------
 
-/** ADR 0028 §1: what the inbox treats as an ambiguity, each an object that
+/** ADR 0029 §1: what the inbox treats as an ambiguity, each an object that
  * already exists. */
 export const ambiguityKindSchema = z.enum(['UNCONFIRMED_INTERPRETATION', 'CONTESTED_BELIEF', 'CONFLICTING_VALUES']);
 export type AmbiguityKind = z.infer<typeof ambiguityKindSchema>;
 
-/** ADR 0028 §3: `<LIFE_CATEGORY>/<SENSITIVITY>`. */
+/** ADR 0029 §3: `<LIFE_CATEGORY>/<SENSITIVITY>`. */
 export const sensitivityScopeSchema = z.string()
   .regex(/^(FINANCE|FAMILY|WORK|HEALTH|ADMIN|PERSONAL)\/(NORMAL|PRIVATE|RESTRICTED)$/);
 export type SensitivityScope = z.infer<typeof sensitivityScopeSchema>;
@@ -101,7 +101,7 @@ export const interruptionPolicyInputsSchema = z.strictObject({
   urgency: urgencySchema,
   interruptionCost: interruptionCostSchema,
   /** The qualitative product of the four risk inputs and the cost it is weighed
-   * against, both on the fixed scale of `@unai/review` (ADR 0028 §4). */
+   * against, both on the fixed scale of `@unai/review` (ADR 0029 §4). */
   expectedValue: z.number().min(0).max(1),
   interruptionCostValue: z.number().min(0).max(1),
   sensitivityScope: sensitivityScopeSchema,

@@ -3,7 +3,9 @@ export * from './schema.js';
 export { lintContractDocuments, isOutcomeStatusPredicate, REQUIRED_FRAME_CONTRACTS, type LintIssue, type LintResult, type ContractDocument } from './lint.js';
 export {
   RegistryError, releaseContentHash, readReleaseIndex, loadRegistryRelease, lintRegistryCheckout, lintRegistryRepository,
-  RELEASE_INDEX_PATH, RELEASES_DIRECTORY, type LoadedRegistryRelease,
+  readTaggedMigrationEvidence, RELEASE_INDEX_PATH, RELEASES_DIRECTORY, MIGRATION_FILE, type LoadedRegistryRelease,
 } from './release.js';
+export { classifyRegistryChange, checkMigrationEvidence, type RegistryChange, type RegistryChangeSet, type MigrationStatus,
+  type EvidenceState } from './migration.js';
 export { validatePredicateValue, findPredicate } from './values.js';
 export { publishRegistryRelease, canonicalJson } from './snapshot.js';

@@ -8,7 +8,7 @@ goal-b2cc3b54-1876-401e-a6a2-527f99b679bc (design v1, sealed graph
 Criteria: CRT-DEC-01-A, CRT-DEC-02-A, CRT-DEC-03-A.
 
 Recorded before the implementing change, per PRD §0.7 and §46. Paired with
-`migrations/0024_goals_decisions_and_mentor.sql` and registry release 0.2.0.
+`migrations/0026_goals_decisions_and_mentor.sql` and registry release 0.2.0.
 
 ## 1. Registry release 0.2.0 adds `shared.decision` and changes nothing else
 

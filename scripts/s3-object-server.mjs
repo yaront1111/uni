@@ -124,6 +124,13 @@ export async function startS3ObjectServer({bucket, kmsKeyId}) {
       response.writeHead(200, {...receipt, 'content-type': 'application/octet-stream', 'content-length': plaintext.length});
       return request.method === 'HEAD' ? response.end() : response.end(plaintext);
     }
+    // S3 answers 204 whether or not the key existed, so a retried deletion
+    // succeeds exactly as the first one did.
+    if (request.method === 'DELETE') {
+      objects.delete(objectKey);
+      response.writeHead(204);
+      return response.end();
+    }
     return sendError(response, 501, 'NotImplemented');
   }
 

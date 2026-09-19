@@ -10,7 +10,7 @@ import { attentionBudgetSchema, interruptionDecisionKindSchema, interruptionPoli
  * entities `goals`, `goal_priority_history`, `decision_projection`; ADR 0029).
  *
  * Schemas only, as every file in this package. The closed enums are the contract
- * migration 0024's CHECK lists and `@unai/capabilities` / `@unai/mentor` hold to.
+ * migration 0026's CHECK lists and `@unai/capabilities` / `@unai/mentor` hold to.
  */
 
 const registryId = z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/);

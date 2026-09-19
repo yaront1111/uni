@@ -9,7 +9,7 @@ import type { RuleBasis } from './ambiguities.js';
 
 /**
  * Learned approval rules (PRD §19.5; design entity `learned_approval_rules`,
- * GET /v1/approval-rules, POST .../{id}/approve and .../{id}/revoke; ADR 0028 §6).
+ * GET /v1/approval-rules, POST .../{id}/approve and .../{id}/revoke; ADR 0029 §6).
  *
  * "Uai may propose an explicit policy after repeated confirmations ... The rule
  * becomes active only after explicit user approval and remains inspectable,

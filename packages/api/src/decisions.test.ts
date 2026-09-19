@@ -19,7 +19,7 @@ import type { EvidenceObjects } from './evidence.js';
  * TLS, session, owner scope, purpose, the owner's words stored as evidence under
  * `memory.correct`, canonicalized under `memory.canonicalize`, reduced under
  * `memory.project`, read through the Context Broker under `memory.read` -- all as
- * the low-privilege application role, so migration 0024's policies are part of
+ * the low-privilege application role, so migration 0026's policies are part of
  * what is exercised. The transition contracts are read out of
  * `registry/releases/0.2.0` by the registry library, so the review is validated
  * against the release's YAML and not a copy of it.

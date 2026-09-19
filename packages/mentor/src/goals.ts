@@ -15,7 +15,7 @@ import { uuidV7 } from '../../../src/kernel/identities.js';
  * statement of a priority -- the first, every change and every temporary
  * override -- is a new `goal_priority_history` row, which no principal can update
  * or delete. `goals.current_priority` is only a cache of the latest standing
- * statement, and migration 0024 refuses to move it unless this transaction
+ * statement, and migration 0026 refuses to move it unless this transaction
  * appended the row it names.
  */
 
@@ -121,7 +121,7 @@ async function setOverride(tx: MemoryTransaction, input: { ownerScopeId: string;
 }
 
 /** State a goal. Its first priority is its INITIAL history row, written in the
- * same transaction (migration 0024 refuses a goal without one at commit). */
+ * same transaction (migration 0026 refuses a goal without one at commit). */
 export async function createGoal(tx: MemoryTransaction, input: {
   ownerScopeId: string; actorId: string; goal: CreateGoal; now: Date;
 }): Promise<Goal> {

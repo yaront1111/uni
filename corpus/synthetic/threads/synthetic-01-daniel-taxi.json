@@ -1,0 +1,113 @@
+{
+  "id": "thr-syn-01",
+  "historyId": "901",
+  "messages": [
+    {
+      "id": "msg-syn-01-1",
+      "threadId": "thr-syn-01",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-01-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Daniel Cohen <daniel.cohen@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Taxi money"
+          }
+        ],
+        "body": {
+          "size": 94,
+          "text": "Hi Daniel, I lent you ILS 50 for the taxi on Sunday. No rush.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-01-2",
+      "threadId": "thr-syn-01",
+      "internalDate": "1788177600000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-01-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-01-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Daniel Cohen <daniel.cohen@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Taxi money"
+          }
+        ],
+        "body": {
+          "size": 112,
+          "text": "Thanks Noa! About the taxi money: I'll pay you back the 50 by Friday.\n-- Daniel Cohen, daniel.cohen@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-01-3",
+      "threadId": "thr-syn-01",
+      "internalDate": "1788382800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-01-3@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-01-2@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Daniel Cohen <daniel.cohen@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Taxi money"
+          }
+        ],
+        "body": {
+          "size": 83,
+          "text": "Done, I sent you the 50 on Bit just now.\n-- Daniel Cohen, daniel.cohen@example.test"
+        }
+      }
+    }
+  ]
+}

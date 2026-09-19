@@ -7,7 +7,7 @@ import {
 
 /**
  * Recording a weekly review (design entities `weekly_reviews` and
- * `behavioral_observations`; ADR 0028 §7, §8).
+ * `behavioral_observations`; ADR 0029 §7, §8).
  *
  * Runs inside a `review.weekly` transaction. The grounds check happens here, at
  * the last point before anything is stored: a statement naming an object the

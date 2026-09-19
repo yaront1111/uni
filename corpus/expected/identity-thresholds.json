@@ -1,0 +1,11 @@
+{
+  "format": "unai-identity-thresholds/1",
+  "version": "identity-thresholds-1",
+  "minimumRealThreads": 10,
+  "rules": {
+    "entity.strong_alias_exact": { "maxFalseMergeRate": 0, "maxFalseSplitRate": 0.5, "minObservations": 20 },
+    "frame_instance.confirmed_match": { "maxFalseMergeRate": 0, "maxFalseSplitRate": 0.5, "minObservations": 6 },
+    "belief_slot.descriptor_identity": { "maxFalseMergeRate": 0, "maxFalseSplitRate": 0, "minObservations": 20 },
+    "proposition.normalized_value_identity": { "maxFalseMergeRate": 0, "maxFalseSplitRate": 0.1, "minObservations": 20 }
+  }
+}

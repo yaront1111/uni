@@ -4,7 +4,7 @@
 
 ## Surface and consumers
 
-`src/index.ts` exports `createEncryptedS3Store(configuration, resolveKey)`, `StorageConfiguration` and `AuthorizedKeyResolver`. The returned store has only `put`, `get` and `close`; there is no delete, list or overwrite. The single consumer is `createEvidenceObjects` in `packages/api/src/evidence.ts`, which imports `../../storage/src/index.js` by relative path because `@unai/api` does not declare this package as a dependency. `scripts/storage-harness.mjs` resolves `@aws-sdk/client-s3` through this folder's `package.json` with `createRequire` at module load, so the SDK dependency must stay declared here: `packages/api/src/reference-stack.test.ts` asserts it, and without it `scripts/test.mjs` dies on import, before any named harness step.
+`src/index.ts` exports `createEncryptedS3Store(configuration, resolveKey)`, `StorageConfiguration` and `AuthorizedKeyResolver`. The returned store has `put`, `get`, `delete` and `close`; there is no list or overwrite. `delete` exists for the deletion cascade (ADR 0030 §8) and goes through the same resolver with operation `DELETE`, which `createEvidenceObjects` answers only under `data.delete`. The single consumer is `createEvidenceObjects` in `packages/api/src/evidence.ts`, which imports `../../storage/src/index.js` by relative path because `@unai/api` does not declare this package as a dependency. `scripts/storage-harness.mjs` resolves `@aws-sdk/client-s3` through this folder's `package.json` with `createRequire` at module load, so the SDK dependency must stay declared here: `packages/api/src/reference-stack.test.ts` asserts it, and without it `scripts/test.mjs` dies on import, before any named harness step.
 
 ## Invariants
 
@@ -24,7 +24,7 @@ Before the resolver runs, `put` and `get` check in order: `STORAGE_CLOSED` after
 
 - Once the key is resolved, every failure in `put` and `get` collapses to `STORAGE_OPERATION_FAILED`, including a rejected receipt, a missing body and the 412 of a conditional PUT. `STORAGE_ENCRYPTION_REQUIRED` and `STORAGE_BODY_MISSING` thrown inside those bodies are internal and never reach a caller. Tests assert the message with `/^STORAGE_OPERATION_FAILED$/`, so never append provider text or a key.
 - Because of `IfNoneMatch`, `put` is not an idempotent retry: a second write to the same key fails. `ingest` in `packages/api/src/evidence.ts` calls it only for a newly inserted row with a fresh random `raw/<hex>` key, after inserting the `evidence_object_keys` row that the resolver reads back in the same transaction.
-- An object can outlive its row, either through a failed database commit or through a PUT whose receipt was rejected after the write. The adapter cannot delete it, and `docs/evidence-runtime.md` assigns orphan cleanup to deployment reconciliation.
+- An object can outlive its row, either through a failed database commit or through a PUT whose receipt was rejected after the write. The adapter deletes only objects whose row the erasure names, so an orphan is still deployment reconciliation work (`docs/evidence-runtime.md`).
 
 ## Tests and changing the S3 request shape
 

@@ -2,7 +2,7 @@
 
 Proactive clarification and the weekly review (PRD §7.5, §7.7, §19.3-§19.5,
 §37.4, §39). Report: `docs/memory-inbox-and-weekly-review.md`; decisions:
-`docs/adr/0028-memory-inbox-attention-budgets-and-weekly-review.md`. Routes live
+`docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md`. Routes live
 in `packages/api/src/review.ts`; screens in `apps/web/components/MemoryInbox.tsx`,
 `ApprovalRules.tsx` and `WeeklyReview.tsx`.
 
@@ -13,7 +13,7 @@ in `packages/api/src/review.ts`; screens in `apps/web/components/MemoryInbox.tsx
   card per situation (memory thread, else frame), with facts, why it matters and
   what each choice will change. The §37.4 repayment template lives here.
 - `interruption.ts` (pure): `decideInterruption(state)` — the fixed check order of
-  ADR 0028 §4 and the logged `policyInputs`.
+  ADR 0029 §4 and the logged `policyInputs`.
 - `budgets.ts`, `rules.ts`, `inbox.ts`: the `attention_budgets`,
   `learned_approval_rules`, `clarification_cards` and `interruption_decisions`
   stores. `evaluateInbox` decides and logs; `readInbox` answers the screen.

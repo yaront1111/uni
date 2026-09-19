@@ -9,8 +9,11 @@ grants and the connector lifecycle. Report: `docs/connectors.md`; decisions:
 - **A connector produces evidence and nothing else.** No file here imports the
   belief-transaction path, a projection, the model gateway or the object store.
   Ingestion and job enqueueing are ports (`SourceIngest`, `ExtractionEnqueue`) the
-  API composition supplies, which is also what keeps the future connector
-  architecture test (CRT-CON-09-A) satisfiable.
+  API composition supplies, which is what `src/boundaries.test.ts` checks
+  (CRT-CON-09-A). That test also treats this package as the plugin runtime
+  (CRT-RD-01-A): it may read no memory table itself. Memory reads go through
+  `@unai/context` (`buildPluginContextBundle` uses the broker; `hasOpenThread`
+  uses `listOpenThreadIds`).
 - **Authority is per capability.** `requireCapability(tx, connectorId,
   capabilityId)` is the only enforcement point, it reads one row, and nothing
   widens a grant to a sibling. Adding an implication between capabilities breaks

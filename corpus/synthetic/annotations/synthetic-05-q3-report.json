@@ -1,0 +1,275 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-05-q3-report",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-05-q3-report.json",
+    "contentHash": "a8f65af8dac911b19f618497572d6860c1d40752226d63d57b4e60c9189af601"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "ask",
+      "messageExternalId": "msg-syn-05-1",
+      "start": 0,
+      "end": 54,
+      "quote": "Can you get me the Q3 report before the board meeting?"
+    },
+    {
+      "spanRef": "maya-sig",
+      "messageExternalId": "msg-syn-05-1",
+      "start": 58,
+      "end": 89,
+      "quote": "Maya Ron, maya.ron@example.test"
+    },
+    {
+      "spanRef": "promise-q3",
+      "messageExternalId": "msg-syn-05-2",
+      "start": 6,
+      "end": 44,
+      "quote": "I will send the Q3 report by Thursday."
+    },
+    {
+      "spanRef": "promise-q4",
+      "messageExternalId": "msg-syn-05-2",
+      "start": 45,
+      "end": 84,
+      "quote": "I will also send the Q4 plan by Monday."
+    },
+    {
+      "spanRef": "owner-sig3",
+      "messageExternalId": "msg-syn-05-2",
+      "start": 88,
+      "end": 117,
+      "quote": "Noa Bar, noa.bar@example.test"
+    },
+    {
+      "spanRef": "done-q3",
+      "messageExternalId": "msg-syn-05-3",
+      "start": 0,
+      "end": 31,
+      "quote": "Done, I sent you the Q3 report."
+    },
+    {
+      "spanRef": "owner-sig4",
+      "messageExternalId": "msg-syn-05-3",
+      "start": 35,
+      "end": 64,
+      "quote": "Noa Bar, noa.bar@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:maya",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "maya-sig",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Maya Ron"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "maya.ron@example.test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig3",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "owner-sig4",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "commitment:noa-q3-report",
+      "frameType": "shared.commitment",
+      "roles": [
+        {
+          "roleId": "promisor",
+          "entityRef": "person:noa"
+        },
+        {
+          "roleId": "promisee",
+          "entityRef": "person:maya"
+        }
+      ],
+      "spanRefs": [
+        "promise-q3"
+      ]
+    },
+    {
+      "instanceRef": "commitment:noa-q4-plan",
+      "frameType": "shared.commitment",
+      "roles": [
+        {
+          "roleId": "promisor",
+          "entityRef": "person:noa"
+        },
+        {
+          "roleId": "promisee",
+          "entityRef": "person:maya"
+        }
+      ],
+      "spanRefs": [
+        "promise-q4"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-q4-not-q3",
+      "mentionSpanRef": "promise-q4",
+      "mentionInstanceRef": "commitment:noa-q4-plan",
+      "candidateInstanceRef": "commitment:noa-q3-report",
+      "signals": {
+        "threadContinuity": true,
+        "sharedResolvedEntityRoles": [
+          "promisor",
+          "promisee"
+        ],
+        "temporalCompatibility": "INCOMPATIBLE"
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:q3-action",
+      "instanceRef": "commitment:noa-q3-report",
+      "predicateId": "shared.commitment.action_description",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:q3-send",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "promise-q3",
+              "value": "send the Q3 report to Maya"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:q3-due",
+      "instanceRef": "commitment:noa-q3-report",
+      "predicateId": "shared.commitment.due_time",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:q3-thursday",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "promise-q3",
+              "value": "2026-09-03T17:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:q4-action",
+      "instanceRef": "commitment:noa-q4-plan",
+      "predicateId": "shared.commitment.action_description",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:q4-send",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "promise-q4",
+              "value": "send the Q4 plan to Maya"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:q4-due",
+      "instanceRef": "commitment:noa-q4-plan",
+      "predicateId": "shared.commitment.due_time",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:q4-monday",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "promise-q4",
+              "value": "2026-09-07T17:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [
+      {
+        "instanceRef": "commitment:noa-q3-report",
+        "spanRef": "promise-q3"
+      },
+      {
+        "instanceRef": "commitment:noa-q4-plan",
+        "spanRef": "promise-q4"
+      }
+    ],
+    "resolutions": [
+      {
+        "resolutionRef": "res:q3-fulfilled",
+        "instanceRef": "commitment:noa-q3-report",
+        "spanRef": "done-q3",
+        "transitionContractId": "shared.commitment.resolution",
+        "linkKind": "RESOLVES",
+        "outcomeCode": "FULFILLED",
+        "targetFrameType": null
+      }
+    ]
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}
