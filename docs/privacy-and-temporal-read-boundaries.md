@@ -2,6 +2,8 @@
 
 Date: 2026-09-19. First implementation tranche of [Task A](plans/2026-09-19-evolving-understanding.md).
 
+The subsequent [derived evidence and inspector privacy](derived-evidence-privacy.md) tranche covers the advanced inspector, derived source authorization, mixed-source claim metadata and multi-input erasure. This report retains the first tranche's verification record.
+
 ## Behavior
 
 The Context Broker filters owner assertions and their independent verification by source authorization and knowledge time before assembling or storing a packet. Later-recorded claims, assessments, and resolutions cannot introduce their values into earlier context. ACTUAL values with a future valid-from date do not become current values through a missing assessment interval. The selector uses the same claim-interval fallback as the broker.
@@ -40,7 +42,7 @@ The free-agent changes add 43 tests over the initial 824-test baseline. Before i
 
 ## Remaining work
 
-- This is not the complete Task A exit or an audit of every memory reader. Advanced inspector output, complete historical replay of mutable graph/lifecycle state, and multi-input derived-value erasure need further focused review. Projection completeness/watermarks remain conservative current operational metadata, not a reconstructed historical snapshot.
+- This is not the complete Task A exit or an audit of every memory reader. Complete historical replay of mutable graph/lifecycle state and other owner-wide history readers need further focused review. The follow-up report covers the inspector and multi-input derived-value erasure. Projection completeness/watermarks remain conservative current operational metadata, not a reconstructed historical snapshot.
 - Semantic matches withheld by an explicit policy verdict are removed after the existing search. Moving all policy exclusions before relevance budgeting belongs with the retrieval work; this change does not claim to fix the existing 100-frame candidate limit.
 - Explicit aging policies/provenance, old-commitment retrieval, the processing worker, and scheduled initiative remain subsequent tasks. No model-backed production ingestion journey or deployment is claimed.
 - The owner-local real corpus gate still requires actual owner data; synthetic fixtures do not satisfy it.
