@@ -1,0 +1,176 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-10-book",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-10-book.json",
+    "contentHash": "f44ba24753623655c23b52f0b353dc19bd750e6ca9e37083c2263c1b9e60ef33"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "return",
+      "messageExternalId": "msg-syn-10-1",
+      "start": 0,
+      "end": 32,
+      "quote": "I'll return your book by Sunday."
+    },
+    {
+      "spanRef": "tom-sig",
+      "messageExternalId": "msg-syn-10-1",
+      "start": 36,
+      "end": 71,
+      "quote": "Tom Shaked, tom.shaked@example.test"
+    },
+    {
+      "spanRef": "book-reminder",
+      "messageExternalId": "msg-syn-10-2",
+      "start": 0,
+      "end": 45,
+      "quote": "Just a reminder about that book, no pressure."
+    },
+    {
+      "spanRef": "owner-sig8",
+      "messageExternalId": "msg-syn-10-2",
+      "start": 49,
+      "end": 78,
+      "quote": "Noa Bar, noa.bar@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:tom",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "tom-sig",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Tom Shaked"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "tom.shaked@example.test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig8",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "commitment:tom-book",
+      "frameType": "shared.commitment",
+      "roles": [
+        {
+          "roleId": "promisor",
+          "entityRef": "person:tom"
+        },
+        {
+          "roleId": "promisee",
+          "entityRef": "person:noa"
+        }
+      ],
+      "spanRefs": [
+        "return",
+        "book-reminder"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-book-reminder",
+      "mentionSpanRef": "book-reminder",
+      "mentionInstanceRef": "commitment:tom-book",
+      "candidateInstanceRef": "commitment:tom-book",
+      "signals": {
+        "threadContinuity": true,
+        "explicitReference": "SAME",
+        "sharedResolvedEntityRoles": [
+          "promisor",
+          "promisee"
+        ]
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:book-action",
+      "instanceRef": "commitment:tom-book",
+      "predicateId": "shared.commitment.action_description",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:book-return",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "return",
+              "value": "return Noa's book"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:book-due",
+      "instanceRef": "commitment:tom-book",
+      "predicateId": "shared.commitment.due_time",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:book-sunday",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "return",
+              "value": "2026-09-06T17:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [
+      {
+        "instanceRef": "commitment:tom-book",
+        "spanRef": "return"
+      }
+    ],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [
+    {
+      "spanRef": "book-reminder",
+      "kind": "NON_MEMORY"
+    }
+  ],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

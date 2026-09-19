@@ -37,6 +37,19 @@ export async function createMemoryThread(tx: MemoryTransaction, input: {
   return id;
 }
 
+/** Which of the given threads are still open. The narrow read a plugin needs to
+ * decide whether an upload belongs to an active workflow (CRT-CON-05-A); it lives
+ * here so the plugin runtime reads no memory table itself (CRT-RD-01-A). */
+export async function listOpenThreadIds(tx: MemoryTransaction, input: {
+  ownerScopeId: string; threadIds: readonly string[];
+}): Promise<string[]> {
+  if (input.threadIds.length === 0) return [];
+  const rows = (await tx.query(
+    `SELECT id FROM memory_threads WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) AND lifecycle='OPEN' ORDER BY id`,
+    [input.ownerScopeId, [...input.threadIds]])).rows;
+  return rows.map(row => row['id'] as string);
+}
+
 /** The object types a membership may name, and the table each one lives in. A
  * membership that named a row that does not exist would be a thread that shows
  * something the owner never recorded. */

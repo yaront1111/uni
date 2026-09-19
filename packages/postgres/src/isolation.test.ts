@@ -210,6 +210,17 @@ describe('real PostgreSQL owner isolation', () => {
         VALUES($1,$2,'claim',$3,$4,'shared.obligation.principal_amount','unai-hashed-lexical','hashed-lexical-256-0.1.0',
         $5,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],ARRAY[$6::uuid],ARRAY['DOCUMENT'],now(),$7)`,
         [randomUUID(),owner,claim,proposition,'['+Array.from({length:256},(_,i)=>i===0?1:0).join(',')+']',source,'f'.repeat(64)]);
+      // Evaluation: one recorded shadow run and one recorded metric per owner.
+      const emptyDiff=JSON.stringify({compared:0,changed:0,entries:[],truncated:false,notes:{}});
+      await pool.query(`INSERT INTO shadow_evaluation_runs(id,owner_scope_id,run_kind,sample_ref,baseline_version,candidate_version,
+        evaluation_versions,instance_match_diff,slot_collision_diff,proposition_diff,belief_status_diff,resolution_diff,
+        projection_diff,cost_and_latency_diff,production_unchanged,requested_by_actor_id,correlation_id)
+        VALUES($1,$2,'REGISTRY','{}','0.1.0','0.1.0','{}',$3,$3,$3,$3,$3,$3,'{}',true,$4,$5)`,
+        [randomUUID(),owner,emptyDiff,actor,randomUUID()]);
+      await pool.query(`INSERT INTO economic_and_quality_metrics(id,owner_scope_id,metric_key,unit,value,numerator,denominator,
+        window_start,window_end,metrics_version,correlation_id)
+        VALUES($1,$2,'cost_per_source_item','MICROUNITS_PER_ITEM',12.5,25,2,now()-interval '1 day',now(),'metrics-0.1.0',$3)`,
+        [randomUUID(),owner,randomUUID()]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -696,7 +707,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(55);
+    expect(rows.length).toBe(58);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -991,6 +1002,54 @@ describe('real PostgreSQL owner isolation', () => {
     await expect(saved!.query('SELECT * FROM devices')).rejects.toThrow('TRANSACTION_CLOSED');
   });
 
+
+  it('CRT-SEC-01-A and CRT-WRT-09-A: hides B from unfiltered owner A evaluation queries and keeps both records append-only',async()=>{
+    const reads:Record<string,string>={shadow_evaluation_runs:'ops.shadow.read',economic_and_quality_metrics:'ops.metrics.read'};
+    for(const [table,purpose] of Object.entries(reads)){
+      await asOwner(a,alice,async c=>{
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      },purpose);
+      await asOwner(b,alice,async c=>{expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);},purpose);
+      // Purpose-bound: any other purpose reads none of it.
+      await asOwner(a,alice,async c=>{expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);},'memory.inspect');
+    }
+    // A shadow run is recorded only under its own purpose and by its own actor;
+    // the console's read purpose writes nothing.
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO shadow_evaluation_runs SELECT gen_random_uuid(),owner_scope_id,run_kind,
+      sample_ref,baseline_version,candidate_version,evaluation_versions,instance_match_diff,slot_collision_diff,proposition_diff,
+      belief_status_diff,resolution_diff,projection_diff,cost_and_latency_diff,production_unchanged,requested_by_actor_id,
+      correlation_id,created_at FROM shadow_evaluation_runs`).then(()=>{}),'ops.shadow.read')).rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO shadow_evaluation_runs(id,owner_scope_id,run_kind,sample_ref,baseline_version,
+      candidate_version,evaluation_versions,instance_match_diff,slot_collision_diff,proposition_diff,belief_status_diff,resolution_diff,
+      projection_diff,cost_and_latency_diff,requested_by_actor_id,correlation_id)
+      VALUES(gen_random_uuid(),$1,'REGISTRY','{}','0.1.0','0.1.0','{}','{}','{}','{}','{}','{}','{}','{}',$2,gen_random_uuid())`,[a,bob])
+      .then(()=>{}),'evaluation.shadow')).rejects.toMatchObject({code:'42501'});
+    for(const table of Object.keys(reads)){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),reads[table]),table).rejects.toMatchObject({code:'42501'});
+    }
+    // Not even the migration principal rewrites what a run or a metric recorded.
+    await expect(pool.query("UPDATE shadow_evaluation_runs SET production_unchanged=false WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('EVALUATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE economic_and_quality_metrics SET value=0 WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('EVALUATION_RECORD_IMMUTABLE');
+    // The metrics reader answers counts for the calling owner under its purpose only.
+    await asOwner(a,alice,async c=>{
+      const inputs=(await c.query("SELECT unai_private.economic_and_quality_inputs(now()-interval '1 day',now()+interval '1 minute') AS v")).rows[0].v;
+      expect(inputs.sourceItems).toBeGreaterThanOrEqual(1);
+      expect(Object.keys(inputs)).not.toContain('ownerScopeId');
+    },'ops.metrics.read');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("SELECT unai_private.economic_and_quality_inputs(now()-interval '1 day',now()) AS v")).rows[0].v).toBeNull();
+    },'memory.inspect');
+    // The migration manifest snapshot is global and closed to the application.
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN'); await client.query('SET LOCAL ROLE unai_app');
+      await expect(client.query('SELECT * FROM registry_migration_manifests')).rejects.toMatchObject({code:'42501'});
+    }finally{await client.query('ROLLBACK');client.release();}
+  });
 
   it('CRT-SEC-01-A: covers every classified owner-scoped table with an unfiltered cross-owner query',async()=>{
     // Read the classification from the database rather than trusting the export:

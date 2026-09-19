@@ -121,9 +121,31 @@ export async function findEntityCandidates(tx: MemoryTransaction, input: {
       canonicalLabel: (row.canonical_label as string | null),
       lifecycle: row.lifecycle as string,
       matchedAliasTypes: matched,
-      matchedStrongly: matched.some(type => STRONG_ALIAS_TYPES.has(type)),
+      matchedStrongly: matched.some(isStrongAliasType),
     };
   });
+}
+
+/** Whether an alias type identifies one account rather than describing a person. */
+export function isStrongAliasType(aliasType: EntityAliasType): boolean {
+  return STRONG_ALIAS_TYPES.has(aliasType);
+}
+
+/** The under-merge decision itself, over candidates already found. Pure, so the
+ * gold-corpus runner scores exactly the rule `resolveEntity` applies
+ * (CRT-QA-03-A) rather than a copy of it.
+ *
+ * Reuse only on exactly one candidate matched on a strong identifier. Ambiguous
+ * strong evidence is not stronger evidence: two entities answering to one
+ * mailbox is a conflict for a human, never a licence to pick one. */
+export function decideEntityResolution(candidates: readonly Pick<EntityCandidate, 'entityId' | 'matchedAliasTypes' | 'matchedStrongly'>[])
+  : { outcome: EntityMatchOutcome; reuseEntityId: string | null } {
+  const strong = candidates.filter(candidate => candidate.matchedStrongly);
+  if (strong.length === 1) return { outcome: 'CONFIRMED_MATCH', reuseEntityId: strong[0]!.entityId };
+  const outcome: EntityMatchOutcome = candidates.length === 0 ? 'NEW_ENTITY'
+    : strong.length > 1 ? 'POSSIBLE_MATCH'
+    : candidates.some(candidate => candidate.matchedAliasTypes.length > 1) ? 'PROBABLE_MATCH' : 'POSSIBLE_MATCH';
+  return { outcome, reuseEntityId: null };
 }
 
 /** Candidate lookup plus the under-merge decision, in one call.
@@ -141,16 +163,12 @@ export async function resolveEntity(tx: MemoryTransaction, input: {
     aliases: input.aliases,
   });
   const candidates = await findEntityCandidates(tx, request);
-  const strong = candidates.filter(candidate => candidate.matchedStrongly);
-  if (strong.length === 1) {
-    const survivor = await resolveEntityReference(tx, { ownerScopeId: request.ownerScopeId, entityId: strong[0]!.entityId });
-    return { outcome: 'CONFIRMED_MATCH', entityId: survivor, candidates, identityEstablished: true, created: false };
+  const decision = decideEntityResolution(candidates);
+  if (decision.reuseEntityId !== null) {
+    const survivor = await resolveEntityReference(tx, { ownerScopeId: request.ownerScopeId, entityId: decision.reuseEntityId });
+    return { outcome: decision.outcome, entityId: survivor, candidates, identityEstablished: true, created: false };
   }
-  // Ambiguous strong evidence is not stronger evidence: two entities answering to
-  // one mailbox is a conflict for a human, never a licence to pick one.
-  const outcome: EntityMatchOutcome = candidates.length === 0 ? 'NEW_ENTITY'
-    : strong.length > 1 ? 'POSSIBLE_MATCH'
-    : candidates.some(candidate => candidate.matchedAliasTypes.length > 1) ? 'PROBABLE_MATCH' : 'POSSIBLE_MATCH';
+  const outcome = decision.outcome;
   const entityId = await createEntity(tx, {
     ownerScopeId: request.ownerScopeId, entityKind: request.entityKind,
     ...(request.canonicalLabel === undefined ? {} : { canonicalLabel: request.canonicalLabel }),

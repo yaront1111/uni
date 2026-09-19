@@ -1,0 +1,76 @@
+{
+  "id": "thr-syn-04",
+  "historyId": "904",
+  "messages": [
+    {
+      "id": "msg-syn-04-1",
+      "threadId": "thr-syn-04",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-04-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Bright Dental <appointments@bright-dental.example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Appointment confirmation"
+          }
+        ],
+        "body": {
+          "size": 147,
+          "text": "Your cleaning appointment is scheduled for 12 September 2026 at 10:30. Reference BD-4471.\n-- Bright Dental, appointments@bright-dental.example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-04-2",
+      "threadId": "thr-syn-04",
+      "internalDate": "1788886800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-04-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-04-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Bright Dental <appointments@bright-dental.example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Appointment confirmation"
+          }
+        ],
+        "body": {
+          "size": 109,
+          "text": "Reminder: appointment BD-4471 is tomorrow at 10:30.\n-- Bright Dental, appointments@bright-dental.example.test"
+        }
+      }
+    }
+  ]
+}

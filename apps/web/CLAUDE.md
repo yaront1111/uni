@@ -38,6 +38,8 @@ Run them alone from the repository root; they need no database or TLS:
 pnpm exec vitest run apps/web
 ```
 
+`/ops/metrics` (`Metrics.tsx`) reads `GET /v1/ops/metrics`. `/ops/corpus` (`Corpus.tsx`) reads the JSON `uai corpus status --report` wrote, from `UNAI_CORPUS_STATUS_FILE` when set, through `lib/corpus-status.ts`, which refuses a path under the private corpus; the private corpus itself never reaches this app, and `lib/corpus-status.test.ts` fails if any server module names it. `/ops/registry` also reads `GET /v1/ops/shadow-evaluations` and renders the lint report's `migrations` array.
+
 ## Checklist: adding a screen or a browser write
 
 1. Add the component in `components/` with a props-only state model, and a `.test.ts` next to it with one assertion per drawn state, the skip link and the labelled controls.

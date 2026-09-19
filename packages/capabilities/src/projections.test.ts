@@ -593,7 +593,9 @@ it('CRT-PRJ-02-A: a full replay equals the incrementally maintained projection o
     expect(second.rowsRebuilt).toBe(again.length);
   }
   expect(seed).not.toBe(seedInitial);
-});
+  // Several seconds of generated transactions even on an idle machine: an explicit
+  // budget, so a busy full-suite run cannot fail it on the 5 s default timeout.
+}, 30000);
 
 it('records a rebuild receipt the Projection health screen reads, with the computed comparison verdict', async () => {
   const result = await reduce(tx => runProjectionReplay(tx, { ownerScopeId: owner, asOf: NOW, trigger: 'MANUAL_REPLAY' }));

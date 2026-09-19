@@ -6,7 +6,10 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
+    "@unai/belief": "workspace:*",
     "@unai/capabilities": "workspace:*",
+    "@unai/domain": "workspace:*",
+    "@unai/memory": "workspace:*",
     "@unai/postgres": "workspace:*",
     "pg": "^8.16.0",
     "yaml": "^2.9.1",

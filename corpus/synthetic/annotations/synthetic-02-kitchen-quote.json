@@ -1,0 +1,240 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-02-kitchen-quote",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-02-kitchen-quote.json",
+    "contentHash": "b11fe83a712e31d34b01df571c8414965278d58e770af5bb6bbee0b9adba8bf3"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "quote-1",
+      "messageExternalId": "msg-syn-02-1",
+      "start": 0,
+      "end": 49,
+      "quote": "The contractor quoted ILS 18,400 for the kitchen."
+    },
+    {
+      "spanRef": "confirm-1",
+      "messageExternalId": "msg-syn-02-1",
+      "start": 50,
+      "end": 84,
+      "quote": "I said we would confirm by Friday."
+    },
+    {
+      "spanRef": "dana-sig1",
+      "messageExternalId": "msg-syn-02-1",
+      "start": 88,
+      "end": 121,
+      "quote": "Dana Katz, dana.katz@example.test"
+    },
+    {
+      "spanRef": "budget",
+      "messageExternalId": "msg-syn-02-2",
+      "start": 0,
+      "end": 34,
+      "quote": "That is over the budget we agreed."
+    },
+    {
+      "spanRef": "maybe",
+      "messageExternalId": "msg-syn-02-2",
+      "start": 35,
+      "end": 71,
+      "quote": "Maybe we could split out the tiling."
+    },
+    {
+      "spanRef": "owner-sig2",
+      "messageExternalId": "msg-syn-02-2",
+      "start": 75,
+      "end": 104,
+      "quote": "Noa Bar, noa.bar@example.test"
+    },
+    {
+      "spanRef": "quote-2",
+      "messageExternalId": "msg-syn-02-3",
+      "start": 0,
+      "end": 41,
+      "quote": "Tiling split out brings it to ILS 14,900."
+    },
+    {
+      "spanRef": "confirm-2",
+      "messageExternalId": "msg-syn-02-3",
+      "start": 42,
+      "end": 85,
+      "quote": "I will confirm with them on Friday morning."
+    },
+    {
+      "spanRef": "dana-sig2",
+      "messageExternalId": "msg-syn-02-3",
+      "start": 89,
+      "end": 122,
+      "quote": "Dana Katz, dana.katz@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:dana",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "dana-sig1",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Dana Katz"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "dana.katz@example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "dana-sig2",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Dana Katz"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "dana.katz@example.test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig2",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "commitment:dana-confirm-quote",
+      "frameType": "shared.commitment",
+      "roles": [
+        {
+          "roleId": "promisor",
+          "entityRef": "person:dana"
+        },
+        {
+          "roleId": "promisee",
+          "entityRef": "person:noa"
+        }
+      ],
+      "spanRefs": [
+        "confirm-1",
+        "confirm-2"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-confirm-again",
+      "mentionSpanRef": "confirm-2",
+      "mentionInstanceRef": "commitment:dana-confirm-quote",
+      "candidateInstanceRef": "commitment:dana-confirm-quote",
+      "signals": {
+        "threadContinuity": true,
+        "sharedResolvedEntityRoles": [
+          "promisor"
+        ],
+        "temporalCompatibility": "COMPATIBLE",
+        "semanticSimilarity": 0.8
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:confirm-action",
+      "instanceRef": "commitment:dana-confirm-quote",
+      "predicateId": "shared.commitment.action_description",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:confirm-contractor",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "confirm-2",
+              "value": "confirm the kitchen quote with the contractor"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:confirm-due",
+      "instanceRef": "commitment:dana-confirm-quote",
+      "predicateId": "shared.commitment.due_time",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:confirm-friday",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "confirm-1",
+              "value": "2026-09-04T09:00:00.000Z"
+            },
+            {
+              "spanRef": "confirm-2",
+              "value": "2026-09-04T09:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [
+      {
+        "instanceRef": "commitment:dana-confirm-quote",
+        "spanRef": "confirm-2"
+      }
+    ],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [
+    {
+      "spanRef": "budget",
+      "kind": "AMBIGUOUS"
+    },
+    {
+      "spanRef": "maybe",
+      "kind": "CONSIDERATION_ONLY"
+    },
+    {
+      "spanRef": "quote-1",
+      "kind": "UNKNOWN_PREDICATE"
+    },
+    {
+      "spanRef": "quote-2",
+      "kind": "UNKNOWN_PREDICATE"
+    }
+  ],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "id": "thr-syn-06",
+  "historyId": "906",
+  "messages": [
+    {
+      "id": "msg-syn-06-1",
+      "threadId": "thr-syn-06",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-06-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Daniel Levi <daniel.levi@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Lunch"
+          }
+        ],
+        "body": {
+          "size": 113,
+          "text": "Could you cover lunch today? Another ILS 50, I will return it next week.\n-- Daniel Levi, daniel.levi@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-06-2",
+      "threadId": "thr-syn-06",
+      "internalDate": "1788170400000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-06-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-06-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Daniel Levi <daniel.levi@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Lunch"
+          }
+        ],
+        "body": {
+          "size": 51,
+          "text": "Sure Daniel, sent.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    }
+  ]
+}

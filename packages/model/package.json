@@ -11,6 +11,8 @@
   },
   "devDependencies": {
     "@types/pg": "^8.15.0",
+    "@unai/belief": "workspace:*",
+    "@unai/extraction": "workspace:*",
     "@unai/postgres": "workspace:*",
     "pg": "^8.16.0"
   }

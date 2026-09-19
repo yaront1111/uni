@@ -31,7 +31,8 @@ function snapshotRows(release: LoadedRegistryRelease) {
  * Deployment operation for the trusted migration principal only. Materializes a
  * tag-loaded release atomically; the immutable row is the publication audit record.
  */
-export async function publishRegistryRelease(pool: Pool, release: LoadedRegistryRelease, correlationId: string)
+export async function publishRegistryRelease(pool: Pool, release: LoadedRegistryRelease, correlationId: string,
+  migrationEvidence: { slotAndPropositionDiff: Record<string, unknown>; shadowRunId: string | null } | null = null)
   : Promise<{ releaseId: string; outcome: 'PUBLISHED' | 'ALREADY_PUBLISHED' }> {
   if (release.source !== 'GIT_TAG' || !release.gitCommit) throw new RegistryError('REGISTRY_TAG_SOURCE_REQUIRED');
   if (!UUID.test(correlationId)) throw new RegistryError('REGISTRY_CORRELATION_ID_INVALID');
@@ -60,6 +61,20 @@ export async function publishRegistryRelease(pool: Pool, release: LoadedRegistry
       for (const contract of snapshotRows(release)) {
         await client.query(`INSERT INTO registry_contracts(id,registry_release_id,contract_id,contract_version,contract_kind,content,content_hash)
           VALUES($1,$2,$3,$4,$5,$6,$7)`, [uuidV7(), releaseId, contract.id, release.version, contract.kind, JSON.stringify(contract.content), contract.contentHash]);
+      }
+      // A release that migrates from an earlier one publishes its manifest in the
+      // same transaction (PRD §17.7): the base release must already be published,
+      // so a manifest can never point at a release this deployment never loaded.
+      if (release.migration) {
+        const base = (await client.query('SELECT id FROM registry_releases WHERE semantic_version=$1', [release.migration.from])).rows[0];
+        if (!base) throw new RegistryError('REGISTRY_MIGRATION_BASE_NOT_PUBLISHED');
+        await client.query(`INSERT INTO registry_migration_manifests(id,from_registry_release_id,to_registry_release_id,
+            from_semantic_version,to_semantic_version,change_class,slot_and_proposition_diff,projection_replay_ref,shadow_run_id,
+            rollback_plan,manifest_content_hash,correlation_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [uuidV7(), base.id, releaseId, release.migration.from, release.version, release.migration.changeClass,
+            JSON.stringify(migrationEvidence?.slotAndPropositionDiff ?? { shadowDiff: release.migration.shadowDiff ?? null }),
+            release.migration.projectionReplay ?? null, migrationEvidence?.shadowRunId ?? null, release.migration.rollbackPlan ?? null,
+            release.migrationContentHash, correlationId]);
       }
       const commit = await client.query('COMMIT');
       if (commit.command !== 'COMMIT') throw new RegistryError('REGISTRY_PUBLISH_FAILED');

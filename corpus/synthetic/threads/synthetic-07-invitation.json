@@ -1,0 +1,39 @@
+{
+  "id": "thr-syn-07",
+  "historyId": "907",
+  "messages": [
+    {
+      "id": "msg-syn-07-1",
+      "threadId": "thr-syn-07",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-07-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Tom Shaked <tom.shaked@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Party invitation"
+          }
+        ],
+        "body": {
+          "size": 101,
+          "text": "I am thinking about sending the invitations next week, not sure yet.\n-- Noa Bar, noa.bar@example.test"
+        }
+      }
+    }
+  ]
+}

@@ -8,3 +8,10 @@ node_modules/
 .env.local
 .local/
 registry-lint-report.json
+# The private gold corpus (PRD §43.4): real threads never enter Git. A commit
+# adding a file here is also refused by .githooks/pre-commit.
+corpus/private-local/
+corpus-report.json
+corpus-status.json
+registry-test-report.json
+shadow-diff-report.json

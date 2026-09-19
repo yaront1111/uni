@@ -57,6 +57,11 @@ decisions: `docs/adr/0026-answer-manifests-grounding-and-reconsideration.md`.
   a category means adding a rule there — never a migration, never a second copy
   of the data (CRT-MEM-02-A).
 
+- **The only memory read path for models and plugins.** `src/boundaries.test.ts`
+  stops its walk at this package, so a narrow read a plugin needs (such as
+  `listOpenThreadIds` for `@unai/connectors`) is added here rather than in the
+  plugin runtime (CRT-RD-01-A, ADR 0027 §2).
+
 ## Traps
 
 - **A denial must outlive its refusal.** `recordPolicyDecision` runs inside the

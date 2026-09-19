@@ -1,0 +1,164 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-09-planning",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-09-planning.json",
+    "contentHash": "040c1adcf739b1cf8b8264777b9db0f945890f1b06132ef34d1ea392897ab368"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "planning",
+      "messageExternalId": "msg-syn-09-1",
+      "start": 0,
+      "end": 74,
+      "quote": "Weekly planning is on 10 September 2026 at 09:00, calendar event cal-7781."
+    },
+    {
+      "spanRef": "maya-sig2",
+      "messageExternalId": "msg-syn-09-1",
+      "start": 78,
+      "end": 109,
+      "quote": "Maya Ron, maya.ron@example.test"
+    },
+    {
+      "spanRef": "met",
+      "messageExternalId": "msg-syn-09-2",
+      "start": 0,
+      "end": 51,
+      "quote": "Update for cal-7781: we met and agreed the roadmap."
+    },
+    {
+      "spanRef": "maya-sig3",
+      "messageExternalId": "msg-syn-09-2",
+      "start": 55,
+      "end": 86,
+      "quote": "Maya Ron, maya.ron@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:maya",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "maya-sig2",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Maya Ron"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "maya.ron@example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "maya-sig3",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Maya Ron"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "maya.ron@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "event:planning-0910",
+      "frameType": "shared.event_occurrence",
+      "roles": [
+        {
+          "roleId": "actor",
+          "entityRef": "person:maya"
+        }
+      ],
+      "spanRefs": [
+        "planning",
+        "met"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-planning-update",
+      "mentionSpanRef": "met",
+      "mentionInstanceRef": "event:planning-0910",
+      "candidateInstanceRef": "event:planning-0910",
+      "signals": {
+        "externalIdentifierMatch": true
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:planning-time",
+      "instanceRef": "event:planning-0910",
+      "predicateId": "shared.event_occurrence.occurrence_time",
+      "contextKind": "BASE",
+      "modality": "SCHEDULED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:planning-0900",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "planning",
+              "value": "2026-09-10T06:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:planning-ref",
+      "instanceRef": "event:planning-0910",
+      "predicateId": "shared.event_occurrence.external_occurrence_reference",
+      "contextKind": "BASE",
+      "modality": "SCHEDULED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:planning-cal",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "planning",
+              "value": {
+                "system": "calendar",
+                "id": "cal-7781"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": [
+      {
+        "resolutionRef": "res:planning-occurred",
+        "instanceRef": "event:planning-0910",
+        "spanRef": "met",
+        "transitionContractId": "shared.event_occurrence.resolution",
+        "linkKind": "RESOLVES",
+        "outcomeCode": "OCCURRED",
+        "targetFrameType": null
+      }
+    ]
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

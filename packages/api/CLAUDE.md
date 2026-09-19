@@ -42,6 +42,17 @@
   idempotency key up before planning, because the planned ids are no longer
   active after the first commit.
 
+## Metrics and shadow-run routes (`metrics.ts`)
+
+`GET /v1/ops/metrics` (`ops.metrics.read`) reads counts only through the definer
+function `unai_private.economic_and_quality_inputs` (migration 0022), computes each
+metric with integer arithmetic (`exactRatio`; a zero denominator is null, never
+zero), appends one `economic_and_quality_metrics` row per value and audits them.
+Metrics without recorded inputs are returned in `notMeasured`, never as numbers.
+`GET /v1/ops/shadow-evaluations` (`ops.shadow.read`) lists recorded runs as diff
+counts. Neither route name may contain "registr", "contract" or "release"
+(`registry-boundary.test.ts`).
+
 ## Adding a route (local steps on top of the root checklist)
 
 Put it in a `register*Routes(app, work)` module called from `createPlatformApi`. Validate params and body before calling `work` and answer a stable code. Keep SQL for another package's tables in that package: the ops routes contain none and call `@unai/jobs`, which re-checks the purpose with `requirePurpose`. Audit, parse the response through a domain schema, and add the refusal cases `ops.test.ts` has (wrong purpose, foreign owner scope, missing correlation id, missing idempotency key, unknown session). `registry-boundary.test.ts` fails on any route path matching `registr|contract|release` on any file path in this package containing "registr", and on any non-test `.ts`, `.tsx` or `.json` file here that mentions `@unai/registry`, `packages/registry` or `registry/releases`.

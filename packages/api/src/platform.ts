@@ -8,6 +8,7 @@ import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
 import {registerMemoryGovernorRoutes} from './memory.js';
 import {registerCorrectionRoutes,CORRECTION_PURPOSE} from './corrections.js';
 import {registerOpsRoutes} from './ops.js';
+import {registerMetricsRoutes,METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE} from './metrics.js';
 import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
@@ -52,7 +53,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
     CONTEXT_READ_PURPOSE,ASK_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
-    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
+    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE]);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -98,7 +99,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
       request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
       request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
-      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':null;
+      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':
+      request.routeOptions.url==='/v1/ops/metrics'?METRICS_READ_PURPOSE:
+      request.routeOptions.url==='/v1/ops/shadow-evaluations'?SHADOW_READ_PURPOSE:null;
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   /** `purpose` lets a route open one transaction under a purpose its server code
@@ -182,6 +185,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId});
   registerOpsRoutes(app,deviceWork);
+  registerMetricsRoutes(app,deviceWork);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),

@@ -17,14 +17,17 @@ pnpm install --frozen-lockfile
 pnpm typecheck            # root tsc (src + packages) then apps/web tsc
 pnpm test                 # full suite behind the harness (see below)
 pnpm build                # Next.js production build of apps/web
-pnpm validate:registry    # = pnpm uai registry lint
-pnpm check:phase-exit     # typecheck + test + validate:registry
+pnpm validate:registry    # = pnpm uai registry lint (also the registry migration-evidence gate)
+pnpm uai registry test | shadow-diff | projection-replay   # the other three PRD §35.14 commands
+pnpm uai corpus import | annotate | run | verify | status   # the gold corpus (corpus/README.md)
+pnpm check:phase-exit     # typecheck + test + validate:registry + registry test + corpus run + corpus verify
+pnpm hooks:install        # core.hooksPath=.githooks (also run by `prepare`): blocks commits under corpus/private-local/
 pnpm db:migrate           # needs UNAI_MIGRATION_DATABASE_URL + UNAI_DATABASE_CA_PATH
 pnpm start:api            # Fastify API over TLS, default port 3443
 pnpm dev:web              # Next.js via apps/web/server.ts (TLS listener)
 ```
 
-CI (`.github/workflows/foundation.yml`) runs typecheck, test, build, validate:registry.
+CI (`.github/workflows/foundation.yml`) runs typecheck, test, build, validate:registry, `uai registry test`, a corpus-sample `uai registry shadow-diff`, a guard that nothing under `corpus/private-local/` is tracked, and `uai corpus run --corpus synthetic` against `corpus/expected/identity-thresholds.json`. `uai corpus verify` (real-corpus results) runs only in `check:phase-exit`: it fails until the owner records results over at least ten real Gmail threads.
 
 ### Test harness
 
@@ -58,7 +61,7 @@ Package layering:
 - `@unai/storage`: encrypted S3 adapter that verifies bucket settings and every read/write encryption receipt.
 - `@unai/secrets`: `secret://<provider>/<name>[#field]` handles; runtime services refuse to start when a credential variable holds a literal (ADR 0013).
 - `@unai/jobs`: PostgreSQL-backed durable queue (leases, bounded attempts, dead letter). `runJobAttempt` uses three separate transactions for claim, handler and outcome. No broker, no Redis.
-- `@unai/registry`: Git-file semantic registry (`registry/releases/<version>/*.yaml`) with lint, release hashing and an immutable database snapshot, exposed through the CLI `pnpm uai registry lint|publish`. Release files are byte-exact (`.gitattributes -text`). Procedure: `docs/registry.md`.
+- `@unai/registry`: Git-file semantic registry (`registry/releases/<version>/*.yaml`) with lint, release hashing and an immutable database snapshot, exposed through the CLI `pnpm uai registry lint|test|shadow-diff|projection-replay|publish`. Release files are byte-exact (`.gitattributes -text`). Procedure: `docs/registry.md`. It is also the evaluation tooling package (never deployed): the migration-evidence gate (`migration.ts`, a release's `migration.yaml`), the contract test battery (`contract-tests.ts`), the shadow evaluation engine and owner-sample reader (`shadow.ts`, `shadow-store.ts`) and the gold corpus (`corpus.ts`, CLI group `pnpm uai corpus`). Report: `docs/evaluation-and-boundaries.md`, ADR 0027.
 - `@unai/memory`: canonical identity — the entity service with its under-merge default, the temporal resolver, the belief-slot/proposition store with versioned lookup fingerprints, and the claim store. Pure functions over an `OwnerTransaction` the caller opened; no route, job or projection. Report: `docs/canonical-identity.md`. It also holds canonicalization and bitemporal state: the BASE-context default with source attribution, frame-instance matching with its five outcomes, the claim relations that tell a correction from a change, and the three query modes of PRD §12.3. Report: `docs/canonicalization-and-bitemporal.md`. It also holds owner read-your-writes (`overlay.ts`): the owner-sequence allocator, the overlay deltas every device of one owner reads at once, and the ten correction operation kinds. Report: `docs/owner-overlay-and-corrections.md`. It also holds outcomes (`resolutions.ts`): the resolution assertions that are the sole outcome authority, the ten protocol link kinds with registry transition-contract validation, and the outcome projection derived on read. Report: `docs/resolutions-and-outcomes.md`. It also holds the semantic index (`embeddings.ts`): a pinned local lexical embedder, the claim indexer the belief governor calls inside every commit, and a search that applies the owner, permission, sensitivity, time, source and entity filters before ranking. Report: `docs/semantic-index-and-ask.md`. It also holds lineage (`lineage.ts`): the frame-instance, proposition and entity lineage writers, governed retirement, slot rehoming, and the resolvers every reader uses to follow a merged or split id. The governed MERGE and SPLIT operations themselves are `@unai/belief`'s (`lineage.ts`), applied inside a belief transaction commit. Report: `docs/merge-split-lineage.md`.
 - `@unai/model`: the provider-independent LLM gateway. One `invoke` that validates
   provider output against the caller's Zod schema before returning it, records
@@ -80,7 +83,7 @@ Package layering:
   triggers, and the least-context plugin bundle. It produces evidence only: no
   belief path, no object store, no queue — those are ports the API supplies.
   Report: `docs/connectors.md`.
-- `@unai/api`: `createApiBoundary` (`index.ts`) is the generic Fastify boundary; `createPlatformApi` (`platform.ts`) is the production composition with device, evidence (`evidence.ts`), governed memory write (`memory.ts`), correction control (`corrections.ts`), typed projection read (`projections.ts`), Context Broker and inspection (`context.ts`), question answering (`ask.ts`, `POST /v1/ask` under `memory.read`), answer provenance (`answers.ts`, the answer recorder and `GET /v1/answers/{id}/manifest` and `/v1/answers/reconsideration-candidates` under `memory.inspect`), connector, sync and document (`connectors.ts`), governed merge and split (`lineage.ts`) and ops (`ops.ts`) routes; `server.ts` is the entry point.
+- `@unai/api`: `createApiBoundary` (`index.ts`) is the generic Fastify boundary; `createPlatformApi` (`platform.ts`) is the production composition with device, evidence (`evidence.ts`), governed memory write (`memory.ts`), correction control (`corrections.ts`), typed projection read (`projections.ts`), Context Broker and inspection (`context.ts`), question answering (`ask.ts`, `POST /v1/ask` under `memory.read`), answer provenance (`answers.ts`, the answer recorder and `GET /v1/answers/{id}/manifest` and `/v1/answers/reconsideration-candidates` under `memory.inspect`), connector, sync and document (`connectors.ts`), governed merge and split (`lineage.ts`), ops (`ops.ts`) and metrics and shadow-run (`metrics.ts`: `GET /v1/ops/metrics` under `ops.metrics.read`, `GET /v1/ops/shadow-evaluations` under `ops.shadow.read`) routes; `server.ts` is the entry point.
 - `apps/web`: Next.js Pages Router. `pages/api/platform/[...path].ts` is a same-origin proxy: it derives owner scope from the verified session, refuses cross-origin writes, maps path to purpose, and calls the API over verified TLS. The browser never talks to the API directly.
 
 ### The owner boundary (the central pattern)
@@ -100,6 +103,10 @@ Migrations: applied files are immutable. The ledger stores SHA-256 digests, and 
 ### Error and telemetry discipline
 
 Errors are stable UPPER_SNAKE codes (`OWNER_ACCESS_DENIED`, `PURPOSE_REFUSED`, `REGISTRY_*`). Raw database and provider error text is never returned, logged or recorded on spans, because it can carry private values. Logs and spans use a fixed allowlist: correlation id, owner scope, purpose, status, duration. Public DTOs go through `public*Schema` and never expose session tokens or digests, private object keys, or job payloads.
+
+### Package boundaries
+
+`src/boundaries.test.ts` builds one TypeScript program of the workspace and walks what code *reaches* (identifier to declaration, transitively), not only what it imports. It fails when a connector package reaches the belief commit path, when the model gateway or the plugin runtime (`@unai/connectors`) holds a database credential, imports a repository package or reaches memory except through `packages/context`, when extraction or the gateway reaches an assessment writer, or when any package imports `apps/web`. In-memory probe files prove each rule fails. A new memory read for a model or plugin belongs in `@unai/context`; a call through an injected port (an interface member) ends the walk. Definitions: ADR 0027 §1.
 
 ## Repo hygiene
 

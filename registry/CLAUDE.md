@@ -1,6 +1,6 @@
 # registry
 
-This folder is the Git source of truth for the semantic registry: `releases.yaml` pins each recorded version to its tag and content hash, and `releases/<version>/` holds that version's frame and transition contracts as YAML. Apart from this file it holds only YAML: no code, no other documentation and no generated output. The reader, linter and publisher live in `packages/registry`, the procedure in `docs/registry.md`, and the decisions in ADR 0011.
+This folder is the Git source of truth for the semantic registry: `releases.yaml` pins each recorded version to its tag and content hash, and `releases/<version>/` holds that version's frame and transition contracts as YAML. Apart from this file it holds only YAML: no code, no other documentation and no generated output -- except `evidence/<version>/`, which holds the JSON migration evidence (shadow report, projection replay report) a governed release's `releases/<version>/migration.yaml` names. An identity-, transition-affecting or breaking release is refused by `pnpm validate:registry` without that manifest and evidence (ADR 0027 §5, `docs/registry.md`). The reader, linter and publisher live in `packages/registry`, the procedure in `docs/registry.md`, and the decisions in ADR 0011.
 
 ## What is frozen
 

@@ -50,13 +50,30 @@ export const registryLintedReleaseSchema = z.strictObject({
   contentHash: registryContentHashSchema,
   contracts: z.int().min(0).max(1000),
 });
+/** PRD §17.7: the change class the CLI computed between two consecutive
+ * releases, and whether each piece of migration evidence was present. */
+const evidenceStateSchema = z.enum(['PRESENT', 'MISSING', 'INVALID', 'NOT_REQUIRED']);
+export const registryMigrationStatusSchema = z.strictObject({
+  from: registryVersionSchema,
+  to: registryVersionSchema,
+  changeClass: z.enum(['ADDITIVE', 'COMPATIBLE_BEHAVIORAL', 'IDENTITY_AFFECTING', 'TRANSITION_AFFECTING', 'BREAKING']).nullable(),
+  changes: z.int().min(0),
+  manifest: evidenceStateSchema,
+  shadowDiff: evidenceStateSchema,
+  projectionReplay: evidenceStateSchema,
+  rollbackPlan: evidenceStateSchema,
+});
+export type RegistryMigrationStatus = z.infer<typeof registryMigrationStatusSchema>;
+
 /** Written by `uai registry lint --report <path>`; read by the operations
- * screen when a deployment configures the CI artifact. */
+ * screen when a deployment configures the CI artifact. `migrations` is absent
+ * from reports written before the migration gate existed. */
 export const registryLintReportSchema = z.strictObject({
   result: z.enum(['PASS', 'FAIL']),
   checkedAt: z.iso.datetime(),
   code: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).nullable(),
   releases: z.array(registryLintedReleaseSchema).max(100),
   issues: z.array(registryLintIssueSchema).max(500),
+  migrations: z.array(registryMigrationStatusSchema).max(100).optional(),
 });
 export type RegistryLintReport = z.infer<typeof registryLintReportSchema>;
