@@ -1,10 +1,13 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
 import type { PolicyPorts } from '@unai/belief';
-import { CONTEXT_READ_PURPOSE, ContextBrokerError, answerQuestion, missingAskFields } from '@unai/context';
+import { CONTEXT_READ_PURPOSE, ContextBrokerError, answerQuestion, missingAskFields, type AnswerPhraser } from '@unai/context';
+import { createAnswerRecorder, type PurposeWork } from './answers.js';
+import type { EvidenceObjects } from './evidence.js';
 
 /**
- * Question answering (design POST /v1/ask; PRD §8.2; CRT-RD-12-A).
+ * Question answering (design POST /v1/ask; PRD §8.2, §23.6, §24; CRT-RD-12-A,
+ * CRT-RD-06-A, CRT-RD-08-A, CRT-AI-01-A).
  *
  * The route drives the Ask surface: it classifies the question into one of the
  * eight §8.2 answer types, reads a purpose-bound packet through the Context Broker
@@ -19,8 +22,11 @@ import { CONTEXT_READ_PURPOSE, ContextBrokerError, answerQuestion, missingAskFie
  *  - The actor is the session's. A body naming another owner scope is refused
  *    rather than obeyed; no body field can name the actor.
  *
- * The answer manifest and the grounding validator are not produced here; they
- * belong to the node that builds them over this pipeline (ADR 0024 §5).
+ * Every answer the route returns has passed the grounding validator and has
+ * been recorded -- as assistant conversation evidence, with the manifest of the
+ * context supplied -- before it is returned (ADR 0025). A deployment with no
+ * evidence storage cannot record an answer, so it gives none: the refusal comes
+ * before any retrieval.
  */
 
 type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>) => Promise<unknown>;
@@ -34,12 +40,20 @@ const REFUSAL_STATUS = new Map<string, number>([
   ['CONTEXT_REQUEST_INVALID', 400],
   ['CONTEXT_READ_DENIED', 403],
   ['CONTEXT_ACTION_DENIED', 403],
+  ['ANSWER_RECORDING_UNAVAILABLE', 503],
 ]);
 
 export interface AskRouteOptions {
   readonly policyPorts?: PolicyPorts;
   readonly registryReleaseId?: string | null;
   readonly registryRelease?: string | null;
+  /** Where the recorder stores the answer as conversation evidence. */
+  readonly evidenceObjects?: EvidenceObjects | undefined;
+  /** Opens the recording transaction under its own purpose. */
+  readonly purposeWork?: PurposeWork;
+  /** The model that phrases answers, when one is configured. Without one the
+   * deterministic composer answers, through the same validator. */
+  readonly phraser?: AnswerPhraser | undefined;
 }
 
 export function registerAskRoutes(app: FastifyInstance, work: Work, options: AskRouteOptions = {}): void {
@@ -58,6 +72,7 @@ export function registerAskRoutes(app: FastifyInstance, work: Work, options: Ask
     if (body['ownerScopeId'] !== context.ownerScopeId || 'requestingActorId' in body) {
       return refuse(request, reply, 'ASK_REQUEST_INVALID');
     }
+    if (!options.evidenceObjects || !options.purposeWork) return refuse(request, reply, 'ANSWER_RECORDING_UNAVAILABLE');
     try {
       const answer = await answerQuestion(
         <T,>(run: (tx: OwnerTransaction) => Promise<T>) => work(request, tx => run(tx)) as Promise<T>,
@@ -66,11 +81,15 @@ export function registerAskRoutes(app: FastifyInstance, work: Work, options: Ask
           ...(options.policyPorts ? { ports: options.policyPorts } : {}),
           correlationId: context.correlationId, requestingActorId: context.actorId,
           registryReleaseId: options.registryReleaseId ?? null, registryRelease: options.registryRelease ?? null,
+          ...(options.phraser ? { phraser: options.phraser } : {}),
+          recorder: createAnswerRecorder({ request, purposeWork: options.purposeWork, objects: options.evidenceObjects,
+            dataPurpose: String(body['purpose']), maximumSensitivity: String(body['maximumSensitivity']) }),
         });
       await work(request, tx => tx.audit({
         policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
         objects: [{ type: 'context_packets', id: answer.packetId, fields: ['packet', 'packet_hash', 'purpose'] },
-          ...answer.sourceLinks.slice(0, 99).map(link => ({ type: 'source_items', id: link.evidenceId, fields: ['sensitivity', 'allowed_purposes'] }))],
+          { type: 'answer_manifests', id: answer.answerManifestId!, fields: ['grounding_validator_result'] },
+          ...answer.sourceLinks.slice(0, 98).map(link => ({ type: 'source_items', id: link.evidenceId, fields: ['sensitivity', 'allowed_purposes'] }))],
       }));
       return reply.code(200).send(answer);
     } catch (error) {

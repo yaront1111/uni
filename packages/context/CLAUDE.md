@@ -11,20 +11,34 @@ classifier (`question.ts`) and the Ask pipeline (`ask.ts`, route
 `packages/api/src/ask.ts`). Report: `docs/semantic-index-and-ask.md`;
 decisions: `docs/adr/0024-deterministic-selection-semantic-index-and-ask.md`.
 
+It also holds answer provenance: the grounding validator (`grounding.ts`), the
+answer manifests and reconsideration read (`manifests.ts`) and the shared
+statement wording (`wording.ts`). Report: `docs/answer-provenance.md`;
+decisions: `docs/adr/0025-answer-manifests-grounding-and-reconsideration.md`.
+
 ## Local invariants
 
 - **Everything here is a read.** `memory.read` appears in no INSERT, UPDATE or
   DELETE policy on any canonical table (migration 0017). The only rows this
   package writes are `context_packets`, `memory_threads`,
-  `memory_thread_members` and `policy_decisions`. If a change here needs to write
-  canonical memory, it belongs in `@unai/memory` or `@unai/belief` instead.
+  `memory_thread_members`, `policy_decisions` and — under `answer.record` only —
+  `answer_manifests`. If a change here needs to write canonical memory, it
+  belongs in `@unai/memory` or `@unai/belief` instead.
+- **A manifest says "supplied", never "used".** It is derived by
+  `suppliedContextOf` from the packet read back from `context_packets` and
+  checked against its hash — never from the in-memory packet or a second
+  retrieval. What the packet names only as withheld (redactions, unknowns, the
+  read-policy step's exclusions) is not supplied. No field or label may name
+  which item the model used (CRT-RD-07-A); a test walks every key for it.
 - **No transaction, no connection, no network.** Every function takes a
   `MemoryTransaction` the caller opened inside the owner boundary, exactly as
   `@unai/memory`, `@unai/belief` and `@unai/capabilities` do. The one exception is
   `readContextPacket`, which takes a *runner* and uses two transactions on
   purpose — see below.
 - **No model call.** `classifyAnswerType` is deterministic string matching over
-  the thirteen query modes of PRD §23.3. This package depends on no gateway.
+  the thirteen query modes of PRD §23.3. This package depends on no gateway: a
+  phrasing model reaches it only through the `AnswerPhraser` port the API fills
+  (`createGatewayAnswerPhraser`).
 - **Selection is a pure function.** `selectSlotState` reads no clock, random
   source, model or network, compares only the request's world and knowledge
   instants, and sorts every list it returns. `selectionsDigest` over its output
@@ -34,8 +48,10 @@ decisions: `docs/adr/0024-deterministic-selection-semantic-index-and-ask.md`.
   unregistered contract, and fails closed when no registry release is pinned.
 - **The Ask composer calls no model.** Statements are built from the packet by
   code; each names the packet objects it rests on and links only evidence the
-  packet carries. Model phrasing, the answer manifest and the grounding validator
-  belong to `answer-manifests-grounding-validator-and-reconsideration`.
+  packet carries, never an assistant's own message.
+- **Nothing is presented unvalidated.** Every candidate — a model's or the
+  composer's — goes through `validateGrounding` first (CRT-RD-08-A). The
+  validator is pure; the strongest action wins (block, regenerate, downgrade).
 - **No life-category column.** Categories are derived on read in `categories.ts`
   from the evidence's allowed purposes and the frame's registry namespace. Adding
   a category means adding a rule there — never a migration, never a second copy

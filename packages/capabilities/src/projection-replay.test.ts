@@ -218,6 +218,15 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // registry reader is a CREATE OR REPLACE and re-applies over itself.
   await admin!.query('DROP TABLE memory_embeddings CASCADE');
   await admin!.query('DROP FUNCTION IF EXISTS unai_private.anchor_evidence_scope(uuid,uuid[])');
+  // Migration 0020's answer manifests and reconsideration candidates, and the
+  // policies it added beside the evidence tables' own; its functions and
+  // triggers are CREATE OR REPLACE and re-apply over themselves.
+  await admin!.query('DROP TABLE reconsideration_candidates, answer_manifests CASCADE');
+  for (const [policy, table] of [['evidence_append_answer', 'source_items'], ['receipt_append_answer', 'evidence_ingestion_receipts'],
+    ['object_key_append_answer', 'evidence_object_keys'], ['anchor_append_answer', 'source_anchors'],
+    ['owner_append_answer', 'triage_decisions'], ['owner_read_answer', 'triage_decisions']] as const) {
+    await admin!.query(`DROP POLICY IF EXISTS ${policy} ON ${table}`);
+  }
   // ...and so do migration 0018's connector capability grants, connector
   // lifecycle columns and the policies it added to the delivered evidence
   // tables. `CREATE OR REPLACE` definitions (evidence_access) and the grants are
@@ -246,7 +255,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
-    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql']);
+    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_answer_manifests_and_reconsideration.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

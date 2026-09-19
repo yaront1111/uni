@@ -164,10 +164,23 @@ describe('real PostgreSQL owner isolation', () => {
         [finance,owner,family]);
       await pool.query(`INSERT INTO memory_thread_members(owner_scope_id,memory_thread_id,object_type,object_id,membership_kind)
         VALUES($1,$2,'frame_instance',$4,'SUBJECT'),($1,$3,'frame_instance',$4,'RELATED')`,[owner,finance,family,instance]);
+      const packet=randomUUID();
       await pool.query(`INSERT INTO context_packets(id,owner_scope_id,purpose,requesting_actor_id,
         answer_type_classification,request,packet,packet_hash,selection_reason)
         VALUES($1,$2,'PERSONAL_ASSISTANCE',$3,'CURRENT_VALUE','{}','{}',$4,'{}')`,
-        [randomUUID(),owner,actor,'e'.repeat(64)]);
+        [packet,owner,actor,'e'.repeat(64)]);
+      // Answer provenance: the manifest of the context that packet supplied, and
+      // the reconsideration candidate a later change to its belief derives.
+      const manifest=randomUUID();
+      await pool.query(`INSERT INTO answer_manifests(id,owner_scope_id,context_packet_id,packet_hash,conversation_message_id,
+        requesting_actor_id,model_provider,model_id,prompt_version,composer_version,belief_ids,claim_ids,evidence_ids,
+        overlay_delta_ids,projection_versions,watermarks,registry_release,registry_release_id,grounding_validator_result,manifest_version)
+        VALUES($1,$2,$3,$4,$5,$6,'unai-deterministic','ask-composer-0.1.0','composer-templates-0.1.0','ask-composer-0.1.0',
+        ARRAY[$7::uuid],ARRAY[$8::uuid],ARRAY[$5::uuid],'{}','{}','{}',NULL,NULL,'{"action":"PASSED"}','answer-manifest-0.1.0')`,
+        [manifest,owner,packet,'e'.repeat(64),source,actor,proposition,claim]);
+      await pool.query(`INSERT INTO reconsideration_candidates(id,owner_scope_id,changed_object_type,changed_object_id,
+        answer_manifest_id,change_kind,change_ref) VALUES($1,$2,'proposition',$3,$4,'BELIEF_ASSESSMENT_CHANGED',$5)`,
+        [randomUUID(),owner,proposition,manifest,randomUUID()]);
       // The semantic index: one embedding of the claim above, carrying the
       // evidence's purposes and sensitivity as its own hard-filter columns.
       await pool.query(`INSERT INTO memory_embeddings(id,owner_scope_id,object_type,object_id,proposition_id,predicate_id,
@@ -616,7 +629,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(51);
+    expect(rows.length).toBe(53);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -769,6 +782,45 @@ describe('real PostgreSQL owner isolation', () => {
     await asOwner(a,alice,async c=>{
       expect((await c.query('SELECT * FROM unai_private.evidence_labels($1)',[a])).rows).toEqual([]);
     },'memory.govern');
+  });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A answer-provenance queries and keeps both records immutable',async()=>{
+    const provenance=['answer_manifests','reconsideration_candidates'];
+    for(const purpose of ['memory.inspect','memory.read']){
+      await asOwner(a,alice,async c=>{
+        for(const table of provenance){
+          const rows=(await readUnfiltered(c,table)).rows;
+          expect(rows.length,table).toBeGreaterThan(0);
+          expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+        }
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        for(const table of provenance) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+    }
+    // Purpose-bound: an unrelated product purpose reads none of it.
+    await asOwner(a,alice,async c=>{
+      for(const table of provenance) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // Only the recording purpose writes a manifest, nobody deletes one, and the
+    // derived candidates have no application writer at all.
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO answer_manifests SELECT gen_random_uuid(),owner_scope_id,context_packet_id,
+      packet_hash,conversation_message_id,requesting_actor_id,model_provider,model_id,prompt_version,composer_version,belief_ids,
+      claim_ids,evidence_ids,overlay_delta_ids,projection_versions,watermarks,registry_release,registry_release_id,
+      grounding_validator_result,manifest_version,created_at FROM answer_manifests`).then(()=>{}),'memory.read'))
+      .rejects.toMatchObject({code:'42501'});
+    for(const table of provenance){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'answer.record'),table).rejects.toMatchObject({code:'42501'});
+    }
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO reconsideration_candidates(id,owner_scope_id,changed_object_type,
+      changed_object_id,answer_manifest_id,change_kind,change_ref) SELECT gen_random_uuid(),owner_scope_id,changed_object_type,
+      changed_object_id,answer_manifest_id,change_kind,gen_random_uuid() FROM reconsideration_candidates`).then(()=>{}),'answer.record'))
+      .rejects.toMatchObject({code:'42501'});
+    // A manifest is a statement about one moment: not even the migration
+    // principal rewrites the context it says was supplied.
+    await expect(pool.query("UPDATE answer_manifests SET belief_ids='{}' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE reconsideration_candidates SET change_kind='CLAIM_CORRECTED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
   });
   it('CRT-SEC-01-A and CRT-RD-04-A: hides B from unfiltered owner A semantic-index queries and applies the evidence gate to every row',async()=>{
     await asOwner(a,alice,async c=>{

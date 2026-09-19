@@ -106,6 +106,13 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
+export {GROUNDING_RULES,groundingRuleSchema,groundingViolationActionSchema,groundingActionSchema,candidateSourceSchema,
+  groundingViolationSchema,groundingAttemptSchema,groundingResultSchema,answerCandidateStatementSchema,
+  answerCandidateSchema,SUPPLIED_CONTEXT_STATEMENT,suppliedContextSchema,reconsiderationChangeSchema,
+  publicAnswerManifestSchema,reconsiderationCandidatesViewSchema,deltaContestRecordSchema,
+  type GroundingRule,type GroundingAction,type GroundingViolation,type GroundingResult,
+  type AnswerCandidateStatement,type AnswerCandidate,type SuppliedContext,type ReconsiderationChange,
+  type PublicAnswerManifest,type ReconsiderationCandidatesView,type DeltaContestRecord} from './answers.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';
