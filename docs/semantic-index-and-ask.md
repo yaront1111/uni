@@ -3,13 +3,13 @@
 Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `current-state-selector-semantic-index-and-ask-pipeline`. This node owns
-CRT-RD-03-A, CRT-RD-04-A, CRT-RD-12-A and CRT-REG-04-A. ADR 0023 records its
-decisions; ADRs 0001–0022 and every delivered slice before it were inspected and
+CRT-RD-03-A, CRT-RD-04-A, CRT-RD-12-A and CRT-REG-04-A. ADR 0024 records its
+decisions; ADRs 0001–0023 and every delivered slice before it were inspected and
 retained.
 
 ## Design entities implemented here
 
-**`memory_embeddings`**, added by `migrations/0018_semantic_index.sql` with forced
+**`memory_embeddings`**, added by `migrations/0019_semantic_index.sql` with forced
 RLS, an owner-bound read policy that applies the evidence gate to every read
 purpose, an insert policy for the governed write purpose only, composite owner
 foreign keys to `claims` and `propositions`, and an immutability trigger. Beside
@@ -121,8 +121,8 @@ The web proxy is not extended; the screen node that builds Ask adds its mapping.
   history and not a conflict; selections and the semantic step are added; future
   claims carry their evidence ids.
 - `packages/capabilities/src/projection-replay.test.ts` drops and expects
-  migration 0018's objects when it re-applies the ledger from 0016, exactly as the
-  previous node did for 0017.
+  migration 0019's objects when it re-applies the ledger from 0016, exactly as the
+  previous node did for 0017 (and alongside migration 0018's connector objects).
 
 ## What this node does not claim
 
@@ -134,7 +134,7 @@ The web proxy is not extended; the screen node that builds Ask adds its mapping.
 - **No just-in-time clarification.** An answer blocked by ambiguity is labelled
   UNKNOWN; raising a clarification card belongs to the memory inbox node.
 - **Lexical, not neural, semantics.** The pinned embedder matches shared words and
-  word fragments, not paraphrase (ADR 0023 §2). Replacing it is a new
+  word fragments, not paraphrase (ADR 0024 §2). Replacing it is a new
   `embedding_version` through the `Embedder` interface.
 - **Claims only.** The index covers claims. Raw document text is not indexed here
   (searchable upload is CRT-CON-05-A, the connector node's), and the unattached

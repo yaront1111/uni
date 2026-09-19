@@ -20,7 +20,7 @@ import { CONTEXT_READ_PURPOSE, ContextBrokerError, answerQuestion, missingAskFie
  *    rather than obeyed; no body field can name the actor.
  *
  * The answer manifest and the grounding validator are not produced here; they
- * belong to the node that builds them over this pipeline (ADR 0023 §5).
+ * belong to the node that builds them over this pipeline (ADR 0024 §5).
  */
 
 type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>) => Promise<unknown>;

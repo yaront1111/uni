@@ -1,7 +1,7 @@
 import type { AnswerType, HistoricalMode, QuestionType } from '@unai/domain';
 
 /**
- * The question classifier (PRD §8.2 step 1, §23.3; CRT-RD-12-A). ADR 0023 §5.
+ * The question classifier (PRD §8.2 step 1, §23.3; CRT-RD-12-A). ADR 0024 §5.
  *
  * An ordered list of word-boundary rules over the question text; the first rule
  * that matches decides, and its name is returned so the classification can be

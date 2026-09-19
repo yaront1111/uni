@@ -238,7 +238,7 @@ type UnregisteredContracts = string[];
 
 /**
  * Which of this transaction's operations touch a predicate or frame type absent
- * from the pinned release (PRD §17.5; ADR 0023 §4).
+ * from the pinned release (PRD §17.5; ADR 0024 §4).
  *
  * "Touch" is any operation over a slot, a proposition, a claim, a support row, an
  * assessment or a derivation whose contracts are unregistered -- including a
@@ -319,7 +319,7 @@ async function liveVerdict(tx: BeliefTransactionStore, ownerScopeId: string, pro
 
 /**
  * The uses PRD §17.5 forbids an unregistered surface predicate, found in one
- * transaction (CRT-REG-04-A; ADR 0023 §4).
+ * transaction (CRT-REG-04-A; ADR 0024 §4).
  *
  * Nothing here refuses *storing* the claim or indexing it. A transaction that
  * touches an unregistered contract is refused when it also supersedes or rejects
@@ -817,7 +817,7 @@ export async function commitBeliefTransaction(
     // Every claim this commit created is indexed in the same transaction, so it is
     // semantically searchable the moment it is visible -- an unregistered surface
     // predicate included, which PRD §17.5 allows to be indexed -- and a rolled-back
-    // commit leaves no index row behind (ADR 0023 §3). The index is not a belief
+    // commit leaves no index row behind (ADR 0024 §3). The index is not a belief
     // object, so the receipt does not list it.
     await indexClaimEmbeddings(tx, {
       ownerScopeId: request.ownerScopeId,

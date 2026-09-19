@@ -8,7 +8,7 @@ import { ContextBrokerError, readContextPacket, type ContextBrokerOptions, type 
 import { classifyQuestion, type QuestionClassification } from './question.js';
 
 /**
- * Question answering (PRD §8.2; design POST /v1/ask; CRT-RD-12-A). ADR 0023 §5.
+ * Question answering (PRD §8.2; design POST /v1/ask; CRT-RD-12-A). ADR 0024 §5.
  *
  *  1. Classify the requested answer type -- one of the eight of §8.2 -- and the
  *     §23.3 query mode it is planned under.

@@ -9,7 +9,7 @@ This is the only memory read path for models and plugins (FR-060).
 It also holds deterministic selection (`selector.ts`), the eight-type question
 classifier (`question.ts`) and the Ask pipeline (`ask.ts`, route
 `packages/api/src/ask.ts`). Report: `docs/semantic-index-and-ask.md`;
-decisions: `docs/adr/0023-deterministic-selection-semantic-index-and-ask.md`.
+decisions: `docs/adr/0024-deterministic-selection-semantic-index-and-ask.md`.
 
 ## Local invariants
 

@@ -11,7 +11,7 @@ import { readContextPacket } from './index.js';
  * CRT-RD-04-A over real PostgreSQL: semantic search never returns an object from
  * another owner, a disallowed purpose or sensitivity, or outside the requested
  * time, source or entity filters -- even when that object is the nearest
- * embedding match (PRD §23.2 step 10, FR-063; ADR 0023 §3).
+ * embedding match (PRD §23.2 step 10, FR-063; ADR 0024 §3).
  *
  * Every object the filters must exclude states the query's own words, identically,
  * so every one of them has the same embedding and sits nearer the query than

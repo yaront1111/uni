@@ -1,4 +1,4 @@
-# ADR 0023: Deterministic selection, the semantic index and the Ask pipeline
+# ADR 0024: Deterministic selection, the semantic index and the Ask pipeline
 
 Date: 2026-09-18
 Status: Accepted
@@ -8,6 +8,12 @@ goal-b2cc3b54-1876-401e-a6a2-527f99b679bc (design v1, sealed graph
 Criteria: CRT-RD-03-A, CRT-RD-04-A, CRT-RD-12-A, CRT-REG-04-A.
 
 Recorded before the implementing change, per PRD §0.7 and §46.
+
+Written as ADR 0023 and renumbered 0024 when master landed ADR 0023 for the
+connector capabilities; its migration moved from 0018 to
+`migrations/0019_semantic_index.sql` for the same reason. That migration's
+header still says "ADR 0023" because its bytes were kept unchanged: it means
+this record.
 
 ## 1. Selection is a pure function over rows, and its reason is data
 

@@ -20,10 +20,10 @@ import {
  * a claim under a surface predicate the release does not hold is stored and is
  * semantically searchable, and a transaction that would use it to supersede an
  * accepted belief, resolve a conflict, set a current value or authorize a
- * high-risk action is refused (PRD §17.5, ADR 0023 §4).
+ * high-risk action is refused (PRD §17.5, ADR 0024 §4).
  *
  * Every call runs inside `withOwnerTransaction` as the low-privilege application
- * role, so migration 0018's index policy is part of what is proved.
+ * role, so migration 0019's index policy is part of what is proved.
  */
 
 if (!process.env.UNAI_TEST_DATABASE_URL) throw new Error('Run pnpm test for the required PostgreSQL harness');
