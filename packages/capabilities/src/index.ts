@@ -45,3 +45,9 @@ export { REDUCER_VERSION, PROJECTION_PURPOSE, PROJECTION_READ_PURPOSE, Projectio
   readProjectionHealth, rebuildProjectionsAfterLineageChange,
   type ApplyProjectionInput, type ReplayProjectionInput, type ProjectionReadFilters, type LineageRebuildInput } from './projections.js';
 export { runProjectionReplay, type ProjectionReplayRequest, type ProjectionReplayResult } from './replay.js';
+export { DECISION_CAPABILITY_VERSION, DECISION_REDUCER_VERSION, DECISION_PROJECTION, DECISION_PROJECTION_PURPOSE,
+  DECISION_FRAME_TYPE, DECISION_REVIEW_CONTRACT, DECISION_PREDICATES, DecisionError, renderDecisionStatement,
+  resolveOwnerEntity, canonicalizeDecision, findDecisionForEvidence, recordDecisionReview, listDecisionReviews,
+  readDecisionRows, decisionRowContent, applyDecisionProjection, replayDecisionProjection, readDecisionProjection,
+  type StatementSpan, type RenderedStatement, type DecisionStatementRequest, type CanonicalizedDecision,
+  type DecisionReviewRequest } from './decisions.js';

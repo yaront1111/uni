@@ -68,9 +68,12 @@ predicates:
     valueType: TEXT
     cardinality: SET
     required: true
-    normalization: Unicode NFC, trimmed whitespace; each alternative is its own proposition.
+    normalization: >-
+      Unicode NFC, trimmed whitespace. Each alternative is its own proposition in
+      its own slot, qualified by its position in the owner's list, so two
+      alternatives are two members of the set and never two competing values.
     allowedModalities: [ACTUAL]
-    slotQualifiers: []
+    slotQualifiers: [position]
     temporalBehavior: Fixed at the time the decision was recorded.
     conflictBehavior: Alternatives are a set; distinct alternatives never conflict.
     supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
@@ -85,9 +88,11 @@ predicates:
     valueType: TEXT
     cardinality: SET
     required: false
-    normalization: Unicode NFC, trimmed whitespace; cited sources are linked, not copied.
+    normalization: >-
+      Unicode NFC, trimmed whitespace; each assumption sits in its own slot,
+      qualified by its position in the owner's list. Cited sources are linked, not copied.
     allowedModalities: [EXPECTED]
-    slotQualifiers: []
+    slotQualifiers: [position]
     temporalBehavior: Valid from the time the decision was recorded; a later finding does not rewrite it.
     conflictBehavior: Assumptions are a set; a later contrary finding is recorded separately and reported.
     supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
@@ -102,9 +107,11 @@ predicates:
     valueType: TEXT
     cardinality: SET
     required: false
-    normalization: The consequence text with the life domain it falls in (FINANCE, FAMILY, WORK, HEALTH, ADMIN or PERSONAL).
+    normalization: >-
+      The consequence text with the life domain it falls in (FINANCE, FAMILY, WORK,
+      HEALTH, ADMIN or PERSONAL), in its own slot qualified by its position in the owner's list.
     allowedModalities: [EXPECTED]
-    slotQualifiers: []
+    slotQualifiers: [position]
     temporalBehavior: Valid from the time the decision was recorded.
     conflictBehavior: Consequences are a set; distinct consequences never conflict.
     supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
@@ -209,7 +216,7 @@ predicates:
     projectionContracts:
       - decision_projection.actual_outcome
 allowedModalities: [ACTUAL, EXPECTED, RECOMMENDED, PREDICTED, INTENDED]
-slotQualifiers: []
+slotQualifiers: [position]
 authorityRules:
   - Only the decider's own statements establish the question, the choice and the rationale.
   - A recommendation is stored with RECOMMENDED semantics and never as the decider's intent or choice.

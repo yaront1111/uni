@@ -15,6 +15,9 @@ import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
 import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import {registerReviewRoutes,INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE} from './review.js';
+import {registerDecisionRoutes,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,
+  MENTOR_PURPOSE} from './decisions.js';
+import type {TransitionContract} from '@unai/domain';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
 import {ConnectorError} from '@unai/connectors';
@@ -55,12 +58,17 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   /** The instant the inbox and the weekly review treat as now. Only tests set it,
    * to move the inbox across owner-local days; sessions still expire on the
    * database's own clock. */
-  clock?:()=>Date}){
+  clock?:()=>Date;
+  /** The pinned registry release's transition contracts, for the decision review.
+   * Without them the review reads the newest published release's from the
+   * database snapshot (ADR 0029 §6). */
+  transitionContracts?:readonly TransitionContract[]}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
     CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
     CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
     INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
+    GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,MENTOR_PURPOSE,
     'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
@@ -108,6 +116,13 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/approval-rules/:id/approve'?APPROVAL_RULES_PURPOSE:
       request.routeOptions.url==='/v1/approval-rules/:id/revoke'?APPROVAL_RULES_PURPOSE:
       request.routeOptions.url==='/v1/weekly-review'?WEEKLY_REVIEW_PURPOSE:
+      request.routeOptions.url==='/v1/goals'&&request.method==='GET'?GOALS_READ_PURPOSE:
+      request.routeOptions.url==='/v1/goals'?GOALS_MANAGE_PURPOSE:
+      request.routeOptions.url==='/v1/goals/:id/priority'?GOALS_MANAGE_PURPOSE:
+      request.routeOptions.url==='/v1/decisions'?DECISIONS_RECORD_PURPOSE:
+      request.routeOptions.url==='/v1/decisions/:id/review'?DECISIONS_RECORD_PURPOSE:
+      request.routeOptions.url==='/v1/decisions/:id'?DECISIONS_READ_PURPOSE:
+      request.routeOptions.url==='/v1/mentor/contradictions'?MENTOR_PURPOSE:
       request.routeOptions.url&&LINEAGE_URLS.has(request.routeOptions.url)?LINEAGE_WRITE_PURPOSE:
       request.routeOptions.url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
       request.routeOptions.url&&CORRECTION_URLS.has(request.routeOptions.url)?CORRECTION_PURPOSE:
@@ -222,6 +237,17 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       deviceWork(request,tx=>run(tx),purpose) as Promise<T>,
     evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId,
     registryRelease:options.registryRelease??null,...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    ...(options.clock?{now:options.clock}:{})});
+  // Goals, decisions, the prediction review and the mentor (ADR 0029). Their
+  // evidence, canonicalization, projection, broker and inspection steps run under
+  // `memory.correct`, `memory.canonicalize`, `memory.project`, `projection.read`,
+  // `memory.read` and `memory.inspect`, named here by server code.
+  registerDecisionRoutes(app,deviceWork,{
+    purposeWork:<T,>(request:import('fastify').FastifyRequest,purpose:string,run:(tx:import('@unai/postgres').OwnerTransaction)=>Promise<T>)=>
+      deviceWork(request,tx=>run(tx),purpose) as Promise<T>,
+    evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId,
+    registryRelease:options.registryRelease??null,...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    ...(options.transitionContracts?{transitionContracts:options.transitionContracts}:{}),
     ...(options.clock?{now:options.clock}:{})});
   return app;
 }

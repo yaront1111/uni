@@ -35,6 +35,11 @@ contracts are added:
   | `review_date` | FUNCTIONAL | INTENDED | review date |
   | `observed_result` | FUNCTIONAL | ACTUAL | actual outcome |
 
+  The three listed predicates carry the slot qualifier `position`: each option,
+  assumption and consequence sits in its own slot keyed by its place in the
+  owner's list. The Context Broker reports two live propositions in one slot as
+  a conflict, and two options are members of a set, not a disagreement.
+
   No predicate names an outcome or a status (CRT-OUT-01-A still holds for the
   new frame): what happened is `observed_result`, in its own ACTUAL slot beside
   the PREDICTED `expected_result`, and whether the prediction held is a
