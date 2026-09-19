@@ -247,6 +247,34 @@ describe('real PostgreSQL owner isolation', () => {
         VALUES($1,$2,'claim',$3,$4,'shared.obligation.principal_amount','unai-hashed-lexical','hashed-lexical-256-0.1.0',
         $5,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],ARRAY[$6::uuid],ARRAY['DOCUMENT'],now(),$7)`,
         [randomUUID(),owner,claim,proposition,'['+Array.from({length:256},(_,i)=>i===0?1:0).join(',')+']',source,'f'.repeat(64)]);
+      // Governed action and the data-control surface (migration 0024): one row per
+      // owner in each of its tables, so the sweep below covers them too.
+      const actionDecision=randomUUID(),recommendation=randomUUID(),draft=randomUUID();
+      await pool.query(`INSERT INTO policy_decisions(id,owner_scope_id,port,request,outcome,reason,policy_version,correlation_id)
+        VALUES($1,$2,'EvaluateMemoryAction','{}','ALLOW','ACTION_WITHIN_LOCAL_POLICY','local-policy-0.1.0',$3)`,
+        [actionDecision,owner,randomUUID()]);
+      await pool.query(`INSERT INTO plugin_capability_grants(id,owner_scope_id,capability_id,access_kind,risk_class,granted,granted_at)
+        VALUES($1,$2,'gmail.create_draft','DRAFT','MEDIUM',true,now()),($3,$2,'gmail.send','WRITE','HIGH',false,NULL)`,
+        [randomUUID(),owner,randomUUID()]);
+      await pool.query(`INSERT INTO recommendation_artifacts(id,owner_scope_id,recommendation_text,recommended_action_kind,
+        action_risk,supporting_packet_id,supporting_assessment,projection_complete,status,policy_decision_id)
+        VALUES($1,$2,'Selling 100 shares would reduce concentration.','TRADE','HIGH',$3,'ACCEPTED',true,'ACTIVE',$4)`,
+        [recommendation,owner,packet,actionDecision]);
+      await pool.query(`INSERT INTO drafts(id,owner_scope_id,draft_kind,capability_id,content,recommendation_id,
+        supporting_packet_id,policy_decision_id) VALUES($1,$2,'EMAIL','gmail.create_draft','{"body":"Draft"}',$3,$4,$5)`,
+        [draft,owner,recommendation,packet,actionDecision]);
+      await pool.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id,
+        recommendation_id,policy_decision_id) VALUES
+        ($1,$2,'SUGGESTED','TRADE','recommendation',$3,$3,$4),($5,$2,'DRAFTED','DRAFT','draft',$6,$3,$4)`,
+        [randomUUID(),owner,recommendation,actionDecision,randomUUID(),draft]);
+      await pool.query("INSERT INTO retention_settings(owner_scope_id,source_type,raw_retention_days) VALUES($1,'GMAIL',365)",[owner]);
+      await pool.query("INSERT INTO domain_sensitivity_settings(owner_scope_id,source_type,sensitivity) VALUES($1,'DOCUMENT','RESTRICTED')",[owner]);
+      await pool.query(`INSERT INTO memory_summaries(id,owner_scope_id,summary_text,source_object_manifest,source_object_ids,
+        model_id,prompt_version) VALUES($1,$2,'Owes Daniel 50','[]',ARRAY[$3::uuid],'fixture-model','summary-0.1.0')`,
+        [randomUUID(),owner,claim]);
+      await pool.query(`INSERT INTO retention_and_deletion_requests(id,owner_scope_id,request_kind,trigger,scope,status,
+        cascade_receipt,requested_by_user_id,requested_at,completed_at)
+        VALUES($1,$2,'EXPORT','OWNER_REQUEST','{}','COMPLETED','{}',$3,now(),now())`,[randomUUID(),owner,actor]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -733,7 +761,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(63);
+    expect(rows.length).toBe(71);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -1011,6 +1039,84 @@ describe('real PostgreSQL owner isolation', () => {
       const anchors=(await pool.query('SELECT id FROM source_anchors WHERE owner_scope_id=$1',[a])).rows.map(row=>row.id);
       expect((await c.query('SELECT * FROM unai_private.anchor_evidence_scope($1,$2)',[a,anchors])).rows).toEqual([]);
     },'memory.read');
+  });
+  it('CRT-SEC-01-A, CRT-CON-08-A and CRT-UX-13-A: hides B from unfiltered owner A governed-action and data-control queries and holds their rules in the schema',async()=>{
+    const tables:[string,string][]=[['plugin_capability_grants','permissions.read'],['recommendation_artifacts','action.read'],
+      ['drafts','action.read'],['action_history','action.read'],
+      ['retention_settings','permissions.read'],['domain_sensitivity_settings','permissions.read'],
+      ['memory_summaries','memory.inspect'],['retention_and_deletion_requests','permissions.read']];
+    for(const [table,purpose] of tables){
+      await asOwner(a,alice,async c=>{
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+      // Purpose-bound: an unrelated product purpose reads none of it.
+      await asOwner(a,alice,async c=>{
+        expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      });
+    }
+    // No external write capability can be granted, by anyone (CRT-CON-08-A).
+    await expect(pool.query("UPDATE plugin_capability_grants SET granted=true,granted_at=now() WHERE owner_scope_id=$1 AND capability_id='gmail.send'",[a]))
+      .rejects.toMatchObject({constraint:'plugin_capability_grants_no_external_write'});
+    // A draft is never labelled executed, even with a real receipt beside it,
+    // and execution needs a receipt (CRT-UX-13-A). The receipt lives only inside
+    // this rolled-back transaction, so no other fixture count changes.
+    const draft=(await pool.query('SELECT id FROM drafts WHERE owner_scope_id=$1',[a])).rows[0].id;
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      const receipt=randomUUID();
+      await client.query(`INSERT INTO source_items(id,owner_scope_id,source_type,external_id,actor_ref,submitted_by_user_id,
+        raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+        VALUES($1,$2,'TOOL_RECEIPT','order-1','{"type":"EXTERNAL","id":"broker"}',$3,$4,$5,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],
+        'evidence-json-v1',$6)`,[receipt,a,alice,randomUUID(),'c'.repeat(64),randomUUID()]);
+      await client.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id,
+        receipt_evidence_id) VALUES(gen_random_uuid(),$1,'EXECUTED','TRADE','evidence',$2,$2)`,[a,receipt]);
+      await client.query('SAVEPOINT draft_executed');
+      await expect(client.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,
+        subject_object_id,receipt_evidence_id) VALUES(gen_random_uuid(),$1,'EXECUTED','DRAFT','draft',$2,$3)`,[a,draft,receipt]))
+        .rejects.toMatchObject({constraint:'action_history_draft_never_executed'});
+      await client.query('ROLLBACK TO SAVEPOINT draft_executed');
+    }finally{await client.query('ROLLBACK');client.release();}
+    await expect(pool.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id)
+      VALUES(gen_random_uuid(),$1,'EXECUTED','TRADE','recommendation',(SELECT id FROM recommendation_artifacts WHERE owner_scope_id=$1))`,[a]))
+      .rejects.toMatchObject({constraint:'action_history_execution_receipted'});
+    // Only an authoritative TOOL_RECEIPT can stand behind an execution fact.
+    const ordinary=(await pool.query("SELECT id FROM source_items WHERE owner_scope_id=$1 AND source_type='DOCUMENT'",[a])).rows[0].id;
+    await expect(pool.query(`INSERT INTO action_history(id,owner_scope_id,stage,action_kind,subject_object_type,subject_object_id,
+      receipt_evidence_id) VALUES(gen_random_uuid(),$1,'EXECUTED','TRADE','evidence',$2,$2)`,[a,ordinary]))
+      .rejects.toThrow('ACTION_RECEIPT_NOT_AUTHORITATIVE');
+    await expect(pool.query("UPDATE drafts SET status='APPROVED' WHERE owner_scope_id=$1",[a])).rejects.toThrow('DRAFT_TRANSITION_REFUSED');
+    await expect(pool.query("UPDATE action_history SET stage='EXECUTED' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    await expect(pool.query("UPDATE recommendation_artifacts SET semantics='INTENT' WHERE owner_scope_id=$1",[a])).rejects.toThrow();
+    // The history is append-only for the application too.
+    await expect(asOwner(a,alice,c=>c.query('DELETE FROM action_history').then(()=>{}),'action.read')).rejects.toMatchObject({code:'42501'});
+    // The erasure cascade is one definer, callable only under `data.delete` and
+    // only for the caller's own owner scope; the application still holds no
+    // DELETE on any canonical or evidence table under that purpose.
+    const foreign=(await pool.query("SELECT id FROM source_items WHERE owner_scope_id=$1 AND source_type='DOCUMENT'",[b])).rows[0].id;
+    await expect(asOwner(a,alice,c=>c.query('SELECT unai_private.erase_evidence($1,$2)',[b,foreign]).then(()=>{}),'data.delete'))
+      .rejects.toThrow('ERASURE_NOT_AUTHORIZED');
+    await expect(asOwner(a,alice,c=>c.query('SELECT unai_private.erase_evidence($1,$2)',[a,ordinary]).then(()=>{}),'memory.govern'))
+      .rejects.toThrow('ERASURE_NOT_AUTHORIZED');
+    for(const table of ['claims','propositions','source_items','source_anchors','memory_embeddings']){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'data.delete'),table).rejects.toMatchObject({code:'42501'});
+    }
+    await expect(asOwner(a,alice,c=>c.query('SELECT unai_private.drop_semantic_index($1)',[b]).then(()=>{}),'memory.reindex'))
+      .rejects.toThrow('REINDEX_NOT_AUTHORIZED');
+    // Export reads the owner's memory and nothing of another owner's.
+    await asOwner(a,alice,async c=>{
+      for(const table of ['source_items','claims','propositions','memory_summaries']){
+        const rows=(await c.query('SELECT owner_scope_id FROM '+table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'data.export');
   });
   it('refuses an elevated application database connection',async()=>{
     await expect(withOwnerTransaction(pool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId:randomUUID()},async()=>{})).rejects.toThrow('DATABASE_ROLE_UNSAFE');

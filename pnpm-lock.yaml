@@ -75,6 +75,9 @@ importers:
       '@unai/context':
         specifier: workspace:*
         version: link:../context
+      '@unai/control':
+        specifier: workspace:*
+        version: link:../control
       '@unai/domain':
         specifier: workspace:*
         version: link:../domain
@@ -237,6 +240,27 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.23.0
+
+  packages/control:
+    dependencies:
+      '@unai/belief':
+        specifier: workspace:*
+        version: link:../belief
+      '@unai/connectors':
+        specifier: workspace:*
+        version: link:../connectors
+      '@unai/context':
+        specifier: workspace:*
+        version: link:../context
+      '@unai/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@unai/memory':
+        specifier: workspace:*
+        version: link:../memory
+      zod:
+        specifier: ^4.6.2
+        version: 4.6.2
 
   packages/domain:
     dependencies:

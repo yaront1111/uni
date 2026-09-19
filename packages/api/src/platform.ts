@@ -14,6 +14,7 @@ import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} 
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerInspectionRoutes,INSPECTION_PURPOSE,INSPECTION_URLS} from './inspection.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
+import {registerControlRoutes,controlPurposeFor,CONTROL_PURPOSES} from './control.js';
 import {registerReviewRoutes,INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE} from './review.js';
 import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
@@ -62,7 +63,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
     CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
     INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
-    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
+    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',
+    // Governed action and the data-control surface (ADR 0030).
+    ...CONTROL_PURPOSES]);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -118,7 +121,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
       request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
       request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
-      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':null;
+      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':
+      controlPurposeFor(request.method,request.routeOptions.url);
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   /** `purpose` lets a route open one transaction under a purpose its server code
@@ -226,5 +230,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId,
     registryRelease:options.registryRelease??null,...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
     ...(options.clock?{now:options.clock}:{})});
+  registerControlRoutes(app,deviceWork,{
+    ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null,
+    evidenceObjects:options.evidenceObjects});
   return app;
 }

@@ -69,6 +69,9 @@ export interface DocumentUploadOptions {
    * regular expression that could disagree with them. */
   readonly readTriage: (tx: ConnectorTransaction, evidenceId: string)
     => Promise<{ readonly route: string; readonly signals: readonly string[] } | null>;
+  /** The owner's own stored sensitivity for uploaded documents, or null for the
+   * manifest default (ADR 0030 §7). */
+  readonly sensitivityFloor?: 'NORMAL' | 'PRIVATE' | 'RESTRICTED' | null;
 }
 
 export async function uploadDocument(
@@ -81,7 +84,7 @@ export async function uploadDocument(
   }
   // The documents manifest's declared default is a floor here too: an upload
   // may be stored more privately than the request asked, never less.
-  const sensitivity = storedSensitivity(manifestFor('DOCUMENT'), upload.sensitivity);
+  const sensitivity = storedSensitivity(manifestFor('DOCUMENT'), upload.sensitivity, options.sensitivityFloor ?? null);
   const imported = await options.ingest(tx, {
     sourceType: 'DOCUMENT', connectorId: upload.connectorId,
     payload: {
