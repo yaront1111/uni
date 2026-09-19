@@ -102,9 +102,10 @@ definer reader `unai_private.economic_and_quality_inputs`.
   recorded, `GET /v1/ops/metrics` returns each in `notMeasured` with its reason
   (or the screen marks it not measured). None is written to
   `economic_and_quality_metrics`, and none is shown as zero or as an estimate.
-  When an input is recorded, the metric is computed through
-  `unai_private.economic_and_quality_inputs`, the same definer-function pattern,
-  with a test.
+  For each deferred metric the owing work is: compute through the
+  `unai_private.economic_and_quality_inputs` definer-function pattern, with a
+  test. That work is owed by the node that records the input, or by a follow-up
+  node; this node invents no probe, label or input to fill a number.
 
   | Deferred metric | Input it waits for |
   | --- | --- |
