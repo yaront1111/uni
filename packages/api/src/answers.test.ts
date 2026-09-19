@@ -22,7 +22,7 @@ import type { EvidenceObjects } from './evidence.js';
 /**
  * Answer provenance and grounding end to end, over the real boundary, the real
  * owner transaction, the real pinned registry release 0.1.0 and the real governor
- * (ADR 0025).
+ * (ADR 0026).
  *
  *  - CRT-RD-06-A: every answer this suite generates has a manifest whose belief,
  *    claim, evidence and overlay delta ids equal what its persisted packet holds,

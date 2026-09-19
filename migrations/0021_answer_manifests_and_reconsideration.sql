@@ -1,7 +1,7 @@
 -- Answer provenance: the manifest of what each answer's model was supplied, the
 -- assistant conversation evidence every answer is stored as, and the derived
 -- reconsideration candidates (design entities `answer_manifests` and
--- `reconsideration_candidates`; PRD §21.7, §23.6, §23.7, §24; ADR 0025 records
+-- `reconsideration_candidates`; PRD §21.7, §23.6, §23.7, §24; ADR 0026 records
 -- the decisions below before the code).
 --
 -- Four rules are carried by the schema rather than by convention:
@@ -68,7 +68,7 @@ CREATE POLICY owner_read_answer ON triage_decisions FOR SELECT TO unai_app
  AND EXISTS(SELECT 1 FROM source_items s WHERE s.owner_scope_id=triage_decisions.owner_scope_id AND s.id=source_item_id));
 
 -- The manifest is derived from the persisted packet, so the recording purpose
--- reads it back (ADR 0025 §1). It cannot write one.
+-- reads it back (ADR 0026 §1). It cannot write one.
 CREATE POLICY owner_read_answer ON context_packets FOR SELECT TO unai_app
  USING(unai_private.has_owner_access(owner_scope_id) AND unai_private.memory_purpose(ARRAY['answer.record']));
 

@@ -1,5 +1,5 @@
 import {
-  commitmentProjectionRowSchema, obligationProjectionRowSchema, scheduleProjectionRowSchema,
+  PROJECTION_NAMES, commitmentProjectionRowSchema, obligationProjectionRowSchema, scheduleProjectionRowSchema,
   commitmentsProjectionViewSchema, obligationsProjectionViewSchema, scheduleProjectionViewSchema,
   projectionRebuildReceiptSchema, projectionHealthSchema, projectionNameSchema, rebuildTriggerSchema,
   type CommitmentProjectionRow, type CommitmentsProjectionView, type Money, type ObligationProjectionRow,
@@ -7,7 +7,9 @@ import {
   type ProjectionRebuildReceipt, type RebuildTrigger, type ScheduleProjectionRow, type ScheduleProjectionView,
   type SourceStrength,
 } from '@unai/domain';
-import { canonicalJson, classifyResolutionStatement, frameOutcomeProjection, type MemoryTransaction } from '@unai/memory';
+import {
+  canonicalJson, classifyResolutionStatement, frameOutcomeProjection, resolveEntitySurvivors, type MemoryTransaction,
+} from '@unai/memory';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import {
   isSettledDelta, latestTime, listFrameInstances, pendingAssertion, readOwnerDeltas, readResolutions, readRoles,
@@ -416,6 +418,11 @@ async function buildScheduleRows(
   const frames = await listFrameInstances(tx, { ownerScopeId: context.ownerScopeId,
     frameTypeId: SCHEDULE_FRAME_TYPE, frameInstanceIds: ids });
   const state = await readScheduleState(tx, { ownerScopeId: context.ownerScopeId, frameInstanceIds: ids });
+  // A participant named by value reads as its survivor after an entity merge, as
+  // one named by role already does (ADR 0025 §3).
+  const participantSurvivors = await resolveEntitySurvivors(tx, { ownerScopeId: context.ownerScopeId,
+    entityIds: state.participantValues.map(value => readEntityReference(value.normalizedValue))
+      .filter((entityId): entityId is string => entityId !== null) });
 
   const rows: ScheduleProjectionRow[] = [];
   for (const frame of frames) {
@@ -427,7 +434,8 @@ async function buildScheduleRows(
       ...state.roles.filter(role => role.frameInstanceId === frame.frameInstanceId && role.entityId !== null)
         .map(role => role.entityId!),
       ...participantValues.map(value => readEntityReference(value.normalizedValue))
-        .filter((entityId): entityId is string => entityId !== null),
+        .filter((entityId): entityId is string => entityId !== null)
+        .map(entityId => participantSurvivors.get(entityId) ?? entityId),
     ])].sort();
     const references = state.referenceValues.filter(value => value.frameInstanceId === frame.frameInstanceId);
     const realization = state.realizations
@@ -564,6 +572,28 @@ async function writeRows(tx: MemoryTransaction, projection: ProjectionName, rows
     else if (projection === 'obligations_projection') await writeObligationRow(tx, row as ObligationProjectionRow);
     else await writeScheduleRow(tx, row as ScheduleProjectionRow);
   }
+}
+
+/**
+ * Remove the rows of frames this projection no longer projects.
+ *
+ * A frame merged into a survivor or split into new instances is not active any
+ * more; its situation is projected under the survivor or the new instances, and a
+ * row still keyed by the old id would show one situation twice. A projection row
+ * is a rebuildable cache (ADR 0021 §7), so removing it destroys nothing canonical:
+ * the old id keeps resolving through lineage (ADR 0025 §3). With `keep` given,
+ * every row outside it goes too, which is what a full replay means by "rebuild".
+ */
+async function pruneRows(tx: MemoryTransaction, ownerScopeId: string, projection: ProjectionName,
+  keep: readonly string[] | null): Promise<number> {
+  const column = FRAME_COLUMN[projection];
+  const removed = await tx.query(
+    `DELETE FROM ${projection} p WHERE p.owner_scope_id=$1
+       AND (($2::uuid[] IS NOT NULL AND NOT (p.${column}=ANY($2::uuid[])))
+         OR NOT EXISTS(SELECT 1 FROM frame_instances f
+           WHERE f.owner_scope_id=p.owner_scope_id AND f.id=p.${column} AND f.lifecycle='ACTIVE'))`,
+    [ownerScopeId, keep === null ? null : [...keep]]);
+  return removed.rowCount ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +750,8 @@ export interface ReplayProjectionInput {
   /** Compare the rebuilt rows with whatever was stored before the rebuild and
    * record the verdict on the receipt. False is recorded as false. */
   readonly compareWithStored?: boolean;
+  /** Context the caller records on the receipt, such as the frames a merge touched. */
+  readonly detail?: Record<string, unknown>;
 }
 
 /**
@@ -737,6 +769,9 @@ export async function replayProjection(tx: MemoryTransaction, input: ReplayProje
   const context = await buildContext(tx, input.ownerScopeId, input.asOf);
   const rows = await buildRows(tx, context, projection);
   await writeRows(tx, projection, rows);
+  // A rebuild from canonical memory holds exactly the rows canonical memory
+  // produces: the row of a frame no longer projected does not survive it.
+  const pruned = await pruneRows(tx, input.ownerScopeId, projection, rows.map(row => frameIdOf(row, projection)));
   const after = await readProjectionRows(tx, { ownerScopeId: input.ownerScopeId, projectionName: projection });
   return recordRebuildReceipt(tx, {
     ownerScopeId: input.ownerScopeId, projectionName: projection, trigger,
@@ -744,7 +779,9 @@ export async function replayProjection(tx: MemoryTransaction, input: ReplayProje
     equalsIncremental: compare ? sameRows(before, after) : null,
     projectionVersion: context.projectionVersion,
     detail: {
+      ...(input.detail ?? {}),
       comparedRows: before.length,
+      prunedRows: pruned,
       unattachedPendingAssertions: context.unattached.length,
       incompleteRows: after.filter(row => !row.isComplete).length,
       asOf: input.asOf.toISOString(),
@@ -778,6 +815,57 @@ function toReceipt(row: Record<string, unknown>): ProjectionRebuildReceipt {
     projectionVersion: row['projection_version'], reducerVersion: row['reducer_version'],
     detail: row['detail'], createdAt: (row['created_at'] as Date).toISOString(),
   });
+}
+
+export interface LineageRebuildInput {
+  readonly ownerScopeId: string;
+  readonly trigger: 'MERGE' | 'SPLIT';
+  /** The committed MERGE or SPLIT transaction the rebuild answers for. */
+  readonly transactionId: string;
+  /** Every frame the transaction touched: survivors and new instances, and the
+   * merged or split frames whose rows must go. */
+  readonly frameInstanceIds: readonly string[];
+  readonly asOf: Date;
+}
+
+/**
+ * Rebuild every typed projection after a governed merge or split (PRD §14.1
+ * item 8, §14.2 item 6; CRT-MEM-10-A, CRT-MEM-10-B, CRT-MEM-10-C).
+ *
+ * The incremental step first: the one reducer recomputes the rows -- every row,
+ * because the commit moved the canonical transaction watermark each row carries
+ * (PRD §33.12), and the affected frames among them -- and the rows of frames the
+ * transaction retired are removed. Then a full replay of each projection is
+ * compared with that state, and its receipt -- trigger MERGE or SPLIT, naming
+ * the transaction -- records whether the two agreed. The comparison is
+ * computed, never asserted.
+ *
+ * Idempotent per transaction: a retried request finds the receipts already
+ * recorded for this transaction and answers with them instead of rebuilding
+ * twice, so the same request always answers the same receipts.
+ */
+export async function rebuildProjectionsAfterLineageChange(tx: MemoryTransaction, input: LineageRebuildInput): Promise<ProjectionRebuildReceipt[]> {
+  const trigger = rebuildTriggerSchema.parse(input.trigger);
+  const recorded = (await tx.query(
+    `SELECT * FROM projection_rebuild_receipts WHERE owner_scope_id=$1 AND transaction_id=$2 AND trigger=$3
+     ORDER BY created_at,id`, [input.ownerScopeId, input.transactionId, trigger])).rows.map(toReceipt);
+  if (recorded.length >= PROJECTION_NAMES.length) return recorded;
+
+  const affected = [...new Set(input.frameInstanceIds)].sort();
+  const receipts: ProjectionRebuildReceipt[] = [];
+  for (const projectionName of PROJECTION_NAMES) {
+    const existing = recorded.find(receipt => receipt.projectionName === projectionName);
+    if (existing) { receipts.push(existing); continue; }
+    const applied = await applyProjectionDelta(tx, { ownerScopeId: input.ownerScopeId, projectionName, asOf: input.asOf });
+    const retired = await pruneRows(tx, input.ownerScopeId, projectionName, null);
+    receipts.push(await replayProjection(tx, {
+      ownerScopeId: input.ownerScopeId, projectionName, asOf: input.asOf, trigger,
+      transactionId: input.transactionId, compareWithStored: true,
+      detail: { affectedFrameInstanceIds: affected.slice(0, 64), incrementalRowsWritten: applied.rowsWritten,
+        retiredRowsRemoved: retired },
+    }));
+  }
+  return receipts;
 }
 
 export async function listRebuildReceipts(tx: MemoryTransaction, input: {

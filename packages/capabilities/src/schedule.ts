@@ -59,12 +59,21 @@ export async function listScheduledFrameInstanceIds(tx: MemoryTransaction, input
   ownerScopeId: string; frameInstanceIds?: readonly string[] | undefined;
 }): Promise<string[]> {
   const only = input.frameInstanceIds ? [...input.frameInstanceIds] : null;
+  // A scheduled slot of a frame merged into this one schedules this one: the
+  // slot row keeps naming the frame it was recorded against (ADR 0025 §2).
   const rows = (await tx.query(
-    `SELECT DISTINCT f.id, f.created_at FROM frame_instances f
-     JOIN belief_slots s ON s.owner_scope_id=f.owner_scope_id AND s.frame_instance_id=f.id
+    `WITH RECURSIVE members(member_id,survivor_id,depth) AS (
+       SELECT f.id,f.id,0 FROM frame_instances f
+        WHERE f.owner_scope_id=$1 AND f.frame_type_id=$2 AND f.lifecycle='ACTIVE'
+          AND ($3::uuid[] IS NULL OR f.id=ANY($3::uuid[]))
+       UNION
+       SELECT l.from_frame_instance_id,m.survivor_id,m.depth+1 FROM frame_instance_lineage l
+        JOIN members m ON l.to_frame_instance_id=m.member_id
+        WHERE l.owner_scope_id=$1 AND l.lineage_kind='MERGED_INTO' AND m.depth<32)
+     SELECT DISTINCT f.id, f.created_at FROM members m
+     JOIN frame_instances f ON f.owner_scope_id=$1 AND f.id=m.survivor_id
+     JOIN belief_slots s ON s.owner_scope_id=$1 AND s.frame_instance_id=m.member_id
        AND s.modality='SCHEDULED' AND s.lifecycle='ACTIVE'
-     WHERE f.owner_scope_id=$1 AND f.frame_type_id=$2 AND f.lifecycle='ACTIVE'
-       AND ($3::uuid[] IS NULL OR f.id=ANY($3::uuid[]))
      ORDER BY f.created_at,f.id`, [input.ownerScopeId, SCHEDULE_FRAME_TYPE, only])).rows;
   return rows.map(row => row['id'] as string);
 }

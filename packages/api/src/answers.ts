@@ -12,7 +12,7 @@ import { ingestAssistantMessage, type EvidenceObjects } from './evidence.js';
 /**
  * Answer provenance at the HTTP boundary (design screen "Answer provenance";
  * PRD §23.6, §23.7, §24; CRT-RD-06-A, CRT-RD-07-A, CRT-RD-11-A, CRT-AI-01-A;
- * ADR 0025).
+ * ADR 0026).
  *
  *  - `createAnswerRecorder` is what the Ask route hands the pipeline: it stores
  *    the presented answer, and every model candidate, as assistant conversation

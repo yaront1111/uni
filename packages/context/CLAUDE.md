@@ -14,7 +14,7 @@ decisions: `docs/adr/0024-deterministic-selection-semantic-index-and-ask.md`.
 It also holds answer provenance: the grounding validator (`grounding.ts`), the
 answer manifests and reconsideration read (`manifests.ts`) and the shared
 statement wording (`wording.ts`). Report: `docs/answer-provenance.md`;
-decisions: `docs/adr/0024-answer-manifests-grounding-and-reconsideration.md`.
+decisions: `docs/adr/0026-answer-manifests-grounding-and-reconsideration.md`.
 
 ## Local invariants
 

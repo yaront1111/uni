@@ -9,7 +9,7 @@ import {createEncryptedS3Store,type StorageConfiguration} from '../../storage/sr
 import {uuidV7} from '../../../src/kernel/identities.js';
 
 // `answer.record` stores an assistant's own answer as conversation evidence and
-// nothing else: migration 0020 admits it to ASSISTANT_CONVERSATION items only.
+// nothing else: migration 0021 admits it to ASSISTANT_CONVERSATION items only.
 const OBJECT_WRITE_PURPOSES=new Set(['evidence.ingest','memory.correct','connector.sync','answer.record']);
 /** The purposes that may store evidence through `importSource`: the direct
  * ingest route and a connector sync, which migration 0018 admits alongside it. */
@@ -30,7 +30,7 @@ export async function createEvidenceObjects(config:StorageConfiguration){
     // The purposes that create evidence: the ingest route, the owner's own
     // correction controls, which store what the owner said before anything
     // canonical is proposed (migration 0014, CRT-RYW-06-A), and the recording of
-    // an assistant's answer as conversation evidence (migration 0020).
+    // an assistant's answer as conversation evidence (migration 0021).
     if(operation==='WRITE'&&!OBJECT_WRITE_PURPOSES.has(context.purpose))return null;
     const row=(await tx.query(`SELECT k.object_store_key,s.submitted_by_user_id FROM source_items s
       JOIN evidence_object_keys k ON k.owner_scope_id=s.owner_scope_id AND k.source_item_id=s.id
@@ -200,7 +200,7 @@ export async function ingestOwnerStatement(tx:OwnerTransaction,objects:EvidenceO
   return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string,stored:result.stored};
 }
 
-/** The source type every assistant answer is stored under (ADR 0025 §4). */
+/** The source type every assistant answer is stored under (ADR 0026 §4). */
 export const ASSISTANT_CONVERSATION='ASSISTANT_CONVERSATION';
 export interface AssistantMessageRequest {
   /** The words the assistant produced, stored verbatim and anchored as one span. */
@@ -216,12 +216,12 @@ export interface AssistantMessageRequest {
   readonly allowedPurposes:readonly string[];
 }
 /** Store one assistant message as conversation evidence (PRD §24.1-24.2,
- * CRT-AI-01-A; ADR 0025 §4).
+ * CRT-AI-01-A; ADR 0026 §4).
  *
  * It goes through the same `ingest` as every other item, so it gets the same
  * content hash, receipt, durable object and recorded triage route -- which, for
  * an ASSISTANT actor, is SOURCE_ONLY: nothing is ever extracted from it. Only the
- * `answer.record` purpose may call this, and migration 0020 lets that purpose
+ * `answer.record` purpose may call this, and migration 0021 lets that purpose
  * write this one kind of item and no other. */
 export async function ingestAssistantMessage(tx:OwnerTransaction,objects:EvidenceObjects,request:AssistantMessageRequest):
   Promise<{evidenceId:string;sourceAnchorId:string}>{

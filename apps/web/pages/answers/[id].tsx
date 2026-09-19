@@ -8,7 +8,7 @@ export default AnswerProvenance;
 const UNREADABLE='This answer\'s record could not be read. Please reload to retry.';
 
 /** One answer's manifest, read under `memory.inspect`. The page computes nothing:
- * the sets, versions and reconsideration changes are the API's (ADR 0025). */
+ * the sets, versions and reconsideration changes are the API's (ADR 0026). */
 export const getServerSideProps:GetServerSideProps=async({req,res,params})=>{
   res.setHeader('Cache-Control','no-store');
   const session=await identity(req);

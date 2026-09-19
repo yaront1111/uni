@@ -4,13 +4,13 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `answer-manifests-grounding-validator-and-reconsideration`. This node owns
 CRT-AI-01-A, CRT-RD-06-A, CRT-RD-07-A, CRT-RD-08-A, CRT-RD-11-A and
-CRT-RYW-05-A. ADR 0025 records its decisions; ADRs 0001–0024 and every
+CRT-RYW-05-A. ADR 0026 records its decisions; ADRs 0001–0025 and every
 delivered slice before it were inspected and retained.
 
 ## Design entities implemented here
 
 **`answer_manifests`** and **`reconsideration_candidates`**, added by
-`migrations/0020_answer_manifests_and_reconsideration.sql` with forced RLS,
+`migrations/0021_answer_manifests_and_reconsideration.sql` with forced RLS,
 purpose-gated policies, composite owner foreign keys and immutability triggers.
 A manifest references the persisted `context_packets` row it was derived from,
 the `source_items` row the answer was stored as, and the requesting member.
@@ -109,7 +109,7 @@ real governor.
 - Tests of earlier nodes adapted to the new schema, never weakened: the Ask route
   test supplies the evidence store production always has; the composer
   expectation names the two new null fields; the RLS table count is 52; the
-  projection replay drops and expects migration 0020.
+  projection replay drops and expects migration 0021.
 
 ## What this node does not claim
 
@@ -117,7 +117,7 @@ real governor.
   tested over a fake provider; `server.ts` passes no phraser, so production
   answers come from the deterministic composer through the same validator.
 - **Personal facts are checked by object and by number.** Free text naming an
-  entity is not matched against the packet (ADR 0025 §3).
+  entity is not matched against the packet (ADR 0026 §3).
 - **No rewrite of old answers.** Reconsideration marks; it never regenerates.
 - **The Ask screen and the link from it to this screen** belong to the web-shell
   node.

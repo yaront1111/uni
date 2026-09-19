@@ -52,6 +52,10 @@ export { RESOLUTION_VERSION, OUTCOME_PROJECTION_VERSION, RESOLUTION_CLASSIFIER_V
   type ResolutionAssertionInput, type RecordedResolutionAssertion, type RealizationInput,
   type ResolutionStatementReading, type ResolutionStatementRequest, type CanonicalizedResolution,
   type ElapsedSchedule, type ElapsedScheduleSweep } from './resolutions.js';
+export { recordFrameInstanceLineage, recordPropositionLineage, recordEntityLineage, retireFrameInstance, retireEntity,
+  listMergedFrameMembers, resolveFrameInstanceSurvivors, resolveEntitySurvivors, readLineageForTransaction,
+  listRecentLineage, resolveIdentity, listFrameSlots, slotDescriptorKey, rehomeSlotDescriptor,
+  type FrameLineageKind, type PropositionLineageKind, type EntityLineageKind, type FrameSlot } from './lineage.js';
 export { BITEMPORAL_QUERY_VERSION, BITEMPORAL_POLICY_VERSION, queryCurrentState, queryCorrectedHistoricalState,
   queryHistoricalBeliefState, queryBeliefState, readBeliefTimeline, recordBeliefStateVersion,
   type BeliefQueryMode, type AssessmentStatusName, type BeliefStateRow, type BeliefStateAnswer,

@@ -29,6 +29,19 @@
 - `importSource` has no route and no production caller; only `source-import.test.ts` calls it, with payloads from `fixtures/sources/`. The caller must pass an `evidence.ingest` owner transaction that already has both `unai.*` evidence settings, and owns error mapping and failure audit, which `scoped` does for the HTTP routes. The idempotency key is derived from the parsed identity, and anchor re-import relies on the `source_anchors_identity` index from migration `0008`. `Refusal` is not exported, so callers match on the error message.
 - `evidence.ts` imports `../../storage/src/index.js` and `../../../src/kernel/identities.js` (`uuidV7`) by relative path; `@unai/storage` is not declared in `package.json`.
 
+## Merge and split routes (`lineage.ts`)
+
+- The four POST routes map to `memory.govern`; each proposes and commits a MERGE
+  or SPLIT belief transaction through `@unai/belief`, then rebuilds the typed
+  projections in a second transaction opened with `deviceWork(request, run,
+  PROJECTION_PURPOSE)`. That third argument is the only way a route opens a
+  transaction under a purpose other than the request's; it is chosen by server
+  code, never from a header. `GET /v1/memory/merge-split/review` maps to
+  `memory.inspect`.
+- A retry is answered from the committed transaction: `commitOnce` looks the
+  idempotency key up before planning, because the planned ids are no longer
+  active after the first commit.
+
 ## Adding a route (local steps on top of the root checklist)
 
 Put it in a `register*Routes(app, work)` module called from `createPlatformApi`. Validate params and body before calling `work` and answer a stable code. Keep SQL for another package's tables in that package: the ops routes contain none and call `@unai/jobs`, which re-checks the purpose with `requirePurpose`. Audit, parse the response through a domain schema, and add the refusal cases `ops.test.ts` has (wrong purpose, foreign owner scope, missing correlation id, missing idempotency key, unknown session). `registry-boundary.test.ts` fails on any route path matching `registr|contract|release` on any file path in this package containing "registr", and on any non-test `.ts`, `.tsx` or `.json` file here that mentions `@unai/registry`, `packages/registry` or `registry/releases`.
