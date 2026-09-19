@@ -32,8 +32,9 @@ export {sourceAnchorKindSchema,parsedSourceAnchorSchema,parsedSourceItemSchema,p
   type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType} from './sources.js';
 export {registryVersionSchema,registryContentHashSchema,registryContractKindSchema,publicRegistryContractSchema,
   loadedRegistryReleaseSchema,registrySnapshotViewSchema,registryLintIssueSchema,registryLintedReleaseSchema,
-  registryLintReportSchema,
-  type PublicRegistryContract,type LoadedRegistryRelease,type RegistrySnapshotView,type RegistryLintReport} from './registry.js';
+  registryLintReportSchema,registryMigrationStatusSchema,
+  type PublicRegistryContract,type LoadedRegistryRelease,type RegistrySnapshotView,type RegistryLintReport,
+  type RegistryMigrationStatus} from './registry.js';
 export {entityKindSchema,entityLifecycleSchema,entityAliasTypeSchema,entityLineageKindSchema,entityMatchOutcomeSchema,
   modalitySchema,polaritySchema,claimOriginSchema,claimLifecycleSchema,temporalPrecisionSchema,temporalInterpretationSchema,
   slotDescriptorSchema,propositionDescriptorSchema,slotLookupOutcomeSchema,propositionLookupOutcomeSchema,storedClaimSchema,
@@ -148,6 +149,14 @@ export {DEFAULT_ATTENTION_BUDGET,attentionBudgetSchema,attentionBudgetPatchSchem
   type ClarificationCard,type MemoryInboxView,type CardDecisionInput,type CardDecisionResult,type LearnedRuleScope,
   type LearnedApprovalRule,type LearnedApprovalRulesView,type ReviewGround,type ReviewStatement,type ReviewSection,
   type PostponementEpisode,type BehavioralObservation,type ReviewManifest,type WeeklyReview} from './review.js';
+export {PRODUCTION_KEYING_RULES,keyingRuleSchema,corpusKindSchema,instanceMatchSignalsSchema,corpusAnnotationSchema,
+  ruleThresholdSchema,identityThresholdsSchema,keyingRuleResultSchema,LABEL_CATEGORIES,corpusResultsSchema,corpusStatusSchema,
+  shadowRunKindSchema,SHADOW_DIFF_NAMES,shadowDiffEntrySchema,shadowDiffSchema,costAndLatencyDiffSchema,
+  shadowSampleRefSchema,evaluationVersionsSchema,shadowReportSchema,publicShadowRunSchema,shadowRunsViewSchema,
+  METRIC_KEYS,metricKeySchema,metricUnitSchema,metricValueSchema,metricsViewSchema,
+  type KeyingRule,type CorpusKind,type CorpusAnnotation,type IdentityThresholds,type KeyingRuleResult,type LabelCategory,
+  type CorpusResults,type CorpusStatus,type ShadowDiff,type ShadowReport,type PublicShadowRun,type ShadowRunsView,
+  type MetricKey,type MetricValue,type MetricsView} from './evaluation.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

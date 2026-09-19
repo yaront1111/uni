@@ -1,0 +1,157 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-06-daniel-levi-lunch",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-06-daniel-levi-lunch.json",
+    "contentHash": "857b28240600a645f651af338ce81a04f300b0c9d44bfe501954e9fcf1eea368"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "another",
+      "messageExternalId": "msg-syn-06-1",
+      "start": 29,
+      "end": 72,
+      "quote": "Another ILS 50, I will return it next week."
+    },
+    {
+      "spanRef": "levi-sig",
+      "messageExternalId": "msg-syn-06-1",
+      "start": 76,
+      "end": 113,
+      "quote": "Daniel Levi, daniel.levi@example.test"
+    },
+    {
+      "spanRef": "sure-daniel",
+      "messageExternalId": "msg-syn-06-2",
+      "start": 0,
+      "end": 11,
+      "quote": "Sure Daniel"
+    },
+    {
+      "spanRef": "owner-sig5",
+      "messageExternalId": "msg-syn-06-2",
+      "start": 22,
+      "end": 51,
+      "quote": "Noa Bar, noa.bar@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:daniel-levi",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "levi-sig",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Daniel Levi"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "daniel.levi@example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "sure-daniel",
+          "aliases": [
+            {
+              "aliasType": "GIVEN_NAME",
+              "aliasValue": "Daniel"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig5",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "obligation:levi-lunch",
+      "frameType": "shared.obligation",
+      "roles": [
+        {
+          "roleId": "debtor",
+          "entityRef": "person:daniel-levi"
+        },
+        {
+          "roleId": "creditor",
+          "entityRef": "person:noa"
+        }
+      ],
+      "spanRefs": [
+        "another"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-another-50",
+      "mentionSpanRef": "another",
+      "mentionInstanceRef": "obligation:levi-lunch",
+      "candidateInstanceRef": "obligation:daniel-taxi",
+      "signals": {
+        "explicitReference": "ANOTHER",
+        "amountCompatibility": "EQUAL",
+        "temporalCompatibility": "COMPATIBLE",
+        "conflictingEntityRoles": [
+          "debtor"
+        ]
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:lunch-principal",
+      "instanceRef": "obligation:levi-lunch",
+      "predicateId": "shared.obligation.principal_amount",
+      "contextKind": "BASE",
+      "modality": "ACTUAL",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:lunch-50",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "another",
+              "value": {
+                "amount": "50.00",
+                "currency": "ILS"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

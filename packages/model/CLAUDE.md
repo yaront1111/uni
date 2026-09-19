@@ -53,6 +53,12 @@ creates the `model_test_app` LOGIN role when absent. No `UNAI_TEST_S3_*` and no
 network: the adapter tests inject `fetch`, and the gateway tests use in-test
 provider doubles.
 
+`assessment-boundary.test.ts` (CRT-WRT-01-A) sends real gateway output into the
+belief store without a transaction and expects the database to refuse it; its
+`@unai/belief` and `@unai/extraction` devDependencies are test-only. The
+gateway's runtime dependencies must stay free of drivers and repository packages
+(`src/boundaries.test.ts`, CRT-RD-01-A).
+
 ## Traps
 
 - `registerModelProvider` refuses an id that already exists, so a deployment

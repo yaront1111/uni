@@ -77,6 +77,11 @@ tells you.
   sets in `foldOwnerDeltas`. The default is to report it as pending, which is the
   safe direction — an unfolded write is visible, a silently ignored one is not.
 
+- **`computeProjectionRows` writes nothing.** It is the replay's compute half,
+  and the shadow evaluation calls it inside a READ ONLY transaction (ADR 0031
+  §4). A statement that writes in `buildContext` or `buildRows` would fail every
+  owner-sample shadow run.
+
 ## Traps
 
 - `numeric` arrives from node-postgres as a **string**. Keep it one; `Number()`

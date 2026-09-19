@@ -1,0 +1,171 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-11-flight",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-11-flight.json",
+    "contentHash": "5eee6c2d93f4824457fb829e63d13b049dbf6a01f4cde93be70b2d36cd791d00"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "flight",
+      "messageExternalId": "msg-syn-11-1",
+      "start": 0,
+      "end": 48,
+      "quote": "Flight SK315 departs 20 September 2026 at 06:40."
+    },
+    {
+      "spanRef": "booking-ref",
+      "messageExternalId": "msg-syn-11-1",
+      "start": 49,
+      "end": 66,
+      "quote": "Booking ref QZ7P2"
+    },
+    {
+      "spanRef": "sky-sig1",
+      "messageExternalId": "msg-syn-11-1",
+      "start": 71,
+      "end": 116,
+      "quote": "Skyway Airlines, bookings@skyway.example.test"
+    },
+    {
+      "spanRef": "change",
+      "messageExternalId": "msg-syn-11-2",
+      "start": 35,
+      "end": 62,
+      "quote": "SK315 now departs at 07:10."
+    },
+    {
+      "spanRef": "sky-sig2",
+      "messageExternalId": "msg-syn-11-2",
+      "start": 66,
+      "end": 111,
+      "quote": "Skyway Airlines, bookings@skyway.example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "org:skyway",
+      "entityKind": "ORGANIZATION",
+      "mentions": [
+        {
+          "spanRef": "sky-sig1",
+          "aliases": [
+            {
+              "aliasType": "DISPLAY_NAME",
+              "aliasValue": "Skyway Airlines"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "bookings@skyway.example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "sky-sig2",
+          "aliases": [
+            {
+              "aliasType": "DISPLAY_NAME",
+              "aliasValue": "Skyway Airlines"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "bookings@skyway.example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "event:flight-sk315",
+      "frameType": "shared.event_occurrence",
+      "roles": [
+        {
+          "roleId": "actor",
+          "entityRef": "org:skyway"
+        }
+      ],
+      "spanRefs": [
+        "flight",
+        "change"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-flight-change",
+      "mentionSpanRef": "change",
+      "mentionInstanceRef": "event:flight-sk315",
+      "candidateInstanceRef": "event:flight-sk315",
+      "signals": {
+        "externalIdentifierMatch": true
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:flight-time",
+      "instanceRef": "event:flight-sk315",
+      "predicateId": "shared.event_occurrence.occurrence_time",
+      "contextKind": "BASE",
+      "modality": "SCHEDULED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:flight-0640",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "flight",
+              "value": "2026-09-20T03:40:00.000Z"
+            }
+          ]
+        },
+        {
+          "propositionRef": "prop:flight-0710",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "change",
+              "value": "2026-09-20T04:10:00.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:flight-ref",
+      "instanceRef": "event:flight-sk315",
+      "predicateId": "shared.event_occurrence.external_occurrence_reference",
+      "contextKind": "BASE",
+      "modality": "SCHEDULED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:flight-booking",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "booking-ref",
+              "value": {
+                "system": "skyway",
+                "id": "QZ7P2"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

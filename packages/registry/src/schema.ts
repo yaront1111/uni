@@ -64,6 +64,58 @@ export const releaseIndexSchema = z.strictObject({
   })).max(1000),
 });
 
+/** PRD §17.7 change classes, in increasing order of what they can disturb. */
+export const CHANGE_CLASSES = ['ADDITIVE', 'COMPATIBLE_BEHAVIORAL', 'IDENTITY_AFFECTING', 'TRANSITION_AFFECTING', 'BREAKING'] as const;
+export type ChangeClass = typeof CHANGE_CLASSES[number];
+/** The classes that require shadow evaluation, a migration manifest, a slot and
+ * proposition diff, a projection replay and a rollback plan (PRD §17.7). */
+export const GOVERNED_CHANGE_CLASSES: readonly ChangeClass[] = Object.freeze(['IDENTITY_AFFECTING', 'TRANSITION_AFFECTING', 'BREAKING']);
+
+const evidencePath = z.string().regex(/^registry\/evidence\/(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\/[a-z0-9][a-z0-9_.-]{0,63}\.json$/);
+
+/** `migration.yaml` inside a release directory: part of the immutable release,
+ * covered by its content hash and materialized by publish into
+ * `registry_migration_manifests`. The evidence it names lives outside the
+ * release under `registry/evidence/<version>/`, because it is regenerable output
+ * rather than contract. */
+export const migrationManifestSchema = z.strictObject({
+  kind: z.literal('MIGRATION'),
+  from: version,
+  to: version,
+  changeClass: z.enum(CHANGE_CLASSES),
+  description: text,
+  /** The shadow report of `uai registry shadow-diff --baseline <from> --candidate <to>`;
+   * its slot-collision and proposition diffs are the slot and proposition diff.
+   * Optional in the schema so the CI gate can name exactly which evidence a
+   * governed change is missing, rather than one parse failure for all of them. */
+  shadowDiff: evidencePath.optional(),
+  /** The report of `uai registry projection-replay --registry-version <to>`. */
+  projectionReplay: evidencePath.optional(),
+  rollbackPlan: text.optional(),
+  /** Test suites pinned to this release, so a later release cannot silently
+   * change what they assert (PRD §17.7 "registry version pinning in tests"). */
+  pinnedTests: texts.min(1),
+});
+export type MigrationManifest = z.infer<typeof migrationManifestSchema>;
+
+/** What `uai registry projection-replay --report` writes. A governed migration
+ * names one of these, run with `--registry-version <to>`. */
+export const projectionReplayReportSchema = z.strictObject({
+  event: z.literal('registry.projection-replay'),
+  result: z.enum(['PASS', 'FAIL']),
+  registryVersion: version.nullable(),
+  ownerScopeId: z.uuid(),
+  asOf: z.iso.datetime(),
+  reducerVersion: z.string().min(1).max(64),
+  equalsIncremental: z.boolean().nullable(),
+  receipts: z.array(z.strictObject({
+    projectionName: z.string().min(1).max(64), rowsRebuilt: z.int().min(0), equalsIncremental: z.boolean().nullable(),
+    projectionVersion: z.string().min(1).max(64), receiptId: z.uuid(),
+  })).max(16),
+  correlationId: z.uuid(),
+});
+export type ProjectionReplayReport = z.infer<typeof projectionReplayReportSchema>;
+
 export type PredicateContract = z.infer<typeof predicateSchema>;
 export type FrameContract = z.infer<typeof frameSchema>;
 export type TransitionContract = z.infer<typeof transitionSchema>;

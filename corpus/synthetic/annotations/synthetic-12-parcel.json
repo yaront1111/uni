@@ -1,0 +1,74 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-12-parcel",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-12-parcel.json",
+    "contentHash": "e6de4d0d9c15d0538084618070ad4f79e49dd3210ee2005cdb554038f8a089d7"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "parcel",
+      "messageExternalId": "msg-syn-12-1",
+      "start": 0,
+      "end": 36,
+      "quote": "Parcel PG-55120 is out for delivery."
+    },
+    {
+      "spanRef": "tracking",
+      "messageExternalId": "msg-syn-12-1",
+      "start": 37,
+      "end": 65,
+      "quote": "Tracking status: in transit."
+    },
+    {
+      "spanRef": "parcel-sig",
+      "messageExternalId": "msg-syn-12-1",
+      "start": 69,
+      "end": 108,
+      "quote": "ParcelGo, updates@parcelgo.example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "org:parcelgo",
+      "entityKind": "ORGANIZATION",
+      "mentions": [
+        {
+          "spanRef": "parcel-sig",
+          "aliases": [
+            {
+              "aliasType": "DISPLAY_NAME",
+              "aliasValue": "ParcelGo"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "updates@parcelgo.example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [],
+  "instanceMatchCases": [],
+  "expectedSlotsAndPropositions": [],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [
+    {
+      "spanRef": "parcel",
+      "kind": "NON_MEMORY"
+    },
+    {
+      "spanRef": "tracking",
+      "kind": "UNKNOWN_PREDICATE"
+    }
+  ],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

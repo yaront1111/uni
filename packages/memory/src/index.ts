@@ -15,7 +15,8 @@ export { canonicalJson } from './canonical-json.js';
 export { MEMORY_PURPOSES, MemoryStoreError, type MemoryTransaction } from './transaction.js';
 export { TEMPORAL_RESOLVER_VERSION, TemporalResolutionError, resolveTemporalExpression,
   type TemporalResolutionRequest } from './temporal.js';
-export { ENTITY_RESOLVER_VERSION, normalizeAliasValue, createEntity, recordEntityAlias, findEntityCandidates, resolveEntity,
+export { ENTITY_RESOLVER_VERSION, normalizeAliasValue, isStrongAliasType, decideEntityResolution, createEntity, recordEntityAlias,
+  findEntityCandidates, resolveEntity,
   resolveEntityReference, recordEntityMerge, readEntity,
   type EntityKind, type EntityAliasType, type EntityAliasInput, type EntityCandidate,
   type EntityMatchOutcome, type EntityResolution } from './entities.js';

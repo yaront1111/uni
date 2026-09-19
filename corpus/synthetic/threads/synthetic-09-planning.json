@@ -1,0 +1,76 @@
+{
+  "id": "thr-syn-09",
+  "historyId": "909",
+  "messages": [
+    {
+      "id": "msg-syn-09-1",
+      "threadId": "thr-syn-09",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-09-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Maya Ron <maya.ron@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Weekly planning"
+          }
+        ],
+        "body": {
+          "size": 109,
+          "text": "Weekly planning is on 10 September 2026 at 09:00, calendar event cal-7781.\n-- Maya Ron, maya.ron@example.test"
+        }
+      }
+    },
+    {
+      "id": "msg-syn-09-2",
+      "threadId": "thr-syn-09",
+      "internalDate": "1788238800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-09-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<msg-syn-09-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Maya Ron <maya.ron@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Weekly planning"
+          }
+        ],
+        "body": {
+          "size": 86,
+          "text": "Update for cal-7781: we met and agreed the roadmap.\n-- Maya Ron, maya.ron@example.test"
+        }
+      }
+    }
+  ]
+}

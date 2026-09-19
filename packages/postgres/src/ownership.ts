@@ -39,16 +39,18 @@ const classifiedTables=new Map([
   ['action_history','owner_scope_id'],['retention_settings','owner_scope_id'],
   ['domain_sensitivity_settings','owner_scope_id'],['memory_summaries','owner_scope_id'],
   ['retention_and_deletion_requests','owner_scope_id'],
+  ['shadow_evaluation_runs','owner_scope_id'],['economic_and_quality_metrics','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a
  * new owner table with no unfiltered fixture fails the suite rather than passing
  * unexamined. */
 export const OWNER_SCOPED_TABLES:readonly string[]=Object.freeze([...classifiedTables.keys()]);
-/** Global Git registry snapshot (ADR 0011): not owner data, so it must stay
- * forced-RLS and completely inaccessible to the application role.
+/** Global Git registry snapshot (ADR 0011) and the migration manifests published
+ * with it (ADR 0031): not owner data, so they must stay forced-RLS and completely
+ * inaccessible to the application role.
  */
-const globalReferenceTables=new Set(['registry_releases','registry_contracts']);
+const globalReferenceTables=new Set(['registry_releases','registry_contracts','registry_migration_manifests']);
 
 export async function assertOwnershipCoverage(pool:Pool):Promise<void>{
   const rows=(await pool.query(`SELECT n.nspname AS schema,c.relname,c.relrowsecurity,c.relforcerowsecurity,

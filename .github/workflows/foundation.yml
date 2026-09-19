@@ -21,11 +21,32 @@ jobs:
       - run: pnpm build
       # Lint runs here and in the CLI, never in the deployment (ADR 0014). The
       # report is the artifact the operations registry screen displays.
+      # Lint also refuses an identity-, transition-affecting or breaking release
+      # without its migration manifest, shadow diff, projection replay output and
+      # rollback plan (PRD §17.7, CRT-REG-05-A).
       - run: pnpm validate:registry --report registry-lint-report.json
+      # The other three registry commands (PRD §35.14, CRT-REG-02-A). The
+      # database-backed shadow-diff and projection-replay runs, as real CLI
+      # processes over TLS, are part of `pnpm test` above
+      # (packages/registry/src/evaluation-db.test.ts).
+      - run: pnpm uai registry test --report registry-test-report.json
+      - run: pnpm uai registry shadow-diff --sample corpus:synthetic --report shadow-diff-report.json
+      # The gold corpus (PRD §43.4, §46): the synthetic equivalents are scored
+      # against the identity acceptance thresholds recorded in
+      # corpus/expected/identity-thresholds.json, and nothing under the private
+      # corpus path may be tracked, whatever a local hook did.
+      - run: test -z "$(git ls-files corpus/private-local)"
+      - run: pnpm uai corpus run --corpus synthetic --report corpus-report.json
+      - run: pnpm uai corpus status --report corpus-status.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: registry-lint-report
-          path: registry-lint-report.json
+          name: registry-and-evaluation-reports
+          path: |
+            registry-lint-report.json
+            registry-test-report.json
+            shadow-diff-report.json
+            corpus-report.json
+            corpus-status.json
           if-no-files-found: ignore
 

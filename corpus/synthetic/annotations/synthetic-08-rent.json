@@ -1,0 +1,233 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-08-rent",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-08-rent.json",
+    "contentHash": "c462ceb00e93e946b6f5b2a8e7a9ea250042378ea95b44282b26a0d91cd4f646"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "rent-due",
+      "messageExternalId": "msg-syn-08-1",
+      "start": 0,
+      "end": 51,
+      "quote": "The March rent of ILS 3,600 is due on 1 March 2026."
+    },
+    {
+      "spanRef": "ruth-sig",
+      "messageExternalId": "msg-syn-08-1",
+      "start": 55,
+      "end": 90,
+      "quote": "Ruth Adler, ruth.adler@example.test"
+    },
+    {
+      "spanRef": "paid-part",
+      "messageExternalId": "msg-syn-08-2",
+      "start": 0,
+      "end": 62,
+      "quote": "Paid ILS 1,200 toward the March rent today, transfer TX-88213."
+    },
+    {
+      "spanRef": "owner-sig7",
+      "messageExternalId": "msg-syn-08-2",
+      "start": 86,
+      "end": 115,
+      "quote": "Noa Bar, noa.bar@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:ruth",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "ruth-sig",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Ruth Adler"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "ruth.adler@example.test"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig7",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "obligation:rent-march",
+      "frameType": "shared.obligation",
+      "roles": [
+        {
+          "roleId": "debtor",
+          "entityRef": "person:noa"
+        },
+        {
+          "roleId": "creditor",
+          "entityRef": "person:ruth"
+        }
+      ],
+      "spanRefs": [
+        "rent-due",
+        "paid-part"
+      ]
+    },
+    {
+      "instanceRef": "allocation:rent-march-1",
+      "frameType": "finance.payment_allocation",
+      "roles": [],
+      "spanRefs": [
+        "paid-part"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-rent-that-one",
+      "mentionSpanRef": "paid-part",
+      "mentionInstanceRef": "obligation:rent-march",
+      "candidateInstanceRef": "obligation:rent-march",
+      "signals": {
+        "threadContinuity": true,
+        "sharedResolvedEntityRoles": [
+          "debtor",
+          "creditor"
+        ],
+        "explicitReference": "THAT_ONE"
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:rent-principal",
+      "instanceRef": "obligation:rent-march",
+      "predicateId": "shared.obligation.principal_amount",
+      "contextKind": "BASE",
+      "modality": "ACTUAL",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:rent-3600",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "rent-due",
+              "value": {
+                "amount": "3600.00",
+                "currency": "ILS"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:rent-due",
+      "instanceRef": "obligation:rent-march",
+      "predicateId": "shared.obligation.due_time",
+      "contextKind": "BASE",
+      "modality": "ACTUAL",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:rent-due-0301",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "rent-due",
+              "value": "2026-03-01T00:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:allocation-amount",
+      "instanceRef": "allocation:rent-march-1",
+      "predicateId": "finance.payment_allocation.allocated_amount",
+      "contextKind": "BASE",
+      "modality": "ACTUAL",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:allocation-1200",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "paid-part",
+              "value": {
+                "amount": "1200.00",
+                "currency": "ILS"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:allocation-ref",
+      "instanceRef": "allocation:rent-march-1",
+      "predicateId": "finance.payment_allocation.allocation_reference",
+      "contextKind": "BASE",
+      "modality": "ACTUAL",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:allocation-tx",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "paid-part",
+              "value": {
+                "system": "bank",
+                "id": "TX-88213"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": [
+      {
+        "resolutionRef": "res:rent-partial",
+        "instanceRef": "obligation:rent-march",
+        "spanRef": "paid-part",
+        "transitionContractId": "shared.obligation.resolution",
+        "linkKind": "RESOLVES",
+        "outcomeCode": "PARTIALLY_FULFILLED",
+        "targetFrameType": "finance.payment_allocation"
+      }
+    ]
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

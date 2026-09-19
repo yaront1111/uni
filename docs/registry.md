@@ -36,9 +36,24 @@ predicate. Outcomes are resolution assertions under these transitions.
 
 ```
 pnpm uai registry lint [--version 0.1.0] [--report <path>]
+pnpm uai registry test [--report <path>]
+pnpm uai registry shadow-diff --baseline <v> --candidate <v> [--sample corpus:synthetic|corpus:private|owner]
+    [--owner-scope <uuid> --actor <uuid> --limit <n> --as-of <iso>] [--run-kind registry|extractor
+    --baseline-extractor <model@prompt> --candidate-extractor <model@prompt>] [--report <path>]
+pnpm uai registry projection-replay --owner-scope <uuid> --actor <uuid> [--registry-version <v>] [--report <path>]
 pnpm uai registry publish --version 0.1.0 [--correlation-id <uuid>]
 pnpm validate:registry        # same as registry lint; runs in CI
 ```
+
+All four PRD §35.14 commands run in CI: `lint`, `test` and a corpus-sample
+`shadow-diff` as workflow steps, and the database-backed `shadow-diff` over an
+owner sample and `projection-replay` as real CLI processes over TLS inside
+`pnpm test` (`packages/registry/src/evaluation-db.test.ts`). `test` exercises
+every frame contract through the ten areas of PRD §43.3; `shadow-diff` writes the
+seven diffs of PRD §43.5 and, for an owner sample, records a
+`shadow_evaluation_runs` row without changing a production table (ADR 0031 §4).
+`--registry-version` pins a replay report to the release a migration manifest
+names.
 
 `--report <path>` writes the same bounded result as JSON (result, checked-at,
 refusal code, linted releases, issue codes with contract file and field path)
@@ -67,8 +82,14 @@ commit, content hash and correlation ID.
 ## Release procedure
 
 1. Add `registry/releases/<version>/` and its manifest in a pull request.
-   Identity-, transition-affecting and breaking changes also need the migration
-   evidence owned by the registry replay tooling (CRT-REG-05-A).
+   `lint` computes the change class against the previous release (ADR 0031 §5).
+   An identity-, transition-affecting or breaking release must also carry
+   `migration.yaml` in its directory (kind, from, to, changeClass, description,
+   shadowDiff, projectionReplay, rollbackPlan, pinnedTests), with the named
+   evidence under `registry/evidence/<version>/`: the report of
+   `shadow-diff --baseline <from> --candidate <version> --report ...` and the
+   report of `projection-replay --registry-version <version> --report ...`.
+   CI refuses the release otherwise (CRT-REG-05-A).
 2. Record the version, tag and content hash in `registry/releases.yaml`. The
    hash is SHA-256 over sorted `<file>\n<sha256(file)>\n` lines;
    `releaseContentHash` computes it and `lint` prints it.
@@ -95,6 +116,16 @@ hash identically to Git objects.
 `REGISTRY_TRANSITION_FRAME_MISMATCH`, `REGISTRY_FRAME_UNKNOWN`,
 `REGISTRY_TRANSITION_OUTCOMES_INVALID`, `REGISTRY_TRANSITION_TARGET_INVALID`,
 `REGISTRY_REQUIRED_CONTRACT_MISSING`, `REGISTRY_MANIFEST_MISMATCH`, `REGISTRY_YAML_INVALID`),
+`REGISTRY_MIGRATION_EVIDENCE_REQUIRED` (issues: `REGISTRY_MIGRATION_MANIFEST_REQUIRED`,
+`REGISTRY_MIGRATION_MANIFEST_INVALID`, `REGISTRY_MIGRATION_CLASS_UNDERSTATED`,
+`REGISTRY_MIGRATION_SHADOW_DIFF_REQUIRED`, `REGISTRY_MIGRATION_SHADOW_DIFF_INVALID`,
+`REGISTRY_MIGRATION_PROJECTION_REPLAY_REQUIRED`, `REGISTRY_MIGRATION_PROJECTION_REPLAY_INVALID`,
+`REGISTRY_MIGRATION_ROLLBACK_PLAN_REQUIRED`), `REGISTRY_MIGRATION_BASE_NOT_PUBLISHED`,
+`REGISTRY_CONTRACT_TEST_FAILED`, `SHADOW_SAMPLE_INVALID`, `SHADOW_RUN_KIND_INVALID`,
+`SHADOW_LIMIT_INVALID`, `SHADOW_OWNER_SAMPLE_CONFIGURATION_REQUIRED`, `SHADOW_EXTRACTOR_VERSIONS_REQUIRED`,
+`SHADOW_EXTRACTOR_NEEDS_OWNER_SAMPLE`, `SHADOW_AS_OF_INVALID`, `SHADOW_PRODUCTION_CHANGED`,
+`PROJECTION_REPLAY_CONFIGURATION_REQUIRED`, `PROJECTION_REPLAY_AS_OF_INVALID`, `PROJECTION_REPLAY_DIVERGED`,
+`REGISTRY_KIND_INVALID`, `REGISTRY_LOAD_FAILED`, `REGISTRY_COMMAND_FAILED`,
 `REGISTRY_TAG_SOURCE_REQUIRED`, `REGISTRY_CORRELATION_ID_INVALID`,
 `REGISTRY_RELEASE_CONFLICT`, `REGISTRY_PUBLISH_FAILED`,
 `REGISTRY_PUBLISH_CONFIGURATION_REQUIRED`, `REGISTRY_COMMAND_UNKNOWN`.

@@ -1,0 +1,39 @@
+{
+  "id": "thr-syn-03",
+  "historyId": "903",
+  "messages": [
+    {
+      "id": "msg-syn-03-1",
+      "threadId": "thr-syn-03",
+      "internalDate": "1788166800000",
+      "labelIds": [
+        "INBOX"
+      ],
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "Message-Id",
+            "value": "<msg-syn-03-1@mail.example.test>"
+          },
+          {
+            "name": "From",
+            "value": "Weekly Garden <news@weekly-garden.example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Noa Bar <noa.bar@example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "This week in the garden"
+          }
+        ],
+        "body": {
+          "size": 130,
+          "text": "Ten plants that love shade, and a recipe for basil pesto. Read more on our site.\n-- Weekly Garden, news@weekly-garden.example.test"
+        }
+      }
+    }
+  ]
+}

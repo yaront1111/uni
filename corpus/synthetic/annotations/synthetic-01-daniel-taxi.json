@@ -1,0 +1,297 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-01-daniel-taxi",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-01-daniel-taxi.json",
+    "contentHash": "f68c0e11a6034001e7206d22fc5326c47643a8d1b7e124c314ed2840abc00106"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "lend",
+      "messageExternalId": "msg-syn-01-1",
+      "start": 11,
+      "end": 41,
+      "quote": "I lent you ILS 50 for the taxi"
+    },
+    {
+      "spanRef": "owner-sig1",
+      "messageExternalId": "msg-syn-01-1",
+      "start": 65,
+      "end": 94,
+      "quote": "Noa Bar, noa.bar@example.test"
+    },
+    {
+      "spanRef": "daniel-name1",
+      "messageExternalId": "msg-syn-01-1",
+      "start": 0,
+      "end": 9,
+      "quote": "Hi Daniel"
+    },
+    {
+      "spanRef": "taxi-money",
+      "messageExternalId": "msg-syn-01-2",
+      "start": 12,
+      "end": 32,
+      "quote": "About the taxi money"
+    },
+    {
+      "spanRef": "repay",
+      "messageExternalId": "msg-syn-01-2",
+      "start": 34,
+      "end": 68,
+      "quote": "I'll pay you back the 50 by Friday"
+    },
+    {
+      "spanRef": "dc-sig1",
+      "messageExternalId": "msg-syn-01-2",
+      "start": 73,
+      "end": 112,
+      "quote": "Daniel Cohen, daniel.cohen@example.test"
+    },
+    {
+      "spanRef": "owner-name1",
+      "messageExternalId": "msg-syn-01-2",
+      "start": 0,
+      "end": 10,
+      "quote": "Thanks Noa"
+    },
+    {
+      "spanRef": "sent",
+      "messageExternalId": "msg-syn-01-3",
+      "start": 0,
+      "end": 40,
+      "quote": "Done, I sent you the 50 on Bit just now."
+    },
+    {
+      "spanRef": "dc-sig2",
+      "messageExternalId": "msg-syn-01-3",
+      "start": 44,
+      "end": 83,
+      "quote": "Daniel Cohen, daniel.cohen@example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "person:noa",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "owner-sig1",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Noa Bar"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "noa.bar@example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "owner-name1",
+          "aliases": [
+            {
+              "aliasType": "GIVEN_NAME",
+              "aliasValue": "Noa"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entityRef": "person:daniel-cohen",
+      "entityKind": "PERSON",
+      "mentions": [
+        {
+          "spanRef": "daniel-name1",
+          "aliases": [
+            {
+              "aliasType": "GIVEN_NAME",
+              "aliasValue": "Daniel"
+            }
+          ]
+        },
+        {
+          "spanRef": "dc-sig1",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Daniel Cohen"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "daniel.cohen@example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "dc-sig2",
+          "aliases": [
+            {
+              "aliasType": "FULL_NAME",
+              "aliasValue": "Daniel Cohen"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "daniel.cohen@example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "obligation:daniel-taxi",
+      "frameType": "shared.obligation",
+      "roles": [
+        {
+          "roleId": "debtor",
+          "entityRef": "person:daniel-cohen"
+        },
+        {
+          "roleId": "creditor",
+          "entityRef": "person:noa"
+        }
+      ],
+      "spanRefs": [
+        "lend",
+        "taxi-money"
+      ]
+    },
+    {
+      "instanceRef": "commitment:daniel-repay",
+      "frameType": "shared.commitment",
+      "roles": [
+        {
+          "roleId": "promisor",
+          "entityRef": "person:daniel-cohen"
+        },
+        {
+          "roleId": "promisee",
+          "entityRef": "person:noa"
+        }
+      ],
+      "spanRefs": [
+        "repay"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-taxi-reference",
+      "mentionSpanRef": "taxi-money",
+      "mentionInstanceRef": "obligation:daniel-taxi",
+      "candidateInstanceRef": "obligation:daniel-taxi",
+      "signals": {
+        "threadContinuity": true,
+        "sharedResolvedEntityRoles": [
+          "debtor",
+          "creditor"
+        ],
+        "amountCompatibility": "EQUAL",
+        "explicitReference": "THAT_ONE"
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:taxi-principal",
+      "instanceRef": "obligation:daniel-taxi",
+      "predicateId": "shared.obligation.principal_amount",
+      "contextKind": "BASE",
+      "modality": "ACTUAL",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:taxi-50",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "lend",
+              "value": {
+                "amount": "50.00",
+                "currency": "ILS"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:repay-action",
+      "instanceRef": "commitment:daniel-repay",
+      "predicateId": "shared.commitment.action_description",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:repay-action",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "repay",
+              "value": "pay Noa back the ILS 50 for the taxi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:repay-due",
+      "instanceRef": "commitment:daniel-repay",
+      "predicateId": "shared.commitment.due_time",
+      "contextKind": "BASE",
+      "modality": "COMMITTED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:repay-friday",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "repay",
+              "value": "2026-09-04T17:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [
+      {
+        "instanceRef": "commitment:daniel-repay",
+        "spanRef": "repay"
+      }
+    ],
+    "resolutions": [
+      {
+        "resolutionRef": "res:repay-fulfilled",
+        "instanceRef": "commitment:daniel-repay",
+        "spanRef": "sent",
+        "transitionContractId": "shared.commitment.resolution",
+        "linkKind": "RESOLVES",
+        "outcomeCode": "FULFILLED",
+        "targetFrameType": null
+      },
+      {
+        "resolutionRef": "res:taxi-fulfilled",
+        "instanceRef": "obligation:daniel-taxi",
+        "spanRef": "sent",
+        "transitionContractId": "shared.obligation.resolution",
+        "linkKind": "RESOLVES",
+        "outcomeCode": "FULFILLED",
+        "targetFrameType": null
+      }
+    ]
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

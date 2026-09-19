@@ -1,3 +1,7 @@
 # Registry release files are hashed byte-for-byte; never convert line endings.
 registry/releases/** -text
 registry/releases.yaml -text
+# Corpus threads are labelled against their exact bytes (content hash); never convert line endings.
+corpus/** -text
+# Git hooks run under sh, which a CRLF checkout would break.
+.githooks/* text eol=lf

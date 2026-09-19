@@ -1,0 +1,165 @@
+{
+  "format": "unai-corpus-annotation/1",
+  "threadRef": "synthetic-04-dentist",
+  "corpusKind": "SYNTHETIC",
+  "source": {
+    "connector": "gmail",
+    "threadFile": "synthetic-04-dentist.json",
+    "contentHash": "f65a83d9720276bb5654e2df8973ba37228033ed7071229fb3008bb9ce44caef"
+  },
+  "labelledSourceSpans": [
+    {
+      "spanRef": "appt",
+      "messageExternalId": "msg-syn-04-1",
+      "start": 0,
+      "end": 70,
+      "quote": "Your cleaning appointment is scheduled for 12 September 2026 at 10:30."
+    },
+    {
+      "spanRef": "appt-ref",
+      "messageExternalId": "msg-syn-04-1",
+      "start": 71,
+      "end": 88,
+      "quote": "Reference BD-4471"
+    },
+    {
+      "spanRef": "clinic-sig1",
+      "messageExternalId": "msg-syn-04-1",
+      "start": 93,
+      "end": 147,
+      "quote": "Bright Dental, appointments@bright-dental.example.test"
+    },
+    {
+      "spanRef": "reminder",
+      "messageExternalId": "msg-syn-04-2",
+      "start": 0,
+      "end": 51,
+      "quote": "Reminder: appointment BD-4471 is tomorrow at 10:30."
+    },
+    {
+      "spanRef": "clinic-sig2",
+      "messageExternalId": "msg-syn-04-2",
+      "start": 55,
+      "end": 109,
+      "quote": "Bright Dental, appointments@bright-dental.example.test"
+    }
+  ],
+  "expectedEntities": [
+    {
+      "entityRef": "org:bright-dental",
+      "entityKind": "ORGANIZATION",
+      "mentions": [
+        {
+          "spanRef": "clinic-sig1",
+          "aliases": [
+            {
+              "aliasType": "DISPLAY_NAME",
+              "aliasValue": "Bright Dental"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "appointments@bright-dental.example.test"
+            }
+          ]
+        },
+        {
+          "spanRef": "clinic-sig2",
+          "aliases": [
+            {
+              "aliasType": "DISPLAY_NAME",
+              "aliasValue": "Bright Dental"
+            },
+            {
+              "aliasType": "EMAIL",
+              "aliasValue": "appointments@bright-dental.example.test"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedFrameInstances": [
+    {
+      "instanceRef": "event:dentist-0912",
+      "frameType": "shared.event_occurrence",
+      "roles": [
+        {
+          "roleId": "actor",
+          "entityRef": "org:bright-dental"
+        }
+      ],
+      "spanRefs": [
+        "appt",
+        "reminder"
+      ]
+    }
+  ],
+  "instanceMatchCases": [
+    {
+      "caseRef": "case-dentist-reminder",
+      "mentionSpanRef": "reminder",
+      "mentionInstanceRef": "event:dentist-0912",
+      "candidateInstanceRef": "event:dentist-0912",
+      "signals": {
+        "externalIdentifierMatch": true
+      }
+    }
+  ],
+  "expectedSlotsAndPropositions": [
+    {
+      "slotRef": "slot:dentist-time",
+      "instanceRef": "event:dentist-0912",
+      "predicateId": "shared.event_occurrence.occurrence_time",
+      "contextKind": "BASE",
+      "modality": "SCHEDULED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:dentist-1030",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "appt",
+              "value": "2026-09-12T07:30:00.000Z"
+            },
+            {
+              "spanRef": "reminder",
+              "value": "2026-09-12T07:30:00.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slotRef": "slot:dentist-ref",
+      "instanceRef": "event:dentist-0912",
+      "predicateId": "shared.event_occurrence.external_occurrence_reference",
+      "contextKind": "BASE",
+      "modality": "SCHEDULED",
+      "qualifiers": {},
+      "propositions": [
+        {
+          "propositionRef": "prop:dentist-ref",
+          "polarity": "POSITIVE",
+          "observations": [
+            {
+              "spanRef": "appt-ref",
+              "value": {
+                "system": "bright-dental",
+                "id": "BD-4471"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expectedCommitmentsAndResolutions": {
+    "commitments": [],
+    "resolutions": []
+  },
+  "expectedUnknownsAndNonMemoryItems": [],
+  "identityAcceptanceThresholds": {
+    "version": "identity-thresholds-1"
+  }
+}

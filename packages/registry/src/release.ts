@@ -5,7 +5,8 @@ import { resolve } from 'node:path';
 import { metrics, trace, SpanStatusCode } from '@opentelemetry/api';
 import { parseDocument } from 'yaml';
 import { lintContractDocuments, type LintIssue } from './lint.js';
-import { manifestSchema, releaseIndexSchema, RELEASE_VERSION, type FrameContract, type RegistryManifest, type TransitionContract } from './schema.js';
+import { manifestSchema, migrationManifestSchema, releaseIndexSchema, RELEASE_VERSION, type FrameContract, type MigrationManifest,
+  type RegistryManifest, type TransitionContract } from './schema.js';
 
 export class RegistryError extends Error {
   constructor(readonly code: string, readonly issues: readonly LintIssue[] = []) { super(code); this.name = 'RegistryError'; }
@@ -22,7 +23,15 @@ export interface LoadedRegistryRelease {
   readonly files: readonly string[];
   readonly frames: readonly FrameContract[];
   readonly transitions: readonly TransitionContract[];
+  /** `migration.yaml` of a release that migrates from an earlier one, else null.
+   * Its bytes are part of the release content hash like every other file. */
+  readonly migration: MigrationManifest | null;
+  /** SHA-256 of the `migration.yaml` bytes, recorded on the published manifest row. */
+  readonly migrationContentHash: string | null;
 }
+
+/** The one release file that is neither the manifest nor a contract. */
+export const MIGRATION_FILE = 'migration.yaml';
 
 interface ReleaseFile { path: string; bytes: Buffer }
 interface ReleaseRecord { version: string; tag: string; contentHash: string }
@@ -86,7 +95,8 @@ function assemble(record: ReleaseRecord, files: ReleaseFile[], source: LoadedReg
   try { manifest = manifestSchema.parse(yaml(manifestFile!.bytes)); }
   catch { throw new RegistryError('REGISTRY_MANIFEST_INVALID'); }
   const listed = manifest.contracts.map(entry => entry.file);
-  const contractFiles = files.filter(file => file !== manifestFile);
+  const migrationFile = files.find(file => file.path === MIGRATION_FILE);
+  const contractFiles = files.filter(file => file !== manifestFile && file !== migrationFile);
   if (manifest.version !== record.version || new Set(listed).size !== listed.length
     || new Set(manifest.contracts.map(entry => entry.id)).size !== listed.length
     || contractFiles.length !== listed.length || contractFiles.some(file => !listed.includes(file.path))) {
@@ -104,10 +114,22 @@ function assemble(record: ReleaseRecord, files: ReleaseFile[], source: LoadedReg
   });
   const result = lintContractDocuments(documents, record.version);
   issues.push(...result.issues);
+  let migration: MigrationManifest | null = null;
+  if (migrationFile) {
+    let document: unknown;
+    try { document = yaml(migrationFile.bytes); }
+    catch { document = null; }
+    const parsed = migrationManifestSchema.safeParse(document);
+    if (!parsed.success) issues.push({ code: 'REGISTRY_MIGRATION_MANIFEST_INVALID', contract: MIGRATION_FILE, path: '' });
+    else if (parsed.data.to !== record.version || parsed.data.from === record.version) {
+      issues.push({ code: 'REGISTRY_MIGRATION_MANIFEST_INVALID', contract: MIGRATION_FILE, path: parsed.data.to !== record.version ? 'to' : 'from' });
+    } else migration = parsed.data;
+  }
   if (issues.length) throw new RegistryError('REGISTRY_LINT_FAILED', issues);
   return Object.freeze({
     source, version: record.version, tag: record.tag, gitCommit, contentHash: record.contentHash, manifest,
     files: Object.freeze(files.map(file => file.path).sort()), frames: Object.freeze(result.frames), transitions: Object.freeze(result.transitions),
+    migration, migrationContentHash: migrationFile ? createHash('sha256').update(migrationFile.bytes).digest('hex') : null,
   });
 }
 
@@ -162,6 +184,26 @@ export function loadRegistryRelease(options: { repository: string; version: stri
     }
     return assemble(record, files, 'GIT_TAG', commit);
   });
+}
+
+/** The migration evidence a tagged release names, read from the same immutable
+ * commit as the release itself, never from the working tree. Returns the slot
+ * and proposition diff summary and the shadow run id, or null when the release
+ * carries no migration manifest. */
+export function readTaggedMigrationEvidence(repository: string, release: LoadedRegistryRelease)
+  : { slotAndPropositionDiff: Record<string, unknown>; shadowRunId: string | null } | null {
+  if (!release.migration) return null;
+  if (release.source !== 'GIT_TAG' || !release.gitCommit) throw new RegistryError('REGISTRY_TAG_SOURCE_REQUIRED');
+  const path = release.migration.shadowDiff;
+  const bytes = path ? git(resolve(repository), ['cat-file', 'blob', release.gitCommit + ':' + path]) : null;
+  let report: { runId?: unknown; diffs?: { slotCollision?: { compared?: unknown; changed?: unknown }; proposition?: { compared?: unknown; changed?: unknown } } } = {};
+  try { report = bytes ? JSON.parse(bytes.toString('utf8')) : {}; } catch { report = {}; }
+  const counts = (diff?: { compared?: unknown; changed?: unknown }) =>
+    diff && Number.isInteger(diff.compared) && Number.isInteger(diff.changed) ? { compared: diff.compared, changed: diff.changed } : null;
+  return {
+    slotAndPropositionDiff: { shadowDiff: path ?? null, slotCollision: counts(report.diffs?.slotCollision), proposition: counts(report.diffs?.proposition) },
+    shadowRunId: typeof report.runId === 'string' && /^[0-9a-f-]{36}$/.test(report.runId) ? report.runId : null,
+  };
 }
 
 /** CI lint of the working-tree release against its recorded hash; never a runtime source. */

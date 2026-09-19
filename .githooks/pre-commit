@@ -1,0 +1,11 @@
+#!/bin/sh
+# Refuses any commit that adds, copies, renames or modifies a file under the
+# private gold corpus (PRD §43.4, CRT-QA-02-A). The path is also gitignored, so
+# this catches the `git add --force` case. Installed by `pnpm hooks:install`.
+blocked=$(git diff --cached --name-only --diff-filter=ACMRT -- 'corpus/private-local/')
+if [ -n "$blocked" ]; then
+  echo "PRIVATE_CORPUS_COMMIT_BLOCKED: files under corpus/private-local/ never enter Git." >&2
+  echo "Unstage them with: git rm --cached -r corpus/private-local/" >&2
+  exit 1
+fi
+exit 0

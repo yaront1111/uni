@@ -349,6 +349,12 @@ importers:
       '@types/pg':
         specifier: ^8.15.0
         version: 8.23.1
+      '@unai/belief':
+        specifier: workspace:*
+        version: link:../belief
+      '@unai/extraction':
+        specifier: workspace:*
+        version: link:../extraction
       '@unai/postgres':
         specifier: workspace:*
         version: link:../postgres
@@ -377,9 +383,18 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
+      '@unai/belief':
+        specifier: workspace:*
+        version: link:../belief
       '@unai/capabilities':
         specifier: workspace:*
         version: link:../capabilities
+      '@unai/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@unai/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@unai/postgres':
         specifier: workspace:*
         version: link:../postgres

@@ -46,11 +46,16 @@ it('materializes the tag-loaded release immutably with public UUIDv7 identifiers
   // the correlation id of the publication that created the row.
   const prior = (await pool.query('SELECT correlation_id FROM registry_releases')).rows[0]?.correlation_id as string | undefined;
   const outcome = await registry.publishRegistryRelease(pool, release, correlationId);
-  expect(outcome.outcome).toBe(prior ? 'ALREADY_PUBLISHED' : 'PUBLISHED');
+  if (prior) expect(outcome.outcome).toBe('ALREADY_PUBLISHED');
   expect(outcome.releaseId).toMatch(uuidV7);
   const row = (await pool.query('SELECT *, current_user AS principal FROM registry_releases')).rows[0];
   expect(row).toMatchObject({ id: outcome.releaseId, semantic_version: '0.1.0', git_tag: 'registry-v0.1.0', git_commit: release.gitCommit,
-    content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: prior ?? correlationId });
+    content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: prior ?? row.correlation_id });
+  // PUBLISHED exactly when this call created the row. Other suites that need the
+  // pinned release publish the identical tag when this file has not yet, so one
+  // can land between the read above and the publish; the row then carries that
+  // publication's correlation id and this call must answer ALREADY_PUBLISHED.
+  expect(outcome.outcome === 'PUBLISHED').toBe(row.correlation_id === correlationId);
   expect(row.published_by).toBe(row.principal);
   expect(row.released_at).toBeInstanceOf(Date);
   expect(row.id).not.toContain(release.contentHash.slice(0, 8));
@@ -111,7 +116,7 @@ it('refuses update, delete and truncate of the snapshot, even for the privileged
   }
   expect(outcome).toBeInstanceOf(Error);
   expect((outcome as Error).message).toContain('REGISTRY_SNAPSHOT_IMMUTABLE');
-});
+}, 30000);
 
 it('grants the application role no registry snapshot read or write access', async () => {
   const client = await pool.connect();

@@ -14,7 +14,9 @@
     "db:migrate": "tsx packages/postgres/src/migrate-cli.ts",
     "uai": "tsx packages/registry/src/cli.ts",
     "validate:registry": "tsx packages/registry/src/cli.ts registry lint",
-    "check:phase-exit": "pnpm typecheck && pnpm test && pnpm validate:registry"
+    "check:phase-exit": "pnpm typecheck && pnpm test && pnpm validate:registry && pnpm uai registry test && pnpm uai corpus run --corpus synthetic && pnpm uai corpus verify",
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "hooks:install": "node scripts/install-git-hooks.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
