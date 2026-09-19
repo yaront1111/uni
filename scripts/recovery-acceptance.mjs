@@ -42,7 +42,12 @@ export async function compareAcceptanceReads(sourceUrl,restoredUrl){
   const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
   async function read(pool,admin,owner,actor,purpose,question,worldTime=now.toISOString()){
     const context={ownerScopeId:owner,actorId:actor,purpose:'memory.read',correlationId:randomUUID()};
-    const runner=run=>withOwnerTransaction(pool,context,run);
+    // Every transaction declares the same source boundary as the public read,
+    // including saved packets; a broker's earlier transaction grants no access.
+    const runner=run=>withOwnerTransaction(pool,context,async tx=>{
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
+      return run(tx);
+    });
     const release=(await admin.query("SELECT id FROM registry_releases WHERE semantic_version='0.1.0'")).rows[0]?.id??null;
     const options={now,correlationId:context.correlationId,requestingActorId:actor,registryReleaseId:release,registryRelease:'0.1.0'};
     const ask=await answerQuestion(runner,{ownerScopeId:owner,question,purpose,worldTime,knowledgeTime:'LATEST',maximumSensitivity:'RESTRICTED'},options);
@@ -75,7 +80,10 @@ export async function compareAcceptanceReads(sourceUrl,restoredUrl){
       const after=await read(restoredApp,restored,owner.owner_scope_id,owner.user_id,purpose,question);
       if(id==='AC44.05'){
         const context={ownerScopeId:owner.owner_scope_id,actorId:owner.user_id,purpose:'memory.correct',correlationId:randomUUID()};
-        const overlay=pool=>withOwnerTransaction(pool,context,tx=>readOwnerOverlay(tx,{ownerScopeId:owner.owner_scope_id}));
+        const overlay=pool=>withOwnerTransaction(pool,context,async tx=>{
+          await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
+          return readOwnerOverlay(tx,{ownerScopeId:owner.owner_scope_id});
+        });
         before.ownerOverlay=await overlay(sourceApp);after.ownerOverlay=await overlay(restoredApp);
         const assertion=before.ownerOverlay.deltas.find(delta=>delta.rawText==='I paid him back');
         if(!assertion||assertion.assertionKind!=='USER_ASSERTION'||assertion.independentVerification.verified!==false)
