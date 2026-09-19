@@ -18,6 +18,7 @@ import {enqueueJob,JOB_PURPOSES} from '@unai/jobs';
 import {EXTRACTION_JOB_KIND} from '@unai/extraction';
 import {createHash} from 'node:crypto';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
+import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import type {PolicyPorts} from '@unai/belief';
 import type {AnswerPhraser} from '@unai/context';
 
@@ -42,11 +43,13 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   /** The model that phrases Ask answers (`createGatewayAnswerPhraser`). Without
    * one the deterministic composer answers; either way the grounding validator
    * decides what is presented and a manifest is recorded (ADR 0025). */
-  answerPhraser?:AnswerPhraser}){
+  answerPhraser?:AnswerPhraser;
+  /** The instant a Today briefing is built for; only tests pin it. */
+  todayClock?:TodayRouteOptions['clock']}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
     CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
-    CONTEXT_READ_PURPOSE,ASK_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
+    CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
     'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
@@ -80,6 +83,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url?.startsWith('/v1/memory/transactions')?'memory.govern':
       request.routeOptions.url==='/v1/memory/context'?CONTEXT_READ_PURPOSE:
       request.routeOptions.url==='/v1/ask'?ASK_PURPOSE:
+      request.routeOptions.url==='/v1/today'?TODAY_PURPOSE:
+      request.routeOptions.url==='/v1/memory/why/:objectType/:id'?WHY_PURPOSE:
       request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
@@ -182,5 +187,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,phraser:options.answerPhraser,
     purposeWork:(request,purpose,run)=>deviceWork(request,tx=>run(tx),purpose)});
   registerAnswerRoutes(app,deviceWork);
+  registerTodayRoutes(app,deviceWork,{
+    ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    ...(options.todayClock?{clock:options.todayClock}:{}),
+    registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null});
   return app;
 }

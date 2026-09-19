@@ -26,6 +26,16 @@ Writes are browser `fetch` calls to `pages/api/platform/[...path].ts`, which acc
 
 Components follow one write convention: send `x-purpose`, a `crypto.randomUUID()` `x-correlation-id` and an `idempotency-key`; on 401 go to `/signin?reason=expired`; on any other failure show a fixed message in `role="alert"`; on success reload or navigate so the server render re-reads state. There is no client-side store. `Evidence.tsx` keeps one `attempt` ref per selected file so a retry reuses the same idempotency key and `externalId`, and its 512 KB limit exists because the base64 envelope must fit the API's 1 MiB `bodyLimit` (`packages/api/src/index.ts`) and the proxy route's own body parser, which is left at the Next.js default of 1 MB.
 
+## Today, Ask and the shell
+
+- `components/Shell.tsx` is the layout the product screens use: skip link, banner, `Navigation`, one focusable `main` labelled by the `h1`, a polite live region (`role="status"`) for asynchronous states, and the footer. New product screens should render inside it rather than copy the markup.
+- `components/Labels.tsx` is the uncertainty label system (CRT-UX-12-A). Every label has its own words, glyph and border-pattern class, and the stylesheet draws `.label*` rules in grey-axis colours only; `Labels.test.ts` parses `styles/global.css` and fails on any chromatic colour in a `.label` rule. Ask statements are mapped onto it by `displayLabelOf`.
+- Identifiers (UUIDs) appear only inside `<details class="advanced">` ("Advanced inspector"). The Today and Ask tests strip those blocks and every tag, then fail on any UUID left; a value that carries one goes through `withoutIdentifiers`.
+- `components/WhySources.tsx` is the Why? / Sources panel: a native `details`, closed by default, filled from `GET /v1/memory/why/{type}/{id}` on the server.
+- Reads for these screens live in `lib/screens.ts` as functions over an injected `ApiCall` (the `apiRequest` signature), so `pages/today.tsx` and `pages/ask.tsx` stay thin and `e2e/ask.test.ts` can drive the same loader against the real API in process. They pin `x-data-purpose: PERSONAL_ASSISTANCE` and `x-maximum-sensitivity: RESTRICTED`.
+- Ask is a GET form (`/ask?q=`); the server render calls `POST /v1/ask` with its own idempotency key. The write proxy is deliberately not extended for it.
+- Today learns the owner's timezone from the browser: without the `unai-tz` cookie, and with none remembered by the API, it renders the Loading state and an effect sets the cookie and reloads.
+
 ## Screens and their tests
 
 A screen exists only when the node's design draws it; `docs/foundation.md`, `docs/evidence-runtime.md` and `docs/jobs-runtime.md` record which screens and states were delivered. `Navigation.tsx` renders undelivered destinations as `aria-disabled` spans, and `Access.test.ts` expects them to stay visible. Copy must not overclaim: `Evidence.test.ts` pins the "Search and semantic extraction are not available" wording, and `Jobs.test.ts` fails if the markup contains `payload`. Status is always text, never colour alone.
@@ -46,6 +56,8 @@ pnpm exec vitest run apps/web
 4. For a new write, extend the path-to-purpose chain in `pages/api/platform/[...path].ts` with an anchored pattern, and keep it identical to the purpose the API expects for that route in `packages/api/src/platform.ts`.
 
 ## Traps
+
+- `e2e/ask.test.ts` needs the database harness and imports `packages/api` and `packages/registry` by a runtime path (`import(/* @vite-ignore */ PATH)`) and `pg` through `createRequire` from `packages/postgres`. Keep it that way: a static import would pull the API and the registry library into this package's type check and trip `registry-boundary.test.ts`.
 
 - `packages/api/src/registry-boundary.test.ts` walks this folder: any path containing `registr`, or any non-test `.ts`, `.tsx` or `.json` file that mentions `@unai/registry`, `packages/registry` or `registry/releases`, fails the suite. `packages/api/src/reference-stack.test.ts` reads `package.json` and requires `next` while refusing graph, vector-store and Redis dependencies.
 - `/signin` is both the Auth.js `signIn` and `error` page (`createAuthOptions` in `@unai/auth`), so `pages/signin.tsx` maps any `?error=` to the `refused` state and `?reason=expired` to `expired`. Keep those query names stable.

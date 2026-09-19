@@ -227,6 +227,8 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     ['owner_append_answer', 'triage_decisions'], ['owner_read_answer', 'triage_decisions']] as const) {
     await admin!.query(`DROP POLICY IF EXISTS ${policy} ON ${table}`);
   }
+  // Migration 0021's briefing editions and items; it adds no function.
+  await admin!.query('DROP TABLE briefing_items, briefing_editions CASCADE');
   // ...and so do migration 0018's connector capability grants, connector
   // lifecycle columns and the policies it added to the delivered evidence
   // tables. `CREATE OR REPLACE` definitions (evidence_access) and the grants are
@@ -255,7 +257,8 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
-    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_answer_manifests_and_reconsideration.sql']);
+    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_answer_manifests_and_reconsideration.sql',
+    '0021_today_briefing.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

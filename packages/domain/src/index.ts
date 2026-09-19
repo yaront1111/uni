@@ -113,6 +113,15 @@ export {GROUNDING_RULES,groundingRuleSchema,groundingViolationActionSchema,groun
   type GroundingRule,type GroundingAction,type GroundingViolation,type GroundingResult,
   type AnswerCandidateStatement,type AnswerCandidate,type SuppliedContext,type ReconsiderationChange,
   type PublicAnswerManifest,type ReconsiderationCandidatesView,type DeltaContestRecord} from './answers.js';
+export {memoryLabelSchema,type MemoryLabel} from './labels.js';
+export {timeZoneSchema,todayRequestSchema,briefingDomainSchema,briefingPrioritySchema,briefingOutcomeStateSchema,
+  briefingItemKindSchema,rankComponentsSchema,whyObjectTypeSchema,whyRefSchema,briefingItemSchema,
+  briefingRecommendationSchema,withheldRecommendationSchema,suppressedRepeatSchema,briefingPacketManifestSchema,
+  briefingProjectionCompletenessSchema,todayBriefingSchema,claimingActorSchema,sourceExcerptSchema,whyClaimSchema,
+  whySourcesSchema,
+  type TodayRequest,type BriefingDomain,type BriefingPriority,type BriefingItemKind,type RankComponents,
+  type WhyObjectType,type WhyRef,type BriefingItem,type BriefingRecommendation,type WithheldRecommendation,
+  type BriefingPacketManifest,type TodayBriefing,type WhySources} from './today.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';
