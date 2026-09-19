@@ -89,7 +89,16 @@ it('refuses update, delete and truncate of the snapshot, even for the privileged
   await expect(pool.query("UPDATE registry_releases SET lifecycle='RELEASED'")).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
   await expect(pool.query('DELETE FROM registry_contracts')).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
   await expect(pool.query("UPDATE registry_contracts SET content='{}'")).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
-  await expect(pool.query('TRUNCATE registry_contracts, registry_releases')).rejects.toThrow('REGISTRY_SNAPSHOT_IMMUTABLE');
+  // Lock order: parallel suites publish releases then contracts, so the TRUNCATE lists them
+  // in that order; the RLS read of contracts joined to releases leaves a small window, so
+  // only a deadlock (40P01) is retried, at most 5 times, and never counts as a pass.
+  let outcome: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    outcome = await pool.query('TRUNCATE registry_releases, registry_contracts').then(() => undefined, (error: unknown) => error);
+    if ((outcome as { code?: string } | undefined)?.code !== '40P01') break;
+  }
+  expect(outcome).toBeInstanceOf(Error);
+  expect((outcome as Error).message).toContain('REGISTRY_SNAPSHOT_IMMUTABLE');
 });
 
 it('grants the application role no registry snapshot read or write access', async () => {

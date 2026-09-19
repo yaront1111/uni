@@ -25,4 +25,11 @@ export { SELECTION_VERSION, modalitiesForAnswerType, selectSlotState, selectCurr
   type SelectorSlot, type SelectorProposition, type SelectorAssessment, type SelectorClaim, type SelectorRelation,
   type SelectorOverlayDelta, type SlotSelectionInput, type SelectionParameters } from './selector.js';
 export { QUESTION_CLASSIFIER_VERSION, classifyQuestion, type QuestionClassification } from './question.js';
-export { ASK_COMPOSER_VERSION, missingAskFields, composeStatements, answerQuestion, type AskOptions } from './ask.js';
+export { ASK_COMPOSER_VERSION, MAX_PHRASING_ATTEMPTS, DETERMINISTIC_COMPOSER_PROVIDER, DETERMINISTIC_PROMPT_VERSION,
+  GROUNDING_BLOCKED_TEXT, missingAskFields, composeStatements, answerQuestion,
+  type AskOptions, type AnswerPhraser, type AnswerPhrasingRequest, type AnswerRecorder, type AnswerRecording,
+  type ModelCandidateRecord } from './ask.js';
+export { GROUNDING_VALIDATOR_VERSION, ASSISTANT_CONVERSATION_SOURCE_TYPE, indexPacket, validateGrounding,
+  type ValidatableStatement, type GroundingValidation, type PacketIndex } from './grounding.js';
+export { MANIFEST_VERSION, ANSWER_RECORD_PURPOSE, suppliedContextOf, readPersistedPacket, recordAnswerManifest,
+  readAnswerManifest, listReconsiderationCandidates, type RecordAnswerManifestInput } from './manifests.js';

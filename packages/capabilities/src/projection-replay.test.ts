@@ -267,12 +267,22 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     DROP POLICY IF EXISTS owner_append_sync ON triage_decisions;
     DROP POLICY IF EXISTS owner_read_sync ON triage_decisions;
     DROP POLICY IF EXISTS owner_append_sync ON evidence_ingestion_receipts`);
+  // Migration 0021's answer manifests and reconsideration candidates, and the
+  // policies it added beside the evidence tables' own; its functions and
+  // triggers are CREATE OR REPLACE and re-apply over themselves.
+  await admin!.query('DROP TABLE reconsideration_candidates, answer_manifests CASCADE');
+  for (const [policy, table] of [['evidence_append_answer', 'source_items'], ['receipt_append_answer', 'evidence_ingestion_receipts'],
+    ['object_key_append_answer', 'evidence_object_keys'], ['anchor_append_answer', 'source_anchors'],
+    ['owner_append_answer', 'triage_decisions'], ['owner_read_answer', 'triage_decisions']] as const) {
+    await admin!.query(`DROP POLICY IF EXISTS ${policy} ON ${table}`);
+  }
 
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
-    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql']);
+    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql',
+    '0021_answer_manifests_and_reconsideration.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

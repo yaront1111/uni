@@ -122,6 +122,8 @@ export interface ContestedReason {
   readonly conflictingEvidenceIds?: readonly string[];
   readonly affectedProjections?: readonly string[];
   readonly containingManifestIds?: readonly string[];
+  /** PRD §21.7: whether the owner has to look at it. */
+  readonly userAttentionRequired?: boolean;
 }
 
 /**
@@ -160,6 +162,7 @@ export async function contestOverlayDelta(tx: MemoryTransaction, input: {
       conflictingEvidenceIds: [...(input.reason.conflictingEvidenceIds ?? [])],
       affectedProjections: [...(input.reason.affectedProjections ?? [])],
       containingManifestIds: [...(input.reason.containingManifestIds ?? [])],
+      userAttentionRequired: input.reason.userAttentionRequired ?? true,
       overlayVersion: OVERLAY_VERSION,
     })]);
   if (changed.rowCount !== 1) throw new MemoryStoreError('OVERLAY_DELTA_NOT_CONTESTABLE');

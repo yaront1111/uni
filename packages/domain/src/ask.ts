@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { dataPurposeSchema, sensitivitySchema } from './evidence.js';
 import { answerTypeSchema, knowledgeTimeSchema, lifeCategorySchema, worldTimeSchema } from './context.js';
+import { certaintyLabelSchema } from './labels.js';
+import { groundingResultSchema } from './answers.js';
+
+export { certaintyLabelSchema, type CertaintyLabel } from './labels.js';
 
 /** Question answering (PRD §7.2, §8.2, §24.5; design POST /v1/ask).
  *
@@ -23,13 +27,6 @@ export type QuestionType = z.infer<typeof questionTypeSchema>;
 /** PRD §12.3: which of the two historical questions was asked. */
 export const historicalModeSchema = z.enum(['CORRECTED_HISTORICAL_STATE', 'HISTORICAL_BELIEF_STATE']);
 export type HistoricalMode = z.infer<typeof historicalModeSchema>;
-
-/** PRD §24.5: how a material statement relates to what is known. The label decides
- * the wording; a contested value is never worded as certain and a scheduled one
- * never as having happened. */
-export const certaintyLabelSchema = z.enum(['CONFIRMED', 'REPORTED', 'INFERRED', 'CONFLICTING', 'UNKNOWN',
-  'SCHEDULED', 'INTENDED', 'COMMITTED', 'PREDICTED', 'RECOMMENDED']);
-export type CertaintyLabel = z.infer<typeof certaintyLabelSchema>;
 
 /** The declarations an Ask request must carry. As with a context request, none of
  * them has a default: a default would answer a question the caller never asked. */
@@ -73,7 +70,12 @@ export type AskSourceLink = z.infer<typeof askSourceLinkSchema>;
 
 export const askStatementKindSchema = z.enum(['SELECTED_STATE', 'CONTESTED_STATE', 'NO_CURRENT_VALUE',
   'HISTORICAL_VALUE', 'FUTURE_CLAIM', 'RESOLUTION', 'CONFLICT', 'NO_CONFLICT_FOUND', 'SEMANTIC_RECALL',
-  'AGGREGATE_COUNT', 'OWNER_ASSERTION_PENDING', 'WITHHELD', 'NOTHING_FOUND', 'HISTORICAL_INSTANT_MISSING']);
+  'AGGREGATE_COUNT', 'OWNER_ASSERTION_PENDING', 'WITHHELD', 'NOTHING_FOUND', 'HISTORICAL_INSTANT_MISSING',
+  // A statement phrased by a model. Its kind is not the composer's to know; the
+  // grounding validator has checked its label, objects and citations instead.
+  'MODEL_PHRASED',
+  // The only statement of an answer the grounding validator blocked.
+  'GROUNDING_BLOCKED']);
 
 export const askStatementSchema = z.strictObject({
   statementId: z.string().regex(/^S[0-9]{1,4}$/),
@@ -110,8 +112,23 @@ export const askAnswerSchema = z.strictObject({
   packetId: z.uuid(),
   packetHash: z.string().regex(/^[a-f0-9]{64}$/),
   selectionsDigest: z.string().regex(/^[a-f0-9]{64}$/),
-  /** No model phrased this answer: it is composed from the packet by code, so the
-   * same memory and the same question give the same statements. */
-  composer: z.strictObject({ kind: z.literal('DETERMINISTIC_COMPOSER'), version, modelCalled: z.literal(false) }),
+  /** Who phrased the presented statements. With no phrasing model configured, or
+   * when the grounding validator regenerated a model's candidate, the answer is
+   * composed from the packet by code, so the same memory and the same question
+   * give the same statements. `modelCalled` says whether a model was supplied the
+   * packet at all, which the manifest then records. */
+  composer: z.strictObject({
+    kind: z.enum(['DETERMINISTIC_COMPOSER', 'MODEL_PHRASED']),
+    version,
+    modelCalled: z.boolean(),
+    modelId: z.string().min(1).max(128).nullable(),
+    promptVersion: version.nullable(),
+  }),
+  /** The grounding validator's verdict over what is presented (PRD §24.6). */
+  grounding: groundingResultSchema,
+  /** The manifest of the context supplied for this answer. Null only when the
+   * answer was composed without being recorded (a library caller); the route
+   * always records one (FR-065). */
+  answerManifestId: z.uuid().nullable(),
 });
 export type AskAnswer = z.infer<typeof askAnswerSchema>;

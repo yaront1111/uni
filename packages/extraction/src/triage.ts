@@ -158,10 +158,23 @@ export function parseTier0(input: TriageInput): Tier0Parse {
  * The order matters and is the policy: a negative signal that makes an item not
  * worth extracting is checked before the positive signals, so a newsletter that
  * happens to quote a price is still a newsletter. */
-export function routeTier1(tier0: Tier0Parse, options?: { userAuthored?: boolean }): { route: Tier1Route; reason: RoutingReason } {
+export function routeTier1(tier0: Tier0Parse, options?: { userAuthored?: boolean; assistantAuthored?: boolean }): { route: Tier1Route; reason: RoutingReason } {
   const scanned = [tier0.subject ?? '', tier0.newText].join('\n');
   const positive: Tier1Signal[] = [], negative: Tier1Signal[] = [];
   const userAuthored = options?.userAuthored === true;
+
+  // PRD §24.1: an AI statement cannot serve as evidence that its own content is
+  // true. An assistant's message is kept as conversation evidence and never
+  // extracted, whatever amounts or deadlines it mentions (CRT-AI-01-A).
+  if (options?.assistantAuthored === true) {
+    return {
+      route: tier1RouteSchema.parse('SOURCE_ONLY'),
+      reason: routingReasonSchema.parse({
+        code: 'ASSISTANT_AUTHORED', routerVersion: TIER1_ROUTER_VERSION,
+        positiveSignals: [], negativeSignals: [], newContentLength: tier0.newText.length,
+      }),
+    };
+  }
 
   if (userAuthored) positive.push('USER_AUTHORED');
   if (AMOUNT.test(scanned)) positive.push('AMOUNT');
@@ -222,7 +235,9 @@ export function routeTier1(tier0: Tier0Parse, options?: { userAuthored?: boolean
 export function triage(input: TriageInput): TriageResult {
   try {
     const tier0 = parseTier0(input);
-    const { route, reason } = routeTier1(tier0, { userAuthored: input.actorRef.type === 'USER' });
+    const { route, reason } = routeTier1(tier0, {
+      userAuthored: input.actorRef.type === 'USER', assistantAuthored: input.actorRef.type === 'ASSISTANT',
+    });
     return { tier0, route, reason, costBudgetMicrounits: ROUTE_COST_BUDGET_MICROUNITS[route] };
   } catch {
     // The fallback records what it can still vouch for and nothing else: no

@@ -31,6 +31,7 @@ const classifiedTables=new Map([
   ['context_packets','owner_scope_id'],
   ['frame_instance_lineage','owner_scope_id'],['proposition_lineage','owner_scope_id'],
   ['memory_embeddings','owner_scope_id'],
+  ['answer_manifests','owner_scope_id'],['reconsideration_candidates','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a
