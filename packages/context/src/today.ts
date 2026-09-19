@@ -143,13 +143,47 @@ function domainOf(view: FrameView, kind: BriefingCandidate['kind']): BriefingDom
   return 'PERSONAL';
 }
 
-async function entityLabels(tx: MemoryTransaction, ownerScopeId: string, ids: readonly string[]): Promise<Map<string, string>> {
-  const wanted = [...new Set(ids)];
-  if (wanted.length === 0) return new Map();
+/** A frame id is not authority for its participants or their preferred names.
+ * Read a role only through a claim/value supplied by this packet, and name it
+ * with an alias whose own evidence was supplied too. Unsourced canonical labels
+ * and roles are deliberately not a fallback. */
+async function roleLabels(tx: MemoryTransaction, packet: ContextPacket): Promise<Map<string, string>> {
+  const values = [...packet.currentBeliefs, ...packet.futureClaims]
+    .filter(entry => 'normalizedValue' in entry && (entry.evidenceIds?.length ?? 0) > 0);
+  if (values.length === 0) return new Map();
+  const propositions = [...new Set(values.map(entry => entry.propositionId))];
+  const evidence = [...new Set(values.flatMap(entry => entry.evidenceIds ?? []))];
   const rows = (await tx.query(
-    'SELECT id,canonical_label FROM entities WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) AND canonical_label IS NOT NULL',
-    [ownerScopeId, wanted])).rows;
-  return new Map(rows.map(row => [row['id'] as string, row['canonical_label'] as string]));
+    `SELECT r.id,r.frame_instance_id,r.role_id,r.entity_id,a.id AS alias_id,a.alias_value
+     FROM frame_instance_roles r
+     JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.proposition_id
+     JOIN belief_slots b ON b.owner_scope_id=p.owner_scope_id AND b.id=p.belief_slot_id
+       AND b.frame_instance_id=r.frame_instance_id
+     JOIN source_anchors s ON s.owner_scope_id=c.owner_scope_id AND s.id=c.source_anchor_id
+     JOIN source_items role_source ON role_source.owner_scope_id=s.owner_scope_id AND role_source.id=s.source_item_id
+     JOIN entity_aliases a ON a.owner_scope_id=r.owner_scope_id AND a.entity_id=r.entity_id
+     JOIN source_items alias_source ON alias_source.owner_scope_id=a.owner_scope_id AND alias_source.id=a.source_item_id
+     WHERE r.owner_scope_id=$1 AND c.proposition_id=ANY($2::uuid[])
+       AND s.source_item_id=ANY($3::uuid[]) AND a.source_item_id=ANY($3::uuid[])
+       AND r.role_id IN ('promisee','creditor','debtor')
+       AND a.alias_type IN ('DISPLAY_NAME','FULL_NAME','GIVEN_NAME','NICKNAME')
+       AND c.lifecycle NOT IN ('REJECTED','SUPPRESSED')
+       AND c.recorded_at<=$4 AND r.created_at<=$4 AND a.created_at<=$4
+       AND role_source.observed_at<=$4 AND alias_source.observed_at<=$4
+       AND (c.valid_from IS NULL OR c.valid_from<=$5) AND (c.valid_to IS NULL OR c.valid_to>$5)
+       AND (r.valid_from IS NULL OR r.valid_from<=$5) AND (r.valid_to IS NULL OR r.valid_to>$5)
+       AND (a.valid_from IS NULL OR a.valid_from<=$5) AND (a.valid_to IS NULL OR a.valid_to>$5)
+     ORDER BY r.frame_instance_id,r.role_id,a.alias_type,a.id,r.id`,
+    [packet.ownerScopeId, propositions, evidence, packet.knowledgeTime, packet.worldTime])).rows;
+  const withheld = new Set(packet.redactions.map(entry => entry.objectId));
+  const labels = new Map<string, string>();
+  for (const row of rows) {
+    if ([row['id'], row['alias_id'], row['entity_id']].some(id => withheld.has(id as string))) continue;
+    const key = row['frame_instance_id'] + ':' + row['role_id'];
+    if (!labels.has(key)) labels.set(key, row['alias_value'] as string);
+  }
+  return labels;
 }
 
 /** Everything shown on the previous `REPEAT_SUPPRESSION_DAYS` owner-local dates. */
@@ -190,12 +224,8 @@ async function candidatesOf(tx: MemoryTransaction, packet: ContextPacket, ownerS
   const commitmentRows = commitments.rows.filter(row => supplied.has(row.commitmentFrameInstanceId));
   const obligationRows = obligations.rows.filter(row => supplied.has(row.obligationFrameInstanceId));
   const scheduleRows = schedule.rows.filter(row => supplied.has(row.scheduledFrameInstanceId));
-  const labels = await entityLabels(tx, ownerScopeId, [
-    ...commitmentRows.flatMap(row => [row.promisorEntityId, row.promiseeEntityId]),
-    ...obligationRows.flatMap(row => [row.debtorEntityId, row.creditorEntityId]),
-    ...scheduleRows.flatMap(row => row.participants),
-  ].filter((id): id is string => id !== null));
-  const name = (id: string | null) => (id ? labels.get(id) : undefined) ?? null;
+  const labels = await roleLabels(tx, packet);
+  const name = (frameInstanceId: string, roleId: string) => labels.get(frameInstanceId + ':' + roleId) ?? null;
 
   const candidates: BriefingCandidate[] = [];
   const add = (frameInstanceId: string, kind: BriefingCandidate['kind'], row: {
@@ -229,11 +259,11 @@ async function candidatesOf(tx: MemoryTransaction, packet: ContextPacket, ownerS
     const view = frameView(packet, row.commitmentFrameInstanceId);
     // Only the promisee is named: which entity is the owner is not something the
     // briefing may guess, so "from <promisor>" could name the owner to themself.
-    const promisee = name(row.promiseeEntityId);
+    const promisee = name(row.commitmentFrameInstanceId, 'promisee');
     add(row.commitmentFrameInstanceId, 'COMMITMENT', {
       outcomeState: row.outcomeState, targetTime: row.dueTime, isComplete: row.isComplete, conflictFlag: row.conflictFlag,
       pendingCount: row.pendingAssertions.length + (row.sourceStrength === 'PENDING_OWNER_ASSERTION' ? 1 : 0),
-      subject: row.actionDescription?.trim() || view.value('shared.commitment.action_description')?.value || 'a commitment',
+      subject: view.value('shared.commitment.action_description')?.value ?? 'a commitment',
       counterpart: promisee ? 'to ' + promisee : '',
       amount: null, statedPriority: view.value('shared.commitment.priority')?.value ?? null,
       keyPredicates: ['shared.commitment.action_description', 'shared.commitment.due_time'],
@@ -241,7 +271,7 @@ async function candidatesOf(tx: MemoryTransaction, packet: ContextPacket, ownerS
   }
   for (const row of obligationRows) {
     const view = frameView(packet, row.obligationFrameInstanceId);
-    const creditor = name(row.creditorEntityId), debtor = name(row.debtorEntityId);
+    const creditor = name(row.obligationFrameInstanceId, 'creditor'), debtor = name(row.obligationFrameInstanceId, 'debtor');
     // A disputed principal is stated as the dispute, never as one of its sides.
     const disputed = view.conflicts.find(conflict => conflict.predicateId === 'shared.obligation.principal_amount');
     const disputedAmounts = disputed?.positions.map(position => 'normalizedValue' in position ? text(position.normalizedValue) : null)
@@ -251,24 +281,23 @@ async function candidatesOf(tx: MemoryTransaction, packet: ContextPacket, ownerS
       pendingCount: row.pendingAssertions.length,
       subject: view.value('shared.obligation.description')?.value ?? 'an obligation',
       counterpart: creditor ? 'to ' + creditor : debtor ? 'from ' + debtor : '',
-      // The principal as the obligations capability recorded it; nothing here
-      // computes with money.
+      // State only the principal supplied by the packet. The owner-wide
+      // projection may include a principal above this request's authority.
       amount: disputed ? (disputedAmounts.length > 0 ? disputedAmounts.join(' or ') + ', sources disagree' : 'amount disputed')
-        : row.principalAmount && row.currency ? row.currency + ' ' + row.principalAmount : null,
+        : view.value('shared.obligation.principal_amount')?.value ?? null,
       statedPriority: null,
       keyPredicates: ['shared.obligation.description', 'shared.obligation.principal_amount', 'shared.obligation.due_time'],
     });
   }
   for (const row of scheduleRows) {
     const view = frameView(packet, row.scheduledFrameInstanceId);
-    const participants = row.participants.map(name).filter((label): label is string => label !== null).slice(0, 3);
     // A calendar event stays SCHEDULED until a resolution assertion says
     // otherwise; a realization link alone does not make it "happened".
     add(row.scheduledFrameInstanceId, 'SCHEDULED_EVENT', {
       outcomeState: row.outcomeResolutionId ? 'RESOLVED' : 'UNRESOLVED', targetTime: row.startTime, isComplete: row.isComplete,
       conflictFlag: false, pendingCount: row.pendingAssertions.length,
       subject: view.value('shared.event_occurrence.description')?.value ?? 'an event',
-      counterpart: participants.length > 0 ? 'with ' + participants.join(', ') : '',
+      counterpart: '',
       amount: null, statedPriority: null,
       keyPredicates: ['shared.event_occurrence.description', 'shared.event_occurrence.occurrence_time'],
     });

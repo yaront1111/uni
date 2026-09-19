@@ -525,3 +525,80 @@ it('refuses a Today request that declares no purpose or ceiling, or no timezone,
     expect((await app.inject({ method: 'GET', url: '/v1/memory/why/propositions/' + randomUUID(), headers: headers('memory.inspect') })).statusCode).toBe(404);
   } finally { await app.close(); }
 });
+
+it.each(['sensitivity', 'purpose'] as const)('keeps Today projection fields within the packet\'s %s authority', async boundary => {
+  const purpose = 'TODAY_PRIVACY_' + boundary.toUpperCase();
+  const authorizedPurpose = boundary === 'purpose' ? purpose + '_FULL' : purpose;
+  const publicSource = await source('today-public-' + boundary, 'CONVERSATION',
+    'An administrative commitment and an ordinary payment are due today.', [...new Set([purpose, authorizedPurpose])]);
+  const secretDescription = 'restricted medical appointment ' + boundary;
+  const secretName = 'Confidential Counterparty ' + boundary;
+  const secretAmount = '97241.18';
+  const hiddenSource = await source('today-hidden-' + boundary, 'DOCUMENT',
+    secretDescription + ' with ' + secretName + '; ILS ' + secretAmount,
+    [authorizedPurpose], boundary === 'sensitivity' ? 'RESTRICTED' : 'PRIVATE');
+
+  const commitmentId = await frame('shared.commitment', RECORDED);
+  const hiddenAction = await value(commitmentId, 'shared.commitment.action_description', 'COMMITTED',
+    { text: secretDescription }, hiddenSource.anchorId, 'ACCEPTED');
+  await value(commitmentId, 'shared.commitment.due_time', 'COMMITTED', { time: at(3).toISOString() }, publicSource.anchorId, 'ACCEPTED');
+  const counterpartyId = await person(secretName);
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id)
+    VALUES($1,$2,$3,'promisee',$4,$5)`, [uuidV7(), owner, commitmentId, counterpartyId, hiddenAction.claimId]);
+  await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id)
+    VALUES($1,$2,$3,'DISPLAY_NAME',$4,$5,$6)`,
+    [uuidV7(), owner, counterpartyId, secretName, secretName.toLowerCase(), hiddenSource.evidenceId]);
+
+  const obligationId = await frame('shared.obligation', RECORDED);
+  const publicDescription = await value(obligationId, 'shared.obligation.description', 'ACTUAL',
+    { text: 'ordinary administrative payment' }, publicSource.anchorId, 'ACCEPTED');
+  await value(obligationId, 'shared.obligation.due_time', 'ACTUAL', { time: at(4).toISOString() }, publicSource.anchorId, 'ACCEPTED');
+  await value(obligationId, 'shared.obligation.principal_amount', 'ACTUAL',
+    { amount: secretAmount, currency: 'ILS' }, hiddenSource.anchorId, 'ACCEPTED');
+  // A permitted alias remains useful even if the entity's preferred label is
+  // private. Merely admitting its id cannot authorize the canonical label.
+  const publicAlias = 'Authorized Payee ' + boundary;
+  const privateCanonical = 'Private Canonical Name ' + boundary;
+  const payeeId = await person(privateCanonical);
+  await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id)
+    VALUES($1,$2,$3,'creditor',$4,$5)`, [uuidV7(), owner, obligationId, payeeId, publicDescription.claimId]);
+  await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id)
+    VALUES($1,$2,$3,'DISPLAY_NAME',$4,$5,$6)`,
+    [uuidV7(), owner, payeeId, publicAlias, publicAlias.toLowerCase(), publicSource.evidenceId]);
+
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.project', correlationId: randomUUID() }, async tx => {
+    for (const projectionName of ['open_commitments_projection', 'obligations_projection'] as const) {
+      await applyProjectionDelta(tx, { ownerScopeId: owner, projectionName, asOf: NOW });
+    }
+  });
+  const app = api();
+  const read = async (dataPurpose: string, ceiling: string) => {
+    const response = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE,
+      headers: headers('memory.read', { 'x-data-purpose': dataPurpose, 'x-maximum-sensitivity': ceiling }) });
+    expect(response.statusCode, response.body).toBe(200);
+    return todayBriefingSchema.parse(response.json());
+  };
+  try {
+    const limited = await read(purpose, 'PRIVATE');
+    expect.soft(itemFor(limited, commitmentId)?.headline).toContain('a commitment');
+    expect.soft(itemFor(limited, obligationId)?.headline).toContain('ordinary administrative payment');
+    expect.soft(itemFor(limited, obligationId)?.headline).toContain(publicAlias);
+    const storedItems = (await admin.query('SELECT headline,why_surfaced FROM briefing_items WHERE briefing_edition_id=$1',
+      [limited.briefingEditionId])).rows;
+    const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1',
+      [limited.packetManifest.contextPacketId])).rows[0].packet;
+    for (const surface of [limited, storedItems, packet]) {
+      for (const hidden of [secretDescription, secretName, secretAmount, privateCanonical]) {
+        expect.soft(JSON.stringify(surface), hidden).not.toContain(hidden);
+      }
+    }
+    // The negative assertions must not pass by dropping the frame or every
+    // field: the same real route returns restricted values when authorized.
+    const authorized = await read(authorizedPurpose, 'RESTRICTED');
+    expect(itemFor(authorized, commitmentId)?.headline).toContain(secretDescription);
+    expect(itemFor(authorized, commitmentId)?.headline).toContain(secretName);
+    expect(itemFor(authorized, obligationId)?.headline).toContain('ILS ' + secretAmount);
+    expect(itemFor(authorized, obligationId)?.headline).toContain(publicAlias);
+    expect(JSON.stringify(authorized)).not.toContain(privateCanonical);
+  } finally { await app.close(); }
+});
