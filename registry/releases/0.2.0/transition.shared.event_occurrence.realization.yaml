@@ -1,0 +1,19 @@
+kind: TRANSITION
+id: shared.event_occurrence.realization
+version: 0.2.0
+description: >-
+  REALIZES links an actual event occurrence (target) to the prior scheduled event
+  or commitment (source) that it manifests. It carries no outcome code; outcome is
+  recorded separately by a RESOLVES transition.
+linkKind: REALIZES
+sourceFrameTypes: [shared.event_occurrence, shared.commitment]
+targetFrameTypes: [shared.event_occurrence]
+targetRequired: true
+allowedOutcomes: []
+authorityRules:
+  - The target occurrence must have ACTUAL modality supported by evidence.
+  - Only owner confirmation or authoritative receipts establish the link for accepted memory.
+invariants:
+  - REALIZES never rewrites the source proposition or frame.
+acceptanceTests:
+  - PRD §44.7 actual occurrence REALIZES scheduled meeting

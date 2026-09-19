@@ -122,7 +122,7 @@ describe('loading by immutable Git tag', () => {
     const { repository } = await taggedRepository();
     git(repository, 'tag', '-d', 'registry-v0.1.0');
     await expect(registry.loadRegistryRelease({ repository, version: '0.1.0' })).rejects.toThrow('REGISTRY_TAG_MISSING');
-    await expect(registry.loadRegistryRelease({ repository, version: '0.2.0' })).rejects.toThrow('REGISTRY_RELEASE_NOT_RECORDED');
+    await expect(registry.loadRegistryRelease({ repository, version: '0.3.0' })).rejects.toThrow('REGISTRY_RELEASE_NOT_RECORDED');
     await expect(registry.loadRegistryRelease({ repository, version: '0.1.0; rm -rf /' })).rejects.toThrow('REGISTRY_VERSION_INVALID');
   });
 
@@ -141,5 +141,44 @@ describe('content hash', () => {
     expect(registry.releaseContentHash([b, a])).toBe(hash);
     expect(registry.releaseContentHash([a, { ...b, bytes: Buffer.from('z') }])).not.toBe(hash);
     expect(registry.releaseContentHash([a, { ...b, path: 'c.yaml' }])).not.toBe(hash);
+  });
+});
+
+/** Release 0.2.0 (ADR 0029): a complete set carrying every 0.1.0 contract unchanged
+ * but for its version, plus the decision frame and its two transitions. */
+describe('genuine release 0.2.0 checked into Git', () => {
+  it('adds shared.decision and its transitions and leaves release 0.1.0 as recorded', async () => {
+    const previous = await registry.lintRegistryCheckout({ repository: resolve('.'), version: '0.1.0' });
+    const release = await registry.lintRegistryCheckout({ repository: resolve('.'), version: '0.2.0' });
+    expect(release).toMatchObject({ version: '0.2.0', tag: 'registry-v0.2.0' });
+    expect(release.contentHash).not.toBe(previous.contentHash);
+    expect(release.frames.map(frame => frame.id).sort()).toEqual([...REQUIRED_FRAMES, 'shared.decision'].sort());
+    // Every earlier contract is carried whole: only its version moved.
+    for (const frame of previous.frames) {
+      expect({ ...release.frames.find(candidate => candidate.id === frame.id), version: '0.1.0' }, frame.id).toEqual(frame);
+    }
+    for (const transition of previous.transitions) {
+      expect({ ...release.transitions.find(candidate => candidate.id === transition.id), version: '0.1.0' }, transition.id).toEqual(transition);
+    }
+    expect(release.transitions.map(transition => transition.id).sort()).toEqual([...previous.transitions.map(transition => transition.id),
+      'shared.decision.prediction_review', 'shared.decision.realization'].sort());
+  });
+
+  it('reviews a PREDICTED expected result as CONFIRMED, REFUTED or PARTIALLY_CONFIRMED and states no outcome status', async () => {
+    const release = await registry.lintRegistryCheckout({ repository: resolve('.'), version: '0.2.0' });
+    const decision = release.frames.find(frame => frame.id === 'shared.decision')!;
+    const predicate = (id: string) => decision.predicates.find(candidate => candidate.id === 'shared.decision.' + id)!;
+    expect(predicate('expected_result').allowedModalities).toEqual(['PREDICTED']);
+    expect(predicate('observed_result').allowedModalities).toEqual(['ACTUAL']);
+    expect(predicate('recommendation').allowedModalities).toEqual(['RECOMMENDED']);
+    expect(predicate('option').cardinality).toBe('SET');
+    expect(predicate('assumption').cardinality).toBe('SET');
+    for (const each of decision.predicates) expect(registry.isOutcomeStatusPredicate(each), each.id).toBe(false);
+    const review = release.transitions.find(transition => transition.id === 'shared.decision.prediction_review')!;
+    expect(review).toMatchObject({ linkKind: 'RESOLVES', sourceFrameTypes: ['shared.decision'], targetRequired: false,
+      allowedOutcomes: ['CONFIRMED', 'REFUTED', 'PARTIALLY_CONFIRMED'] });
+    const realization = release.transitions.find(transition => transition.id === 'shared.decision.realization')!;
+    expect(realization).toMatchObject({ linkKind: 'REALIZES', targetRequired: true, allowedOutcomes: [] });
+    expect(decision.transitionContracts).toEqual(['shared.decision.prediction_review', 'shared.decision.realization']);
   });
 });

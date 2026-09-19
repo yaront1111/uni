@@ -1,0 +1,35 @@
+version: 0.2.0
+contracts:
+  - id: shared.obligation
+    kind: FRAME
+    file: shared.obligation.yaml
+  - id: shared.commitment
+    kind: FRAME
+    file: shared.commitment.yaml
+  - id: shared.event_occurrence
+    kind: FRAME
+    file: shared.event_occurrence.yaml
+  - id: finance.payment_allocation
+    kind: FRAME
+    file: finance.payment_allocation.yaml
+  - id: shared.obligation.resolution
+    kind: TRANSITION
+    file: transition.shared.obligation.resolution.yaml
+  - id: shared.commitment.resolution
+    kind: TRANSITION
+    file: transition.shared.commitment.resolution.yaml
+  - id: shared.event_occurrence.resolution
+    kind: TRANSITION
+    file: transition.shared.event_occurrence.resolution.yaml
+  - id: shared.event_occurrence.realization
+    kind: TRANSITION
+    file: transition.shared.event_occurrence.realization.yaml
+  - id: shared.decision
+    kind: FRAME
+    file: shared.decision.yaml
+  - id: shared.decision.prediction_review
+    kind: TRANSITION
+    file: transition.shared.decision.prediction_review.yaml
+  - id: shared.decision.realization
+    kind: TRANSITION
+    file: transition.shared.decision.realization.yaml

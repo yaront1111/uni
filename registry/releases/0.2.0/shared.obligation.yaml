@@ -1,0 +1,148 @@
+kind: FRAME
+id: shared.obligation
+version: 0.2.0
+description: >-
+  A monetary obligation: a debtor owes a creditor a principal amount of money.
+  V0 is limited to monetary obligations; legal, social, service, item-return and
+  other non-monetary duties are deferred and cannot be represented by this frame.
+contextPolicy:
+  allowedKinds: [BASE, QUOTED, TEST]
+  defaultKind: BASE
+  quotedRule: >-
+    No rule in this release creates QUOTED context. Reported speech such as
+    "Daniel says I owe ILS 50" canonicalizes into BASE with source attribution.
+    Extractor output cannot select the context kind.
+identityStrategy:
+  kind: SURROGATE
+  matching: >-
+    Surrogate UUIDv7 identity. Prefer an explicit external reference; otherwise
+    latent-cluster matching over debtor, creditor, origin and discourse. Only a
+    CONFIRMED_MATCH reuses an existing instance for a material accepted update;
+    PROBABLE_MATCH and POSSIBLE_MATCH remain separate candidates (under-merge).
+  descriptivePredicates:
+    - shared.obligation.principal_amount
+    - shared.obligation.due_time
+    - shared.obligation.description
+  newInstanceSignals:
+    - '"Another" obligation language creates a new candidate instance.'
+    - A separate origin creates a new candidate instance.
+    - A clearly separate purpose creates a new candidate instance.
+identityAnchors: [external_reference, debtor, creditor, origin_reference]
+roles:
+  - id: debtor
+    valueType: ENTITY
+    required: true
+    description: Entity that owes the principal amount.
+  - id: creditor
+    valueType: ENTITY
+    required: true
+    description: Entity to whom the principal amount is owed.
+predicates:
+  - id: shared.obligation.principal_amount
+    frameType: shared.obligation
+    description: Principal money amount owed. Amount is descriptive, not identity-defining.
+    valueType: MONEY
+    cardinality: FUNCTIONAL
+    required: true
+    normalization: >-
+      Exact positive decimal amount string and ISO 4217 upper-case currency code.
+      Non-monetary values are refused. No conversion, rounding or arithmetic.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: >-
+      Valid-time bounded. A correction replaces the value over the same valid
+      period; a change opens a later non-overlapping valid period.
+    conflictBehavior: >-
+      Different amounts in the same slot are separate propositions that coexist;
+      neither silently overwrites the other and high-risk calculations report the conflict.
+    supersessionBehavior: >-
+      Supersession only through a governed Belief Transaction; earlier propositions
+      and claims remain retrievable history.
+    sourceAuthorityPolicy: >-
+      Owner statements and authoritative documents may support the amount. A
+      reminder, a bank transaction or an allocation never changes the principal.
+    projectionContracts:
+      - obligations_projection.principal_amount
+      - obligations_projection.currency
+  - id: shared.obligation.due_time
+    frameType: shared.obligation
+    description: Time or interval by which the principal is due, when stated.
+    valueType: TIME_OR_INTERVAL
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: >-
+      ISO 8601 instant with offset or a start/end interval; the temporal
+      interpretation keeps original text, timezone, precision and resolver version.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: >-
+      Vague phrases keep their stated precision. Passing the due time may set
+      derived projection flags only and never creates a resolution assertion.
+    conflictBehavior: Different due times coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Owner statements and authoritative documents may support; reminders do not change the due time.
+    projectionContracts:
+      - obligations_projection.due_time
+  - id: shared.obligation.description
+    frameType: shared.obligation
+    description: Free-text description or purpose of the obligation, when stated.
+    valueType: TEXT
+    # Registry review of record (ADR 0011, design open decision 3, PRD §26.1): SET.
+    # Paraphrases from different sources are one obligation with several descriptions,
+    # not conflicting values. SET is lossless; a later release may narrow it to FUNCTIONAL.
+    cardinality: SET
+    required: false
+    normalization: Unicode NFC, trimmed whitespace; original wording retained on the claim.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Valid-time bounded; descriptions do not expire.
+    conflictBehavior: >-
+      Distinct descriptions coexist as set members; an explicit correction contests
+      the corrected member only.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Any attributed source may support; description never establishes identity.
+    projectionContracts: []
+  - id: shared.obligation.origin_reference
+    frameType: shared.obligation
+    description: Reference to the loan, purchase, message or document that created the obligation, when available.
+    valueType: EXTERNAL_REFERENCE
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Connector system identifier plus stable external identifier.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Fixed at creation of the obligation; not time-varying.
+    conflictBehavior: A different origin is a signal of a separate obligation instance, not a slot conflict to overwrite.
+    supersessionBehavior: Supersession only through a governed Belief Transaction or instance split.
+    sourceAuthorityPolicy: Connector structured data and owner statements may support.
+    projectionContracts:
+      - obligations_projection.source_manifest
+allowedModalities: [ACTUAL]
+slotQualifiers: []
+authorityRules:
+  - Only accepted resolution assertions establish outcome; this frame defines no status predicate.
+  - A payment or bank transaction alone never resolves the obligation.
+  - Canonical allocation amounts come from finance.payment_allocation frames; advisory coverage is never arithmetic input.
+  - Model output may propose but not commit; commits require a Belief Transaction.
+mergePolicy: >-
+  Merge only by explicit user action or confirmed evidence in a governed
+  transaction; both identifiers remain resolvable through lineage and are never reused.
+splitPolicy: >-
+  Split only through a governed transaction; claims that cannot be safely assigned
+  become CONTESTED or stay with the retired parent, which remains lineage history.
+transitionContracts:
+  - shared.obligation.resolution
+projectionConsumers:
+  - obligations_projection
+invariants:
+  - Principal amount is monetary.
+  - No parallel outcome status predicate.
+  - Identity is a surrogate UUIDv7, never a hash or fingerprint.
+  - The Memory Kernel performs no financial arithmetic.
+acceptanceTests:
+  - PRD §44.1 Daniel obligation evolution
+  - PRD §44.2 separate obligation
+  - PRD §44.3 corrected amount shares the slot
+  - PRD §44.4 target-less settlement
+  - PRD §44.13 obligation merge
+  - PRD §44.14 obligation split
