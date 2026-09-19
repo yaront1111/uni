@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
-import { answerCandidateSchema, sensitivitySchema, type AnswerCandidate } from '@unai/domain';
+import { answerCandidateSchema, dataPurposeSchema, sensitivitySchema, type AnswerCandidate } from '@unai/domain';
 import {
-  ANSWER_RECORD_PURPOSE, MEMORY_INSPECT_PURPOSE, listReconsiderationCandidates, readAnswerManifest, recordAnswerManifest,
+  ANSWER_RECORD_PURPOSE, MEMORY_INSPECT_PURPOSE, ContextBrokerError, listReconsiderationCandidates, readAnswerManifest, recordAnswerManifest,
   type AnswerPhraser, type AnswerRecorder,
 } from '@unai/context';
 import type { ModelGateway } from '@unai/model';
@@ -107,7 +107,12 @@ export function registerAnswerRoutes(app: FastifyInstance, work: Work): void {
 
   app.get<{ Params: { id: string } }>('/v1/answers/:id/manifest', async (request, reply) => {
     if (!UUID.test(request.params.id)) return refuse(request, reply, 400, 'ANSWER_MANIFEST_ID_INVALID');
-    const manifest = await work(request, async tx => {
+    if (!dataPurposeSchema.safeParse(request.headers['x-data-purpose']).success
+      || !sensitivitySchema.safeParse(request.headers['x-maximum-sensitivity']).success) return refuse(request, reply, 400, 'ANSWER_MANIFEST_REQUEST_INVALID');
+    let manifest;
+    try { manifest = await work(request, async tx => {
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+        [request.headers['x-data-purpose'], request.headers['x-maximum-sensitivity']]);
       const found = await readAnswerManifest(tx, { ownerScopeId: tx.context.ownerScopeId, answerManifestId: request.params.id });
       if (found) {
         await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
@@ -115,12 +120,17 @@ export function registerAnswerRoutes(app: FastifyInstance, work: Work): void {
             'overlay_delta_ids', 'packet_hash', 'projection_versions', 'watermarks', 'grounding_validator_result'] }] });
       }
       return found;
-    });
+    }); } catch (error) {
+      if (error instanceof ContextBrokerError && error.message === 'ANSWER_MANIFEST_SOURCE_WITHHELD') return refuse(request, reply, 403, error.message);
+      throw error;
+    }
     if (!manifest) return refuse(request, reply, 404, 'ANSWER_MANIFEST_NOT_FOUND');
     return reply.code(200).send(manifest);
   });
 
   app.get<{ Querystring: Record<string, unknown> }>('/v1/answers/reconsideration-candidates', async (request, reply) => {
+    if (!dataPurposeSchema.safeParse(request.headers['x-data-purpose']).success
+      || !sensitivitySchema.safeParse(request.headers['x-maximum-sensitivity']).success) return refuse(request, reply, 400, 'ANSWER_MANIFEST_REQUEST_INVALID');
     const query = request.query ?? {};
     const beliefId = typeof query['beliefId'] === 'string' ? query['beliefId'] : null;
     const overlayDeltaId = typeof query['overlayDeltaId'] === 'string' ? query['overlayDeltaId'] : null;
@@ -131,6 +141,8 @@ export function registerAnswerRoutes(app: FastifyInstance, work: Work): void {
       return refuse(request, reply, 400, 'RECONSIDERATION_QUERY_INVALID');
     }
     const view = await work(request, async tx => {
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+        [request.headers['x-data-purpose'], request.headers['x-maximum-sensitivity']]);
       const listed = await listReconsiderationCandidates(tx, { ownerScopeId: tx.context.ownerScopeId,
         objectType: beliefId ? 'belief' : 'owner_overlay_delta', objectId: objectId.toLowerCase() });
       await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',

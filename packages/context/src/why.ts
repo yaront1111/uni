@@ -27,7 +27,7 @@ import { readPropositionAuthority } from './support-authority.js';
  * of being shown.
  */
 
-export const WHY_PANEL_VERSION = 'why-sources-0.3.0';
+export const WHY_PANEL_VERSION = 'why-sources-0.4.0';
 const EXCERPT_LENGTH = 600;
 const MODEL_ORIGINS = new Set(['MODEL_EXTRACTION', 'MODEL_INFERENCE', 'MODEL_RECOMMENDATION', 'MODEL_PREDICTION']);
 const OWNER_OR_AUTHORITY = new Set(['USER_STATEMENT', 'USER_CONFIRMATION', 'USER_CORRECTION',
@@ -120,7 +120,9 @@ async function readClaims(tx: MemoryTransaction, ownerScopeId: string,
      FROM claims c
      LEFT JOIN entities e ON e.owner_scope_id=c.owner_scope_id AND e.id=c.asserted_by_entity_id
      LEFT JOIN extraction_runs r ON r.owner_scope_id=c.owner_scope_id AND r.id=c.extraction_run_id
-     WHERE c.owner_scope_id=$1 AND (c.proposition_id=$2 OR c.id=ANY($3::uuid[])) AND c.recorded_at<=$4
+     WHERE c.owner_scope_id=$1 AND (c.proposition_id=$2 OR c.id=ANY($3::uuid[]))
+       AND ((unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4)->>'proposition_id')::uuid=$2 OR c.id=ANY($3::uuid[]))
+       AND c.recorded_at<=$4 AND unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4) IS NOT NULL
      ORDER BY c.recorded_at,c.id`,
     [ownerScopeId, where.propositionId ?? null, [...(where.claimIds ?? [])], readAt])).rows;
   const anchors = await readAnchors(tx, ownerScopeId, rows.map(row => row['source_anchor_id'] as string));
@@ -188,6 +190,10 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
   try {
     explanation = await explainProposition(tx, { ownerScopeId: input.ownerScopeId, propositionId: input.propositionId, readAt: input.readAt });
   } catch (error) {
+    if (error instanceof ContextBrokerError && error.message === 'PROPOSITION_HISTORY_UNAVAILABLE') {
+      return whySourcesSchema.parse({ ...withheldPanel({ objectType: 'propositions', objectId: input.propositionId }, 'BELIEF', input.readAt),
+        statement: 'The historical state of this belief was not recorded.', redactions: [] });
+    }
     if (error instanceof ContextBrokerError && error.message === 'PROPOSITION_SOURCE_WITHHELD') {
       return withheldPanel({ objectType: 'propositions', objectId: input.propositionId }, 'BELIEF', input.readAt);
     }
@@ -250,9 +256,10 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
   const competing = explanation.contradictions.filter(entry => entry.kind === 'COMPETING_PROPOSITION');
   const competingStatus = competing.length === 0 ? [] : (await tx.query(
     `SELECT p.id,(SELECT b.assessment_status FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
-       AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS status
+       AND b.proposition_id=p.id AND b.recorded_at<=$3 AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
+       ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS status
      FROM propositions p WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])`,
-    [input.ownerScopeId, competing.map(entry => entry.objectId)])).rows;
+    [input.ownerScopeId, competing.map(entry => entry.objectId), input.readAt])).rows;
   const status = explanation.currentAssessment.assessmentStatus;
   const contested = competing.length > 0 || status === 'CONTESTED'
     || explanation.contradictions.some(entry => entry.kind === 'CONTESTED_OVERLAY_DELTA' || entry.kind === 'MEMORY_LINK');
@@ -272,7 +279,7 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
     && PENDING_LIFECYCLES.has(delta.lifecycle));
 
   const label: MemoryLabel = contested ? 'CONTESTED'
-    : resolutions.some(resolution => resolution.lifecycle === 'ACCEPTED') ? 'RESOLVED'
+    : resolutions.some(resolution => resolution.lifecycle === 'ACCEPTED' && resolution.effectiveAt <= input.readAt.toISOString()) ? 'RESOLVED'
       : pending ? 'PENDING_OWNER_ASSERTION'
         : explanation.modality === 'SCHEDULED' ? 'SCHEDULED'
           : isInferred ? 'INFERRED'
@@ -307,7 +314,7 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
 }
 
 async function whyOverlayDelta(tx: MemoryTransaction, input: { ownerScopeId: string; overlayDeltaId: string; readAt: Date }): Promise<WhySources> {
-  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId });
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt });
   const delta = overlay.deltas.find(entry => entry.overlayDeltaId === input.overlayDeltaId);
   if (!delta) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
   // The owner's words are stored as evidence before anything else happens
@@ -345,20 +352,23 @@ async function whyOverlayDelta(tx: MemoryTransaction, input: { ownerScopeId: str
 
 async function whyResolution(tx: MemoryTransaction, input: { ownerScopeId: string; resolutionAssertionId: string; readAt: Date }): Promise<WhySources> {
   const row = (await tx.query(
-    `SELECT id,outcome_code,effective_at,lifecycle,claim_id,recorded_at,source_frame_instance_id FROM resolution_assertions
-     WHERE owner_scope_id=$1 AND id=$2`, [input.ownerScopeId, input.resolutionAssertionId])).rows[0];
+    `SELECT id,outcome_code,effective_at,unai_private.object_state_at(owner_scope_id,'resolution_assertions',id,$3)->>'lifecycle' AS lifecycle,
+       claim_id,recorded_at,source_frame_instance_id FROM resolution_assertions
+     WHERE owner_scope_id=$1 AND id=$2 AND recorded_at<=$3`, [input.ownerScopeId, input.resolutionAssertionId, input.readAt])).rows[0];
   if (!row) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
   const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { claimIds: [row['claim_id'] as string] }, input.readAt);
   if (claims.length === 0) {
     return withheldPanel({ objectType: 'resolution_assertions', objectId: input.resolutionAssertionId }, 'RESOLUTION', input.readAt);
   }
-  const accepted = row['lifecycle'] === 'ACCEPTED';
+  if (!row['lifecycle']) return whySourcesSchema.parse({ ...withheldPanel({ objectType: 'resolution_assertions', objectId: input.resolutionAssertionId }, 'RESOLUTION', input.readAt),
+    statement: 'The historical state of this outcome was not recorded.', redactions: [] });
+  const accepted = row['lifecycle'] === 'ACCEPTED' && (row['effective_at'] as Date) <= input.readAt;
   const outcome = (row['outcome_code'] as string).toLowerCase().replaceAll('_', ' ');
   const effectiveAt = iso(row['effective_at'])!;
   return whySourcesSchema.parse({
     subject: { objectType: 'resolution_assertions', objectId: row['id'] }, subjectKind: 'RESOLUTION',
     label: accepted ? 'RESOLVED' : 'REPORTED',
-    statement: 'Outcome recorded: ' + outcome + ', effective ' + effectiveAt.slice(0, 10) + (accepted ? '.' : ' (not yet accepted).'),
+    statement: 'Outcome recorded: ' + outcome + ', effective ' + effectiveAt.slice(0, 10) + (accepted ? '.' : row['lifecycle'] === 'ACCEPTED' ? ' (takes effect later).' : ' (not yet accepted).'),
     modality: null, assessmentStatus: null,
     effectiveTime: { from: effectiveAt, to: null, recordedAt: iso(row['recorded_at']) },
     confidence: { ...weakest(claims), assessmentStatus: null },

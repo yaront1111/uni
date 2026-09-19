@@ -3,6 +3,7 @@ import { uuidV7 } from '../../../src/kernel/identities.js';
 import { canonicalJson } from './canonical-json.js';
 import { CANONICAL_NORMALIZATION_VERSION, recordSlotFingerprint, slotFingerprint } from './slots.js';
 import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
+import { readTemporalObjectStates, type TemporalObjectType } from './object-history.js';
 
 /** Lineage: how an old identifier stays resolvable after a merge or a split
  * (PRD §13.1, §13.6, §14, §44.13, §44.14; ADR 0025).
@@ -100,7 +101,7 @@ export async function retireEntity(tx: MemoryTransaction, input: {
  * identity map, and the reader behaves exactly as before.
  */
 export async function listMergedFrameMembers(tx: MemoryTransaction, input: {
-  ownerScopeId: string; frameInstanceIds: readonly string[];
+  ownerScopeId: string; frameInstanceIds: readonly string[]; knowledgeTime?: Date;
 }): Promise<Map<string, string>> {
   const members = new Map<string, string>();
   for (const id of input.frameInstanceIds) members.set(id, id);
@@ -109,12 +110,14 @@ export async function listMergedFrameMembers(tx: MemoryTransaction, input: {
     `WITH RECURSIVE members(member_id,survivor_id,depth) AS (
        SELECT l.from_frame_instance_id,l.to_frame_instance_id,1 FROM frame_instance_lineage l
         WHERE l.owner_scope_id=$1 AND l.lineage_kind='MERGED_INTO' AND l.to_frame_instance_id=ANY($2::uuid[])
+          AND ($3::timestamptz IS NULL OR l.created_at<=$3)
        UNION
        SELECT l.from_frame_instance_id,m.survivor_id,m.depth+1 FROM frame_instance_lineage l
         JOIN members m ON l.to_frame_instance_id=m.member_id
-        WHERE l.owner_scope_id=$1 AND l.lineage_kind='MERGED_INTO' AND m.depth<32)
+        WHERE l.owner_scope_id=$1 AND l.lineage_kind='MERGED_INTO' AND m.depth<32
+          AND ($3::timestamptz IS NULL OR l.created_at<=$3))
      SELECT DISTINCT member_id,survivor_id FROM members ORDER BY member_id`,
-    [input.ownerScopeId, [...input.frameInstanceIds]])).rows;
+    [input.ownerScopeId, [...input.frameInstanceIds], input.knowledgeTime ?? null])).rows;
   for (const row of rows) members.set(row['member_id'] as string, row['survivor_id'] as string);
   return members;
 }
@@ -128,7 +131,7 @@ export async function listMergedFrameMembers(tx: MemoryTransaction, input: {
  * item 3). A frame with no lineage resolves to itself.
  */
 export async function resolveFrameInstanceSurvivors(tx: MemoryTransaction, input: {
-  ownerScopeId: string; frameInstanceIds: readonly string[];
+  ownerScopeId: string; frameInstanceIds: readonly string[]; knowledgeTime?: Date;
 }): Promise<Map<string, string | null>> {
   const resolved = new Map<string, string | null>();
   const ids = [...new Set(input.frameInstanceIds)];
@@ -139,12 +142,12 @@ export async function resolveFrameInstanceSurvivors(tx: MemoryTransaction, input
        UNION ALL
        SELECT c.origin_id,l.to_frame_instance_id,c.depth+1 FROM chain c
         JOIN frame_instance_lineage l ON l.owner_scope_id=$1 AND l.from_frame_instance_id=c.current_id
-         AND l.lineage_kind='MERGED_INTO'
+         AND l.lineage_kind='MERGED_INTO' AND ($3::timestamptz IS NULL OR l.created_at<=$3)
         WHERE c.depth<32)
      SELECT DISTINCT ON (c.origin_id) c.origin_id,c.current_id,
        EXISTS(SELECT 1 FROM frame_instance_lineage s WHERE s.owner_scope_id=$1 AND s.from_frame_instance_id=c.current_id
-         AND s.lineage_kind='SPLIT_INTO') AS split
-     FROM chain c ORDER BY c.origin_id,c.depth DESC`, [input.ownerScopeId, ids])).rows;
+         AND s.lineage_kind='SPLIT_INTO' AND ($3::timestamptz IS NULL OR s.created_at<=$3)) AS split
+     FROM chain c ORDER BY c.origin_id,c.depth DESC`, [input.ownerScopeId, ids, input.knowledgeTime ?? null])).rows;
   // Split is read from the lineage, not from the frame's lifecycle: a projection
   // read may see lineage without seeing frames, and must still report a delta
   // about a split frame rather than lose it.
@@ -158,7 +161,7 @@ export async function resolveFrameInstanceSurvivors(tx: MemoryTransaction, input
 /** Which live entity each named entity means today, through MERGED_INTO. A split
  * parent keeps its own id: roles that name it stay on it (ADR 0025 §2). */
 export async function resolveEntitySurvivors(tx: MemoryTransaction, input: {
-  ownerScopeId: string; entityIds: readonly string[];
+  ownerScopeId: string; entityIds: readonly string[]; knowledgeTime?: Date;
 }): Promise<Map<string, string>> {
   const resolved = new Map<string, string>();
   const ids = [...new Set(input.entityIds)];
@@ -169,9 +172,10 @@ export async function resolveEntitySurvivors(tx: MemoryTransaction, input: {
        UNION ALL
        SELECT c.origin_id,l.to_entity_id,c.depth+1 FROM chain c
         JOIN entity_lineage l ON l.owner_scope_id=$1 AND l.from_entity_id=c.current_id AND l.lineage_kind='MERGED_INTO'
+          AND ($3::timestamptz IS NULL OR l.created_at<=$3)
         WHERE c.depth<32)
      SELECT DISTINCT ON (origin_id) origin_id,current_id FROM chain ORDER BY origin_id,depth DESC`,
-    [input.ownerScopeId, ids])).rows;
+    [input.ownerScopeId, ids, input.knowledgeTime ?? null])).rows;
   for (const row of rows) resolved.set(row['origin_id'] as string, row['current_id'] as string);
   for (const id of ids) if (!resolved.has(id)) resolved.set(id, id);
   return resolved;
@@ -235,14 +239,21 @@ export async function listRecentLineage(tx: MemoryTransaction, input: {
  * named anything this owner can read.
  */
 export async function resolveIdentity(tx: MemoryTransaction, input: {
-  ownerScopeId: string; objectType: LineageObjectType; id: string;
+  ownerScopeId: string; objectType: LineageObjectType; id: string; knowledgeTime?: Date;
 }): Promise<ResolvedIdentity | null> {
   const shape = LINEAGE_TABLES[input.objectType];
   const own = (await tx.query(`SELECT id,lifecycle FROM ${shape.objects} WHERE owner_scope_id=$1 AND id=$2`,
     [input.ownerScopeId, input.id])).rows[0];
   if (!own) return null;
+  if (input.knowledgeTime) {
+    const state = (await readTemporalObjectStates(tx, { ownerScopeId: input.ownerScopeId,
+      objectType: shape.objects as TemporalObjectType, objectIds: [input.id], knowledgeTime: input.knowledgeTime })).get(input.id);
+    if (!state) return { objectType: input.objectType, id: input.id, lifecycle: 'UNKNOWN', resolvesTo: [], lineage: [] };
+    own['lifecycle'] = state['lifecycle'];
+  }
   const lineage = (await tx.query(`SELECT * FROM ${shape.table} WHERE owner_scope_id=$1 AND ($2 IN (${shape.from},${shape.to}))
-    ORDER BY created_at,id`, [input.ownerScopeId, input.id])).rows.map(row => toLineageRecord(input.objectType, row));
+    AND ($3::timestamptz IS NULL OR created_at<=$3)
+    ORDER BY created_at,id`, [input.ownerScopeId, input.id, input.knowledgeTime ?? null])).rows.map(row => toLineageRecord(input.objectType, row));
 
   // Walk forward through MERGED_INTO and SPLIT_INTO until only live objects remain.
   const resolvesTo = new Set<string>();
@@ -254,11 +265,19 @@ export async function resolveIdentity(tx: MemoryTransaction, input: {
       FROM ${shape.objects} o
       LEFT JOIN ${shape.table} l ON l.owner_scope_id=o.owner_scope_id AND l.${shape.from}=o.id
         AND l.lineage_kind IN ('MERGED_INTO','SPLIT_INTO')
+        AND ($3::timestamptz IS NULL OR l.created_at<=$3)
       WHERE o.owner_scope_id=$1 AND o.id=ANY($2::uuid[]) GROUP BY o.id,o.lifecycle ORDER BY o.id`,
-      [input.ownerScopeId, frontier])).rows;
+      [input.ownerScopeId, frontier, input.knowledgeTime ?? null])).rows;
+    const states = input.knowledgeTime ? await readTemporalObjectStates(tx, { ownerScopeId: input.ownerScopeId,
+      objectType: shape.objects as TemporalObjectType, objectIds: rows.map(row => row['id'] as string), knowledgeTime: input.knowledgeTime }) : null;
     const next: string[] = [];
     for (const row of rows) {
       const id = row['id'] as string;
+      if (states) {
+        const state = states.get(id);
+        if (!state) continue;
+        row['lifecycle'] = state['lifecycle'];
+      }
       seen.add(id);
       const successors = (row['next'] as string[]).filter(successor => !seen.has(successor));
       if (row['lifecycle'] === 'ACTIVE' || successors.length === 0) resolvesTo.add(id);

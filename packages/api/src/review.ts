@@ -363,8 +363,10 @@ export function registerReviewRoutes(app: FastifyInstance, work: Work, options: 
     }, at);
     // Composed from the packet *as persisted*, read back and hash-checked: the
     // manifest the grounds are held against is the stored one.
-    const persisted = await as(request, CONTEXT_READ_PURPOSE, tx => readPersistedPacket(tx, {
-      ownerScopeId: context.ownerScopeId, packetId: assembled.packetId }));
+    const persisted = await as(request, CONTEXT_READ_PURPOSE, async tx => {
+      await declare(tx, evidence);
+      return readPersistedPacket(tx, { ownerScopeId: context.ownerScopeId, packetId: assembled.packetId });
+    });
     const composed = composeWeeklyReview(persisted.packet, week);
     const manifest = reviewManifestOf(persisted.packet, { registryReleaseId: persisted.registryReleaseId });
     const review = await as(request, WEEKLY_REVIEW_PURPOSE, async tx => {

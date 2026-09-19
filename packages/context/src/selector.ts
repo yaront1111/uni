@@ -21,7 +21,7 @@ import { canonicalJson, type MemoryTransaction } from '@unai/memory';
  * the selection is its own explanation.
  */
 
-export const SELECTION_VERSION = 'deterministic-selector-0.4.0';
+export const SELECTION_VERSION = 'deterministic-selector-0.5.0';
 
 const FUTURE_MODALITIES = ['SCHEDULED', 'INTENDED', 'COMMITTED', 'EXPECTED', 'PREDICTED', 'RECOMMENDED', 'CONDITIONAL'] as const;
 
@@ -46,6 +46,8 @@ export interface SelectorSlot {
   readonly contextKind: ContextSelection['contextKind'];
   /** Both the predicate and the frame type are in the pinned release. */
   readonly predicateRegistered: boolean;
+  readonly lifecycle?: string;
+  readonly frameLifecycle?: string;
 }
 
 export interface SelectorProposition {
@@ -208,6 +210,8 @@ export function selectSlotState(input: SlotSelectionInput, parameters: Selection
 
   // 5. Lifecycle: the verdict live at the knowledge time, and the proposition's own.
   apply('APPLY_BELIEF_LIFECYCLE', id => {
+    if (slot.lifecycle === 'UNKNOWN' || slot.frameLifecycle === 'UNKNOWN' || propositionById.get(id)!.lifecycle === 'UNKNOWN') return 'HISTORY_NOT_RECORDED';
+    if (slot.lifecycle === 'RETIRED' || slot.frameLifecycle === 'RETIRED') return 'CONTAINER_RETIRED';
     if (propositionById.get(id)!.lifecycle === 'RETIRED') return 'PROPOSITION_RETIRED';
     const status = chosen.get(id)!.status;
     if (LIFECYCLE_EXCLUDED.has(status)) return 'ASSESSMENT_' + status;
@@ -337,36 +341,43 @@ export async function selectCurrentStates(tx: MemoryTransaction, input: {
 }): Promise<ContextSelection[]> {
   if (input.frameInstanceIds.length === 0) return [];
   const slots = (await tx.query(
-    `SELECT s.id,s.frame_instance_id,s.predicate_id,s.modality,c.context_kind,f.frame_type_id
+    `SELECT s.id,s.frame_instance_id,s.predicate_id,s.modality,c.context_kind,f.frame_type_id,
+       coalesce(unai_private.object_state_at(s.owner_scope_id,'belief_slots',s.id,$3)->>'lifecycle','UNKNOWN') AS lifecycle,
+       coalesce(unai_private.object_state_at(f.owner_scope_id,'frame_instances',f.id,$3)->>'lifecycle','UNKNOWN') AS frame_lifecycle
      FROM belief_slots s
      JOIN frame_instances f ON f.owner_scope_id=s.owner_scope_id AND f.id=s.frame_instance_id
-     JOIN context_spaces c ON c.owner_scope_id=s.owner_scope_id AND c.id=s.context_space_id
+     JOIN context_spaces c ON c.owner_scope_id=s.owner_scope_id AND c.id=coalesce(
+       (unai_private.object_state_at(s.owner_scope_id,'belief_slots',s.id,$3)->>'context_space_id')::uuid,s.context_space_id)
      WHERE s.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[]) ORDER BY s.id`,
-    [input.ownerScopeId, [...input.frameInstanceIds]])).rows;
+    [input.ownerScopeId, [...input.frameInstanceIds], input.parameters.knowledgeTime])).rows;
   if (slots.length === 0) return [];
   const slotIds = slots.map(row => row['id'] as string);
   const propositions = (await tx.query(
-    `SELECT id,belief_slot_id,normalized_value,lifecycle FROM propositions
-     WHERE owner_scope_id=$1 AND belief_slot_id=ANY($2::uuid[]) ORDER BY id`, [input.ownerScopeId, slotIds])).rows;
+    `SELECT id,belief_slot_id,normalized_value,
+       coalesce(unai_private.object_state_at(owner_scope_id,'propositions',id,$3)->>'lifecycle','UNKNOWN') AS lifecycle FROM propositions
+     WHERE owner_scope_id=$1 AND belief_slot_id=ANY($2::uuid[]) ORDER BY id`, [input.ownerScopeId, slotIds, input.parameters.knowledgeTime])).rows;
   const propositionIds = propositions.map(row => row['id'] as string);
   const assessments = propositionIds.length === 0 ? [] : (await tx.query(
     `SELECT b.id,b.proposition_id,b.assessment_status,
        coalesce(b.valid_from,(SELECT min(c.valid_from) FROM claims c
          WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3
+           AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid=b.proposition_id
            AND ($4::uuid[] IS NULL OR c.id=ANY($4::uuid[])))) AS valid_from,
        coalesce(b.valid_to,(SELECT max(c.valid_to) FROM claims c
          WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3
+           AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid=b.proposition_id
            AND ($4::uuid[] IS NULL OR c.id=ANY($4::uuid[])))) AS valid_to,
        b.recorded_at,b.superseded_recorded_at
      FROM belief_assessments b WHERE b.owner_scope_id=$1 AND b.proposition_id=ANY($2::uuid[]) ORDER BY b.recorded_at,b.id`,
     [input.ownerScopeId, propositionIds, input.parameters.knowledgeTime,
       input.allowedClaimIds === undefined ? null : [...input.allowedClaimIds]])).rows;
   const claims = propositionIds.length === 0 ? [] : (await tx.query(
-    `SELECT c.id,c.proposition_id,c.claim_origin,c.recorded_at,a.source_item_id
+    `SELECT c.id,(unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4)->>'proposition_id')::uuid AS proposition_id,
+       c.claim_origin,c.recorded_at,a.source_item_id
      FROM claims c LEFT JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     WHERE c.owner_scope_id=$1 AND c.proposition_id=ANY($2::uuid[])
+     WHERE c.owner_scope_id=$1 AND c.proposition_id=ANY($2::uuid[]) AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4)->>'proposition_id')::uuid=ANY($2::uuid[])
        AND ($3::uuid[] IS NULL OR c.id=ANY($3::uuid[])) ORDER BY c.id`,
-    [input.ownerScopeId, propositionIds, input.allowedClaimIds === undefined ? null : [...input.allowedClaimIds]])).rows;
+    [input.ownerScopeId, propositionIds, input.allowedClaimIds === undefined ? null : [...input.allowedClaimIds], input.parameters.knowledgeTime])).rows;
   const claimIds = claims.map(row => row['id'] as string);
   const relations = claimIds.length === 0 ? [] : (await tx.query(
     `SELECT from_claim_id,to_claim_id,relation_kind,valid_from,created_at FROM claim_relations
@@ -406,6 +417,7 @@ export async function selectCurrentStates(tx: MemoryTransaction, input: {
         beliefSlotId: slotId, frameInstanceId: slot['frame_instance_id'] as string, frameTypeId, predicateId,
         modality: slot['modality'] as SelectorSlot['modality'], contextKind: slot['context_kind'] as SelectorSlot['contextKind'],
         predicateRegistered: await present(predicateId, 'PREDICATE') && await present(frameTypeId, 'FRAME'),
+        lifecycle: slot['lifecycle'] as string, frameLifecycle: slot['frame_lifecycle'] as string,
       },
       propositions: own.map(row => ({
         propositionId: row['id'] as string, lifecycle: row['lifecycle'] as string, normalizedValue: row['normalized_value'],

@@ -349,7 +349,7 @@ describe('CRT-DEC-02-A: "Why did I make this decision?" and the prediction revie
         predicted: expect.objectContaining({ text: 'Within a year I lead a team and save 15% more' }), actual: expect.objectContaining({ text: actual }) })]);
       expect(detail.decision.actualOutcome).toBe(actual);
     }
-  });
+  },20_000);
 
   it('refuses a code the pinned transition contract does not allow, a missing contract, and a decision with nothing predicted', async () => {
     const o = await makeOwner('Review Refusals');

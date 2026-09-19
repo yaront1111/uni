@@ -281,7 +281,7 @@ async function buildCommitmentRows(
     const fold = foldOwnerDeltas(context.deltasByFrame.get(frame.frameInstanceId) ?? [], 'open_commitments_projection', null);
     // The outcome is the kernel's reading of accepted resolutions; an applied
     // owner statement shows on top of it and never rewrites it.
-    const outcome = await frameOutcomeProjection(tx, { ownerScopeId: context.ownerScopeId, frameInstanceId: frame.frameInstanceId });
+    const outcome = await frameOutcomeProjection(tx, { ownerScopeId: context.ownerScopeId, frameInstanceId: frame.frameInstanceId, asOf: context.asOf });
     const outcomeState = fold.outcomeOverride !== null && outcome.state === 'UNRESOLVED' ? fold.outcomeOverride : outcome.state;
     const due = dueInstant(selectedDue?.normalizedValue);
     const unresolved = outcomeState === 'UNRESOLVED' || outcomeState === 'PARTIALLY_RESOLVED';
@@ -360,7 +360,7 @@ async function buildObligationRows(
       principalValues: framePrincipals, principal, principalConflict: null,
       dueTimeValues: frameDue, allocations: frameAllocations, advisoryCoverage: [],
     });
-    const outcome = await frameOutcomeProjection(tx, { ownerScopeId: context.ownerScopeId, frameInstanceId: frame.frameInstanceId });
+    const outcome = await frameOutcomeProjection(tx, { ownerScopeId: context.ownerScopeId, frameInstanceId: frame.frameInstanceId, asOf: context.asOf });
     const conflict = amountConflict(framePrincipals);
     const frameResolutions = resolutions.filter(resolution => resolution.sourceFrameInstanceId === frame.frameInstanceId);
     const updatedAt = latestTime([

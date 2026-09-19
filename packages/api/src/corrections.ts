@@ -339,8 +339,13 @@ export function registerCorrectionRoutes(app: FastifyInstance, work: Work, optio
       const since = request.query.sinceSequence;
       if (since !== undefined && !/^\d{1,15}$/.test(since)) throw new CorrectionRefusal(400, 'MEMORY_CORRECTION_INPUT_INVALID');
       const overlay = await work(request, async tx => {
+        await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+          [request.headers['x-data-purpose'], request.headers['x-maximum-sensitivity']]);
+        const readableEvidenceIds = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
+          [tx.context.ownerScopeId])).rows.map(row => row['id'] as string);
         const answer = await readOwnerOverlay(tx, {
           ownerScopeId: tx.context.ownerScopeId, ...(since === undefined ? {} : { sinceSequence: Number(since) }),
+          readableEvidenceIds,
         });
         await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
           objects: answer.deltas.slice(0, 100).map(delta => ({

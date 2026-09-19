@@ -72,6 +72,28 @@ beforeAll(async () => {
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
+it.each(['purpose', 'sensitivity'])('overlay history requires current %s permission for the original assertion', async boundary => {
+  const app = api();
+  try {
+    const marker = 'private-overlay-history-' + boundary;
+    const written = await app.inject({ method: 'POST', url: '/v1/memory/overlay-deltas', headers: headers(phoneToken, {
+      'x-data-purpose': 'FAMILY_COORDINATION', 'x-maximum-sensitivity': 'RESTRICTED',
+    }), payload: { deltaKind: 'USER_ASSERTION', rawText: marker } });
+    expect(written.statusCode, written.body).toBe(201);
+    const denied = await app.inject({ method: 'GET', url: '/v1/memory/overlay-deltas', headers: headers(desktopToken, {
+      'x-data-purpose': boundary === 'purpose' ? 'PERSONAL_ASSISTANCE' : 'FAMILY_COORDINATION',
+      'x-maximum-sensitivity': boundary === 'sensitivity' ? 'PRIVATE' : 'RESTRICTED',
+    }) });
+    expect(denied.statusCode, denied.body).toBe(200);
+    expect(denied.body).not.toContain(marker);
+    const allowed = await app.inject({ method: 'GET', url: '/v1/memory/overlay-deltas', headers: headers(desktopToken, {
+      'x-data-purpose': 'FAMILY_COORDINATION', 'x-maximum-sensitivity': 'RESTRICTED',
+    }) });
+    expect(allowed.statusCode, allowed.body).toBe(200);
+    expect(allowed.json().deltas).toContainEqual(expect.objectContaining({ rawText: marker }));
+  } finally { await app.close(); }
+});
+
 function api() {
   const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects, registryReleaseId });
   app.addHook('onRequest', async request => { Object.defineProperty(request.raw.socket, 'encrypted', { value: true }); });

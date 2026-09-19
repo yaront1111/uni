@@ -101,7 +101,7 @@ const view:MemoryThreadView={memoryThreadId:id(30),displayTitle:'Daniel payment'
   actualEvents:[{propositionId:id(1),beliefSlotId:id(2),frameInstanceId:id(3),frameTypeId:'shared.obligation',predicateId:'shared.obligation.principal_amount',
     modality:'ACTUAL',polarity:'POSITIVE',normalizedValue:{amount:'500.00',currency:'ILS'},assessmentStatus:'ACCEPTED',assessmentRecordedAt:at,
     validFrom:null,validTo:null,certainty:'ACCEPTED',lifeCategories:['FINANCE'],claimIds:[],evidenceIds:[],selectionReason:'THREAD_MEMBER_ACTUAL_STATE'}],
-  resolutionLinks:[{resolutionAssertionId:id(12),sourceFrameInstanceId:id(3),targetFrameInstanceId:id(36),outcomeCode:'PARTIALLY_FULFILLED',
+  resolutionLinks:[{claimId:null,evidenceIds:[],resolutionAssertionId:id(12),sourceFrameInstanceId:id(3),targetFrameInstanceId:id(36),outcomeCode:'PARTIALLY_FULFILLED',
     effectiveAt:'2026-03-10T08:00:00.000Z',lifecycle:'ACCEPTED',transitionContractId:'shared.obligation.resolution'}],
   openUncertainties:[{kind:'NO_ACCEPTED_VALUE',objectType:'propositions',objectId:id(8),detail:'CONTESTED_BELIEF'}],
   relatedPeople:[{entityId:id(37),entityKind:'PERSON',canonicalLabel:'Daniel'}],

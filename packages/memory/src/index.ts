@@ -12,6 +12,7 @@
  * the belief transaction service's work, not this layer's.
  */
 export { canonicalJson } from './canonical-json.js';
+export { readTemporalObjectStates, type TemporalObjectType, type TemporalObjectState } from './object-history.js';
 export { MEMORY_PURPOSES, MemoryStoreError, type MemoryTransaction } from './transaction.js';
 export { TEMPORAL_RESOLVER_VERSION, TemporalResolutionError, resolveTemporalExpression,
   type TemporalResolutionRequest } from './temporal.js';
@@ -64,3 +65,4 @@ export { BITEMPORAL_QUERY_VERSION, BITEMPORAL_POLICY_VERSION, queryCurrentState,
 export { EMBEDDING_MODEL, EMBEDDING_VERSION, EMBEDDING_DIMENSIONS, hashedLexicalEmbedder, embeddingTokens, vectorLiteral,
   indexClaimEmbeddings, searchMemoryEmbeddings,
   type Embedder, type IndexedClaims, type SemanticSearchRequest } from './embeddings.js';
+export { AGING_EVALUATOR_VERSION, evaluateFreshness, readAgingPolicy, type FreshnessEvaluationInput } from './aging.js';

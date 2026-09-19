@@ -483,7 +483,7 @@ async function buildDecisionRows(tx: MemoryTransaction, input: {
     const frameResolutions = resolutions.filter(resolution => resolution.sourceFrameInstanceId === frame.frameInstanceId);
     const reviews = frameResolutions.filter(resolution => REVIEW_CODES.has(resolution.outcomeCode) && STANDING.has(resolution.lifecycle));
     const latestReview = reviews.at(-1) ?? null;
-    const outcome = await frameOutcomeProjection(tx, { ownerScopeId: input.ownerScopeId, frameInstanceId: frame.frameInstanceId });
+    const outcome = await frameOutcomeProjection(tx, { ownerScopeId: input.ownerScopeId, frameInstanceId: frame.frameInstanceId, asOf: input.asOf });
     const reviewDate = timeOf(selected('reviewDate')?.normalizedValue);
     const goal = roleValue(roles, frame.frameInstanceId, 'related_goal') as Record<string, unknown> | null;
     const allValues = (Object.keys(DECISION_PREDICATES) as DecisionPredicate[]).flatMap(of);

@@ -23,7 +23,7 @@ import { readPropositionAuthority } from './support-authority.js';
  * and "absent".
  */
 
-export const INSPECTOR_VERSION = 'memory-inspector-0.2.0';
+export const INSPECTOR_VERSION = 'memory-inspector-0.3.0';
 
 /** How many audit rows the access history lists, newest first. */
 const ACCESS_HISTORY_LIMIT = 50;
@@ -54,9 +54,9 @@ async function resolveSubject(tx: MemoryTransaction, ownerScopeId: string, objec
       return { propositionId: objectId, correctionTarget: { objectType: 'proposition', objectId } };
     }
     case 'claim': {
-      const row = (await tx.query(`SELECT c.proposition_id,EXISTS(SELECT 1 FROM source_anchors a
+      const row = (await tx.query(`SELECT (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid AS proposition_id,EXISTS(SELECT 1 FROM source_anchors a
         WHERE a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id) AS readable
-        FROM claims c WHERE c.owner_scope_id=$1 AND c.id=$2`, [ownerScopeId, objectId])).rows[0];
+        FROM claims c WHERE c.owner_scope_id=$1 AND c.id=$2 AND c.recorded_at<=$3`, [ownerScopeId, objectId, readAt])).rows[0];
       // A claim no belief took up -- an assistant's invented fact, say -- is
       // conversation evidence and nothing more: there is no belief to inspect.
       if (!row || !row['proposition_id']) throw unresolved();
@@ -76,9 +76,9 @@ async function resolveSubject(tx: MemoryTransaction, ownerScopeId: string, objec
       const row = (await tx.query(
         `SELECT r.source_proposition_id,r.source_frame_instance_id,EXISTS(SELECT 1 FROM claims c
           JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-          WHERE c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id) AS readable
-         FROM resolution_assertions r WHERE r.owner_scope_id=$1 AND r.id=$2`,
-        [ownerScopeId, objectId])).rows[0];
+          WHERE c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id AND c.recorded_at<=$3) AS readable
+         FROM resolution_assertions r WHERE r.owner_scope_id=$1 AND r.id=$2 AND r.recorded_at<=$3`,
+        [ownerScopeId, objectId, readAt])).rows[0];
       if (!row) throw unresolved();
       if (row['readable'] !== true) throw withheld();
       const propositionId = (row['source_proposition_id'] as string | null) ?? await firstOfFrame(row['source_frame_instance_id'] as string);
@@ -87,10 +87,11 @@ async function resolveSubject(tx: MemoryTransaction, ownerScopeId: string, objec
     }
     case 'owner_overlay_delta': {
       const row = (await tx.query(
-        `SELECT d.target_object_type,d.target_object_id,d.attached_frame_instance_id,EXISTS(SELECT 1 FROM source_items s
+        `SELECT d.target_object_type,d.target_object_id,
+          unai_private.object_state_at(d.owner_scope_id,'owner_overlay_deltas',d.id,$3)->>'attached_frame_instance_id' AS attached_frame_instance_id,EXISTS(SELECT 1 FROM source_items s
           WHERE s.owner_scope_id=d.owner_scope_id AND s.id=d.source_evidence_id) AS readable
-         FROM owner_overlay_deltas d WHERE d.owner_scope_id=$1 AND d.id=$2`,
-        [ownerScopeId, objectId])).rows[0];
+         FROM owner_overlay_deltas d WHERE d.owner_scope_id=$1 AND d.id=$2 AND d.created_at<=$3`,
+        [ownerScopeId, objectId, readAt])).rows[0];
       if (!row || depth > 0) throw unresolved();
       if (row['readable'] !== true) throw withheld();
       const targetType = row['target_object_type'] as string | null;
@@ -174,7 +175,8 @@ export async function inspectMemory(tx: MemoryTransaction, input: {
     `SELECT d.id,d.derived_proposition_id,d.input_claim_ids,d.input_proposition_ids,d.evaluator_id,d.model_or_code_version,
        d.registry_release_id,d.created_at,
        (SELECT b.assessment_status FROM belief_assessments b WHERE b.owner_scope_id=d.owner_scope_id
-         AND b.proposition_id=d.derived_proposition_id AND b.superseded_recorded_at IS NULL
+         AND b.proposition_id=d.derived_proposition_id AND b.recorded_at<=$4
+         AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$4)
          ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS derived_status
      FROM derived_proposition_dependencies d
      WHERE d.owner_scope_id=$1 AND d.created_at<=$4 AND (d.derived_proposition_id=$2 OR $2=ANY(d.input_proposition_ids)
@@ -193,12 +195,13 @@ export async function inspectMemory(tx: MemoryTransaction, input: {
 
   // Threads: memberships of the belief itself, of its claims and of its frame.
   const threadRows = (await tx.query(
-    `SELECT t.id,t.lifecycle,m.membership_kind,m.object_type FROM memory_thread_members m
+    `SELECT t.id,unai_private.object_state_at(t.owner_scope_id,'memory_threads',t.id,$5)->>'lifecycle' AS lifecycle,m.membership_kind,m.object_type FROM memory_thread_members m
      JOIN memory_threads t ON t.owner_scope_id=m.owner_scope_id AND t.id=m.memory_thread_id
-     WHERE m.owner_scope_id=$1 AND ((m.object_type='proposition' AND m.object_id=$2)
+     WHERE m.owner_scope_id=$1 AND m.created_at<=$5 AND t.created_at<=$5
+       AND unai_private.object_state_at(t.owner_scope_id,'memory_threads',t.id,$5) IS NOT NULL AND ((m.object_type='proposition' AND m.object_id=$2)
        OR (m.object_type='frame_instance' AND m.object_id=$3) OR (m.object_type='claim' AND m.object_id=ANY($4::uuid[])))
      ORDER BY t.created_at,t.id,m.object_type LIMIT 100`,
-    [owner, subject.propositionId, explanation.frameInstanceId, claimIds])).rows;
+    [owner, subject.propositionId, explanation.frameInstanceId, claimIds, input.readAt])).rows;
   const seenThreads = new Set<string>();
 
   // Access history: audit rows naming the belief, a claim of it or its frame,
@@ -206,11 +209,11 @@ export async function inspectMemory(tx: MemoryTransaction, input: {
   const named = [subject.propositionId, explanation.frameInstanceId, ...claimIds].map(id => JSON.stringify([{ id }]));
   const auditRows = (await tx.query(
     `SELECT id,purpose,result,created_at,objects_and_fields_accessed FROM audit_events
-     WHERE owner_scope_id=$1 AND objects_and_fields_accessed @> ANY($2::jsonb[])
-     ORDER BY created_at DESC,id DESC LIMIT ${ACCESS_HISTORY_LIMIT}`, [owner, named])).rows;
+     WHERE owner_scope_id=$1 AND created_at<=$3 AND objects_and_fields_accessed @> ANY($2::jsonb[])
+     ORDER BY created_at DESC,id DESC LIMIT ${ACCESS_HISTORY_LIMIT}`, [owner, named, input.readAt])).rows;
   const manifestRows = (await tx.query(
-    `SELECT id,created_at FROM answer_manifests WHERE owner_scope_id=$1 AND $2=ANY(belief_ids)
-     ORDER BY created_at DESC,id DESC LIMIT 50`, [owner, subject.propositionId])).rows;
+    `SELECT id,created_at FROM answer_manifests WHERE owner_scope_id=$1 AND $2=ANY(belief_ids) AND created_at<=$3
+     ORDER BY created_at DESC,id DESC LIMIT 50`, [owner, subject.propositionId, input.readAt])).rows;
   const namedIds = new Set([subject.propositionId, explanation.frameInstanceId, ...claimIds]);
 
   const operations = [
@@ -218,7 +221,7 @@ export async function inspectMemory(tx: MemoryTransaction, input: {
     ...await listMemoryOperations(tx, { ownerScopeId: owner, target: { objectType: 'frame_instance', objectId: explanation.frameInstanceId } }),
     ...(await Promise.all(claimIds.map(claimId =>
       listMemoryOperations(tx, { ownerScopeId: owner, target: { objectType: 'claim', objectId: claimId } })))).flat(),
-  ].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.memoryOperationId.localeCompare(right.memoryOperationId));
+  ].filter(operation => operation.createdAt <= input.readAt.toISOString()).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.memoryOperationId.localeCompare(right.memoryOperationId));
 
   return memoryInspectorSchema.parse({
     subject: { requestedType: input.objectType, requestedId: input.objectId, propositionId: subject.propositionId,
@@ -285,24 +288,31 @@ export async function readRelatedFrames(tx: MemoryTransaction, input: {
   const ids = [...new Set(input.frameInstanceIds)].slice(0, 100);
   if (ids.length === 0) return relatedFramesSchema.parse({ frames: [], readAt: input.readAt.toISOString() });
   const frameRows = (await tx.query(
-    'SELECT id,frame_type_id,lifecycle FROM frame_instances WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) ORDER BY created_at,id',
-    [owner, ids])).rows;
+    `SELECT id,frame_type_id,unai_private.object_state_at(owner_scope_id,'frame_instances',id,$3)->>'lifecycle' AS lifecycle
+     FROM frame_instances WHERE owner_scope_id=$1 AND id=ANY($2::uuid[])
+       AND unai_private.object_state_at(owner_scope_id,'frame_instances',id,$3) IS NOT NULL ORDER BY created_at,id`,
+    [owner, ids, input.readAt])).rows;
   const roleRows = (await tx.query(
     `SELECT r.frame_instance_id,r.role_id,r.entity_id FROM frame_instance_roles r
      JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
      JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.proposition_id
      JOIN belief_slots b ON b.owner_scope_id=p.owner_scope_id AND b.id=p.belief_slot_id AND b.frame_instance_id=r.frame_instance_id
-     WHERE r.owner_scope_id=$1 AND r.frame_instance_id=ANY($2::uuid[]) AND r.entity_id IS NOT NULL ORDER BY r.role_id,r.entity_id`,
-    [owner, ids])).rows;
+     WHERE r.owner_scope_id=$1 AND r.frame_instance_id=ANY($2::uuid[]) AND r.entity_id IS NOT NULL
+       AND r.created_at<=$3 AND c.recorded_at<=$3
+       AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid=p.id
+       AND unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'lifecycle' NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
+       AND (r.valid_from IS NULL OR r.valid_from<=$3) AND (r.valid_to IS NULL OR r.valid_to>$3)
+       ORDER BY r.role_id,r.entity_id`,
+    [owner, ids, input.readAt])).rows;
   const beliefCandidates = (await tx.query(
     `SELECT s.frame_instance_id,p.id,s.predicate_id,s.modality,
        (SELECT b.assessment_status FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
-         AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS status
+         AND b.proposition_id=p.id AND b.recorded_at<=$3 AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3) ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS status
      FROM propositions p JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
      WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[])
      ORDER BY s.predicate_id,p.created_at,p.id`,
-    [owner, ids])).rows;
+    [owner, ids, input.readAt])).rows;
   const authority = await readPropositionAuthority(tx, { ownerScopeId: owner, knowledgeTime: input.readAt,
     propositionIds: beliefCandidates.map(row => row['id'] as string) });
   const beliefRows = beliefCandidates.filter(row => authority.get(row['id'] as string)?.readable);
@@ -311,18 +321,24 @@ export async function readRelatedFrames(tx: MemoryTransaction, input: {
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
      JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.proposition_id
      JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-     WHERE c.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[]) ORDER BY c.recorded_at,c.id`, [owner, ids])).rows;
+     WHERE c.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[]) AND c.recorded_at<=$3
+       AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid=p.id
+       ORDER BY c.recorded_at,c.id`, [owner, ids, input.readAt])).rows;
   const resolutionRows = (await tx.query(
-    `SELECT r.id,r.source_frame_instance_id,r.outcome_code,r.effective_at,r.lifecycle,r.asserted_by_entity_id,r.claim_id
+    `SELECT r.id,r.source_frame_instance_id,r.outcome_code,r.effective_at,
+       unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3)->>'lifecycle' AS lifecycle,r.asserted_by_entity_id,r.claim_id
      FROM resolution_assertions r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     WHERE r.owner_scope_id=$1 AND r.source_frame_instance_id=ANY($2::uuid[])
-     ORDER BY r.effective_at,r.id`, [owner, ids])).rows;
+     WHERE r.owner_scope_id=$1 AND r.source_frame_instance_id=ANY($2::uuid[]) AND r.recorded_at<=$3 AND c.recorded_at<=$3
+       AND unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3) IS NOT NULL
+     ORDER BY r.effective_at,r.id`, [owner, ids, input.readAt])).rows;
   const threadRows = (await tx.query(
     `SELECT DISTINCT m.object_id,t.id,t.created_at FROM memory_thread_members m
      JOIN memory_threads t ON t.owner_scope_id=m.owner_scope_id AND t.id=m.memory_thread_id
      WHERE m.owner_scope_id=$1 AND m.object_type='frame_instance' AND m.object_id=ANY($2::uuid[])
-     ORDER BY t.created_at,t.id`, [owner, ids])).rows;
+       AND m.created_at<=$3 AND t.created_at<=$3
+       AND unai_private.object_state_at(t.owner_scope_id,'memory_threads',t.id,$3) IS NOT NULL
+     ORDER BY t.created_at,t.id`, [owner, ids, input.readAt])).rows;
   const people = await entities(tx, owner, [
     ...roleRows.map(row => row['entity_id'] as string),
     ...resolutionRows.map(row => row['asserted_by_entity_id'] as string),

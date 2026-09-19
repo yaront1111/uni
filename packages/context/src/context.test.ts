@@ -6,10 +6,14 @@ import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@una
 import type { PolicyVerdict, RequestContext } from '@unai/domain';
 import { createLocalPolicyAdapters, type PolicyPorts } from '@unai/belief';
 import { uuidV7 } from '../../../src/kernel/identities.js';
+import { readOwnerOverlay, resolveEntitySurvivors, resolveIdentity } from '@unai/memory';
+import { selectCurrentStates } from './selector.js';
+import { inspectMemory, readRelatedFrames } from './inspector.js';
 import {
   ContextBrokerError, assembleContextPacket, addThreadMember, createMemoryThread, classifyAnswerType,
   deriveLifeCategories, explainProposition, missingContextFields, readContextPacket, readMemoryThread,
   readWhySources,
+  readPersistedPacket, suppliedContextOf, listOpenThreadIds,
 } from './index.js';
 
 /**
@@ -94,11 +98,11 @@ async function proposition(input: {
   claimOrigin?: string; extractionRunId?: string | null; recordedAt?: Date; validFrom?: Date;
 }): Promise<{ propositionId: string; claimId: string }> {
   const propositionId = uuidV7(), claimId = uuidV7();
-  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
-    [propositionId, owner, input.beliefSlotId, JSON.stringify(input.value)]);
+  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,$5)',
+    [propositionId, owner, input.beliefSlotId, JSON.stringify(input.value), RECORDED_AT]);
   await admin.query(`INSERT INTO proposition_fingerprints(id,owner_scope_id,proposition_id,registry_release_id,
-    normalization_version,fingerprint,descriptor) VALUES($1,$2,$3,$4,'normalization-1',$5,'{}')`,
-    [randomUUID(), owner, propositionId, registryReleaseId, randomUUID().replaceAll('-', '').padEnd(64, 'b').slice(0, 64)]);
+    normalization_version,fingerprint,descriptor,valid_from_recorded_at) VALUES($1,$2,$3,$4,'normalization-1',$5,'{}',$6)`,
+    [randomUUID(), owner, propositionId, registryReleaseId, randomUUID().replaceAll('-', '').padEnd(64, 'b').slice(0, 64), RECORDED_AT]);
   // `recorded_at` is explicit throughout the fixture: the knowledge time under
   // test is pinned to NOW, and a row recorded after it is correctly invisible, so
   // leaving the column to default to the wall clock would test nothing.
@@ -111,23 +115,23 @@ async function proposition(input: {
       transaction_id,decision_reason,recorded_at) VALUES($1,$2,$3,$4,'local-policy-0.1.0',$5,'{"code":"FIXTURE"}',$6)`,
       [randomUUID(), owner, propositionId, input.assessment, transactionId, RECORDED_AT]);
     await admin.query(`INSERT INTO belief_support(id,owner_scope_id,proposition_id,claim_id,support_kind,
-      independence_group,created_by_transaction_id) VALUES($1,$2,$3,$4,'DIRECT_ASSERTION',$5,$6)`,
-      [randomUUID(), owner, propositionId, claimId, 'source:' + input.anchorId.slice(0, 8), transactionId]);
+      independence_group,created_by_transaction_id,created_at) VALUES($1,$2,$3,$4,'DIRECT_ASSERTION',$5,$6,$7)`,
+      [randomUUID(), owner, propositionId, claimId, 'source:' + input.anchorId.slice(0, 8), transactionId, RECORDED_AT]);
   }
   return { propositionId, claimId };
 }
 
 async function slot(frameInstanceId: string, predicateId: string, modality = 'ACTUAL'): Promise<string> {
   const id = uuidV7();
-  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
-    VALUES($1,$2,$3,$4,$5,$6)`, [id, owner, frameInstanceId, predicateId, baseContext, modality]);
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7)`, [id, owner, frameInstanceId, predicateId, baseContext, modality, RECORDED_AT]);
   return id;
 }
 
 async function frame(frameTypeId: string): Promise<string> {
   const id = uuidV7();
-  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,$3,$4)',
-    [id, owner, frameTypeId, baseContext]);
+  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,$3,$4,$5)',
+    [id, owner, frameTypeId, baseContext, RECORDED_AT]);
   return id;
 }
 
@@ -223,16 +227,16 @@ beforeAll(async () => {
 
   // The contradiction the explanation reports beside the competing proposition.
   await admin.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,
-    temporal_effect,created_by_transaction_id)
-    SELECT $1,$2,c.id,$3,'CORRECTS','SAME_VALID_INTERVAL',$4 FROM claims c WHERE c.owner_scope_id=$2
-      AND c.proposition_id=$5`, [randomUUID(), owner, acceptedClaim, transactionId, competingProposition]);
+    temporal_effect,created_by_transaction_id,created_at)
+    SELECT $1,$2,c.id,$3,'CORRECTS','SAME_VALID_INTERVAL',$4,$6 FROM claims c WHERE c.owner_scope_id=$2
+      AND c.proposition_id=$5`, [randomUUID(), owner, acceptedClaim, transactionId, competingProposition, RECORDED_AT]);
 
   // The accepted outcome authority over the obligation, and the link that carries it.
   const resolutionId = uuidV7(), linkId = uuidV7();
   await admin.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,
-    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id)
-    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5)`,
-    [linkId, owner, resolutionId, obligationFrame, transactionId]);
+    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id,created_at)
+    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5,$6)`,
+    [linkId, owner, resolutionId, obligationFrame, transactionId, RECORDED_AT]);
   await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
     effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id,
     creation_transaction_id,recorded_at)
@@ -548,7 +552,7 @@ it('CRT-MEM-02-A: one evidence row and one set of semantic objects appear in the
   expect(deriveLifeCategories({ frameTypeId: 'finance.payment_allocation' })).toContain('FINANCE');
   expect(deriveLifeCategories({ allowedPurposes: [FAMILY_PURPOSE, FINANCE_PURPOSE] }).sort())
     .toEqual(['FAMILY', 'FINANCE']);
-  expect(classifyAnswerType('Why did I decide that?')).toBe('CAUSAL_EXPLANATION');
+  expect(classifyAnswerType('Why did I decide that?')).toBe('DECISION_RECONSTRUCTION');
 });
 
 it('CRT-RD-09-A: explain returns the assessment, claims, anchors, support, contradictions, history, resolutions, versions and consumers', async () => {
@@ -614,11 +618,11 @@ it('CRT-RD-10-A: one evidence-backed object joins two threads and appears in bot
 
   const financeView = await inspect(async tx => {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)", [FINANCE_PURPOSE]);
-    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: NOW });
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: new Date() });
   });
   const familyView = await inspect(async tx => {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)", [FINANCE_PURPOSE]);
-    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: familyThread, readAt: NOW });
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: familyThread, readAt: new Date() });
   });
 
   expect(financeView.members.map(member => member.objectId)).toContain(obligationFrame);
@@ -760,9 +764,9 @@ it('does not present a known but not-yet-effective actual value as current', asy
 it('excludes a late-recorded resolution from historical context while preserving corrected history', async () => {
   const resolutionId = uuidV7(), linkId = uuidV7();
   await admin.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,
-    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id)
-    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5)`,
-    [linkId, owner, resolutionId, obligationFrame, transactionId]);
+    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id,created_at)
+    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5,$6)`,
+    [linkId, owner, resolutionId, obligationFrame, transactionId, RECORDED_AT]);
   await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
     effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id,
     creation_transaction_id,recorded_at)
@@ -814,7 +818,7 @@ it.each(['sensitivity', 'purpose'])('thread projection fragments withhold pendin
     member: { objectType: 'frame_instance', objectId: obligationFrame, membershipKind: 'SUBJECT', confidence: null, transactionId: null } }));
   const view = (purpose: string, ceiling: string) => inspect(async tx => {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)", [purpose, ceiling]);
-    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: NOW });
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: new Date() });
   });
   const denied = await view(FINANCE_PURPOSE, 'PRIVATE');
   expect(JSON.stringify(denied.currentProjection)).toContain(controlMarker);
@@ -834,9 +838,9 @@ it.each(['sensitivity', 'purpose'])('Why withholds canonical and resolution deta
   const resolutionId = uuidV7(), linkId = uuidV7();
   const effectiveAt = new Date('2026-02-23T11:22:33.000Z');
   await admin.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,
-    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id)
-    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5)`,
-    [linkId, owner, resolutionId, obligationFrame, transactionId]);
+    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id,created_at)
+    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5,$6)`,
+    [linkId, owner, resolutionId, obligationFrame, transactionId, RECORDED_AT]);
   await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
     effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id,
     creation_transaction_id,recorded_at)
@@ -871,9 +875,9 @@ it.each(['sensitivity', 'purpose'])('thread values and outcomes require support 
     value: { text: marker }, anchorId: source.anchorId, assessment: 'ACCEPTED' });
   const resolutionId = uuidV7(), linkId = uuidV7();
   await admin.query(`INSERT INTO memory_links(id,owner_scope_id,from_object_type,from_object_id,to_object_type,
-    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id)
-    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5)`,
-    [linkId, owner, resolutionId, obligationFrame, transactionId]);
+    to_object_id,link_kind,lifecycle,transition_contract_id,transaction_id,created_at)
+    VALUES($1,$2,'resolution_assertion',$3,'frame_instance',$4,'RESOLVES','ACTIVE','shared.obligation.resolution',$5,$6)`,
+    [linkId, owner, resolutionId, obligationFrame, transactionId, RECORDED_AT]);
   await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
     effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,resolution_link_id,
     creation_transaction_id,recorded_at)
@@ -883,7 +887,7 @@ it.each(['sensitivity', 'purpose'])('thread values and outcomes require support 
     member: { objectType: 'frame_instance', objectId: obligationFrame, membershipKind: 'SUBJECT', confidence: null, transactionId: null } }));
   const view = (purpose: string, ceiling: string) => inspect(async tx => {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)", [purpose, ceiling]);
-    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: NOW });
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: new Date() });
   });
   const denied = await view(FINANCE_PURPOSE, 'PRIVATE');
   expect(denied.actualEvents.map(event => event.propositionId)).toContain(acceptedProposition);
@@ -919,7 +923,7 @@ it.each(['sensitivity', 'purpose'])('thread names require readable role and alia
     member: { objectType: 'frame_instance', objectId: obligationFrame, membershipKind: 'SUBJECT', confidence: null, transactionId: null } }));
   const view = (purpose: string, ceiling: string) => inspect(async tx => {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)", [purpose, ceiling]);
-    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: NOW });
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: financeThread, readAt: new Date() });
   });
   const denied = await view(FINANCE_PURPOSE, 'PRIVATE');
   expect(denied.relatedPeople).toContainEqual({ entityId: danielEntity, entityKind: 'PERSON', canonicalLabel: 'Daniel' });
@@ -961,4 +965,265 @@ it.each(['sensitivity', 'purpose'])('Why actor names require readable alias sour
   const allowed = await panel(boundary === 'purpose' ? FAMILY_PURPOSE : FINANCE_PURPOSE, 'RESTRICTED');
   expect(allowed.claimingActors).toContainEqual({ kind: 'PERSON', label: alias, entityId });
   expect(JSON.stringify(allowed)).not.toContain(canonicalLabel);
+});
+
+it('historical overlay reads preserve pending state before later contesting and attachment', async () => {
+  const id = await delta({ lifecycle: 'USER_ASSERTED', rawText: 'historical-overlay-pending', evidenceId: sharedEvidence });
+  await admin.query(`UPDATE owner_overlay_deltas SET lifecycle='CONTESTED',attached_frame_instance_id=$3,
+    contested_reason='{"code":"LATER_CONFLICT"}' WHERE owner_scope_id=$1 AND id=$2`, [owner, id, obligationFrame]);
+  const historical = await inspect(tx => readOwnerOverlay(tx, { ownerScopeId: owner, knowledgeTime: NOW,
+    readableEvidenceIds: [sharedEvidence] }));
+  expect(historical.deltas.find(entry => entry.overlayDeltaId === id)).toMatchObject({
+    lifecycle: 'USER_ASSERTED', attachedFrameInstanceId: null, contestedReason: null,
+  });
+  const current = await inspect(tx => readOwnerOverlay(tx, { ownerScopeId: owner }));
+  expect(current.deltas.find(entry => entry.overlayDeltaId === id)).toMatchObject({ lifecycle: 'CONTESTED', attachedFrameInstanceId: obligationFrame });
+});
+
+it('historical selection reads proposition lifecycle before later retirement', async () => {
+  const frameId = uuidV7(), slotId = uuidV7(), propositionId = uuidV7();
+  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,$3,$4,$5)',
+    [frameId, owner, 'shared.obligation', baseContext, RECORDED_AT]);
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,'shared.obligation.principal_amount',$4,'ACTUAL',$5)`, [slotId, owner, frameId, baseContext, RECORDED_AT]);
+  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,$5)',
+    [propositionId, owner, slotId, '{"amount":"17.00","currency":"ILS"}', RECORDED_AT]);
+  await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,
+    transaction_id,decision_reason,recorded_at) VALUES($1,$2,$3,'ACCEPTED','local-policy-0.1.0',$4,'{"code":"FIXTURE"}',$5)`,
+    [uuidV7(), owner, propositionId, transactionId, RECORDED_AT]);
+  await admin.query("UPDATE propositions SET lifecycle='RETIRED',retired_at=now() WHERE owner_scope_id=$1 AND id=$2", [owner, propositionId]);
+  // This suite's registry ID is an intentional unpublished fixture. Hold its
+  // presence port true here so this test isolates the real database lifecycle.
+  const select = (knowledgeTime: Date) => read(tx => selectCurrentStates({ ...tx,
+    query: (sql, values) => sql.startsWith('SELECT unai_private.registry_contract_present')
+      ? Promise.resolve({ rows: [{ present: true }], rowCount: 1 }) : tx.query(sql, values),
+  }, { ownerScopeId: owner, frameInstanceIds: [frameId],
+    registryReleaseId, parameters: { worldTime: NOW.toISOString(), knowledgeTime: knowledgeTime.toISOString(), modalities: ['ACTUAL'], admitProvisional: false },
+    withheldPropositionIds: new Set(), outOfViewPropositionIds: new Set(), overlayDeltas: [] }));
+  expect((await select(NOW))[0]).toMatchObject({ outcome: 'SELECTED', selectedPropositionId: propositionId });
+  expect((await select(new Date()))[0]).toMatchObject({ outcome: 'NO_CURRENT_VALUE', selectedPropositionId: null });
+});
+
+it('historical lineage excludes a merge recorded after the knowledge time', async () => {
+  const from = uuidV7(), to = uuidV7();
+  for (const id of [from, to]) await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,created_at) VALUES($1,$2,'PERSON',$3)",
+    [id, owner, RECORDED_AT]);
+  await admin.query("INSERT INTO entity_lineage(id,owner_scope_id,from_entity_id,to_entity_id,lineage_kind) VALUES($1,$2,$3,$4,'MERGED_INTO')",
+    [uuidV7(), owner, from, to]);
+  await admin.query("UPDATE entities SET lifecycle='MERGED',retired_at=now() WHERE owner_scope_id=$1 AND id=$2", [owner, from]);
+  const input = { ownerScopeId: owner, entityIds: [from], knowledgeTime: NOW };
+  expect((await inspect(tx => resolveEntitySurvivors(tx, input))).get(from)).toBe(from);
+  expect((await inspect(tx => resolveEntitySurvivors(tx, { ownerScopeId: owner, entityIds: [from] }))).get(from)).toBe(to);
+  const identityInput = { ownerScopeId: owner, objectType: 'entity' as const, id: from, knowledgeTime: NOW };
+  expect(await inspect(tx => resolveIdentity(tx, identityInput))).toMatchObject({ lifecycle: 'ACTIVE', resolvesTo: [from], lineage: [] });
+});
+
+it('temporal journal is owner isolated, immutable to readers, and absent before its first recorded checkpoint', async () => {
+  const id = uuidV7();
+  await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,created_at) VALUES($1,$2,'PERSON',$3)", [id, owner, RECORDED_AT]);
+  const state = await inspect(tx => tx.query("SELECT unai_private.object_state_at($1,'entities',$2,$3) AS state", [owner, id, NOW]));
+  expect(state.rows[0]?.state).toMatchObject({ lifecycle: 'ACTIVE' });
+  const absent = await inspect(tx => tx.query("SELECT unai_private.object_state_at($1,'entities',$2,$3) AS state", [owner, id, new Date('2020-01-01')]));
+  expect(absent.rows[0]?.state).toBeNull();
+  await expect(inspect(tx => explainProposition(tx, { ownerScopeId: owner, propositionId: acceptedProposition,
+    readAt: new Date('2020-01-01') }))).rejects.toThrow('PROPOSITION_HISTORY_UNAVAILABLE');
+  const unknown = await inspect(tx => readWhySources(tx, { ownerScopeId: owner,
+    ref: { objectType: 'propositions', objectId: acceptedProposition }, readAt: new Date('2020-01-01') }));
+  expect(unknown).toMatchObject({ label: 'UNKNOWN', statement: 'The historical state of this belief was not recorded.', sources: [], redactions: [] });
+  const otherOwner = await inspect(tx => tx.query("SELECT unai_private.object_state_at($1,'entities',$2,$3) AS state", [randomUUID(), id, NOW]));
+  expect(otherOwner.rows[0]?.state).toBeNull();
+  await expect(inspect(tx => tx.query("UPDATE memory_object_state_history SET state='{}' WHERE owner_scope_id=$1", [owner])))
+    .rejects.toMatchObject({ code: '42501' });
+});
+
+it('thread source reads never repeat an unsourced free-form title', async () => {
+  const marker = 'private-unsourced-thread-title';
+  const id = await thread(tx => createMemoryThread(tx, { ownerScopeId: owner, displayTitle: marker }));
+  await thread(tx => addThreadMember(tx, { ownerScopeId: owner, memoryThreadId: id,
+    member: { objectType: 'frame_instance', objectId: obligationFrame, membershipKind: 'SUBJECT', confidence: null, transactionId: null } }));
+  const view = await inspect(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: id, readAt: new Date() });
+  });
+  expect(view.displayTitle).toBeNull();
+  expect(view.actualEvents.some(value => value.propositionId === acceptedProposition)).toBe(true);
+  expect(JSON.stringify(view)).not.toContain(marker);
+  const packet = await readContextPacket(readRunner, request(), { now: NOW, correlationId: randomUUID(), registryReleaseId });
+  expect(JSON.stringify(packet)).not.toContain(marker);
+});
+
+it('persisted packets recheck present source permissions before returning their saved content', async () => {
+  const packet = await readContextPacket(readRunner, request(), { now: NOW, correlationId: randomUUID(), registryReleaseId });
+  const reread = (purpose: string) => read(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [purpose]);
+    return readPersistedPacket(tx, { ownerScopeId: owner, packetId: packet.packetId });
+  });
+  await expect(reread(FAMILY_PURPOSE)).rejects.toThrow('CONTEXT_PACKET_SOURCE_WITHHELD');
+  expect((await reread(FINANCE_PURPOSE)).packet.packetId).toBe(packet.packetId);
+});
+
+it('historical explanation and Why read the assessment and overlay state known then', async () => {
+  const source = await evidence({ sensitivity: 'PRIVATE', allowedPurposes: [FINANCE_PURPOSE], externalId: 'historical-explanation-control' });
+  const frameId = await frame('shared.obligation'), slotId = await slot(frameId, 'shared.obligation.description');
+  const value = await proposition({ frameInstanceId: frameId, beliefSlotId: slotId, value: { text: 'recorded before later contest' },
+    anchorId: source.anchorId, assessment: 'ACCEPTED' });
+  await admin.query('UPDATE belief_assessments SET superseded_recorded_at=now() WHERE owner_scope_id=$1 AND proposition_id=$2', [owner, value.propositionId]);
+  await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,transaction_id)
+    VALUES($1,$2,$3,'CONTESTED','local-policy-0.1.0',$4)`, [uuidV7(), owner, value.propositionId, transactionId]);
+  const deltaId = await delta({ lifecycle: 'USER_ASSERTED', rawText: 'still pending at historical read', evidenceId: source.evidenceId });
+  await admin.query(`UPDATE owner_overlay_deltas SET lifecycle='CONTESTED',contested_reason='{"code":"LATER_CONFLICT"}' WHERE id=$1`, [deltaId]);
+  const answer = await inspect(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return { explanation: await explainProposition(tx, { ownerScopeId: owner, propositionId: value.propositionId, readAt: NOW }),
+      why: await readWhySources(tx, { ownerScopeId: owner, ref: { objectType: 'owner_overlay_deltas', objectId: deltaId }, readAt: NOW }) };
+  });
+  expect(answer.explanation.currentAssessment.assessmentStatus).toBe('ACCEPTED');
+  expect(answer.explanation.temporalHistory.every(entry => Date.parse(entry.recordedAt) <= NOW.getTime())).toBe(true);
+  expect(answer.why.label).toBe('PENDING_OWNER_ASSERTION');
+  expect(JSON.stringify(answer.why)).not.toContain('LATER_CONFLICT');
+});
+
+it('historical outcome panels preserve the proposed lifecycle before later withdrawal', async () => {
+  const id = uuidV7();
+  await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,
+    effective_at,asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,recorded_at)
+    VALUES($1,$2,$3,'WAIVED',$4,$5,$6,'shared.obligation.resolution','PROPOSED',$4)`,
+    [id, owner, obligationFrame, RECORDED_AT, danielEntity, acceptedClaim]);
+  await admin.query("UPDATE resolution_assertions SET lifecycle='WITHDRAWN' WHERE id=$1", [id]);
+  const answer = await inspect(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return readWhySources(tx, { ownerScopeId: owner, ref: { objectType: 'resolution_assertions', objectId: id }, readAt: NOW });
+  });
+  expect(answer.resolutions).toContainEqual(expect.objectContaining({ resolutionAssertionId: id, lifecycle: 'PROPOSED' }));
+});
+
+
+it('historical fallback validity ignores claims attached only after the knowledge time', async () => {
+  const frameId = await frame('shared.obligation'), slotId = await slot(frameId, 'shared.obligation.principal_amount');
+  const source = await evidence({ sensitivity: 'PRIVATE', allowedPurposes: [FINANCE_PURPOSE], externalId: 'late-claim-attachment' });
+  const value = await proposition({ frameInstanceId: frameId, beliefSlotId: slotId, value: { amount: '81.00', currency: 'ILS' },
+    anchorId: source.anchorId, assessment: 'ACCEPTED', validFrom: new Date('2026-05-01') });
+  const lateClaim = uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,valid_from,recorded_at)
+    VALUES($1,$2,$3,'USER_STATEMENT','CANDIDATE',$4,$4)`, [lateClaim, owner, source.anchorId, RECORDED_AT]);
+  await admin.query('UPDATE claims SET proposition_id=$2 WHERE id=$1', [lateClaim, value.propositionId]);
+  const selections = await read(tx => selectCurrentStates({ ...tx,
+    query: (sql, values) => sql.startsWith('SELECT unai_private.registry_contract_present')
+      ? Promise.resolve({ rows: [{ present: true }], rowCount: 1 }) : tx.query(sql, values),
+  }, { ownerScopeId: owner, frameInstanceIds: [frameId], registryReleaseId,
+    parameters: { worldTime: NOW.toISOString(), knowledgeTime: NOW.toISOString(), modalities: ['ACTUAL'], admitProvisional: false },
+    withheldPropositionIds: new Set(), outOfViewPropositionIds: new Set(), overlayDeltas: [] }));
+  expect(selections[0]).toMatchObject({ outcome: 'NO_CURRENT_VALUE', selectedPropositionId: null });
+});
+
+it('historical related frames preserve outcome and assessment state and omit later memberships', async () => {
+  const frameId = await frame('shared.obligation'), slotId = await slot(frameId, 'shared.obligation.description');
+  const source = await evidence({ sensitivity: 'PRIVATE', allowedPurposes: [FINANCE_PURPOSE], externalId: 'related-history-control' });
+  const value = await proposition({ frameInstanceId: frameId, beliefSlotId: slotId, value: { text: 'known historical obligation' },
+    anchorId: source.anchorId, assessment: 'ACCEPTED' });
+  await admin.query('UPDATE belief_assessments SET superseded_recorded_at=now() WHERE proposition_id=$1', [value.propositionId]);
+  await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,
+    transaction_id,decision_reason) VALUES($1,$2,$3,'CONTESTED','local-policy-0.1.0',$4,'{}')`, [uuidV7(), owner, value.propositionId, transactionId]);
+  const resolutionId = uuidV7();
+  await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,effective_at,
+    asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,recorded_at)
+    VALUES($1,$2,$3,'WAIVED',$4,$5,$6,'shared.obligation.resolution','PROPOSED',$4)`,
+    [resolutionId, owner, frameId, RECORDED_AT, danielEntity, value.claimId]);
+  await admin.query("UPDATE resolution_assertions SET lifecycle='WITHDRAWN' WHERE id=$1", [resolutionId]);
+  const threadId = uuidV7();
+  await admin.query('INSERT INTO memory_threads(id,owner_scope_id,created_at) VALUES($1,$2,$3)', [threadId, owner, RECORDED_AT]);
+  await thread(tx => addThreadMember(tx, { ownerScopeId: owner, memoryThreadId: threadId,
+    member: { objectType: 'frame_instance', objectId: frameId, membershipKind: 'SUBJECT', confidence: null, transactionId: null } }));
+  const readAt = (instant: Date) => inspect(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return readRelatedFrames(tx, { ownerScopeId: owner, frameInstanceIds: [frameId], readAt: instant });
+  });
+  const historical = (await readAt(NOW)).frames[0]!;
+  expect(historical.beliefs).toContainEqual(expect.objectContaining({ propositionId: value.propositionId, assessmentStatus: 'ACCEPTED' }));
+  expect(historical.resolutions).toContainEqual(expect.objectContaining({ resolutionAssertionId: resolutionId, lifecycle: 'PROPOSED' }));
+  expect(historical.threads).toEqual([]);
+  const current = (await readAt(new Date())).frames[0]!;
+  expect(current.resolutions).toContainEqual(expect.objectContaining({ lifecycle: 'WITHDRAWN' }));
+  expect(current.threads).toContainEqual(expect.objectContaining({ memoryThreadId: threadId }));
+  const threadView = await inspect(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return readMemoryThread(tx, { ownerScopeId: owner, memoryThreadId: threadId, readAt: NOW });
+  });
+  expect(threadView.members).toEqual([]);
+  expect(threadView.actualEvents).toEqual([]);
+});
+
+it('historical inspector refuses a claim that was not yet attached to a belief', async () => {
+  const id = uuidV7();
+  const source = await evidence({ sensitivity: 'PRIVATE', allowedPurposes: [FINANCE_PURPOSE], externalId: 'inspector-late-attachment' });
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,recorded_at)
+    VALUES($1,$2,$3,'USER_STATEMENT','CANDIDATE',$4)`, [id, owner, source.anchorId, RECORDED_AT]);
+  await admin.query('UPDATE claims SET proposition_id=$2 WHERE id=$1', [id, acceptedProposition]);
+  const view = (instant: Date) => inspect(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return inspectMemory(tx, { ownerScopeId: owner, objectType: 'claim', objectId: id, readAt: instant });
+  });
+  await expect(view(NOW)).rejects.toThrow('INSPECTOR_TARGET_NOT_FOUND');
+  expect((await view(new Date())).subject.propositionId).toBe(acceptedProposition);
+});
+
+
+it('persisted packets honor later suppression of an outcome carried without evidence excerpts', async () => {
+  const source = await evidence({ sensitivity: 'PRIVATE', allowedPurposes: [FINANCE_PURPOSE], externalId: 'cached-outcome-control' });
+  const claimId = uuidV7(), resolutionId = uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,recorded_at)
+    VALUES($1,$2,$3,'USER_STATEMENT','CANDIDATE',$4)`, [claimId, owner, source.anchorId, RECORDED_AT]);
+  await admin.query(`INSERT INTO resolution_assertions(id,owner_scope_id,source_frame_instance_id,outcome_code,effective_at,
+    asserted_by_entity_id,claim_id,transition_contract_id,lifecycle,recorded_at)
+    VALUES($1,$2,$3,'WAIVED',$4,$5,$6,'shared.obligation.resolution','PROPOSED',$4)`,
+    [resolutionId, owner, obligationFrame, RECORDED_AT, danielEntity, claimId]);
+  const packet = await readContextPacket(readRunner, request({ includeEvidence: 'NEVER' }),
+    { now: NOW, correlationId: randomUUID(), registryReleaseId });
+  expect(packet.resolutionAssertions.map(entry => entry.resolutionAssertionId)).toContain(resolutionId);
+  const reread = () => read(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE_PURPOSE]);
+    return readPersistedPacket(tx, { ownerScopeId: owner, packetId: packet.packetId });
+  });
+  expect((await reread()).packet.packetId).toBe(packet.packetId);
+  const id = uuidV7(); nextSequence += 1;
+  await admin.query(`INSERT INTO owner_overlay_deltas(id,owner_scope_id,owner_sequence,source_evidence_id,raw_text,
+    delta_kind,lifecycle,target_object_type,target_object_id)
+    VALUES($1,$2,$3,$4,'hide this outcome','SUPPRESSION','USER_ASSERTED','resolution_assertion',$5)`,
+    [id, owner, nextSequence, sharedEvidence, resolutionId]);
+  await expect(reread()).rejects.toThrow('CONTEXT_PACKET_SOURCE_WITHHELD');
+});
+
+it('saved packet provenance includes independent verification even without other source references', async () => {
+  const packet = await readContextPacket(readRunner, request(), { now: NOW, correlationId: randomUUID(), registryReleaseId });
+  const verifier = randomUUID(), claimId = randomUUID(), outcomeEvidence = randomUUID();
+  const delta = packet.ownerOverlayDeltas[0]!;
+  expect(delta).toBeDefined();
+  const supplied = suppliedContextOf({ ...packet, currentBeliefs: [], historicalBeliefs: [], futureClaims: [],
+    conflicts: [], selections: [], evidenceRefs: [], semanticSearch: null,
+    ownerOverlayDeltas: [{ ...delta, independentVerification: {
+      verified: true, independentEvidenceIds: [verifier], independentClaimOrigins: ['DOCUMENT_ASSERTION'],
+    } }],
+    resolutionAssertions: [{ ...packet.resolutionAssertions[0]!, claimId, evidenceIds: [outcomeEvidence] }],
+  }, { registryReleaseId });
+  expect(supplied.evidenceIds).toEqual(expect.arrayContaining([verifier, outcomeEvidence]));
+  expect(supplied.claimIds).toContain(claimId);
+});
+
+
+it('source bounded overlay reads omit opaque conflict text without provenance', async () => {
+  const id = await delta({ lifecycle: 'USER_ASSERTED', rawText: 'authorized pending assertion', evidenceId: sharedEvidence });
+  await admin.query("UPDATE owner_overlay_deltas SET lifecycle='CONTESTED',contested_reason=$2 WHERE id=$1",
+    [id, JSON.stringify({ failureReason: 'restricted-conflict-reason-marker', conflictingEvidenceIds: [restrictedEvidence] })]);
+  const overlay = await inspect(tx => readOwnerOverlay(tx, { ownerScopeId: owner, readableEvidenceIds: [sharedEvidence] }));
+  expect(overlay.deltas.find(entry => entry.overlayDeltaId === id)?.rawText).toBe('authorized pending assertion');
+  expect(overlay.deltas.find(entry => entry.overlayDeltaId === id)?.contestedReason).toBeNull();
+  expect(JSON.stringify(overlay)).not.toContain('restricted-conflict-reason-marker');
+});
+
+
+it('active workflow thread lookup admits ACTIVE and excludes CLOSED threads', async () => {
+  const active = await thread(tx => createMemoryThread(tx, { ownerScopeId: owner }));
+  const closed = uuidV7();
+  await admin.query("INSERT INTO memory_threads(id,owner_scope_id,lifecycle) VALUES($1,$2,'CLOSED')", [closed, owner]);
+  expect(await inspect(tx => listOpenThreadIds(tx, { ownerScopeId: owner, threadIds: [active, closed] }))).toEqual([active]);
 });

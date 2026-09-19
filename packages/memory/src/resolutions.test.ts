@@ -559,3 +559,24 @@ it('CRT-OUT-01-B: accepting a resolution is a governed decision, and what the re
   }));
   expect(links[0]).toMatchObject({ lifecycle: 'ACTIVE', transitionContractId: 'shared.commitment.resolution' });
 });
+
+
+it('an accepted future-effective resolution remains open until its effective boundary', async () => {
+  const commitment = await frame('shared.commitment');
+  const effectiveAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const canonicalized = await write(tx => canonicalizeResolutionStatement(tx, {
+    ownerScopeId: owner, sourceFrameInstanceId: commitment, sourceFrameTypeId: 'shared.commitment',
+    statement: 'Done, I sent it', sourceAnchorId: anchor(), claimOrigin: 'USER_STATEMENT',
+    assertedByEntityId: ownerEntityId, effectiveAt,
+    transitionContractId: 'shared.commitment.resolution', transitionContracts: contracts(),
+  }));
+  await govern(tx => setResolutionLifecycle(tx, { ownerScopeId: owner,
+    resolutionAssertionId: canonicalized.resolutionAssertionId, lifecycle: 'ACCEPTED', transactionId }));
+  const current = await read(tx => frameOutcomeProjection(tx, { ownerScopeId: owner, frameInstanceId: commitment }));
+  expect(current).toMatchObject({ state: 'UNRESOLVED', acceptedResolutionIds: [], acceptedOutcomes: [] });
+  const before = { ownerScopeId: owner, frameInstanceId: commitment, asOf: new Date(effectiveAt.getTime() - 1) };
+  expect(await read(tx => frameOutcomeProjection(tx, before))).toMatchObject({ state: 'UNRESOLVED' });
+  const atBoundary = { ...before, asOf: effectiveAt };
+  expect(await read(tx => frameOutcomeProjection(tx, atBoundary))).toMatchObject({ state: 'RESOLVED',
+    acceptedResolutionIds: [canonicalized.resolutionAssertionId], acceptedOutcomes: ['FULFILLED'] });
+});

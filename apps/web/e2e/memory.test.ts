@@ -86,7 +86,7 @@ async function evidence(sourceType:string,text:string,occurredAt:string){
 }
 async function frame(frameTypeId:string){
   const id=randomUUID();
-  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,$3,$4)',[id,owner,frameTypeId,baseContext]);
+  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,$3,$4,$5)',[id,owner,frameTypeId,baseContext,RECORDED]);
   return id;
 }
 /** One value in one slot, the claim that asserts it and, when given, the
@@ -94,10 +94,10 @@ async function frame(frameTypeId:string){
 async function belief(input:{frame:string;predicate:string;modality:string;value:unknown;anchor:string;origin:string;
   assertedBy:string;assessment?:string;slot?:string}){
   const slot=input.slot??randomUUID(),propositionId=randomUUID(),claimId=randomUUID();
-  if(!input.slot)await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
-    VALUES($1,$2,$3,$4,$5,$6)`,[slot,owner,input.frame,input.predicate,baseContext,input.modality]);
-  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
-    [propositionId,owner,slot,JSON.stringify(input.value)]);
+  if(!input.slot)await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7)`,[slot,owner,input.frame,input.predicate,baseContext,input.modality,RECORDED]);
+  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,$5)',
+    [propositionId,owner,slot,JSON.stringify(input.value),RECORDED]);
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,asserted_by_entity_id,
     recorded_at,extraction_confidence,entity_resolution_confidence,instance_resolution_confidence)
     VALUES($1,$2,$3,$4,$5,'PROVISIONAL',$6,$7,0.9,0.8,0.7)`,[claimId,owner,input.anchor,propositionId,input.origin,input.assertedBy,RECORDED]);
@@ -424,7 +424,8 @@ it('CRT-UX-15-A: the memory thread view for the Daniel payment shows projection,
       'Open uncertainties','Related people, documents and decisions']){
       expect(html,heading).toContain('>'+heading+'</h2>');
     }
-    expect(html).toContain('<h1>Daniel payment</h1>');
+    expect(thread.displayTitle).toBeNull();
+    expect(html).toContain('<h1>Memory thread</h1>');
     expect(html).toContain('Obligations: 1 row');
     expect(html).toContain('Evidence arrived');
     expect(html).toContain('action description: send Daniel the remaining money');

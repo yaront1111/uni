@@ -63,6 +63,9 @@ export function registerInspectionRoutes(app: FastifyInstance, work: Work, optio
       if (error instanceof ContextBrokerError && error.message === 'INSPECTOR_TARGET_NOT_FOUND') {
         return refuse(request, reply, 404, error.message);
       }
+      if (error instanceof ContextBrokerError && error.message === 'PROPOSITION_HISTORY_UNAVAILABLE') {
+        return refuse(request, reply, 409, error.message);
+      }
       if (error instanceof ContextBrokerError && ['PROPOSITION_SOURCE_WITHHELD', 'INSPECTOR_TARGET_SOURCE_WITHHELD'].includes(error.message)) {
         return refuse(request, reply, 403, error.message);
       }

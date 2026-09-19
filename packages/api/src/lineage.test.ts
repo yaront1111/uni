@@ -72,13 +72,55 @@ beforeAll(async () => {
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
+it.each(['purpose', 'sensitivity'])('merge review names require readable alias evidence for %s', async boundary => {
+  const app = api();
+  try {
+    const evidenceId = randomUUID(), marker = 'protected-review-name-' + boundary;
+    await admin.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,
+      raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+      SELECT $1,owner_scope_id,connector_id,source_type,$2,actor_ref,submitted_by_user_id,$3,content_hash,'RESTRICTED',
+        ARRAY['FAMILY_COORDINATION'],ingestion_version,$4 FROM source_items WHERE id=$5`,
+      [evidenceId, randomUUID(), randomUUID(), randomUUID(), sourceItemId]);
+    for (let index = 0; index < 2; index++) {
+      const entity = randomUUID();
+      await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind) VALUES($1,$2,'PERSON')", [entity, owner]);
+      await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id)
+        VALUES($1,$2,$3,'DISPLAY_NAME',$4,$4,$5)`, [randomUUID(), owner, entity, marker, evidenceId]);
+    }
+    const read = (purpose: string, ceiling: string) => app.inject({ method: 'GET', url: '/v1/memory/merge-split/review',
+      headers: headers({ 'x-purpose': 'memory.inspect', 'x-data-purpose': purpose, 'x-maximum-sensitivity': ceiling }) });
+    const denied = await read(boundary === 'purpose' ? 'PERSONAL_ASSISTANCE' : 'FAMILY_COORDINATION', boundary === 'sensitivity' ? 'PRIVATE' : 'RESTRICTED');
+    expect(denied.statusCode, denied.body).toBe(200);
+    expect(denied.body).not.toContain(marker);
+    const allowed = await read('FAMILY_COORDINATION', 'RESTRICTED');
+    expect(allowed.statusCode, allowed.body).toBe(200);
+    expect(allowed.json().entityCandidates).toContainEqual(expect.objectContaining({ sharedAlias: marker }));
+  } finally { await app.close(); }
+});
+
+it('merge review does not echo unprovenanced free-form matcher details', async () => {
+  const app = api();
+  try {
+    const first = await obligation('18.00'), second = await obligation('18.00');
+    await write(tx => recordInstanceMatchCandidate(tx, { ownerScopeId: owner, frameTypeId: 'shared.obligation',
+      claimId: second.claimId, candidateFrameInstanceId: first.frameInstanceId, resolvedFrameInstanceId: second.frameInstanceId,
+      matchOutcome: 'PROBABLE_MATCH', materiality: 'MATERIAL_ACCEPTED_UPDATE', reusedExistingInstance: false, score: 0.72,
+      scoreComponents: { sharedEntities: 1, privateReason: 'private-matcher-history-detail' }, decisionReason: { code: 'FIXTURE' } }));
+    const response = await app.inject({ method: 'GET', url: '/v1/memory/merge-split/review', headers: headers({ 'x-purpose': 'memory.inspect' }) });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.body).not.toContain('private-matcher-history-detail');
+    expect(response.json().frameCandidates).toContainEqual(expect.objectContaining({ candidateFrameInstanceId: first.frameInstanceId,
+      scoreComponents: { sharedEntities: 1 } }));
+  } finally { await app.close(); }
+});
+
 function context(purpose: string) { return { actorId: userId, ownerScopeId: owner, purpose, correlationId: randomUUID() }; }
 const as = <T,>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) => withOwnerTransaction(appPool, context(purpose), run);
 const write = <T,>(run: (tx: OwnerTransaction) => Promise<T>) => as('memory.canonicalize', run);
 
 async function person(label: string, mailbox: string): Promise<string> {
   return (await write(tx => resolveEntity(tx, { ownerScopeId: owner, entityKind: 'PERSON', canonicalLabel: label,
-    aliases: [{ aliasType: 'EMAIL', aliasValue: mailbox }, { aliasType: 'DISPLAY_NAME', aliasValue: label }] }))).entityId;
+    aliases: [{ aliasType: 'EMAIL', aliasValue: mailbox, sourceItemId }, { aliasType: 'DISPLAY_NAME', aliasValue: label, sourceItemId }] }))).entityId;
 }
 
 /** One stated value in one slot of a frame, with the claim that stated it. */

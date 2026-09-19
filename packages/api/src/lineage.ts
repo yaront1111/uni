@@ -449,19 +449,29 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
    * same-name entities the under-merge default kept apart, and the most recent
    * lineage. It proposes nothing; merging is the owner's decision.
    */
-  app.get('/v1/memory/merge-split/review', async request => work(request, async tx => {
+  app.get('/v1/memory/merge-split/review', async (request, reply) => {
+    const purpose = dataPurposeSchema.safeParse(request.headers['x-data-purpose']);
+    const ceiling = sensitivitySchema.safeParse(request.headers['x-maximum-sensitivity']);
+    if (!purpose.success || !ceiling.success) return reply.code(400).send({ code: 'MEMORY_CONTEXT_REQUIRED', correlationId: request.ownerContext!.correlationId });
+    return work(request, async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)", [purpose.data, ceiling.data]);
     const owner = tx.context.ownerScopeId;
     const frameCandidates = (await tx.query(
       `SELECT id,frame_type_id,candidate_frame_instance_id,resolved_frame_instance_id,match_outcome,score,score_components,
          reused_existing_instance,created_at
-       FROM instance_match_candidates WHERE owner_scope_id=$1 AND match_outcome<>'NEW_INSTANCE'
+       FROM instance_match_candidates m WHERE owner_scope_id=$1 AND match_outcome<>'NEW_INSTANCE'
+         AND EXISTS(SELECT 1 FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+           WHERE c.owner_scope_id=m.owner_scope_id AND c.id=m.claim_id)
        ORDER BY created_at DESC,id DESC LIMIT 100`, [owner])).rows.map(row => ({
       candidateId: row['id'], frameTypeId: row['frame_type_id'],
       candidateFrameInstanceId: row['candidate_frame_instance_id'] ?? null,
       resolvedFrameInstanceId: row['resolved_frame_instance_id'] ?? null,
       matchOutcome: row['match_outcome'],
       score: row['score'] === null || row['score'] === undefined ? null : Number(row['score']),
-      scoreComponents: row['score_components'] ?? {},
+      scoreComponents: Object.fromEntries(Object.entries((row['score_components'] ?? {}) as Record<string, unknown>)
+        .filter(([key, value]) => ['sharedEntities','sharedResolvedEntities','threadContinuity','sharedOriginEvent',
+          'sharedDocumentAnchor','temporalCompatibility','amountCompatibility','semanticSimilarity','explicitReference'].includes(key)
+          && typeof value === 'number' && Number.isFinite(value))),
       keptSeparate: row['reused_existing_instance'] !== true,
       reusedExistingInstance: row['reused_existing_instance'] === true,
       createdAt: (row['created_at'] as Date).toISOString(),
@@ -470,6 +480,7 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
     const entityCandidates = (await tx.query(
       `SELECT e.entity_kind,a.normalized_value,array_agg(DISTINCT e.id ORDER BY e.id) AS entity_ids
        FROM entities e JOIN entity_aliases a ON a.owner_scope_id=e.owner_scope_id AND a.entity_id=e.id
+       JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
        WHERE e.owner_scope_id=$1 AND e.lifecycle='ACTIVE' AND a.alias_type IN ('DISPLAY_NAME','GIVEN_NAME','FULL_NAME','NICKNAME')
        GROUP BY e.entity_kind,a.normalized_value HAVING count(DISTINCT e.id)>1
        ORDER BY a.normalized_value,e.entity_kind LIMIT 100`, [owner])).rows.map(row => ({
@@ -485,5 +496,6 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
       objects: review.frameCandidates.slice(0, 100).map(candidate => ({ type: 'instance_match_candidates',
         id: candidate.candidateId, fields: ['match_outcome', 'score_components'] })) });
     return review;
-  }));
+    });
+  });
 }

@@ -10,6 +10,8 @@ export interface PropositionAuthority {
   /** Exact readable leaf claims; these ground citations without pretending the
    * output itself has a direct assertion or exposing unrelated source spans. */
   readonly claimIds: string[];
+  /** A traversal ceiling is missing knowledge, never proof of an empty graph. */
+  readonly incomplete?: true;
 }
 
 interface ClaimSource {
@@ -46,7 +48,7 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
   const roots = [...new Set(input.propositionIds)];
   // Exhausting a read budget denies this batch as a whole; a truncated graph
   // must never become a supposedly complete authority proof.
-  const denied = () => new Map(roots.map(id => [id, { readable: false, evidenceIds: [], claimIds: [] }]));
+  const denied = () => new Map(roots.map(id => [id, { readable: false, evidenceIds: [], claimIds: [], incomplete: true as const }]));
   if (roots.length === 0 || roots.length > MAX_GRAPH_NODES) return denied();
   const blocked = (id: string | null | undefined) => id != null
     && (input.withheldObjectIds?.has(id) === true || input.removedObjectIds?.has(id) === true);
@@ -67,7 +69,11 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
     const propositionRows = propIds.length === 0 ? [] : (await tx.query(
       `SELECT p.id,p.belief_slot_id,s.frame_instance_id FROM propositions p
        JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-       WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[]) ORDER BY p.id`, [input.ownerScopeId, propIds])).rows;
+       WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])
+         AND unai_private.object_state_at(p.owner_scope_id,'propositions',p.id,$3) IS NOT NULL
+         AND unai_private.object_state_at(s.owner_scope_id,'belief_slots',s.id,$3) IS NOT NULL
+         AND unai_private.object_state_at(s.owner_scope_id,'frame_instances',s.frame_instance_id,$3) IS NOT NULL
+       ORDER BY p.id`, [input.ownerScopeId, propIds, input.knowledgeTime])).rows;
     for (const row of propositionRows) {
       const id = row['id'] as string;
       if (!blocked(id) && !blocked(row['belief_slot_id'] as string) && !blocked(row['frame_instance_id'] as string)) {
@@ -75,13 +81,15 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
       }
     }
     const sourceRows = propIds.length === 0 && claimIds.length === 0 ? [] : (await tx.query(
-      `SELECT c.id,c.proposition_id,p.belief_slot_id,b.frame_instance_id,s.id AS evidence_id
+      `SELECT c.id,(history.state->>'proposition_id')::uuid AS proposition_id,p.belief_slot_id,b.frame_instance_id,s.id AS evidence_id
        FROM claims c LEFT JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+       CROSS JOIN LATERAL (SELECT unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4) AS state) history
        LEFT JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
-       LEFT JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.proposition_id
+       LEFT JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=(history.state->>'proposition_id')::uuid
        LEFT JOIN belief_slots b ON b.owner_scope_id=p.owner_scope_id AND b.id=p.belief_slot_id
        WHERE c.owner_scope_id=$1 AND (c.proposition_id=ANY($2::uuid[]) OR c.id=ANY($3::uuid[]))
-         AND c.recorded_at<=$4 ORDER BY c.id LIMIT $5`,
+         AND ((history.state->>'proposition_id')::uuid=ANY($2::uuid[]) OR c.id=ANY($3::uuid[]))
+         AND c.recorded_at<=$4 AND history.state IS NOT NULL ORDER BY c.id LIMIT $5`,
       [input.ownerScopeId, propIds, claimIds, input.knowledgeTime, remainingRows + 1])).rows;
     remainingRows -= sourceRows.length;
     if (remainingRows < 0) return denied();
@@ -135,6 +143,7 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
   }
 
   const proof = new Map<string, { evidenceIds: string[]; claimIds: string[] }>();
+  const excessiveReferences = new Set<string>();
   const cited = (ids: Iterable<string>) => [...new Set(ids)].sort();
   for (const [id, node] of nodes) {
     const claimIds = cited(node.directClaimIds.filter(claimId => claims.get(claimId)?.readable));
@@ -145,6 +154,7 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
     if (evidenceIds.length > 0 && evidenceIds.length <= MAX_EVIDENCE_REFS && claimIds.length <= MAX_EVIDENCE_REFS) {
       proof.set(id, { evidenceIds, claimIds });
     }
+    if (evidenceIds.length > MAX_EVIDENCE_REFS || claimIds.length > MAX_EVIDENCE_REFS) excessiveReferences.add(id);
   }
   // Least fixed point: an ungrounded cycle grants nothing; a complete grounded
   // alternative can unlock every dependent node irrespective of traversal order.
@@ -164,11 +174,16 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
           ...path.propositionIds.flatMap(propositionId => proof.get(propositionId)!.evidenceIds),
         ]);
         const claimIds = cited([...path.claimIds, ...path.propositionIds.flatMap(propositionId => proof.get(propositionId)!.claimIds)]);
-        if (evidenceIds.length === 0 || evidenceIds.length > MAX_EVIDENCE_REFS || claimIds.length > MAX_EVIDENCE_REFS) continue;
+        if (evidenceIds.length > MAX_EVIDENCE_REFS || claimIds.length > MAX_EVIDENCE_REFS) { excessiveReferences.add(id); continue; }
+        if (evidenceIds.length === 0) continue;
         proof.set(id, { evidenceIds, claimIds }); changed = true; break;
       }
     }
   }
+  // A reference cap on an operand can also prevent its dependent roots from
+  // being proved. Independent admitted alternatives remain complete.
+  const referenceBudgetReached = excessiveReferences.size > 0;
   return new Map(roots.map(id => [id, { readable: proof.has(id),
-    evidenceIds: proof.get(id)?.evidenceIds ?? [], claimIds: proof.get(id)?.claimIds ?? [] }]));
+    evidenceIds: proof.get(id)?.evidenceIds ?? [], claimIds: proof.get(id)?.claimIds ?? [],
+    ...(!proof.has(id) && referenceBudgetReached ? { incomplete: true as const } : {}) }]));
 }

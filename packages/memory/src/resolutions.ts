@@ -35,7 +35,7 @@ import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
  */
 
 export const RESOLUTION_VERSION = 'resolutions-0.1.0';
-export const OUTCOME_PROJECTION_VERSION = 'outcome-projection-0.1.0';
+export const OUTCOME_PROJECTION_VERSION = 'outcome-projection-0.2.0';
 export const RESOLUTION_CLASSIFIER_VERSION = 'resolution-statement-0.1.0';
 
 const registryId = z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/);
@@ -554,13 +554,13 @@ const isPartial = (code: OutcomeCode) => PARTIAL_OUTCOME_CODES.includes(code);
  * (PRD §14.1, ADR 0025 §3). With no lineage the member set is the frame itself.
  */
 export async function frameOutcomeProjection(tx: MemoryTransaction, input: {
-  ownerScopeId: string; frameInstanceId: string;
+  ownerScopeId: string; frameInstanceId: string; asOf?: Date;
 }): Promise<OutcomeProjection> {
   const members = await listMergedFrameMembers(tx, { ownerScopeId: input.ownerScopeId, frameInstanceIds: [input.frameInstanceId] });
   const rows = (await tx.query(
     `SELECT id,outcome_code FROM resolution_assertions
-     WHERE owner_scope_id=$1 AND source_frame_instance_id=ANY($2::uuid[]) AND lifecycle='ACCEPTED'
-     ORDER BY effective_at,recorded_at,id`, [input.ownerScopeId, [...members.keys()]])).rows;
+     WHERE owner_scope_id=$1 AND source_frame_instance_id=ANY($2::uuid[]) AND lifecycle='ACCEPTED' AND effective_at<=$3
+     ORDER BY effective_at,recorded_at,id`, [input.ownerScopeId, [...members.keys()], input.asOf ?? new Date()])).rows;
   const accepted = rows.map(row => outcomeCodeSchema.parse(row.outcome_code));
   const settling = [...new Set(accepted.filter(code => !isPartial(code)))].sort();
   const state = accepted.length === 0 ? 'UNRESOLVED'
@@ -632,7 +632,7 @@ export async function sweepElapsedSchedules(tx: MemoryTransaction, input: {
       frameInstanceId, frameTypeId: row.frame_type_id as string,
       scheduledFor: (row.scheduled_for as Date).toISOString(),
       realizingFrameInstanceIds: Object.freeze(realizing.map(link => link.fromObjectId)),
-      outcome: await frameOutcomeProjection(tx, { ownerScopeId: input.ownerScopeId, frameInstanceId }),
+      outcome: await frameOutcomeProjection(tx, { ownerScopeId: input.ownerScopeId, frameInstanceId, asOf: input.asOf }),
     }));
   }
   return Object.freeze({

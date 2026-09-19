@@ -7,6 +7,7 @@ import { MemoryStoreError, readOwnerOverlay, type MemoryTransaction } from '@una
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { deriveLifeCategories } from './categories.js';
 import { readProjectionFragments } from './fragments.js';
+import { readPropositionAuthority } from './support-authority.js';
 
 /**
  * The memory thread service (PRD §33.11, §50; design GET /v1/memory/threads/{id}
@@ -22,7 +23,7 @@ import { readProjectionFragments } from './fragments.js';
  * Every function takes a transaction the caller opened inside the owner boundary.
  */
 
-export const THREAD_SERVICE_VERSION = 'memory-threads-0.1.0';
+export const THREAD_SERVICE_VERSION = 'memory-threads-0.3.0';
 
 export class MemoryThreadError extends Error {
   constructor(code: string) { super(code); this.name = 'MemoryThreadError'; }
@@ -45,7 +46,7 @@ export async function listOpenThreadIds(tx: MemoryTransaction, input: {
 }): Promise<string[]> {
   if (input.threadIds.length === 0) return [];
   const rows = (await tx.query(
-    `SELECT id FROM memory_threads WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) AND lifecycle='OPEN' ORDER BY id`,
+    `SELECT id FROM memory_threads WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) AND lifecycle='ACTIVE' ORDER BY id`,
     [input.ownerScopeId, [...input.threadIds]])).rows;
   return rows.map(row => row['id'] as string);
 }
@@ -92,17 +93,20 @@ export async function addThreadMember(tx: MemoryTransaction, input: {
 /** Every thread one object already belongs to. The Context Broker uses it to put
  * a thread reference beside a retrieved belief. */
 export async function listThreadsForObject(tx: MemoryTransaction, input: {
-  ownerScopeId: string; objectType: string; objectId: string;
+  ownerScopeId: string; objectType: string; objectId: string; knowledgeTime?: Date;
 }): Promise<Array<{ memoryThreadId: string; displayTitle: string | null; memberCount: number }>> {
   const rows = (await tx.query(
     `SELECT t.id,t.display_title,
-       (SELECT count(*)::int FROM memory_thread_members c WHERE c.owner_scope_id=t.owner_scope_id AND c.memory_thread_id=t.id) AS member_count
+       (SELECT count(*)::int FROM memory_thread_members c WHERE c.owner_scope_id=t.owner_scope_id AND c.memory_thread_id=t.id
+         AND ($4::timestamptz IS NULL OR c.created_at<=$4)) AS member_count
      FROM memory_thread_members m JOIN memory_threads t ON t.owner_scope_id=m.owner_scope_id AND t.id=m.memory_thread_id
-     WHERE m.owner_scope_id=$1 AND m.object_type=$2 AND m.object_id=$3 ORDER BY t.created_at,t.id`,
-    [input.ownerScopeId, input.objectType, input.objectId])).rows;
+     WHERE m.owner_scope_id=$1 AND m.object_type=$2 AND m.object_id=$3
+       AND ($4::timestamptz IS NULL OR (m.created_at<=$4 AND t.created_at<=$4
+         AND unai_private.object_state_at(t.owner_scope_id,'memory_threads',t.id,$4) IS NOT NULL)) ORDER BY t.created_at,t.id`,
+    [input.ownerScopeId, input.objectType, input.objectId, input.knowledgeTime ?? null])).rows;
   return rows.map(row => ({
     memoryThreadId: row['id'] as string,
-    displayTitle: (row['display_title'] as string | null) ?? null,
+    displayTitle: null,
     memberCount: row['member_count'] as number,
   }));
 }
@@ -115,25 +119,27 @@ export async function listThreadsForObject(tx: MemoryTransaction, input: {
  * therefore report the same evidence ids, which is what "without creating a
  * second evidence row" means when the reader checks it.
  */
-async function evidenceOf(tx: MemoryTransaction, ownerScopeId: string, objectType: string, objectId: string): Promise<string[]> {
+async function evidenceOf(tx: MemoryTransaction, ownerScopeId: string, objectType: string, objectId: string, knowledgeTime?: Date): Promise<string[]> {
   const claimEvidence = `SELECT DISTINCT a.source_item_id AS evidence_id FROM claims c
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     WHERE c.owner_scope_id=$1 AND `;
+     WHERE c.owner_scope_id=$1 AND ($3::timestamptz IS NULL OR c.recorded_at<=$3) AND `;
+  const binding = "(CASE WHEN $3::timestamptz IS NULL THEN c.proposition_id ELSE (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid END)";
   const sql = objectType === 'claim' ? claimEvidence + 'c.id=$2'
-    : objectType === 'proposition' ? claimEvidence + 'c.proposition_id=$2'
-      : objectType === 'frame_instance' ? claimEvidence + `c.proposition_id IN (
+    : objectType === 'proposition' ? claimEvidence + binding + '=$2'
+      : objectType === 'frame_instance' ? claimEvidence + binding + ` IN (
           SELECT p.id FROM propositions p JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
           WHERE p.owner_scope_id=c.owner_scope_id AND s.frame_instance_id=$2)`
         : objectType === 'resolution_assertion' ? claimEvidence + `c.id=(
-            SELECT r.claim_id FROM resolution_assertions r WHERE r.owner_scope_id=c.owner_scope_id AND r.id=$2)`
-          : `SELECT DISTINCT source_item_id AS evidence_id FROM entity_aliases
-             WHERE owner_scope_id=$1 AND entity_id=$2 AND source_item_id IS NOT NULL`;
-  const rows = (await tx.query(sql + ' ORDER BY 1', [ownerScopeId, objectId])).rows;
+            SELECT r.claim_id FROM resolution_assertions r WHERE r.owner_scope_id=c.owner_scope_id AND r.id=$2 AND ($3::timestamptz IS NULL OR r.recorded_at<=$3))`
+          : `SELECT DISTINCT a.source_item_id AS evidence_id FROM entity_aliases a
+             JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+             WHERE a.owner_scope_id=$1 AND a.entity_id=$2 AND ($3::timestamptz IS NULL OR a.created_at<=$3)`;
+  const rows = (await tx.query(sql + ' ORDER BY 1', [ownerScopeId, objectId, knowledgeTime ?? null])).rows;
   return rows.map(row => row['evidence_id'] as string);
 }
 
 async function readMember(tx: MemoryTransaction, ownerScopeId: string, memoryThreadId: string,
-  objectType: string, objectId: string): Promise<ThreadMember | null> {
+  objectType: string, objectId: string, knowledgeTime?: Date): Promise<ThreadMember | null> {
   const row = (await tx.query(
     `SELECT memory_thread_id,object_type,object_id,membership_kind,confidence,transaction_id,created_at
      FROM memory_thread_members WHERE owner_scope_id=$1 AND memory_thread_id=$2 AND object_type=$3 AND object_id=$4`,
@@ -145,7 +151,7 @@ async function readMember(tx: MemoryTransaction, ownerScopeId: string, memoryThr
     confidence: row['confidence'] === null || row['confidence'] === undefined ? null : Number(row['confidence']),
     transactionId: (row['transaction_id'] as string | null) ?? null,
     createdAt: (row['created_at'] as Date).toISOString(),
-    evidenceIds: await evidenceOf(tx, ownerScopeId, objectType as string, objectId),
+    evidenceIds: await evidenceOf(tx, ownerScopeId, objectType as string, objectId, knowledgeTime),
   });
 }
 
@@ -162,17 +168,19 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
   ownerScopeId: string; memoryThreadId: string; readAt: Date;
 }): Promise<MemoryThreadView> {
   const thread = (await tx.query(
-    'SELECT id,display_title,lifecycle,created_at FROM memory_threads WHERE owner_scope_id=$1 AND id=$2',
-    [input.ownerScopeId, input.memoryThreadId])).rows[0];
+    `SELECT id,display_title,unai_private.object_state_at(owner_scope_id,'memory_threads',id,$3)->>'lifecycle' AS lifecycle,created_at
+     FROM memory_threads WHERE owner_scope_id=$1 AND id=$2 AND created_at<=$3`,
+    [input.ownerScopeId, input.memoryThreadId, input.readAt])).rows[0];
   if (!thread) throw new MemoryThreadError('MEMORY_THREAD_NOT_FOUND');
+  if (!thread['lifecycle']) throw new MemoryThreadError('MEMORY_THREAD_HISTORY_UNAVAILABLE');
 
   const memberRows = (await tx.query(
-    `SELECT object_type,object_id FROM memory_thread_members WHERE owner_scope_id=$1 AND memory_thread_id=$2
-     ORDER BY object_type,object_id`, [input.ownerScopeId, input.memoryThreadId])).rows;
+    `SELECT object_type,object_id FROM memory_thread_members WHERE owner_scope_id=$1 AND memory_thread_id=$2 AND created_at<=$3
+     ORDER BY object_type,object_id`, [input.ownerScopeId, input.memoryThreadId, input.readAt])).rows;
   const members: ThreadMember[] = [];
   for (const row of memberRows) {
     const member = await readMember(tx, input.ownerScopeId, input.memoryThreadId,
-      row['object_type'] as string, row['object_id'] as string);
+      row['object_type'] as string, row['object_id'] as string, input.readAt);
     if (member) members.push(member);
   }
   const frameInstanceIds = members.filter(member => member.objectType === 'frame_instance').map(member => member.objectId);
@@ -180,24 +188,26 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
 
   // Every proposition the thread's frames and propositions cover, with the frame
   // it belongs to and the assessment that stands over it now.
-  const beliefRows = frameInstanceIds.length === 0 && members.every(member => member.objectType !== 'proposition') ? []
+  const beliefCandidates = frameInstanceIds.length === 0 && members.every(member => member.objectType !== 'proposition') ? []
     : (await tx.query(
       `SELECT p.id AS proposition_id,p.belief_slot_id,p.normalized_value,p.polarity,s.frame_instance_id,s.predicate_id,
          s.modality,f.frame_type_id,
          (SELECT b.assessment_status FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
-           AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_status,
+           AND b.proposition_id=p.id AND b.recorded_at<=$4 AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$4)
+           ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_status,
          (SELECT b.recorded_at FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
-           AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_recorded_at
+           AND b.proposition_id=p.id AND b.recorded_at<=$4 AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$4)
+           ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_recorded_at
        FROM propositions p
        JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
        JOIN frame_instances f ON f.owner_scope_id=s.owner_scope_id AND f.id=s.frame_instance_id
        WHERE p.owner_scope_id=$1 AND (s.frame_instance_id=ANY($2::uuid[]) OR p.id=ANY($3::uuid[]))
-         AND EXISTS(SELECT 1 FROM claims c
-           JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-           WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id AND c.recorded_at<=$4)
        ORDER BY f.id,s.id,p.id`,
       [input.ownerScopeId, frameInstanceIds,
         members.filter(member => member.objectType === 'proposition').map(member => member.objectId), input.readAt])).rows;
+  const beliefAuthority = await readPropositionAuthority(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt,
+    propositionIds: beliefCandidates.map(row => row['proposition_id'] as string) });
+  const beliefRows = beliefCandidates.filter(row => beliefAuthority.get(row['proposition_id'] as string)?.readable);
 
   const ACTUAL_MODALITIES = new Set(['ACTUAL']);
   const actualEvents = [];
@@ -228,16 +238,18 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
   }
 
   const resolutionRows = frameInstanceIds.length === 0 ? [] : (await tx.query(
-    `SELECT r.id,r.source_frame_instance_id,r.target_frame_instance_id,r.outcome_code,r.effective_at,r.lifecycle,r.transition_contract_id
+    `SELECT r.id,r.source_frame_instance_id,r.target_frame_instance_id,r.outcome_code,r.effective_at,
+       unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3)->>'lifecycle' AS lifecycle,r.transition_contract_id,r.claim_id,a.source_item_id
      FROM resolution_assertions r
      JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
      WHERE r.owner_scope_id=$1
        AND (r.source_frame_instance_id=ANY($2::uuid[]) OR r.target_frame_instance_id=ANY($2::uuid[]))
        AND r.recorded_at<=$3 AND c.recorded_at<=$3 AND r.effective_at<=$3
+       AND unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3) IS NOT NULL
      ORDER BY r.effective_at,r.id`, [input.ownerScopeId, frameInstanceIds, input.readAt])).rows;
   const resolutionLinks = resolutionRows.map(row => contextResolutionSchema.parse({
-    resolutionAssertionId: row['id'], sourceFrameInstanceId: row['source_frame_instance_id'],
+    resolutionAssertionId: row['id'], claimId: row['claim_id'], evidenceIds: [row['source_item_id']], sourceFrameInstanceId: row['source_frame_instance_id'],
     targetFrameInstanceId: (row['target_frame_instance_id'] as string | null) ?? null,
     outcomeCode: row['outcome_code'], effectiveAt: (row['effective_at'] as Date).toISOString(),
     lifecycle: row['lifecycle'], transitionContractId: row['transition_contract_id'],
@@ -262,8 +274,9 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
   }
   const deltaRows = (await tx.query(
     `SELECT id,created_at,delta_kind FROM owner_overlay_deltas
-     WHERE owner_scope_id=$1 AND (attached_frame_instance_id=ANY($2::uuid[]) OR $3=ANY(candidate_worldline_refs))
-     ORDER BY owner_sequence`, [input.ownerScopeId, frameInstanceIds, input.memoryThreadId])).rows;
+     WHERE owner_scope_id=$1 AND created_at<=$4
+       AND ((unai_private.object_state_at(owner_scope_id,'owner_overlay_deltas',id,$4)->>'attached_frame_instance_id')::uuid=ANY($2::uuid[]) OR $3=ANY(candidate_worldline_refs))
+     ORDER BY owner_sequence`, [input.ownerScopeId, frameInstanceIds, input.memoryThreadId, input.readAt])).rows;
   // Evidence row policies enforce the current request's purpose and sensitivity.
   // Projection caches must not reintroduce pending text that those policies hide.
   const readableEvidenceIds = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
@@ -299,7 +312,8 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
        AND b.frame_instance_id=r.frame_instance_id
      JOIN source_anchors s ON s.owner_scope_id=c.owner_scope_id AND s.id=c.source_anchor_id
      WHERE r.owner_scope_id=$1 AND r.frame_instance_id=ANY($2::uuid[]) AND r.entity_id IS NOT NULL
-       AND c.lifecycle NOT IN ('REJECTED','SUPPRESSED') AND c.recorded_at<=$3 AND r.created_at<=$3
+       AND unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'lifecycle' NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
+       AND (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid=p.id AND c.recorded_at<=$3 AND r.created_at<=$3
        AND (c.valid_from IS NULL OR c.valid_from<=$3) AND (c.valid_to IS NULL OR c.valid_to>$3)
        AND (r.valid_from IS NULL OR r.valid_from<=$3) AND (r.valid_to IS NULL OR r.valid_to>$3)`,
     [input.ownerScopeId, frameInstanceIds, input.readAt])).rows;
@@ -320,7 +334,7 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
     [input.ownerScopeId, frameInstanceIds])).rows;
 
   return memoryThreadViewSchema.parse({
-    memoryThreadId: thread['id'], displayTitle: (thread['display_title'] as string | null) ?? null,
+    memoryThreadId: thread['id'], displayTitle: null,
     lifecycle: thread['lifecycle'], createdAt: (thread['created_at'] as Date).toISOString(),
     members,
     currentProjection: await readProjectionFragments(tx, {

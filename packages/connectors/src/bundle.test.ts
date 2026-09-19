@@ -50,12 +50,12 @@ async function evidenceRow(input: { externalId: string; allowedPurposes: string[
 async function belief(input: { frameTypeId: string; predicateId: string; value: unknown; allowedPurposes: string[] }): Promise<string> {
   const frameInstanceId = uuidV7(), slotId = uuidV7(), propositionId = uuidV7(), claimId = uuidV7();
   const { anchorId } = await evidenceRow({ externalId: input.predicateId, allowedPurposes: input.allowedPurposes });
-  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,$3,$4)',
-    [frameInstanceId, owner, input.frameTypeId, baseContext]);
-  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
-    VALUES($1,$2,$3,$4,$5,'ACTUAL')`, [slotId, owner, frameInstanceId, input.predicateId, baseContext]);
-  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
-    [propositionId, owner, slotId, JSON.stringify(input.value)]);
+  await admin.query('INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,created_at) VALUES($1,$2,$3,$4,$5)',
+    [frameInstanceId, owner, input.frameTypeId, baseContext, RECORDED_AT]);
+  await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality,created_at)
+    VALUES($1,$2,$3,$4,$5,'ACTUAL',$6)`, [slotId, owner, frameInstanceId, input.predicateId, baseContext, RECORDED_AT]);
+  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,created_at) VALUES($1,$2,$3,$4,$5)',
+    [propositionId, owner, slotId, JSON.stringify(input.value), RECORDED_AT]);
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,
     valid_from,recorded_at) VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL',$5,$6)`,
     [claimId, owner, anchorId, propositionId, new Date('2026-02-01T08:00:00.000Z'), RECORDED_AT]);

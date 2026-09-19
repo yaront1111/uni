@@ -6,6 +6,7 @@ import { memoryLinkKindSchema, outcomeCodeSchema } from './outcomes.js';
 import { publicOverlayDeltaSchema } from './overlay.js';
 import { pendingAssertionSchema, projectionNameSchema } from './projections.js';
 import { contextSelectionSchema, semanticSearchSchema } from './selection.js';
+import { freshnessAssessmentSchema } from './aging.js';
 
 /** The Context Broker's vocabularies and record shapes (PRD §21.4, §23, §33.11,
  * §33.14, §35.7, §35.8).
@@ -200,7 +201,7 @@ export const contextConflictSchema = z.strictObject({
  * cannot distinguish "no" from "not known" is the failure PRD §16.6 forbids. */
 export const contextUnknownSchema = z.strictObject({
   kind: z.enum(['NO_ACCEPTED_VALUE', 'ENTITY_UNRESOLVED', 'UNATTACHED_OWNER_ASSERTION',
-    'PROJECTION_INCOMPLETE', 'EVIDENCE_WITHHELD', 'NO_MATCHING_MEMORY']),
+    'PROJECTION_INCOMPLETE', 'EVIDENCE_WITHHELD', 'NO_MATCHING_MEMORY', 'RETRIEVAL_INCOMPLETE', 'PROCESSING_INCOMPLETE', 'HISTORY_NOT_RECORDED']),
   objectType: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
   objectId: z.string().min(1).max(512).nullable(),
   detail: reasonCode,
@@ -243,6 +244,8 @@ export const contextEvidenceRefSchema = z.strictObject({
 
 export const contextResolutionSchema = z.strictObject({
   resolutionAssertionId: z.uuid(),
+  claimId: z.uuid().nullable().default(null),
+  evidenceIds: z.array(z.uuid()).max(64).default([]),
   sourceFrameInstanceId: z.uuid(),
   targetFrameInstanceId: z.uuid().nullable(),
   outcomeCode: outcomeCodeSchema,
@@ -299,6 +302,19 @@ export const contextActionDecisionSchema = z.strictObject({
 });
 
 /** PRD §23.5, with the request's own authority recorded beside the content. */
+export const contextUnderstandingSchema = z.strictObject({
+  asOf: z.iso.datetime(),
+  currentPropositionIds: z.array(z.uuid()).max(1000),
+  lastKnownPropositionIds: z.array(z.uuid()).max(1000),
+  historicalPropositionIds: z.array(z.uuid()).max(1000),
+  unresolvedFrameIds: z.array(z.uuid()).max(500),
+  origins: z.array(z.strictObject({ propositionId: z.uuid(), basis: z.enum(['EXPLICIT', 'INFERRED', 'REPORTED']) })).max(1000),
+  transitions: z.array(z.strictObject({ fromPropositionId: z.uuid(), toPropositionId: z.uuid(), kind: z.enum(['CORRECTS', 'SUPERSEDES']),
+    recordedAt: z.iso.datetime(), effectiveAt: z.iso.datetime().nullable(), rationalePropositionId: z.uuid().nullable() })).max(500),
+  goalLinks: z.array(z.strictObject({ frameInstanceId: z.uuid(), goalId: z.uuid(), claimId: z.uuid(), evidenceId: z.uuid() })).max(500),
+  complete: z.boolean(),
+});
+
 export const contextPacketSchema = z.strictObject({
   packetId: z.uuid(),
   packetHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -330,6 +346,10 @@ export const contextPacketSchema = z.strictObject({
   /** The semantic step, run only after the hard filters (PRD §23.2 step 10).
    * Null when the query carries nothing an embedding can be made of. */
   semanticSearch: semanticSearchSchema.nullable(),
+  /** Applicability is separate from the evidence's confidence and retention. */
+  freshness: z.array(z.strictObject({ propositionId: z.uuid(), assessment: freshnessAssessmentSchema })).max(1000).optional(),
+  /** Derived solely from this packet. Old stored packets remain readable. */
+  understanding: contextUnderstandingSchema.optional(),
   selectionReason: selectionReasonSchema,
   policy: z.strictObject({
     outcome: z.enum(['ALLOW', 'REDACT']),

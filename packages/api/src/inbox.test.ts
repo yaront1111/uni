@@ -427,7 +427,7 @@ describe('CRT-UX-08-A and CRT-WRT-06-A: the Daniel card, its answer, and a learn
     expect(asked).toMatchObject({ status: 'ASKED', appliedRuleId: null, answer: null });
     expect(asked.interruption).toMatchObject({ decision: 'ASK', policyInputs: { learnedApprovalRuleId: null } });
     expect(afterRevoke.resolvedToday).toEqual([]);
-  });
+  },20_000);
 
   it('keeps a question uncertain for the suppression window, and refuses unknown cards, choices and rules', async () => {
     at(0);

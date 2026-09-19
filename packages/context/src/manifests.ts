@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   SUPPLIED_CONTEXT_STATEMENT, contextPacketSchema, groundingResultSchema, publicAnswerManifestSchema,
-  reconsiderationCandidatesViewSchema, suppliedContextSchema,
+  reconsiderationCandidatesViewSchema, suppliedContextSchema, dataPurposeSchema, sensitivitySchema,
   type ContextPacket, type GroundingResult, type PublicAnswerManifest, type ReconsiderationCandidatesView,
   type ReconsiderationChange, type SuppliedContext,
 } from '@unai/domain';
@@ -20,7 +20,7 @@ import { ContextBrokerError } from './broker.js';
  * held, and no field of it says which item the model used.
  */
 
-export const MANIFEST_VERSION = 'answer-manifest-0.1.0';
+export const MANIFEST_VERSION = 'answer-manifest-0.2.0';
 /** The purpose an answer is recorded under. It is never a request purpose. */
 export const ANSWER_RECORD_PURPOSE = 'answer.record';
 
@@ -46,7 +46,7 @@ const TARGET_SET: Readonly<Record<string, 'belief' | 'claim' | 'evidence' | 'ove
  * whole, and what the selector's read-policy step excluded.
  */
 export function suppliedContextOf(packet: ContextPacket, options: { registryReleaseId: string | null }): SuppliedContext {
-  const beliefs: Array<string | null> = [], claims: string[] = [], evidence: string[] = [], overlay: string[] = [];
+  const beliefs: Array<string | null> = [], claims: Array<string | null> = [], evidence: string[] = [], overlay: string[] = [];
   const target = (ref: { objectType: string; objectId: string } | null) => {
     const set = ref ? TARGET_SET[ref.objectType] : undefined;
     if (!ref || !set) return;
@@ -58,6 +58,21 @@ export function suppliedContextOf(packet: ContextPacket, options: { registryRele
     evidence.push(...belief.evidenceIds ?? []);
   }
   for (const claim of packet.futureClaims) { beliefs.push(claim.propositionId); evidence.push(...claim.evidenceIds ?? []); }
+  for (const resolution of packet.resolutionAssertions) {
+    claims.push(resolution.claimId); evidence.push(...resolution.evidenceIds);
+  }
+  for (const freshness of packet.freshness ?? []) {
+    beliefs.push(freshness.propositionId);
+    claims.push(...freshness.assessment.claimIds); evidence.push(...freshness.assessment.evidenceIds);
+  }
+  if (packet.understanding) {
+    const understanding = packet.understanding;
+    beliefs.push(...understanding.currentPropositionIds, ...understanding.lastKnownPropositionIds, ...understanding.historicalPropositionIds,
+      ...understanding.origins.map(origin => origin.propositionId),
+      ...understanding.transitions.flatMap(transition => [transition.fromPropositionId, transition.toPropositionId, transition.rationalePropositionId]));
+    claims.push(...understanding.goalLinks.map(link => link.claimId));
+    evidence.push(...understanding.goalLinks.map(link => link.evidenceId));
+  }
   for (const conflict of packet.conflicts) {
     for (const position of conflict.positions) { beliefs.push(position.propositionId); evidence.push(...position.evidenceIds ?? []); }
   }
@@ -83,7 +98,7 @@ export function suppliedContextOf(packet: ContextPacket, options: { registryRele
   evidence.push(...packet.evidenceRefs.map(reference => reference.evidenceId));
   for (const delta of packet.ownerOverlayDeltas) {
     overlay.push(delta.overlayDeltaId);
-    evidence.push(delta.sourceEvidenceId);
+    evidence.push(delta.sourceEvidenceId, ...delta.independentVerification.independentEvidenceIds);
     target(delta.target);
     const conflicting = delta.contestedReason?.['conflictingEvidenceIds'];
     if (Array.isArray(conflicting)) evidence.push(...conflicting.filter((id): id is string => typeof id === 'string'));
@@ -128,10 +143,40 @@ export async function readPersistedPacket(tx: MemoryTransaction, input: { ownerS
     throw new ContextBrokerError('CONTEXT_PACKET_HASH_MISMATCH');
   }
   const request = row['request'] as Record<string, unknown> | null;
+  await requireStoredPacketAccess(tx, input.ownerScopeId, packet, request);
   return {
     packet, registryReleaseId: (row['registry_release_id'] as string | null) ?? null,
     question: typeof request?.['query'] === 'string' ? request['query'] : null,
   };
+}
+
+/** A saved copy is not a standing grant. Recheck the original request boundary,
+ * every cited source and present removal controls before returning any bytes. */
+async function requireStoredPacketAccess(tx: MemoryTransaction, ownerScopeId: string, packet: ContextPacket,
+  request: Record<string, unknown> | null): Promise<void> {
+  const settings = (await tx.query("SELECT current_setting('unai.data_purpose',true) AS purpose,current_setting('unai.maximum_sensitivity',true) AS sensitivity")).rows[0];
+  const purpose = dataPurposeSchema.safeParse(settings?.['purpose']);
+  const sensitivity = sensitivitySchema.safeParse(settings?.['sensitivity']);
+  const storedSensitivity = sensitivitySchema.safeParse(request?.['maximumSensitivity']);
+  const levels = ['NORMAL','PRIVATE','RESTRICTED'];
+  if (!purpose.success || !sensitivity.success || !storedSensitivity.success || purpose.data !== packet.purpose
+    || levels.indexOf(sensitivity.data) < levels.indexOf(storedSensitivity.data)) throw new ContextBrokerError('CONTEXT_PACKET_SOURCE_WITHHELD');
+  const supplied = suppliedContextOf(packet, { registryReleaseId: null });
+  const outcomeAccess = (await tx.query('SELECT unai_private.stored_outcomes_readable($1,$2::uuid[]) AS readable',
+    [ownerScopeId, packet.resolutionAssertions.map(outcome => outcome.resolutionAssertionId)])).rows[0];
+  if (outcomeAccess?.['readable'] !== true) throw new ContextBrokerError('CONTEXT_PACKET_SOURCE_WITHHELD');
+  const readable = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) AND deleted_at IS NULL',
+    [ownerScopeId, supplied.evidenceIds])).rows;
+  if (readable.length !== supplied.evidenceIds.length) throw new ContextBrokerError('CONTEXT_PACKET_SOURCE_WITHHELD');
+  const objectIds = [...new Set([...supplied.beliefIds, ...supplied.claimIds, ...supplied.evidenceIds, ...supplied.overlayDeltaIds,
+    ...packet.currentBeliefs.flatMap(value => [value.beliefSlotId, value.frameInstanceId]),
+    ...packet.historicalBeliefs.flatMap(value => [value.beliefSlotId, value.frameInstanceId]),
+    ...packet.futureClaims.map(value => value.frameInstanceId),
+    ...packet.resolutionAssertions.flatMap(value => [value.resolutionAssertionId, value.sourceFrameInstanceId, value.targetFrameInstanceId, value.claimId]),
+    ...packet.understanding?.unresolvedFrameIds ?? [],
+    ...packet.understanding?.goalLinks.flatMap(link => [link.frameInstanceId, link.goalId]) ?? []].filter((id): id is string => id !== null))];
+  const removed = (await tx.query('SELECT unai_private.any_memory_object_removed($1,$2::uuid[]) AS removed', [ownerScopeId, objectIds])).rows[0];
+  if (removed?.['removed'] !== false) throw new ContextBrokerError('CONTEXT_PACKET_SOURCE_WITHHELD');
 }
 
 export interface RecordAnswerManifestInput {
@@ -193,6 +238,17 @@ export async function readAnswerManifest(tx: MemoryTransaction, input: {
      LEFT JOIN context_packets p ON p.owner_scope_id=m.owner_scope_id AND p.id=m.context_packet_id
      WHERE m.owner_scope_id=$1 AND m.id=$2`, [input.ownerScopeId, input.answerManifestId])).rows[0];
   if (!row) return null;
+  try {
+    await readPersistedPacket(tx, { ownerScopeId: input.ownerScopeId, packetId: row['context_packet_id'] as string });
+    const conversation = await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1 AND id=$2 AND deleted_at IS NULL',
+      [input.ownerScopeId, row['conversation_message_id']]);
+    if (conversation.rowCount !== 1) throw new ContextBrokerError('CONTEXT_PACKET_SOURCE_WITHHELD');
+  } catch (error) {
+    if (error instanceof ContextBrokerError && error.message === 'CONTEXT_PACKET_SOURCE_WITHHELD') {
+      throw new ContextBrokerError('ANSWER_MANIFEST_SOURCE_WITHHELD');
+    }
+    throw error;
+  }
   const changes = (await tx.query(
     `SELECT changed_object_type,changed_object_id,change_kind,detected_at FROM reconsideration_candidates
      WHERE owner_scope_id=$1 AND answer_manifest_id=$2 ORDER BY detected_at,id`,
@@ -246,6 +302,13 @@ export async function listReconsiderationCandidates(tx: MemoryTransaction, input
   const byManifest = new Map<string, ReconsiderationCandidatesView['candidates'][number]>();
   for (const row of rows) {
     const manifestId = row['answer_manifest_id'] as string;
+    if (!byManifest.has(manifestId)) {
+      try { if (!await readAnswerManifest(tx, { ownerScopeId: input.ownerScopeId, answerManifestId: manifestId })) continue; }
+      catch (error) {
+        if (error instanceof ContextBrokerError && error.message === 'ANSWER_MANIFEST_SOURCE_WITHHELD') continue;
+        throw error;
+      }
+    }
     const entry = byManifest.get(manifestId) ?? {
       answerManifestId: manifestId, contextPacketId: row['context_packet_id'] as string,
       conversationMessageId: row['conversation_message_id'] as string,

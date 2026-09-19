@@ -6,6 +6,7 @@ import {
 } from '@unai/domain';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
+import { readTemporalObjectStates } from './object-history.js';
 
 /** Owner read-your-writes: the sequence allocator, the overlay delta store and
  * the memory operation record (PRD §14, §20; design entities `owner_sequences`,
@@ -214,11 +215,13 @@ export async function listMemoryOperations(tx: MemoryTransaction, input: {
 
 /** The proposition a target names, so independent support can be looked for in
  * one place whether the owner pointed at a claim or at the proposition itself. */
-async function propositionOfTarget(tx: MemoryTransaction, ownerScopeId: string, target: TargetObjectRef): Promise<string | null> {
+async function propositionOfTarget(tx: MemoryTransaction, ownerScopeId: string, target: TargetObjectRef, knowledgeTime?: Date): Promise<string | null> {
   if (target.objectType === 'proposition') return target.objectId;
   if (target.objectType === 'claim') {
-    const row = (await tx.query('SELECT proposition_id FROM claims WHERE owner_scope_id=$1 AND id=$2',
-      [ownerScopeId, target.objectId])).rows[0];
+    const row = (await tx.query(`SELECT CASE WHEN $3::timestamptz IS NULL THEN proposition_id
+        ELSE (unai_private.object_state_at(owner_scope_id,'claims',id,$3)->>'proposition_id')::uuid END AS proposition_id
+       FROM claims WHERE owner_scope_id=$1 AND id=$2`,
+      [ownerScopeId, target.objectId, knowledgeTime ?? null])).rows[0];
     return (row?.['proposition_id'] as string | null) ?? null;
   }
   return null;
@@ -234,14 +237,17 @@ async function independentVerification(
 ): Promise<PublicOverlayDelta['independentVerification']> {
   const empty = { verified: false, independentEvidenceIds: [], independentClaimOrigins: [] };
   if (!target) return empty;
-  const propositionId = await propositionOfTarget(tx, ownerScopeId, target);
+  const propositionId = await propositionOfTarget(tx, ownerScopeId, target, bounds.knowledgeTime);
   if (!propositionId) return empty;
   const rows = (await tx.query(
     `SELECT DISTINCT s.id AS evidence_id,c.claim_origin FROM claims c
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
      JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
      WHERE c.owner_scope_id=$1 AND c.proposition_id=$2 AND s.id<>$3
-       AND c.claim_origin=ANY($4::text[]) AND c.lifecycle<>'REJECTED'
+       AND ($5::timestamptz IS NULL OR (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$5)->>'proposition_id')::uuid=$2)
+       AND c.claim_origin=ANY($4::text[])
+       AND (CASE WHEN $5::timestamptz IS NULL THEN c.lifecycle
+         ELSE unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$5)->>'lifecycle' END) NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
        AND ($5::timestamptz IS NULL OR c.recorded_at<=$5)
        AND ($6::uuid[] IS NULL OR s.id=ANY($6::uuid[]))`,
     [ownerScopeId, propositionId, sourceEvidenceId, [...INDEPENDENT_CLAIM_ORIGINS],
@@ -270,8 +276,9 @@ async function independentVerification(
 export async function readOwnerOverlay(tx: MemoryTransaction, input: {
   ownerScopeId: string; sinceSequence?: number; limit?: number;
   /** Broker reads additionally bind pending assertions and their verification
-   * to the request's knowledge time and source authorization. Owner correction
-   * reads omit these bounds and retain their owner-wide immediate visibility. */
+   * to the request's knowledge time and source authorization. Public correction
+   * reads supply readableEvidenceIds and may omit knowledgeTime for the current
+   * owner view. Internal callers may omit both under their own authority. */
   knowledgeTime?: Date; readableEvidenceIds?: readonly string[];
 }): Promise<OwnerOverlay> {
   const since = input.sinceSequence ?? 0;
@@ -286,10 +293,22 @@ export async function readOwnerOverlay(tx: MemoryTransaction, input: {
      ORDER BY owner_sequence LIMIT $3`,
     [input.ownerScopeId, since, limit, input.knowledgeTime ?? null, input.readableEvidenceIds ?? null])).rows;
 
+  const historical = input.knowledgeTime ? await readTemporalObjectStates(tx, { ownerScopeId: input.ownerScopeId,
+    objectType: 'owner_overlay_deltas', objectIds: rows.map(row => row['id'] as string), knowledgeTime: input.knowledgeTime }) : null;
   const deltas: PublicOverlayDelta[] = [];
   const removed: Record<'suppressed' | 'archived' | 'deleted', TargetObjectRef[]> = { suppressed: [], archived: [], deleted: [] };
   let watermark = since;
   for (const row of rows) {
+    if (historical) {
+      const state = historical.get(row['id'] as string);
+      if (!state) continue; // No recorded checkpoint: no invented old lifecycle.
+      Object.assign(row, state);
+      // Reasons were not versioned and may have been added later. They cannot
+      // be represented as part of a historical checkpoint.
+      row['contested_reason'] = null;
+    }
+    // An opaque rationale is not itself sourced by the assertion evidence.
+    if (input.readableEvidenceIds !== undefined) row['contested_reason'] = null;
     const sequence = Number(row['owner_sequence']);
     watermark = Math.max(watermark, sequence);
     const target: TargetObjectRef | null = row['target_object_type']

@@ -244,7 +244,7 @@ describe('the weekly review over one packet', () => {
       future({ frameInstanceId: school, frameTypeId: 'shared.event_occurrence', predicateId: 'shared.event_occurrence.occurrence_time', modality: 'SCHEDULED',
         normalizedValue: { start: '2026-03-05T16:00:00.000Z', end: '2026-03-05T17:00:00.000Z' }, lifeCategories: ['FAMILY', 'PERSONAL'] }),
     ],
-    resolutionAssertions: [{ resolutionAssertionId: resolution, sourceFrameInstanceId: done, targetFrameInstanceId: null, outcomeCode: 'FULFILLED' as const,
+    resolutionAssertions: [{ resolutionAssertionId: resolution, claimId: null, evidenceIds: [], sourceFrameInstanceId: done, targetFrameInstanceId: null, outcomeCode: 'FULFILLED' as const,
       effectiveAt: '2026-03-04T08:00:00.000Z', lifecycle: 'ACCEPTED', transitionContractId: 'shared.commitment.resolution' }],
   };
 
