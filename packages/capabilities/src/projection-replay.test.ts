@@ -277,12 +277,18 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     await admin!.query(`DROP POLICY IF EXISTS ${policy} ON ${table}`);
   }
 
+  // Migration 0023's inbox, budget, rule and review tables and the two trigger
+  // functions it created outright.
+  await admin!.query(`DROP TABLE interruption_decisions, clarification_cards, learned_approval_rules, attention_budgets,
+    behavioral_observations, weekly_reviews CASCADE`);
+  await admin!.query('DROP FUNCTION unai_private.learned_rule_transition(), unai_private.clarification_card_identity()');
+
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
     '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql',
-    '0021_answer_manifests_and_reconsideration.sql']);
+    '0021_answer_manifests_and_reconsideration.sql', '0023_memory_inbox_and_weekly_review.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

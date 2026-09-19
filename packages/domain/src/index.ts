@@ -122,6 +122,19 @@ export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityA
   type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
   type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
   type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
+export {DEFAULT_ATTENTION_BUDGET,attentionBudgetSchema,attentionBudgetPatchSchema,ambiguityKindSchema,
+  sensitivityScopeSchema,situationKeySchema,situationKindSchema,ambiguitySchema,cardEffectSchema,cardChoiceSchema,
+  errorConsequenceSchema,irreversibilitySchema,urgencySchema,interruptionCostSchema,interruptionPolicyInputsSchema,
+  interruptionDecisionKindSchema,interruptionReasonSchema,interruptionDecisionSchema,clarificationCardStatusSchema,
+  cardAnswerSchema,clarificationCardSchema,memoryInboxViewSchema,cardDecisionInputSchema,cardDecisionResultSchema,
+  learnedRuleStatusSchema,learnedRuleScopeSchema,learnedApprovalRuleSchema,learnedApprovalRulesViewSchema,
+  reviewGroundSchema,reviewStatementSchema,reviewAvailabilitySchema,reviewSectionSchema,calendarAllocationSchema,
+  postponementEpisodeSchema,behavioralObservationSchema,reviewManifestSchema,weeklyReviewSchema,weeklyReviewRequestSchema,
+  type AttentionBudget,type AttentionBudgetPatch,type AmbiguityKind,type SensitivityScope,type Ambiguity,type CardEffect,
+  type CardChoice,type InterruptionPolicyInputs,type InterruptionReason,type InterruptionDecision,type CardAnswer,
+  type ClarificationCard,type MemoryInboxView,type CardDecisionInput,type CardDecisionResult,type LearnedRuleScope,
+  type LearnedApprovalRule,type LearnedApprovalRulesView,type ReviewGround,type ReviewStatement,type ReviewSection,
+  type PostponementEpisode,type BehavioralObservation,type ReviewManifest,type WeeklyReview} from './review.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

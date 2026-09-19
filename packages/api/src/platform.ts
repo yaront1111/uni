@@ -13,6 +13,7 @@ import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
+import {registerReviewRoutes,INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE} from './review.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
 import {ConnectorError} from '@unai/connectors';
@@ -47,11 +48,16 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
    * revoker a disconnect calls, and the extraction enqueue a FULL document plan
    * uses. A deployment without them still serves the inspection routes and
    * refuses a sync rather than pretending to run one. */
-  connectors?:ConnectorRouteOptions}){
+  connectors?:ConnectorRouteOptions;
+  /** The instant the inbox and the weekly review treat as now. Only tests set it,
+   * to move the inbox across owner-local days; sessions still expire on the
+   * database's own clock. */
+  clock?:()=>Date}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
     CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
     CONTEXT_READ_PURPOSE,ASK_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
+    INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
     'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
@@ -90,6 +96,13 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
       request.routeOptions.url==='/v1/answers/:id/manifest'?ANSWER_READ_PURPOSE:
       request.routeOptions.url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
+      request.routeOptions.url==='/v1/memory/inbox'?INBOX_PURPOSE:
+      request.routeOptions.url==='/v1/memory/inbox/cards/:id/decide'?INBOX_PURPOSE:
+      request.routeOptions.url==='/v1/settings/attention-budgets'?ATTENTION_SETTINGS_PURPOSE:
+      request.routeOptions.url==='/v1/approval-rules'?APPROVAL_RULES_PURPOSE:
+      request.routeOptions.url==='/v1/approval-rules/:id/approve'?APPROVAL_RULES_PURPOSE:
+      request.routeOptions.url==='/v1/approval-rules/:id/revoke'?APPROVAL_RULES_PURPOSE:
+      request.routeOptions.url==='/v1/weekly-review'?WEEKLY_REVIEW_PURPOSE:
       request.routeOptions.url&&LINEAGE_URLS.has(request.routeOptions.url)?LINEAGE_WRITE_PURPOSE:
       request.routeOptions.url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
       request.routeOptions.url&&CORRECTION_URLS.has(request.routeOptions.url)?CORRECTION_PURPOSE:
@@ -192,5 +205,14 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,phraser:options.answerPhraser,
     purposeWork:(request,purpose,run)=>deviceWork(request,tx=>run(tx),purpose)});
   registerAnswerRoutes(app,deviceWork);
+  // The Memory inbox, learned approval rules, attention budgets and the weekly
+  // review (ADR 0028). Their broker reads and their answer writes run under
+  // `memory.read` and `memory.correct`, named here by server code.
+  registerReviewRoutes(app,deviceWork,{
+    purposeWork:<T,>(request:import('fastify').FastifyRequest,purpose:string,run:(tx:import('@unai/postgres').OwnerTransaction)=>Promise<T>)=>
+      deviceWork(request,tx=>run(tx),purpose) as Promise<T>,
+    evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId,
+    registryRelease:options.registryRelease??null,...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    ...(options.clock?{now:options.clock}:{})});
   return app;
 }
