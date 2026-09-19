@@ -6,13 +6,14 @@ import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { runMigrations } from '@unai/postgres';
+import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 // The registry library stays out of the API's manifest (registry-boundary.test.ts);
 // only this test publishes the pinned release, through the package's own source.
 import { loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
 import { actionHistoryEntrySchema, exportBundleSchema, permissionsViewSchema } from '@unai/domain';
 import { decideInterruption } from '@unai/review';
+import { readPersistedPacket } from '@unai/context';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
 
@@ -575,6 +576,99 @@ it('CRT-UX-09-A: the Permissions surface shows and changes sources, scopes, sens
       AND result='SUCCESS'`, [o.owner])).rows.map(row => JSON.stringify(row.objects_and_fields_accessed));
     for (const table of ['plugin_capability_grants', 'domain_sensitivity_settings', 'retention_settings']) {
       expect(audited.some(text => text.includes('"' + table + '"')), table).toBe(true);
+    }
+  } finally { await app.close(); }
+});
+
+it('CRT-SEC-06-A: retained assistant history cannot reconstruct erased memory', async () => {
+  const app = api();
+  const o = await newOwner('erased-answer');
+  const erasedValue = '4471.99', controlValue = '30.77';
+  try {
+    const upload = async (name: string, amount: string) => {
+      const text = name + ' lent me ILS ' + amount;
+      const response = await app.inject({ method: 'POST', url: '/v1/documents', headers: evidenceHeaders(o, 'evidence.ingest'),
+        payload: { documentId: name, title: name, pages: [{ page: 1, text }], sensitivity: 'PRIVATE',
+          allowedPurposes: [FINANCE], base64: Buffer.from(text).toString('base64') } });
+      expect(response.statusCode, response.body).toBe(201);
+      const evidenceId = response.json().evidenceId as string;
+      const anchorId = (await admin.query("SELECT id FROM source_anchors WHERE source_item_id=$1 AND anchor_kind='DOCUMENT_RANGE'",
+        [evidenceId])).rows[0].id as string;
+      const frame = await obligation(o, await entity(o, name));
+      const value = await belief(o, { slot: frame.slot, value: { amount, currency: 'ILS' }, anchorId, assessment: 'ACCEPTED' });
+      return { evidenceId, ...value };
+    };
+    const doomed = await upload('Erased creditor', erasedValue);
+    const control = await upload('Retained creditor', controlValue);
+    const indexed = await app.inject({ method: 'POST', url: '/v1/memory/embeddings/regenerate',
+      headers: headers(o, 'memory.reindex'), payload: {} });
+    expect(indexed.statusCode, indexed.body).toBe(200);
+    expect(indexed.json().indexed).toBe(2);
+    const ask = async (overrides: Record<string, unknown> = {}) => {
+      const response = await app.inject({ method: 'POST', url: '/v1/ask', headers: headers(o, 'memory.read'),
+        payload: { ownerScopeId: o.owner, purpose: FINANCE, question: 'What do I currently owe?',
+          worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'RESTRICTED', ...overrides } });
+      expect(response.statusCode, response.body).toBe(200);
+      return response.json();
+    };
+    const why = (propositionId: string) => app.inject({ method: 'GET',
+      url: '/v1/memory/why/propositions/' + propositionId, headers: evidenceHeaders(o, 'memory.inspect') });
+    const packetOf = (packetId: string) => withOwnerTransaction(appPool,
+      { ownerScopeId: o.owner, actorId: o.actor, purpose: 'memory.inspect', correlationId: randomUUID() },
+      tx => readPersistedPacket(tx, { ownerScopeId: o.owner, packetId }));
+
+    const before = await ask();
+    expect(JSON.stringify(before.statements)).toContain(erasedValue);
+    expect(JSON.stringify(before.statements)).toContain(controlValue);
+    const beforePacket = (await packetOf(before.packetId)).packet;
+    expect(JSON.stringify(beforePacket)).toContain(erasedValue);
+    expect(beforePacket.semanticSearch!.matches.map(match => match.objectId))
+      .toEqual(expect.arrayContaining([doomed.claimId, control.claimId]));
+    const beforeWhy = await why(doomed.propositionId);
+    expect(beforeWhy.statusCode, beforeWhy.body).toBe(200);
+    expect(beforeWhy.json().statement).toContain(erasedValue);
+    const assistantEvidenceId = (await admin.query('SELECT conversation_message_id FROM answer_manifests WHERE id=$1',
+      [before.answerManifestId])).rows[0].conversation_message_id as string;
+    const historicalAt = new Date().toISOString();
+
+    const deletion = await app.inject({ method: 'POST', url: '/v1/data/deletions', headers: headers(o, 'data.delete'),
+      payload: { evidenceIds: [doomed.evidenceId], confirmation: 'DELETE' } });
+    expect(deletion.statusCode, deletion.body).toBe(200);
+    expect((await admin.query('SELECT packet,request FROM context_packets WHERE id=$1', [before.packetId])).rows[0])
+      .toEqual({ packet: { erased: true }, request: { erased: true } });
+    // The stored packet reader validates the erased sentinel and refuses it;
+    // it must never revive the earlier supplied values from the saved answer.
+    await expect(packetOf(before.packetId)).rejects.toMatchObject({ name: 'ZodError' });
+    const erasedWhy = await why(doomed.propositionId);
+    expect(erasedWhy.statusCode, erasedWhy.body).toBe(404);
+    expect(erasedWhy.json().code).toBe('WHY_OBJECT_NOT_FOUND');
+    const controlWhy = await why(control.propositionId);
+    expect(controlWhy.statusCode, controlWhy.body).toBe(200);
+    expect(controlWhy.json().statement).toContain(controlValue);
+
+    // A previous assistant conversation remains separate history. Its quote is
+    // deliberately still present, making the non-reconstruction check meaningful.
+    const retainedAnswer = (await admin.query(`SELECT a.normalized_text FROM source_anchors a
+      JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+      WHERE s.owner_scope_id=$1 AND s.id=$2 AND s.deleted_at IS NULL`, [o.owner, assistantEvidenceId])).rows;
+    expect(retainedAnswer.map(row => row.normalized_text).join('\n')).toContain(erasedValue);
+    const rawAnswer = await app.inject({ method: 'GET', url: '/v1/evidence/' + assistantEvidenceId,
+      headers: evidenceHeaders(o, 'evidence.read') });
+    expect(rawAnswer.statusCode, rawAnswer.body).toBe(200);
+
+    for (const overrides of [{}, { question: 'What did Uai believe at that time about what I owe?',
+      worldTime: historicalAt, knowledgeTime: historicalAt }]) {
+      const answer = await ask(overrides);
+      expect(JSON.stringify(answer)).not.toContain(erasedValue);
+      expect(JSON.stringify(answer.statements)).toContain(controlValue);
+      expect(answer.sourceLinks.map((link: { evidenceId: string }) => link.evidenceId)).toContain(control.evidenceId);
+      expect(answer.sourceLinks.map((link: { evidenceId: string }) => link.evidenceId)).not.toContain(assistantEvidenceId);
+      const packet = (await packetOf(answer.packetId)).packet;
+      expect(JSON.stringify(packet)).not.toContain(erasedValue);
+      expect(packet.currentBeliefs.map(value => value.propositionId)).toContain(control.propositionId);
+      expect(packet.currentBeliefs.map(value => value.propositionId)).not.toContain(doomed.propositionId);
+      expect(packet.semanticSearch!.matches.map(match => match.objectId)).toContain(control.claimId);
+      expect((packet.semanticSearch?.matches ?? []).flatMap(match => match.evidenceIds)).not.toContain(assistantEvidenceId);
     }
   } finally { await app.close(); }
 });

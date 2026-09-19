@@ -230,6 +230,7 @@ async function propositionOfTarget(tx: MemoryTransaction, ownerScopeId: string, 
  * and the delta's own evidence is excluded whatever origin it carries. */
 async function independentVerification(
   tx: MemoryTransaction, ownerScopeId: string, sourceEvidenceId: string, target: TargetObjectRef | null,
+  bounds: { knowledgeTime?: Date; readableEvidenceIds?: readonly string[] } = {},
 ): Promise<PublicOverlayDelta['independentVerification']> {
   const empty = { verified: false, independentEvidenceIds: [], independentClaimOrigins: [] };
   if (!target) return empty;
@@ -240,8 +241,11 @@ async function independentVerification(
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
      JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
      WHERE c.owner_scope_id=$1 AND c.proposition_id=$2 AND s.id<>$3
-       AND c.claim_origin=ANY($4::text[]) AND c.lifecycle<>'REJECTED'`,
-    [ownerScopeId, propositionId, sourceEvidenceId, [...INDEPENDENT_CLAIM_ORIGINS]])).rows;
+       AND c.claim_origin=ANY($4::text[]) AND c.lifecycle<>'REJECTED'
+       AND ($5::timestamptz IS NULL OR c.recorded_at<=$5)
+       AND ($6::uuid[] IS NULL OR s.id=ANY($6::uuid[]))`,
+    [ownerScopeId, propositionId, sourceEvidenceId, [...INDEPENDENT_CLAIM_ORIGINS],
+      bounds.knowledgeTime ?? null, bounds.readableEvidenceIds ?? null])).rows;
   return {
     verified: rows.length > 0,
     independentEvidenceIds: [...new Set(rows.map(row => row['evidence_id'] as string))],
@@ -265,6 +269,10 @@ async function independentVerification(
  */
 export async function readOwnerOverlay(tx: MemoryTransaction, input: {
   ownerScopeId: string; sinceSequence?: number; limit?: number;
+  /** Broker reads additionally bind pending assertions and their verification
+   * to the request's knowledge time and source authorization. Owner correction
+   * reads omit these bounds and retain their owner-wide immediate visibility. */
+  knowledgeTime?: Date; readableEvidenceIds?: readonly string[];
 }): Promise<OwnerOverlay> {
   const since = input.sinceSequence ?? 0;
   const limit = Math.min(Math.max(input.limit ?? 500, 1), 1000);
@@ -273,8 +281,10 @@ export async function readOwnerOverlay(tx: MemoryTransaction, input: {
       attached_frame_instance_id,attached_belief_slot_id,candidate_entity_refs,candidate_frame_types,discourse_anchor,
       created_at,contested_reason
      FROM owner_overlay_deltas WHERE owner_scope_id=$1 AND owner_sequence>$2
+       AND ($4::timestamptz IS NULL OR created_at<=$4)
+       AND ($5::uuid[] IS NULL OR source_evidence_id=ANY($5::uuid[]))
      ORDER BY owner_sequence LIMIT $3`,
-    [input.ownerScopeId, since, limit])).rows;
+    [input.ownerScopeId, since, limit, input.knowledgeTime ?? null, input.readableEvidenceIds ?? null])).rows;
 
   const deltas: PublicOverlayDelta[] = [];
   const removed: Record<'suppressed' | 'archived' | 'deleted', TargetObjectRef[]> = { suppressed: [], archived: [], deleted: [] };
@@ -304,7 +314,7 @@ export async function readOwnerOverlay(tx: MemoryTransaction, input: {
       createdAt: (row['created_at'] as Date).toISOString(),
       contestedReason: (row['contested_reason'] as Record<string, unknown> | null) ?? null,
       assertionKind: 'USER_ASSERTION',
-      independentVerification: await independentVerification(tx, input.ownerScopeId, row['source_evidence_id'] as string, target),
+      independentVerification: await independentVerification(tx, input.ownerScopeId, row['source_evidence_id'] as string, target, input),
     }));
   }
   return ownerOverlaySchema.parse({

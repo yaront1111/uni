@@ -1,4 +1,4 @@
-import { contextProjectionFragmentSchema, type ProjectionName } from '@unai/domain';
+import { contextProjectionFragmentSchema, type ProjectionName, type PublicOverlayDelta } from '@unai/domain';
 import type { MemoryTransaction } from '@unai/memory';
 import { readCommitmentsProjection, readObligationsProjection, readScheduleProjection } from '@unai/capabilities';
 import type { z } from 'zod';
@@ -36,8 +36,13 @@ function frameIdsOf(projection: ProjectionName, rows: readonly Record<string, un
  */
 export async function readProjectionFragments(tx: MemoryTransaction, input: {
   ownerScopeId: string; asOf: Date; frameInstanceIds?: readonly string[] | null;
+  /** When supplied by the broker, projection caches cannot widen the pending
+   * assertions authorized for the packet's source and knowledge-time bounds. */
+  authorizedOverlayDeltas?: readonly PublicOverlayDelta[];
 }): Promise<ContextProjectionFragment[]> {
   const narrow = input.frameInstanceIds ? new Set(input.frameInstanceIds) : null;
+  const allowedDeltas = input.authorizedOverlayDeltas === undefined ? null
+    : new Map(input.authorizedOverlayDeltas.map(delta => [delta.overlayDeltaId, delta]));
   const fragments: ContextProjectionFragment[] = [];
   for (const [name, read] of Object.entries(READS)) {
     const projection = name as ProjectionName;
@@ -53,7 +58,10 @@ export async function readProjectionFragments(tx: MemoryTransaction, input: {
       reducerVersion: view.reducerVersion,
       ownerOverlayWatermark: view.ownerOverlayWatermark,
       canonicalTransactionWatermark: view.canonicalTransactionWatermark,
-      pendingAssertions: view.pendingAssertions,
+      pendingAssertions: view.pendingAssertions
+        .filter(assertion => allowedDeltas === null || allowedDeltas.has(assertion.overlayDeltaId))
+        .map(assertion => allowedDeltas === null ? assertion
+          : { ...assertion, rawText: allowedDeltas.get(assertion.overlayDeltaId)!.rawText }),
       highRiskActionsBlocked: view.highRiskActionsBlocked,
     }));
   }

@@ -110,10 +110,11 @@ Report: `docs/today-and-ask.md`; decisions:
   rows read the version live at the knowledge time and prefer its interval to the
   claims'. Reading only claim intervals reports a change over time as a live
   conflict.
-- **Overlay deltas are not knowledge-time filtered in the packet, only in the
-  selector.** Fixtures leave `owner_overlay_deltas.created_at` at the wall clock;
-  filtering the packet's overlay by knowledge time would hide them from every
-  test that pins `now` in the past.
+- **Overlay authorization applies before packet assembly.** The broker binds
+  deltas and their independent verification to the requested knowledge time and
+  authorized source evidence. Projection pending text must obey those same
+  bounds. Pin fixture `created_at` and `recorded_at` explicitly when the test
+  clock is fixed; never widen a production read to accommodate a fixture clock.
 - **A suppression fingerprint must not contain the day.** `materialFingerprintOf`
   hashes the material state only. Putting the headline (which says "due in
   20 hours") or the rank score in it makes every item look changed every day,

@@ -3,7 +3,7 @@ import {
   contextBeliefSchema, contextFutureClaimSchema, contextResolutionSchema, contextUnknownSchema,
   type MemoryThreadView, type ThreadMember, type ThreadMemberInput,
 } from '@unai/domain';
-import { MemoryStoreError, type MemoryTransaction } from '@unai/memory';
+import { MemoryStoreError, readOwnerOverlay, type MemoryTransaction } from '@unai/memory';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { deriveLifeCategories } from './categories.js';
 import { readProjectionFragments } from './fragments.js';
@@ -192,9 +192,12 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
        JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
        JOIN frame_instances f ON f.owner_scope_id=s.owner_scope_id AND f.id=s.frame_instance_id
        WHERE p.owner_scope_id=$1 AND (s.frame_instance_id=ANY($2::uuid[]) OR p.id=ANY($3::uuid[]))
+         AND EXISTS(SELECT 1 FROM claims c
+           JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+           WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id AND c.recorded_at<=$4)
        ORDER BY f.id,s.id,p.id`,
       [input.ownerScopeId, frameInstanceIds,
-        members.filter(member => member.objectType === 'proposition').map(member => member.objectId)])).rows;
+        members.filter(member => member.objectType === 'proposition').map(member => member.objectId), input.readAt])).rows;
 
   const ACTUAL_MODALITIES = new Set(['ACTUAL']);
   const actualEvents = [];
@@ -225,10 +228,14 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
   }
 
   const resolutionRows = frameInstanceIds.length === 0 ? [] : (await tx.query(
-    `SELECT id,source_frame_instance_id,target_frame_instance_id,outcome_code,effective_at,lifecycle,transition_contract_id
-     FROM resolution_assertions WHERE owner_scope_id=$1
-       AND (source_frame_instance_id=ANY($2::uuid[]) OR target_frame_instance_id=ANY($2::uuid[]))
-     ORDER BY effective_at,id`, [input.ownerScopeId, frameInstanceIds])).rows;
+    `SELECT r.id,r.source_frame_instance_id,r.target_frame_instance_id,r.outcome_code,r.effective_at,r.lifecycle,r.transition_contract_id
+     FROM resolution_assertions r
+     JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE r.owner_scope_id=$1
+       AND (r.source_frame_instance_id=ANY($2::uuid[]) OR r.target_frame_instance_id=ANY($2::uuid[]))
+       AND r.recorded_at<=$3 AND c.recorded_at<=$3 AND r.effective_at<=$3
+     ORDER BY r.effective_at,r.id`, [input.ownerScopeId, frameInstanceIds, input.readAt])).rows;
   const resolutionLinks = resolutionRows.map(row => contextResolutionSchema.parse({
     resolutionAssertionId: row['id'], sourceFrameInstanceId: row['source_frame_instance_id'],
     targetFrameInstanceId: (row['target_frame_instance_id'] as string | null) ?? null,
@@ -257,7 +264,17 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
     `SELECT id,created_at,delta_kind FROM owner_overlay_deltas
      WHERE owner_scope_id=$1 AND (attached_frame_instance_id=ANY($2::uuid[]) OR $3=ANY(candidate_worldline_refs))
      ORDER BY owner_sequence`, [input.ownerScopeId, frameInstanceIds, input.memoryThreadId])).rows;
+  // Evidence row policies enforce the current request's purpose and sensitivity.
+  // Projection caches must not reintroduce pending text that those policies hide.
+  const readableEvidenceIds = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
+    [input.ownerScopeId])).rows.map(row => row['id'] as string);
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId,
+    knowledgeTime: input.readAt, readableEvidenceIds });
+  const threadDeltaIds = new Set(deltaRows.map(row => row['id'] as string));
+  const authorizedOverlayDeltas = overlay.deltas.filter(delta => threadDeltaIds.has(delta.overlayDeltaId));
+  const visibleDeltaIds = new Set(authorizedOverlayDeltas.map(delta => delta.overlayDeltaId));
   for (const row of deltaRows) {
+    if (!visibleDeltaIds.has(row['id'] as string)) continue;
     timeline.push({ at: (row['created_at'] as Date).toISOString(), kind: 'OWNER_ASSERTION',
       objectType: 'owner_overlay_deltas', objectId: row['id'] as string, detail: row['delta_kind'] as string });
   }
@@ -271,16 +288,32 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
       detail: row['assessment_status'] === 'CONTESTED' ? 'CONTESTED_BELIEF' : 'NO_ACCEPTED_ASSESSMENT',
     }));
 
-  // Related people and documents: the entities that fill a role of the thread's
-  // frames, plus the entities named as members outright.
+  // A frame membership does not authorize all of its participants. Roles need
+  // readable supporting claims, and names need their own readable alias source.
+  // An unsourced canonical label cannot stand in for withheld evidence.
   const roleEntityRows = frameInstanceIds.length === 0 ? [] : (await tx.query(
-    `SELECT DISTINCT entity_id FROM frame_instance_roles
-     WHERE owner_scope_id=$1 AND frame_instance_id=ANY($2::uuid[]) AND entity_id IS NOT NULL`,
-    [input.ownerScopeId, frameInstanceIds])).rows;
+    `SELECT DISTINCT r.entity_id FROM frame_instance_roles r
+     JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.proposition_id
+     JOIN belief_slots b ON b.owner_scope_id=p.owner_scope_id AND b.id=p.belief_slot_id
+       AND b.frame_instance_id=r.frame_instance_id
+     JOIN source_anchors s ON s.owner_scope_id=c.owner_scope_id AND s.id=c.source_anchor_id
+     WHERE r.owner_scope_id=$1 AND r.frame_instance_id=ANY($2::uuid[]) AND r.entity_id IS NOT NULL
+       AND c.lifecycle NOT IN ('REJECTED','SUPPRESSED') AND c.recorded_at<=$3 AND r.created_at<=$3
+       AND (c.valid_from IS NULL OR c.valid_from<=$3) AND (c.valid_to IS NULL OR c.valid_to>$3)
+       AND (r.valid_from IS NULL OR r.valid_from<=$3) AND (r.valid_to IS NULL OR r.valid_to>$3)`,
+    [input.ownerScopeId, frameInstanceIds, input.readAt])).rows;
   const relatedEntityIds = [...new Set([...entityIds, ...roleEntityRows.map(row => row['entity_id'] as string)])];
   const entityRows = relatedEntityIds.length === 0 ? [] : (await tx.query(
-    'SELECT id,entity_kind,canonical_label FROM entities WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) ORDER BY id',
-    [input.ownerScopeId, relatedEntityIds])).rows;
+    `SELECT DISTINCT ON (e.id) e.id,e.entity_kind,a.alias_value AS canonical_label
+     FROM entities e
+     JOIN entity_aliases a ON a.owner_scope_id=e.owner_scope_id AND a.entity_id=e.id
+     JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+     WHERE e.owner_scope_id=$1 AND e.id=ANY($2::uuid[])
+       AND a.alias_type IN ('DISPLAY_NAME','FULL_NAME','GIVEN_NAME','NICKNAME') AND a.created_at<=$3
+       AND (a.valid_from IS NULL OR a.valid_from<=$3) AND (a.valid_to IS NULL OR a.valid_to>$3)
+     ORDER BY e.id,a.alias_type,a.id`,
+    [input.ownerScopeId, relatedEntityIds, input.readAt])).rows;
 
   const frameRows = frameInstanceIds.length === 0 ? [] : (await tx.query(
     'SELECT id,frame_type_id FROM frame_instances WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) ORDER BY id',
@@ -292,6 +325,7 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
     members,
     currentProjection: await readProjectionFragments(tx, {
       ownerScopeId: input.ownerScopeId, asOf: input.readAt, frameInstanceIds,
+      authorizedOverlayDeltas,
     }),
     timeline, plansAndExpectedOutcomes: plans, actualEvents, resolutionLinks, openUncertainties,
     relatedPeople: entityRows.filter(row => row['entity_kind'] !== 'DOCUMENT').map(row => ({

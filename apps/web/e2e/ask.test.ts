@@ -128,6 +128,9 @@ beforeAll(async()=>{
     [transactionId,owner,actor,registryReleaseId,randomUUID().replaceAll('-',''),RECORDED]);
   maya=randomUUID();daniel=randomUUID();
   await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,canonical_label) VALUES($1,$2,'PERSON','Maya'),($3,$2,'PERSON','Daniel')",[maya,owner,daniel]);
+  const identitySource=await source('maya-name','My name is Maya.');
+  await admin.query(`INSERT INTO entity_aliases(id,owner_scope_id,entity_id,alias_type,alias_value,normalized_value,source_item_id,created_at)
+    VALUES($1,$2,$3,'DISPLAY_NAME','Maya','maya',$4,$5)`,[randomUUID(),owner,maya,identitySource.evidenceId,RECORDED]);
 
   // What Maya told Daniel, in her own words, and what a model inferred she
   // agreed to from Daniel's message.

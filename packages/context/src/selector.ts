@@ -21,7 +21,7 @@ import { canonicalJson, type MemoryTransaction } from '@unai/memory';
  * the selection is its own explanation.
  */
 
-export const SELECTION_VERSION = 'deterministic-selector-0.2.0';
+export const SELECTION_VERSION = 'deterministic-selector-0.3.0';
 
 const FUTURE_MODALITIES = ['SCHEDULED', 'INTENDED', 'COMMITTED', 'EXPECTED', 'PREDICTED', 'RECOMMENDED', 'CONDITIONAL'] as const;
 
@@ -347,9 +347,14 @@ export async function selectCurrentStates(tx: MemoryTransaction, input: {
      WHERE owner_scope_id=$1 AND belief_slot_id=ANY($2::uuid[]) ORDER BY id`, [input.ownerScopeId, slotIds])).rows;
   const propositionIds = propositions.map(row => row['id'] as string);
   const assessments = propositionIds.length === 0 ? [] : (await tx.query(
-    `SELECT id,proposition_id,assessment_status,valid_from,valid_to,recorded_at,superseded_recorded_at
-     FROM belief_assessments WHERE owner_scope_id=$1 AND proposition_id=ANY($2::uuid[]) ORDER BY recorded_at,id`,
-    [input.ownerScopeId, propositionIds])).rows;
+    `SELECT b.id,b.proposition_id,b.assessment_status,
+       coalesce(b.valid_from,(SELECT min(c.valid_from) FROM claims c
+         WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3)) AS valid_from,
+       coalesce(b.valid_to,(SELECT max(c.valid_to) FROM claims c
+         WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3)) AS valid_to,
+       b.recorded_at,b.superseded_recorded_at
+     FROM belief_assessments b WHERE b.owner_scope_id=$1 AND b.proposition_id=ANY($2::uuid[]) ORDER BY b.recorded_at,b.id`,
+    [input.ownerScopeId, propositionIds, input.parameters.knowledgeTime])).rows;
   const claims = propositionIds.length === 0 ? [] : (await tx.query(
     `SELECT c.id,c.proposition_id,c.claim_origin,c.recorded_at,a.source_item_id
      FROM claims c LEFT JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
