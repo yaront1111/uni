@@ -9,7 +9,7 @@ import {
 } from '@unai/domain';
 import type { PolicyPorts } from '@unai/belief';
 import { CONTEXT_READ_PURPOSE } from '@unai/context';
-import { PROJECTION_PURPOSE, replayProjection } from '@unai/capabilities';
+import { PROJECTION_PURPOSE, REDUCER_VERSION, replayProjection } from '@unai/capabilities';
 import { CONNECTOR_READ_PURPOSE, listConnectors } from '@unai/connectors';
 import { EMBEDDING_MODEL, EMBEDDING_VERSION } from '@unai/memory';
 import {
@@ -104,7 +104,9 @@ class PreviewRollback extends Error {
 export function registerControlRoutes(app: FastifyInstance, work: Work, options: ControlRouteOptions = {}): void {
   const correlation = (request: FastifyRequest) => request.ownerContext!.correlationId;
   async function refuse(request: FastifyRequest, reply: FastifyReply, code: string, extra: Record<string, unknown> = {}) {
-    await work(request, tx => tx.audit({ policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED', objects: [] }));
+    // A refusal a policy port decided names that recorded decision.
+    const decided = typeof extra['policyDecisionId'] === 'string' ? { policyDecisionId: extra['policyDecisionId'] } : {};
+    await work(request, tx => tx.audit({ ...decided, policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED', objects: [] }));
     return reply.code(REFUSAL_STATUS.get(code) ?? 400).send({ code, correlationId: correlation(request), ...extra });
   }
   async function guarded(request: FastifyRequest, reply: FastifyReply, run: () => Promise<unknown>) {
@@ -217,7 +219,7 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
           draftKind: input.draftKind, capabilityId: input.capabilityId, content: input.content,
           recommendationId: input.recommendationId, supportingPacketId: verdict.packetId!, policyDecisionId: verdict.policyDecisionId!,
         });
-        await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [
+        await tx.audit({ policyDecisionId: verdict.policyDecisionId!, policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [
           { type: 'drafts', id: stored.draft.draftId, fields: ['draft_kind', 'capability_id', 'content', 'policy_decision_id'] },
           { type: 'action_history', id: stored.entry.entryId, fields: ['stage'] }] });
         return stored;
@@ -414,24 +416,29 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
     if (!ceiling.success) return refuse(request, reply, 'EVIDENCE_CONTEXT_REQUIRED');
     if (parsed.data.includeRawEvidence && !options.evidenceObjects) return refuse(request, reply, 'EXPORT_STORAGE_UNAVAILABLE');
     const objects = options.evidenceObjects;
-    return guarded(request, reply, () => work(request, async tx => {
-      await tx.query("SELECT set_config('unai.maximum_sensitivity',$1,true)", [ceiling.data]);
-      const requestedAt = new Date();
-      const bundle = await buildExportBundle(tx, {
-        includeRawEvidence: parsed.data.includeRawEvidence,
-        readRaw: rawObjectRef => objects!.get(tx, rawObjectRef),
+    return guarded(request, reply, async () => {
+      const exported = await work(request, async tx => {
+        await tx.query("SELECT set_config('unai.maximum_sensitivity',$1,true)", [ceiling.data]);
+        const requestedAt = new Date();
+        const bundle = await buildExportBundle(tx, {
+          includeRawEvidence: parsed.data.includeRawEvidence,
+          readRaw: rawObjectRef => objects!.get(tx, rawObjectRef),
+        });
+        const requestId = await recordDataRequest(tx, {
+          requestKind: 'EXPORT', trigger: 'OWNER_REQUEST', requestedAt,
+          scope: { scope: parsed.data.scope, includeRawEvidence: parsed.data.includeRawEvidence, maximumSensitivity: ceiling.data },
+          receipt: { exportId: bundle.exportId, counts: bundle.counts },
+        });
+        await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [
+          { type: 'retention_and_deletion_requests', id: requestId, fields: ['request_kind', 'cascade_receipt'] },
+          ...bundle.evidence.slice(0, 99).map(item => ({ type: 'source_items', id: item.evidenceId,
+            fields: ['raw_object_ref', 'deterministic_metadata', 'anchors'] }))] });
+        return { requestId, status: 'COMPLETED', bundle };
       });
-      const requestId = await recordDataRequest(tx, {
-        requestKind: 'EXPORT', trigger: 'OWNER_REQUEST', requestedAt,
-        scope: { scope: parsed.data.scope, includeRawEvidence: parsed.data.includeRawEvidence, maximumSensitivity: ceiling.data },
-        receipt: { exportId: bundle.exportId, counts: bundle.counts },
-      });
-      await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [
-        { type: 'retention_and_deletion_requests', id: requestId, fields: ['request_kind', 'cascade_receipt'] },
-        ...bundle.evidence.slice(0, 99).map(item => ({ type: 'source_items', id: item.evidenceId,
-          fields: ['raw_object_ref', 'deterministic_metadata', 'anchors'] }))] });
-      return reply.code(201).send({ requestId, status: 'COMPLETED', bundle });
-    }));
+      // A successful response promises a durable export and audit receipt.
+      // Sending inside the callback can race COMMIT or hide its failure.
+      return reply.code(201).send(exported);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -463,12 +470,18 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
     }) as { requestId: string; erased: ErasedEvidence[]; cascade: ReturnType<typeof cascadeCounts> };
     const rebuilt: string[] = [];
     await work(request, async tx => {
+      const receipts: string[] = [];
       for (const projectionName of PROJECTION_NAMES) {
-        await replayProjection(tx, { ownerScopeId: tx.context.ownerScopeId, projectionName, asOf: new Date(),
+        const receipt = await replayProjection(tx, { ownerScopeId: tx.context.ownerScopeId, projectionName, asOf: new Date(),
           trigger: 'MANUAL_REPLAY', compareWithStored: false,
           detail: { cause: 'DELETION', retentionAndDeletionRequestId: committed.requestId } });
+        receipts.push(receipt.projectionRebuildReceiptId);
         rebuilt.push(projectionName);
       }
+      // The rebuild is its own audited event (CRT-SEC-07-A), beside the deletion's.
+      await tx.audit({ policyDecision: 'ALLOW', codeVersion: REDUCER_VERSION, result: 'SUCCESS', objects: [
+        { type: 'retention_and_deletion_requests', id: committed.requestId, fields: ['cascade_receipt'] },
+        ...receipts.map(id => ({ type: 'projection_rebuild_receipts', id, fields: ['projection_name', 'trigger', 'rows_rebuilt'] }))] });
     }, PROJECTION_PURPOSE);
     return deletionReceiptSchema.parse({
       requestId: committed.requestId, status: 'COMPLETED', trigger,
@@ -489,7 +502,8 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
         });
       } catch (error) {
         if (!(error instanceof PreviewRollback)) throw error;
-        await work(request, tx => tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
+        // A preview reads what a deletion would remove and removes nothing.
+        await work(request, tx => tx.audit({ eventKind: 'READ', policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
           objects: error.erased.slice(0, 100).map(item => ({ type: 'source_items', id: item.evidenceId, fields: ['deleted_at'] })) }));
         return deletionReceiptSchema.parse({
           requestId: null, status: 'PREVIEW', trigger: 'OWNER_REQUEST', evidenceIds: error.erased.map(item => item.evidenceId),

@@ -11,7 +11,7 @@ import {
 import type { PolicyPorts } from '@unai/belief';
 import { MemoryStoreError } from '@unai/memory';
 import {
-  DECISION_PROJECTION_PURPOSE, DecisionError, applyDecisionProjection, canonicalizeDecision, findDecisionForEvidence,
+  DECISION_PROJECTION_PURPOSE, DECISION_REDUCER_VERSION, DecisionError, applyDecisionProjection, canonicalizeDecision, findDecisionForEvidence,
   listDecisionReviews, readDecisionProjection, readDecisionRows, recordDecisionReview, renderDecisionStatement,
   resolveOwnerEntity,
 } from '@unai/capabilities';
@@ -223,7 +223,11 @@ export function registerDecisionRoutes(app: FastifyInstance, work: Work, options
 
   const projectDecision = (request: FastifyRequest, frameInstanceId: string, at: Date) =>
     as(request, DECISION_PROJECTION_PURPOSE, async tx => {
-      await applyDecisionProjection(tx, { ownerScopeId: tx.context.ownerScopeId, asOf: at, frameInstanceIds: [frameInstanceId] });
+      const applied = await applyDecisionProjection(tx, { ownerScopeId: tx.context.ownerScopeId, asOf: at, frameInstanceIds: [frameInstanceId] });
+      // Writing projection rows is audited like any rebuild (CRT-SEC-07-A).
+      await tx.audit({ policyDecision: 'ALLOW', codeVersion: DECISION_REDUCER_VERSION, result: 'SUCCESS',
+        objects: applied.rows.slice(0, 100).map(row => ({ type: 'decision_projection', id: row.decisionFrameInstanceId,
+          fields: ['projection_version', 'is_complete'] })) });
     });
   const readDecisionRow = (request: FastifyRequest, frameInstanceId: string, at: Date) =>
     as(request, PROJECTION_READ, async tx => {

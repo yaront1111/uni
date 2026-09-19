@@ -1,6 +1,6 @@
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { trace, metrics, SpanStatusCode } from '@opentelemetry/api';
-import { requestContextSchema, auditEventSchema, type RequestContext, type AuditEvent } from '@unai/domain';
+import { requestContextSchema, auditEventSchema, auditEventKindFor, type RequestContext, type AuditEvent } from '@unai/domain';
 
 const tracer=trace.getTracer('unai.postgres','0.1.0');
 const duration=metrics.getMeter('unai.postgres','0.1.0').createHistogram('unai.database.transaction.duration',{unit:'ms'});
@@ -63,9 +63,11 @@ export async function withOwnerTransaction<T>(pool:Pool, input:RequestContext, r
           if(!active)throw new Error('TRANSACTION_CLOSED');
           const event=auditEventSchema.parse(inputEvent);
           const receipt=await activeClient.query(`INSERT INTO audit_events
-            (owner_scope_id,actor,purpose,objects_and_fields_accessed,policy_decision,model_or_code_version,result,correlation_id)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-            [context.ownerScopeId,context.actorId,context.purpose,JSON.stringify(event.objects),event.policyDecision,event.codeVersion,event.result,context.correlationId]);
+            (owner_scope_id,actor,purpose,event_kind,objects_and_fields_accessed,policy_decision,policy_decision_id,
+             model_or_code_version,result,correlation_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+            [context.ownerScopeId,context.actorId,context.purpose,event.eventKind??auditEventKindFor(context.purpose),
+              JSON.stringify(event.objects),event.policyDecision,event.policyDecisionId??null,event.codeVersion,event.result,context.correlationId]);
           return receipt.rows[0].id as string;
         },
       });
@@ -96,6 +98,7 @@ export async function withOwnerTransaction<T>(pool:Pool, input:RequestContext, r
 }
 
 export { assertOwnershipCoverage, OWNER_SCOPED_TABLES } from './ownership.js';
+export { assertDatabaseEncryptionAtRest, ENCRYPTION_AT_REST_SETTING } from './encryption.js';
 export { runMigrations } from './migrations.js';
 
 

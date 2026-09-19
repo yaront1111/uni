@@ -1,8 +1,9 @@
 import type { Pool } from 'pg';
 import { createApiBoundary, type ApiBoundaryOptions } from './index.js';
 import { resolveSession, sessionToken, revokeSessions } from '@unai/auth';
-import { withOwnerTransaction } from '@unai/postgres';
-import { registerDeviceSchema,publicDeviceSchema } from '@unai/domain';
+import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
+import { registerDeviceSchema,publicDeviceSchema,auditEventKindFor,type AuditEvent } from '@unai/domain';
+import {registerAuditRoutes,AUDIT_READ_PURPOSE,AUDIT_MODIFY_PURPOSE,auditPurposeFor} from './audit.js';
 import { randomUUID } from 'node:crypto';
 import {registerEvidenceRoutes,type EvidenceObjects} from './evidence.js';
 import {registerMemoryGovernorRoutes} from './memory.js';
@@ -41,6 +42,92 @@ const CORRECTION_URLS=new Set(['/v1/memory/overlay-deltas','/v1/memory/correctio
 const LINEAGE_URLS=new Set(['/v1/memory/frame-instances/merge','/v1/memory/frame-instances/:id/split',
   '/v1/memory/entities/merge','/v1/memory/entities/:id/split']);
 
+/** Every audit event a route appends names its kind (CRT-SEC-07-A). A route that
+ * knows better names it itself; otherwise the transaction's purpose decides the
+ * four kinds only one purpose can produce, and the request's HTTP method tells a
+ * read from a write. The owner, actor and correlation id stay the transaction's. */
+function withRequestEventKind(tx:OwnerTransaction,method:string):OwnerTransaction{
+  return Object.freeze({
+    context:tx.context,
+    query:(sql:string,values?:unknown[])=>tx.query(sql,values),
+    audit:(event:AuditEvent)=>tx.audit({...event,eventKind:event.eventKind??auditEventKindFor(tx.context.purpose,method)}),
+  });
+}
+
+/** Every purpose a request may declare. A purpose missing here is refused at the
+ * boundary (`ACCESS_DENIED`) before any route runs. */
+export const PLATFORM_PURPOSES:ReadonlySet<string>=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
+  CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
+  'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
+  CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
+  INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
+  GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,MENTOR_PURPOSE,
+  'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE,
+  // Governed action and the data-control surface (ADR 0030).
+  ...CONTROL_PURPOSES,
+  // The Audit log (ADR 0032). `audit.modify` is admitted only so an attempt to
+  // change an event reaches its route, which refuses it and records the refusal.
+  AUDIT_READ_PURPOSE,AUDIT_MODIFY_PURPOSE]);
+
+/** The single purpose each route admits, by route pattern (not the raw URL) and
+ * method, or null for none. The platform's preHandler refuses any other declared
+ * purpose with `PURPOSE_REFUSED`. */
+export function routePurpose(method:string,url:string|undefined):string|null{
+  return method==='GET'&&url==='/v1/devices'?'device.list':
+    url==='/v1/devices'?'device.register':
+    url==='/v1/devices/:id/revoke'?'device.remove':
+    url==='/v1/sessions/revoke-all'?'auth.sign_out_all':
+    url==='/v1/evidence'?'evidence.ingest':
+    url==='/v1/evidence/:id'?'evidence.read':
+    url==='/v1/documents'?'evidence.ingest':
+    url==='/v1/documents/search'?'evidence.read':
+    url==='/v1/connectors/:id/sync'?CONNECTOR_SYNC_PURPOSE:
+    url==='/v1/connectors/:id/capabilities'&&method==='POST'?CONNECTOR_MANAGE_PURPOSE:
+    url==='/v1/connectors/:id/disconnect'?CONNECTOR_MANAGE_PURPOSE:
+    url==='/v1/connectors'&&method==='POST'?CONNECTOR_MANAGE_PURPOSE:
+    url==='/v1/connectors'?'connector.read':
+    url==='/v1/connectors/:id/capabilities'?'connector.read':
+    url==='/v1/connectors/:id'?'connector.read':
+    url?.startsWith('/v1/memory/transactions')?'memory.govern':
+    url==='/v1/memory/context'?CONTEXT_READ_PURPOSE:
+    url==='/v1/ask'?ASK_PURPOSE:
+    url==='/v1/today'?TODAY_PURPOSE:
+    url==='/v1/memory/why/:objectType/:id'?WHY_PURPOSE:
+    url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
+    url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
+    url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
+    url&&INSPECTION_URLS.includes(url)?INSPECTION_PURPOSE:
+    url==='/v1/answers/:id/manifest'?ANSWER_READ_PURPOSE:
+    url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
+    url==='/v1/memory/inbox'?INBOX_PURPOSE:
+    url==='/v1/memory/inbox/cards/:id/decide'?INBOX_PURPOSE:
+    url==='/v1/settings/attention-budgets'?ATTENTION_SETTINGS_PURPOSE:
+    url==='/v1/approval-rules'?APPROVAL_RULES_PURPOSE:
+    url==='/v1/approval-rules/:id/approve'?APPROVAL_RULES_PURPOSE:
+    url==='/v1/approval-rules/:id/revoke'?APPROVAL_RULES_PURPOSE:
+    url==='/v1/weekly-review'?WEEKLY_REVIEW_PURPOSE:
+    url==='/v1/goals'&&method==='GET'?GOALS_READ_PURPOSE:
+    url==='/v1/goals'?GOALS_MANAGE_PURPOSE:
+    url==='/v1/goals/:id/priority'?GOALS_MANAGE_PURPOSE:
+    url==='/v1/decisions'?DECISIONS_RECORD_PURPOSE:
+    url==='/v1/decisions/:id/review'?DECISIONS_RECORD_PURPOSE:
+    url==='/v1/decisions/:id'?DECISIONS_READ_PURPOSE:
+    url==='/v1/mentor/contradictions'?MENTOR_PURPOSE:
+    url&&LINEAGE_URLS.has(url)?LINEAGE_WRITE_PURPOSE:
+    url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
+    url&&CORRECTION_URLS.has(url)?CORRECTION_PURPOSE:
+    url?.startsWith('/v1/projections/')?PROJECTION_READ_PURPOSE:
+    url==='/v1/ops/projections'?PROJECTION_HEALTH_PURPOSE:
+    url==='/v1/ops/jobs'?'ops.jobs.read':
+    url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
+    url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
+    url==='/v1/ops/registry-snapshot'?'ops.registry.read':
+    url==='/v1/ops/metrics'?METRICS_READ_PURPOSE:
+    url==='/v1/ops/shadow-evaluations'?SHADOW_READ_PURPOSE:
+    auditPurposeFor(method,url)??
+    controlPurposeFor(method,url);
+}
+
 export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];
   evidenceObjects?:EvidenceObjects;registryReleaseId?:string;registryRelease?:string;
   /** The policy ports the Context Broker evaluates reads through. The local
@@ -66,15 +153,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
    * Without them the review reads the newest published release's from the
    * database snapshot (ADR 0029 §6). */
   transitionContracts?:readonly TransitionContract[]}){
-  const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
-    CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
-    'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
-    CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
-    INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
-    GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,MENTOR_PURPOSE,
-    'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE,
-    // Governed action and the data-control surface (ADR 0030).
-    ...CONTROL_PURPOSES]);
+  const purposes=PLATFORM_PURPOSES;
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
     async authenticate(headers){
@@ -89,58 +168,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     log:event=>console.info(JSON.stringify(event)),
   });
   app.addHook('preHandler',async(request,reply)=>{
-    const expected=request.method==='GET'&&request.routeOptions.url==='/v1/devices'?'device.list':
-      request.routeOptions.url==='/v1/devices'?'device.register':
-      request.routeOptions.url==='/v1/devices/:id/revoke'?'device.remove':
-      request.routeOptions.url==='/v1/sessions/revoke-all'?'auth.sign_out_all':
-      request.routeOptions.url==='/v1/evidence'?'evidence.ingest':
-      request.routeOptions.url==='/v1/evidence/:id'?'evidence.read':
-      request.routeOptions.url==='/v1/documents'?'evidence.ingest':
-      request.routeOptions.url==='/v1/documents/search'?'evidence.read':
-      request.routeOptions.url==='/v1/connectors/:id/sync'?CONNECTOR_SYNC_PURPOSE:
-      request.routeOptions.url==='/v1/connectors/:id/capabilities'&&request.method==='POST'?CONNECTOR_MANAGE_PURPOSE:
-      request.routeOptions.url==='/v1/connectors/:id/disconnect'?CONNECTOR_MANAGE_PURPOSE:
-      request.routeOptions.url==='/v1/connectors'&&request.method==='POST'?CONNECTOR_MANAGE_PURPOSE:
-      request.routeOptions.url==='/v1/connectors'?'connector.read':
-      request.routeOptions.url==='/v1/connectors/:id/capabilities'?'connector.read':
-      request.routeOptions.url==='/v1/connectors/:id'?'connector.read':
-      request.routeOptions.url?.startsWith('/v1/memory/transactions')?'memory.govern':
-      request.routeOptions.url==='/v1/memory/context'?CONTEXT_READ_PURPOSE:
-      request.routeOptions.url==='/v1/ask'?ASK_PURPOSE:
-      request.routeOptions.url==='/v1/today'?TODAY_PURPOSE:
-      request.routeOptions.url==='/v1/memory/why/:objectType/:id'?WHY_PURPOSE:
-      request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
-      request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
-      request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
-      request.routeOptions.url&&INSPECTION_URLS.includes(request.routeOptions.url)?INSPECTION_PURPOSE:
-      request.routeOptions.url==='/v1/answers/:id/manifest'?ANSWER_READ_PURPOSE:
-      request.routeOptions.url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
-      request.routeOptions.url==='/v1/memory/inbox'?INBOX_PURPOSE:
-      request.routeOptions.url==='/v1/memory/inbox/cards/:id/decide'?INBOX_PURPOSE:
-      request.routeOptions.url==='/v1/settings/attention-budgets'?ATTENTION_SETTINGS_PURPOSE:
-      request.routeOptions.url==='/v1/approval-rules'?APPROVAL_RULES_PURPOSE:
-      request.routeOptions.url==='/v1/approval-rules/:id/approve'?APPROVAL_RULES_PURPOSE:
-      request.routeOptions.url==='/v1/approval-rules/:id/revoke'?APPROVAL_RULES_PURPOSE:
-      request.routeOptions.url==='/v1/weekly-review'?WEEKLY_REVIEW_PURPOSE:
-      request.routeOptions.url==='/v1/goals'&&request.method==='GET'?GOALS_READ_PURPOSE:
-      request.routeOptions.url==='/v1/goals'?GOALS_MANAGE_PURPOSE:
-      request.routeOptions.url==='/v1/goals/:id/priority'?GOALS_MANAGE_PURPOSE:
-      request.routeOptions.url==='/v1/decisions'?DECISIONS_RECORD_PURPOSE:
-      request.routeOptions.url==='/v1/decisions/:id/review'?DECISIONS_RECORD_PURPOSE:
-      request.routeOptions.url==='/v1/decisions/:id'?DECISIONS_READ_PURPOSE:
-      request.routeOptions.url==='/v1/mentor/contradictions'?MENTOR_PURPOSE:
-      request.routeOptions.url&&LINEAGE_URLS.has(request.routeOptions.url)?LINEAGE_WRITE_PURPOSE:
-      request.routeOptions.url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
-      request.routeOptions.url&&CORRECTION_URLS.has(request.routeOptions.url)?CORRECTION_PURPOSE:
-      request.routeOptions.url?.startsWith('/v1/projections/')?PROJECTION_READ_PURPOSE:
-      request.routeOptions.url==='/v1/ops/projections'?PROJECTION_HEALTH_PURPOSE:
-      request.routeOptions.url==='/v1/ops/jobs'?'ops.jobs.read':
-      request.routeOptions.url==='/v1/ops/dead-letter'?'ops.dead_letter.read':
-      request.routeOptions.url==='/v1/ops/dead-letter/:id/retry'?'ops.dead_letter.retry':
-      request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':
-      request.routeOptions.url==='/v1/ops/metrics'?METRICS_READ_PURPOSE:
-      request.routeOptions.url==='/v1/ops/shadow-evaluations'?SHADOW_READ_PURPOSE:
-      controlPurposeFor(request.method,request.routeOptions.url);
+    const expected=routePurpose(request.method,request.routeOptions.url);
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
   /** `purpose` lets a route open one transaction under a purpose its server code
@@ -156,7 +184,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     return withOwnerTransaction(options.appPool,context,async tx=>{
       const live=await tx.query('SELECT id FROM auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp() FOR UPDATE',[session.id]);
       if(live.rowCount!==1)throw new Error('SESSION_EXPIRED');
-      return run(tx,session.id);
+      return run(withRequestEventKind(tx,request.method),session.id);
     });
   }
   app.get('/v1/devices',async request=>deviceWork(request,async(tx)=>{
@@ -264,5 +292,6 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
     registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null,
     evidenceObjects:options.evidenceObjects});
+  registerAuditRoutes(app,deviceWork);
   return app;
 }
