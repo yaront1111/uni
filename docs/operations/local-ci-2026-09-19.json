@@ -1,0 +1,91 @@
+{
+  "format": "unai-local-stage-executions/1",
+  "sourceCommit": "7c50078fb1e21577cbef61155da0cd3b24e73930",
+  "scope": "Local worktree stage executions; not hosted default-branch certification. Subsequent edits only document execution and remove whitespace/obsolete opt-in configuration.",
+  "stages": [
+    {
+      "exitCode": 0,
+      "name": "lint",
+      "completedAt": "2026-09-19T16:20:32.5673949Z",
+      "command": "pnpm lint",
+      "startedAt": "2026-09-19T16:20:23.6505912Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "unit",
+      "completedAt": "2026-09-19T16:20:45.6528120Z",
+      "command": "node scripts/test.mjs --stage unit",
+      "startedAt": "2026-09-19T16:20:32.5771405Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "property",
+      "completedAt": "2026-09-19T16:20:54.9018777Z",
+      "command": "node scripts/test.mjs --stage property",
+      "startedAt": "2026-09-19T16:20:45.6557329Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "registry-lint",
+      "completedAt": "2026-09-19T16:20:55.5911794Z",
+      "command": "pnpm validate:registry",
+      "startedAt": "2026-09-19T16:20:54.9034239Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "registry-contract",
+      "completedAt": "2026-09-19T16:20:56.3788057Z",
+      "command": "pnpm uai registry test",
+      "startedAt": "2026-09-19T16:20:55.5926871Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "connector-integration",
+      "completedAt": "2026-09-19T16:21:02.6172877Z",
+      "command": "node scripts/test.mjs --stage connector-integration",
+      "startedAt": "2026-09-19T16:20:56.3807151Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "security",
+      "completedAt": "2026-09-19T16:21:13.7665327Z",
+      "command": "node scripts/test.mjs --stage security",
+      "startedAt": "2026-09-19T16:21:02.6187830Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "corpus",
+      "completedAt": "2026-09-19T16:21:14.5284468Z",
+      "command": "pnpm uai corpus run --corpus synthetic",
+      "startedAt": "2026-09-19T16:21:13.7678539Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "end-to-end",
+      "completedAt": "2026-09-19T16:21:33.5807043Z",
+      "command": "node scripts/test.mjs --stage end-to-end",
+      "startedAt": "2026-09-19T16:21:14.5298847Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "build",
+      "completedAt": "2026-09-19T16:21:45.0496790Z",
+      "command": "pnpm build",
+      "startedAt": "2026-09-19T16:21:33.5818131Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "shadow-diff",
+      "completedAt": "2026-09-19T16:21:45.8166975Z",
+      "command": "pnpm uai registry shadow-diff --sample corpus:synthetic",
+      "startedAt": "2026-09-19T16:21:45.0508115Z"
+    },
+    {
+      "exitCode": 0,
+      "name": "corpus-status",
+      "completedAt": "2026-09-19T16:21:46.7160922Z",
+      "command": "pnpm uai corpus status",
+      "startedAt": "2026-09-19T16:21:45.8182960Z"
+    }
+  ]
+}

@@ -1,0 +1,697 @@
+{
+  "sourceCommit": "7c50078fb1e21577cbef61155da0cd3b24e73930",
+  "workspaceDigest": "7e4c75fd8b94ca102385bc35d4981127c708a235a97b76af16e319d16a19e0d5",
+  "format": "unai-coordinated-roundtrip/1",
+  "executedAt": "2026-09-19T16:19:13.542Z",
+  "environment": "TEST",
+  "result": "PASS",
+  "emptyTarget": true,
+  "archiveRef": "test-results/operations/coordinated-backup.aesgcm",
+  "archiveDigest": "eb51debfeea970d504c8e5c8354c7952a3792d014a68d6b542f9cbc89bbfd057",
+  "tables": [
+    {
+      "table": "public.action_history",
+      "digest": "92b747eee21e2b3a964b7e2042fd72557bee911e58a60ae42e455c666eed15d8",
+      "rows": 11
+    },
+    {
+      "table": "public.answer_manifests",
+      "digest": "feb61ab20af4bbbefb1a30719ec413ed769c7d31ebf7cc4adfc76d4a2d9a3756",
+      "rows": 31
+    },
+    {
+      "table": "public.attention_budgets",
+      "digest": "859a85588e53af84c4607c5f256300fc656b5bdfb86b3436d743854deecc6796",
+      "rows": 6
+    },
+    {
+      "table": "public.audit_events",
+      "digest": "78dfdfe7814da94d649af8c0eceb896e65230a48855b34eb1b15c181f1b5bbfd",
+      "rows": 1565
+    },
+    {
+      "table": "public.auth_identities",
+      "digest": "402e3cf5edf53de51c8efa142d99ad3834c6232927be7d229a4719fad75d9f3f",
+      "rows": 5
+    },
+    {
+      "table": "public.auth_sessions",
+      "digest": "d88ffc35f3ad678ca3c5b7b744190f10259214d22b7111f41f8a3c3da8b8b44a",
+      "rows": 109
+    },
+    {
+      "table": "public.behavioral_observations",
+      "digest": "b0b32f4aa458bf11ceb399e77c64fd51aac034fc5db4800cd259ecfb4285907b",
+      "rows": 4
+    },
+    {
+      "table": "public.belief_assessments",
+      "digest": "60c6a16dcc3056863467ae94d30d9111817e00cc80fbe9691b83adb03b241e88",
+      "rows": 286
+    },
+    {
+      "table": "public.belief_slots",
+      "digest": "56fae3157a5275bb9057975aea0c99d947e7db2191900d1cb4227e606963e39e",
+      "rows": 443
+    },
+    {
+      "table": "public.belief_support",
+      "digest": "593c4a95797a5ee9581ead43eba2fbcea7a6c74e16375833c2bb02f8e2bcf0af",
+      "rows": 71
+    },
+    {
+      "table": "public.belief_transaction_operations",
+      "digest": "3f03dc1d46ad0fde68ac548872846fb37b0d41a034fb65dc9b0c73afec98190e",
+      "rows": 240
+    },
+    {
+      "table": "public.belief_transactions",
+      "digest": "896e61bae6d3abd4deec95c02c2e8b4e0dd4d64e7ca489b4996e7dfdf461ea6e",
+      "rows": 119
+    },
+    {
+      "table": "public.briefing_editions",
+      "digest": "03f279a2e6d4f2eb9c8191cb77a64788f1839dae947d0401a19f6cdba603a016",
+      "rows": 32
+    },
+    {
+      "table": "public.briefing_items",
+      "digest": "d501e4e7789f75280fe2a28a7bfad71a2c8b9d968057ff6b0fdf02dca1e3444b",
+      "rows": 71
+    },
+    {
+      "table": "public.claim_relations",
+      "digest": "9e8bd89df535cd587137dff3c33aa29e251e6c4c1181b7ca1265d574eafda787",
+      "rows": 9
+    },
+    {
+      "table": "public.claims",
+      "digest": "a6505aa002985d0bf785da4f0b113eeb6e6a3a52aa34bfe66c5cdbf128373822",
+      "rows": 557
+    },
+    {
+      "table": "public.clarification_cards",
+      "digest": "ddbddce21b960d4fbade552993d51b7e6784f92f6c0d6a0e6fe959db5d1f4da5",
+      "rows": 31
+    },
+    {
+      "table": "public.connector_capability_grants",
+      "digest": "d04f21e8af13ea39dbac3e25071932cd482cdfcbac6ef154320af57bf2e74365",
+      "rows": 46
+    },
+    {
+      "table": "public.connectors",
+      "digest": "b496bae56830b3b9a225333e95240cb76a164f86f820d80228a5ed5ae7ce9206",
+      "rows": 222
+    },
+    {
+      "table": "public.context_packets",
+      "digest": "cf771d97e45f566b4f78eb7e5f81f7639f2186173a4f7346bc038003360fff20",
+      "rows": 321
+    },
+    {
+      "table": "public.context_spaces",
+      "digest": "d67a9f50edadb191163dfa3a5967dad26682c192ff4c7dbe581ae68c5ad04166",
+      "rows": 125
+    },
+    {
+      "table": "public.decision_projection",
+      "digest": "1024fe08d27d962405e414fc62ee426674e39772eb9ac4540981af32cfbe76c6",
+      "rows": 12
+    },
+    {
+      "table": "public.derived_proposition_dependencies",
+      "digest": "34a0e78d4c46c52ce19161033aabbb105ef0fface55aae7abd4c9ab2d74b28d0",
+      "rows": 6
+    },
+    {
+      "table": "public.devices",
+      "digest": "bcf846bb3be3c1164a2eeb39dcb0e2c03731f03f1dda11d507174547d92446ee",
+      "rows": 4
+    },
+    {
+      "table": "public.domain_sensitivity_settings",
+      "digest": "00ba10b79b001c13e412c7f583bdc115f78a8b4794ae0771011cfe4be1e7a556",
+      "rows": 3
+    },
+    {
+      "table": "public.drafts",
+      "digest": "9723148b58fecb360541e69043f42c95053d67194250bce47b62083f2a0f374c",
+      "rows": 4
+    },
+    {
+      "table": "public.economic_and_quality_metrics",
+      "digest": "7120c548f2effc2a026af7164126a3484331c592aa72c7fe68876777c35ec90e",
+      "rows": 38
+    },
+    {
+      "table": "public.entities",
+      "digest": "6a19702d4d0a091e6bf4976f9617703057931ce16f5b9a9f93c72758046ec29f",
+      "rows": 89
+    },
+    {
+      "table": "public.entity_aliases",
+      "digest": "0290ddee44372bb3037cfcf159c3fa757e68a3066367bc155174037924bfcfd6",
+      "rows": 74
+    },
+    {
+      "table": "public.entity_lineage",
+      "digest": "d3f3a142f37c13ebbd28f90de74510df793bbed20571e0a2d2dae85c0ef99a31",
+      "rows": 6
+    },
+    {
+      "table": "public.evidence_ingestion_receipts",
+      "digest": "e6380e70612fb53e34319b512ee2c87601cb37ed4a5389d08420e5077bb2ef20",
+      "rows": 383
+    },
+    {
+      "table": "public.evidence_object_keys",
+      "digest": "d39ac8e45d330d4e0966d8b5445a46e3ca1bec9767f119cc4a739e7fd69bca86",
+      "rows": 388
+    },
+    {
+      "table": "public.extraction_runs",
+      "digest": "2b10f5bd5baae6703b7b632193e72cd82403eef104a6adaa1954a9848a410c3b",
+      "rows": 55
+    },
+    {
+      "table": "public.frame_instance_lineage",
+      "digest": "2385280035f6aa133be2323edec0eaa62f15fa01c189b8505b8d0f08a52a730f",
+      "rows": 15
+    },
+    {
+      "table": "public.frame_instance_roles",
+      "digest": "3d79388c1f137a5554aeec2ccb33c6c971bc453705dca401a4f05502733fcbf7",
+      "rows": 221
+    },
+    {
+      "table": "public.frame_instances",
+      "digest": "6f3f756b495262300eb01e32bc0c57ed3d7ea6d59de00821ac937f768bd89de4",
+      "rows": 321
+    },
+    {
+      "table": "public.goal_priority_history",
+      "digest": "bdf3b7d709ef8c38e6891bac6ddc1eb78a31cecbbb28957782f589e1a1b0217d",
+      "rows": 18
+    },
+    {
+      "table": "public.goals",
+      "digest": "013236277e42e2750b357d0dd3776161ceef227e1d6531d4b945081fdba73e26",
+      "rows": 14
+    },
+    {
+      "table": "public.instance_match_candidates",
+      "digest": "8a862b0cfb98f1eed7e2efbcf18b976651d6363ffdd8515e4ab0542234def600",
+      "rows": 20
+    },
+    {
+      "table": "public.interruption_decisions",
+      "digest": "30a968402b4653dd2745bff371789f24f69b8f4eedaa0e1aeed20934c4a1f2d4",
+      "rows": 60
+    },
+    {
+      "table": "public.jobs",
+      "digest": "85bdf78433eee1a07a693069ce5307fff8b8b0d0004308d088992c10b1b1c27e",
+      "rows": 24
+    },
+    {
+      "table": "public.learned_approval_rules",
+      "digest": "e4c054959e89668799271866ce0eea230f70654800ba4fdd0ba30eee8ac96355",
+      "rows": 3
+    },
+    {
+      "table": "public.memory_embeddings",
+      "digest": "b175cfcc4835a5b8be88b3df12a0bdd6453f1caa9551d5d49854e54ba638bef8",
+      "rows": 47
+    },
+    {
+      "table": "public.memory_links",
+      "digest": "7b482cd49b4230c735827ecbb5ac0edb97fb18fc7fe5e9c04e29db2088bf1803",
+      "rows": 39
+    },
+    {
+      "table": "public.memory_operations",
+      "digest": "48b276724ea48a0ba9a9a96a5ddcd64d7d7f7edf413aa7341933481bacdbfc88",
+      "rows": 89
+    },
+    {
+      "table": "public.memory_summaries",
+      "digest": "fa2177f63299407e458b2e41629a98d97de66d3249f26dd0f94e60e3d240ed40",
+      "rows": 2
+    },
+    {
+      "table": "public.memory_thread_members",
+      "digest": "cbed971d11a95515b2ad97c7651970baed10b1a60cac952f851a3ed15524e809",
+      "rows": 33
+    },
+    {
+      "table": "public.memory_threads",
+      "digest": "3eee05584f2a3640f39b6181aa8a27961654e0bf161ac03306a2cbaac720e742",
+      "rows": 18
+    },
+    {
+      "table": "public.mentor_cards",
+      "digest": "9af09894d4c096a228b16d74ddc41af75bafd4e2ccfd2f115289225cb701d7f3",
+      "rows": 8
+    },
+    {
+      "table": "public.model_call_records",
+      "digest": "6c41b2def4a6c9bde629009ba4c0e73bf43fac031e8106b34ef511e312c03b58",
+      "rows": 68
+    },
+    {
+      "table": "public.obligations_projection",
+      "digest": "88201a6b61991360358072a5dcc4531cb398335a101f7e57d1abde3d757ce69e",
+      "rows": 45
+    },
+    {
+      "table": "public.open_commitments_projection",
+      "digest": "77dc1de51abae3f5b06f6d62f17cb7248b2f0f10130c00ce963b486213a0a104",
+      "rows": 41
+    },
+    {
+      "table": "public.owner_overlay_deltas",
+      "digest": "1aef01bddd1d5c8d9b2462c93ff456e20679206c5e90735564ccc288f6fdcb96",
+      "rows": 104
+    },
+    {
+      "table": "public.owner_scope_members",
+      "digest": "2396e3e3f2727509afd93b8b6fb2c859740ac15e2079a1dc75950604f3a91f13",
+      "rows": 122
+    },
+    {
+      "table": "public.owner_scopes",
+      "digest": "8e14aa09ae0e8fad0baeaddcb2c70c48b53236554946a2d8c4b9537df7770539",
+      "rows": 123
+    },
+    {
+      "table": "public.owner_sequences",
+      "digest": "e8407459b371d5e4cb78f323eb2b45e263b0e70720e336e22ddc7e484aaab4a4",
+      "rows": 9
+    },
+    {
+      "table": "public.performance_measurements",
+      "digest": "9b6a95623347461a442b089ca203c6b5d91cc4fbc04b132a6cff86d2776b196e",
+      "rows": 5
+    },
+    {
+      "table": "public.plugin_capability_grants",
+      "digest": "9af7691fa4c0deb8a0620226b030662e35a2ae67dd8cdef736b75e172c4f52b2",
+      "rows": 8
+    },
+    {
+      "table": "public.policy_decisions",
+      "digest": "22a550001e7d069e7e7d938566b63bf68e9af292a4b62723a9495d8ddf6a5a09",
+      "rows": 441
+    },
+    {
+      "table": "public.projection_rebuild_receipts",
+      "digest": "831cf162207c9b0759573426b9e6c53bd873edc5ca7d7cf467f54ed6d519c604",
+      "rows": 59
+    },
+    {
+      "table": "public.proposition_fingerprints",
+      "digest": "2538928da242a8bf376231bc4679e00451fde0de4c6daf41b80abeac490cad20",
+      "rows": 185
+    },
+    {
+      "table": "public.proposition_lineage",
+      "digest": "9e98db3eb41757237355f37aec1edfc45602befca5b8ad25d6530855fe810e5c",
+      "rows": 10
+    },
+    {
+      "table": "public.propositions",
+      "digest": "a498dc82ec13c3079813f1864c81fe96d8079fa43c966234464d0232e5be7cb5",
+      "rows": 456
+    },
+    {
+      "table": "public.recommendation_artifacts",
+      "digest": "1e41ceadb8bb296333809a70c99b862f85fcd2df016327d08925afe404491d33",
+      "rows": 6
+    },
+    {
+      "table": "public.reconsideration_candidates",
+      "digest": "4e68d307510fa8d62f5aa2d100be823368f37d6f9b10d86e90f48bc5f33c064e",
+      "rows": 28
+    },
+    {
+      "table": "public.registry_contracts",
+      "digest": "555a7545cbc1300983490371e2a988487d561154f91006dcfd8f4f107d57252c",
+      "rows": 22
+    },
+    {
+      "table": "public.registry_migration_manifests",
+      "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rows": 0
+    },
+    {
+      "table": "public.registry_releases",
+      "digest": "128bcbe0f324c75bf99bb62eaa5c5244f0a73b3ce1010c7b5b4fec1a0210acc5",
+      "rows": 1
+    },
+    {
+      "table": "public.resolution_assertions",
+      "digest": "e21a5cd86dab09a1049f681fabb90e726cfec310a9de375db622b460553ba14f",
+      "rows": 46
+    },
+    {
+      "table": "public.retention_and_deletion_requests",
+      "digest": "03b97ba9a488be99212a3060fea46a5f15d720942cc3c0efd9e3ee961351d54c",
+      "rows": 18
+    },
+    {
+      "table": "public.retention_settings",
+      "digest": "9dbf9d7157a7889d7d22e75a2aa2e5e393ce12dcb978c4af6e8fd0135238327b",
+      "rows": 3
+    },
+    {
+      "table": "public.schedule_projection",
+      "digest": "b2dd67c599a714c1d1f908332ac0d9e3351291f7d47b1bbf01a707f47b66cdb9",
+      "rows": 9
+    },
+    {
+      "table": "public.shadow_evaluation_runs",
+      "digest": "37b88b5b76e500d51106fc04cfab396f1efb93806b40e67bf0c8c179dd9120ef",
+      "rows": 3
+    },
+    {
+      "table": "public.slot_fingerprints",
+      "digest": "9e0217a05bbb43aa7d504e80c704cf3f27a2547eccc8d3b2da316990c4835461",
+      "rows": 177
+    },
+    {
+      "table": "public.source_anchors",
+      "digest": "ae6fa1581ff5b0686745ea1acf45d041de9fc5098d135bb0bdb914936bf49475",
+      "rows": 1069
+    },
+    {
+      "table": "public.source_items",
+      "digest": "cf1723645bbd48af9d7d5d0c794a67b67c77661978fed5ff0de71592c7a1fbd6",
+      "rows": 602
+    },
+    {
+      "table": "public.triage_decisions",
+      "digest": "9aa71091a9f4a515d4009fa4bd2d20b283e97238c66a71427c30461eaba399a3",
+      "rows": 381
+    },
+    {
+      "table": "public.users",
+      "digest": "29a7d09c762f1d50d61f9eaaf3c8bbdf4397767c5e275ff653fc7e23f6dd26d3",
+      "rows": 123
+    },
+    {
+      "table": "public.weekly_reviews",
+      "digest": "e202e71da154e9ef946cc1a99c042a04241028d0086330021000327e2fcaf907",
+      "rows": 9
+    }
+  ],
+  "objectsRestored": 103,
+  "keyRecoveryVerified": true,
+  "liveEvidenceObjectsVerified": 103,
+  "syntheticObjectMappings": 285,
+  "acceptanceAnswersRegenerated": true,
+  "comparatorVersion": "recovery-output-v1",
+  "fixtureScope": "Fresh Today/Ask/Why reads of terminal persisted states from the existing passing AC44 suites; no fixture reseeding after restore.",
+  "fixtures": [
+    {
+      "id": "AC44.01",
+      "sourceDigest": "fec1bb89fe894e6730ea1716288336c9f753a02c4903b8bdcfdf54bbba52afde",
+      "restoredDigest": "fec1bb89fe894e6730ea1716288336c9f753a02c4903b8bdcfdf54bbba52afde",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_FINANCE",
+      "statements": 7,
+      "beliefs": 9,
+      "explanations": 7,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.02",
+      "sourceDigest": "4e611bdf9000c3f611fe69e4ac41bdec2e777c450fd25bdade5358d9d9c14072",
+      "restoredDigest": "4e611bdf9000c3f611fe69e4ac41bdec2e777c450fd25bdade5358d9d9c14072",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 5,
+      "beliefs": 11,
+      "explanations": 2,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.03",
+      "sourceDigest": "47e4bffaeac1a8df39eaf27118cd1e61de9237f22ab0b24b7cb04944a0857fe4",
+      "restoredDigest": "47e4bffaeac1a8df39eaf27118cd1e61de9237f22ab0b24b7cb04944a0857fe4",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What changed about the loan?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 5,
+      "beliefs": 11,
+      "explanations": 2,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.04",
+      "sourceDigest": "922fefd22bc6c774b128232349341fb0b9973b1a2bb9a975989e28f7d0859e9c",
+      "restoredDigest": "922fefd22bc6c774b128232349341fb0b9973b1a2bb9a975989e28f7d0859e9c",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 5,
+      "beliefs": 11,
+      "explanations": 0,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.05",
+      "sourceDigest": "bad95e29fac7958743572cbfb6fe21d267e96b044f2b1031e256620e7471f639",
+      "restoredDigest": "bad95e29fac7958743572cbfb6fe21d267e96b044f2b1031e256620e7471f639",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What did I promise Daniel?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 1,
+      "beliefs": 0,
+      "explanations": 0,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 9
+    },
+    {
+      "id": "AC44.06",
+      "sourceDigest": "d9af447b56129cdf693b73ffa9d78d3304e95b69f25c212553f245528023aa19",
+      "restoredDigest": "d9af447b56129cdf693b73ffa9d78d3304e95b69f25c212553f245528023aa19",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Does anything about the loan contradict itself?",
+      "purpose": "PERSONAL_FINANCE",
+      "statements": 1,
+      "beliefs": 9,
+      "explanations": 2,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.07",
+      "sourceDigest": "0486190bd1b80c1d2573b76c3b59b8d073c843c489ef97baa341c794f2677896",
+      "restoredDigest": "0486190bd1b80c1d2573b76c3b59b8d073c843c489ef97baa341c794f2677896",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What is on my calendar?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 6,
+      "beliefs": 11,
+      "explanations": 0,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.08",
+      "sourceDigest": "666c34faf5ceee16123ec9df5442fb8bf954196e3a50f88bdcd834986b679e9f",
+      "restoredDigest": "666c34faf5ceee16123ec9df5442fb8bf954196e3a50f88bdcd834986b679e9f",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What did I promise?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 27,
+      "beliefs": 36,
+      "explanations": 8,
+      "todayItems": 3,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.09",
+      "sourceDigest": "7f9539c1b215263ba1412946a808d0076efdbacf5751385a74c535fc603c8884",
+      "restoredDigest": "7f9539c1b215263ba1412946a808d0076efdbacf5751385a74c535fc603c8884",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Did my prediction come true?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 19,
+      "beliefs": 11,
+      "explanations": 19,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.10",
+      "sourceDigest": "27cba10df7cc341dccf1f886239527bc36d6e0e301e2238e03477351c7998e85",
+      "restoredDigest": "27cba10df7cc341dccf1f886239527bc36d6e0e301e2238e03477351c7998e85",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What did I believe at the time?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 5,
+      "beliefs": 11,
+      "explanations": 2,
+      "todayItems": 0,
+      "historicalModes": 2,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.11",
+      "sourceDigest": "d02fa1a201b58a6e03acf7eeea93999fa10442ece1d90642faf1f64bedcdef10",
+      "restoredDigest": "d02fa1a201b58a6e03acf7eeea93999fa10442ece1d90642faf1f64bedcdef10",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Does anything about the loan contradict itself?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 3,
+      "beliefs": 36,
+      "explanations": 14,
+      "todayItems": 3,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.12",
+      "sourceDigest": "8ed22df2d37fb27ec843f662cfd01f35b12ed1bea0ae0f2a4d1f113d210989db",
+      "restoredDigest": "8ed22df2d37fb27ec843f662cfd01f35b12ed1bea0ae0f2a4d1f113d210989db",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What do I know about Daniel?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 3,
+      "beliefs": 4,
+      "explanations": 0,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.13",
+      "sourceDigest": "19e8ccc0cd88abefc9b49f5c508f0c1b7f4e25f97ba260374e7c21dc30a27af1",
+      "restoredDigest": "19e8ccc0cd88abefc9b49f5c508f0c1b7f4e25f97ba260374e7c21dc30a27af1",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 20,
+      "beliefs": 21,
+      "explanations": 8,
+      "todayItems": 1,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.14",
+      "sourceDigest": "827ca8398280376f730f1f0a68851d7b6cc2e0c28f14f408fc8912b9b188c48d",
+      "restoredDigest": "827ca8398280376f730f1f0a68851d7b6cc2e0c28f14f408fc8912b9b188c48d",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Does anything about the loan contradict itself?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 1,
+      "beliefs": 21,
+      "explanations": 4,
+      "todayItems": 1,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.15",
+      "sourceDigest": "5e8b22b2932ff857b0b6b4f16aab631955320855841ac33e12924b79ac832c1a",
+      "restoredDigest": "5e8b22b2932ff857b0b6b4f16aab631955320855841ac33e12924b79ac832c1a",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I owe Dana for the concert tickets?",
+      "purpose": "PERSONAL_FINANCE",
+      "statements": 7,
+      "beliefs": 9,
+      "explanations": 7,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.16",
+      "sourceDigest": "4af9f39cb788598222825a2d98f337c4e42ec8d8287bcc25b52af177dbd57bed",
+      "restoredDigest": "4af9f39cb788598222825a2d98f337c4e42ec8d8287bcc25b52af177dbd57bed",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "What does Daniel say?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 5,
+      "beliefs": 11,
+      "explanations": 2,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.17",
+      "sourceDigest": "ea9558d87060063398c42c061b77ce8906b6aea73bd0ab722fcedbe90361adae",
+      "restoredDigest": "ea9558d87060063398c42c061b77ce8906b6aea73bd0ab722fcedbe90361adae",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_ASSISTANCE",
+      "statements": 16,
+      "beliefs": 36,
+      "explanations": 8,
+      "todayItems": 3,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.18",
+      "sourceDigest": "c16eb148f3e75a8c7c9a3001a61b681a9689749266f3221d0335bcb18eeab46d",
+      "restoredDigest": "c16eb148f3e75a8c7c9a3001a61b681a9689749266f3221d0335bcb18eeab46d",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I owe Dana?",
+      "purpose": "PERSONAL_FINANCE",
+      "statements": 1,
+      "beliefs": 1,
+      "explanations": 1,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.19",
+      "sourceDigest": "e767ff6d1ff2b7a8c0cf1c6bbd9bf885f653ea50db6e6846b7b24c3b85cb63e8",
+      "restoredDigest": "e767ff6d1ff2b7a8c0cf1c6bbd9bf885f653ea50db6e6846b7b24c3b85cb63e8",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_FINANCE",
+      "statements": 1,
+      "beliefs": 1,
+      "explanations": 1,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    },
+    {
+      "id": "AC44.20",
+      "sourceDigest": "fec1bb89fe894e6730ea1716288336c9f753a02c4903b8bdcfdf54bbba52afde",
+      "restoredDigest": "fec1bb89fe894e6730ea1716288336c9f753a02c4903b8bdcfdf54bbba52afde",
+      "frozenAt": "2026-09-19T16:19:01.264Z",
+      "question": "Do I still owe Daniel?",
+      "purpose": "PERSONAL_FINANCE",
+      "statements": 7,
+      "beliefs": 9,
+      "explanations": 7,
+      "todayItems": 0,
+      "historicalModes": 0,
+      "ownerOverlayDeltas": 0
+    }
+  ]
+}

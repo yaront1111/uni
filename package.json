@@ -6,6 +6,9 @@
   "type": "module",
   "scripts": {
     "test": "node scripts/test.mjs",
+    "lint": "pnpm typecheck && pnpm exec vitest run src/architecture.test.ts src/boundaries.test.ts",
+    "ops:report": "tsx src/operations/report.ts",
+    "check:v0-release": "tsx src/operations/report.ts --check",
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm --filter @unai/web typecheck",
     "build": "pnpm --filter @unai/web build",
     "dev:web": "pnpm --filter @unai/web dev",

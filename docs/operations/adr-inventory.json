@@ -1,0 +1,2965 @@
+{
+  "format": "unai-approved-requirement-adr-inventory/1",
+  "reviewedAt": "2026-09-19T16:05:50.287Z",
+  "gateRef": {
+    "contractId": "contract-uai-v0",
+    "revisionDigest": "22027aaaeea527eb7b1d2ae3dab70bfabda8ff13c660bf0e0839356f91fe1339",
+    "revisionId": "rev-uai-v0-001"
+  },
+  "sourceCommit": "7c50078fb1e21577cbef61155da0cd3b24e73930",
+  "scope": "All 128 requirements of the approved revision, reviewed against the existing implementation reports, ADR decisions, mapped test assertions and Git history. This inventory records deliberate implementation choices and known evidence gaps; it is not an acceptance attestation. Later PRD Task A-E roadmap additions are not silently substituted for this sealed contract.",
+  "requirements": [
+    {
+      "requirementId": "REQ-AI-01",
+      "statement": "AI output cannot independently support its own truth: assistant statements are stored only as conversation evidence and are never retrieved as proof (FR-070, §24.2, §44.15).",
+      "criterionIds": [
+        "CRT-AI-01-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts",
+        "packages/api/src/security.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md",
+        "docs/adr/0030-governed-action-and-data-control.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-AI-02",
+      "statement": "Derived propositions record input claim and proposition IDs, evaluator ID, model or code version, registry release, calculation inputs, and creation time, and become UNSUPPORTED when all support is invalidated (FR-071, §24.4).",
+      "criterionIds": [
+        "CRT-AI-02-A"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md",
+        "docs/adr/0030-governed-action-and-data-control.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-AI-03",
+      "statement": "User confirmation of an assistant statement creates a new USER_CONFIRMATION claim and does not rewrite the assistant statement's origin (FR-074, §24.3).",
+      "criterionIds": [
+        "CRT-AI-03-A"
+      ],
+      "testPaths": [
+        "packages/api/src/corrections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md",
+        "docs/adr/0030-governed-action-and-data-control.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-AI-04",
+      "statement": "Recommendations, drafts, and tool requests are stored as recommendations, draft artifacts, and attempts respectively, and only an authoritative external receipt establishes actual execution (§24.2, §60, §8.4).",
+      "criterionIds": [
+        "CRT-AI-04-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts",
+        "packages/control/src/permissions.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md",
+        "docs/adr/0030-governed-action-and-data-control.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-01",
+      "statement": "First-party conversation ingestion stores every user and assistant message as evidence (§27.5).",
+      "criterionIds": [
+        "CRT-CON-01-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.test.ts",
+        "packages/connectors/src/manifests.test.ts",
+        "packages/domain/src/sources.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-02",
+      "statement": "A Gmail connector ingests real data read-only using thread updates as the primary unit (§20.5, §27.5, §54.1).",
+      "criterionIds": [
+        "CRT-CON-02-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.live.test.ts",
+        "packages/api/src/connectors.test.ts",
+        "packages/connectors/src/manifests.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-03",
+      "statement": "A Google Calendar connector ingests real data read-only using structured fields directly (§20.5, §27.5, §54.1).",
+      "criterionIds": [
+        "CRT-CON-03-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.live.test.ts",
+        "packages/api/src/connectors.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-04",
+      "statement": "A GitHub connector ingests real data read-only aggregated around PRs, issues, review threads, releases, and CI-failure episodes (§20.5, §27.5, §54.1).",
+      "criterionIds": [
+        "CRT-CON-04-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.live.test.ts",
+        "packages/api/src/connectors.test.ts",
+        "packages/connectors/src/manifests.test.ts",
+        "packages/domain/src/sources.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-05",
+      "statement": "Document upload stores and indexes documents immediately and parses them with lazy full extraction (§20.5, §27.5).",
+      "criterionIds": [
+        "CRT-CON-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.test.ts",
+        "packages/connectors/src/manifests.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-06",
+      "statement": "Connectors support incremental cursors, harmless duplicate delivery, disconnect, and deletion (§43.6, §51 exit criteria).",
+      "criterionIds": [
+        "CRT-CON-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.live.test.ts",
+        "packages/api/src/connectors.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-07",
+      "statement": "Each plugin declares a manifest of discrete capabilities, each with independent permission and risk classification (§27.1, §27.2).",
+      "criterionIds": [
+        "CRT-CON-07-A"
+      ],
+      "testPaths": [
+        "packages/api/src/connectors.test.ts",
+        "packages/connectors/src/bundle.test.ts",
+        "packages/connectors/src/manifests.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-08",
+      "statement": "No external write occurs without explicit permission and policy approval, and V0 external writes are limited to draft creation (§6, §8.4, §27.5, §51).",
+      "criterionIds": [
+        "CRT-CON-08-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts",
+        "packages/control/src/permissions.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-CON-09",
+      "statement": "Connector adapters emit evidence but never commit beliefs directly (§32 rules).",
+      "criterionIds": [
+        "CRT-CON-09-A"
+      ],
+      "testPaths": [
+        "src/boundaries.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-DEC-01",
+      "statement": "Phase 6 delivers a goal model with priority history, a decision frame and decision projection with question, alternatives, assumptions, recommendation, choice, review date, predicted outcomes, and actual resolution links, surfaced as the Decisions workspace (§7.4, §25.3, §52).",
+      "criterionIds": [
+        "CRT-DEC-01-A"
+      ],
+      "testPaths": [
+        "apps/web/components/Decisions.test.ts",
+        "apps/web/components/Goals.test.ts",
+        "packages/api/src/decisions.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-DEC-02",
+      "statement": "Uai can reconstruct why a decision was made and compare a prediction with its outcome (§52 exit criteria).",
+      "criterionIds": [
+        "CRT-DEC-02-A"
+      ],
+      "testPaths": [
+        "apps/web/components/Decisions.test.ts",
+        "packages/api/src/decisions.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-DEC-03",
+      "statement": "Mentor advice distinguishes evidence, inference, and recommendation and surfaces contradictions between goals and behavior without exceeding attention budgets (§4.9, §37.7, §52 exit criteria).",
+      "criterionIds": [
+        "CRT-DEC-03-A"
+      ],
+      "testPaths": [
+        "apps/web/components/Mentor.test.ts",
+        "packages/api/src/decisions.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-EVD-01",
+      "statement": "POST /v1/evidence durably persists raw evidence and returns the evidence ID and ingestion status before any semantic processing runs (FR-001, §35.1).",
+      "criterionIds": [
+        "CRT-EVD-01-A"
+      ],
+      "testPaths": [
+        "packages/api/src/evidence.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0010-synchronous-evidence-runtime.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-EVD-02",
+      "statement": "Evidence ingestion is idempotent (FR-002, §33.2, §34.2).",
+      "criterionIds": [
+        "CRT-EVD-02-A",
+        "CRT-EVD-02-B",
+        "CRT-EVD-02-C"
+      ],
+      "testPaths": [
+        "packages/api/src/evidence.test.ts",
+        "packages/api/src/source-import.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0010-synchronous-evidence-runtime.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-EVD-03",
+      "statement": "Every evidence item retains owner scope, source type, connector ID, external ID, actor, occurred time, observed time, raw object reference, content hash, sensitivity, allowed purposes, and ingestion version (FR-003, §11.1).",
+      "criterionIds": [
+        "CRT-EVD-03-A"
+      ],
+      "testPaths": [
+        "packages/api/src/evidence.test.ts",
+        "packages/api/src/extraction-pipeline.test.ts",
+        "packages/api/src/source-import.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0010-synchronous-evidence-runtime.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-EVD-04",
+      "statement": "Connector parsing preserves external IDs and threading and recurrence relationships (FR-004).",
+      "criterionIds": [
+        "CRT-EVD-04-A",
+        "CRT-EVD-04-B"
+      ],
+      "testPaths": [
+        "packages/api/src/source-import.test.ts",
+        "packages/domain/src/sources.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0010-synchronous-evidence-runtime.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-EVD-05",
+      "statement": "Extraction, model, or worker failure never removes or invalidates stored evidence (FR-005, §54.2).",
+      "criterionIds": [
+        "CRT-EVD-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/extraction-pipeline.test.ts",
+        "packages/model/src/gateway.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0010-synchronous-evidence-runtime.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-EVD-06",
+      "statement": "Claims reference precise source anchors (message span, document page and character range, calendar field, connector JSON path, or GitHub comment) when feasible (§11.2).",
+      "criterionIds": [
+        "CRT-EVD-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/extraction-pipeline.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0010-synchronous-evidence-runtime.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-01",
+      "statement": "Accepted semantic memory exists only as registry-defined frame instances, slots, propositions, claims, and resolution assertions whose frame type and predicate are members of the pinned registry release (FR-010, FR-020).",
+      "criterionIds": [
+        "CRT-MEM-01-A"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts",
+        "packages/memory/src/canonicalization.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-02",
+      "statement": "User-facing life categories are computed views over singly-stored objects, not exclusive storage containers (FR-011, invariant 4-5).",
+      "criterionIds": [
+        "CRT-MEM-02-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/context/src/context.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-03",
+      "statement": "All durable semantic objects (frame instances, belief slots, propositions, claims, resolution assertions, registry releases, belief transactions, overlay deltas, projection versions) use UUIDv7 surrogate identifiers (FR-012, §13.1).",
+      "criterionIds": [
+        "CRT-MEM-03-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/identity-invariant.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-04",
+      "statement": "Fingerprints and hashes are versioned lookup indexes only and never primary identities (FR-013, §13.2).",
+      "criterionIds": [
+        "CRT-MEM-04-A",
+        "CRT-MEM-04-B"
+      ],
+      "testPaths": [
+        "packages/memory/src/identity.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-05",
+      "statement": "Claim, proposition, belief-slot, and frame-instance identities are separate, and a belief slot excludes the candidate value (FR-014, §13.3).",
+      "criterionIds": [
+        "CRT-MEM-05-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/identity.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-06",
+      "statement": "The system preserves valid time and recorded time and answers current-state, corrected-historical-state, and historical-belief-state queries (FR-015, §12.3, §44.10).",
+      "criterionIds": [
+        "CRT-MEM-06-A",
+        "CRT-MEM-06-B"
+      ],
+      "testPaths": [
+        "packages/memory/src/canonicalization.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-07",
+      "statement": "Temporal interpretations preserve normalized time, original text, original timezone or locale, precision, resolver version, and confidence, and vague phrases are never stored as falsely precise (§12.5).",
+      "criterionIds": [
+        "CRT-MEM-07-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/identity.test.ts",
+        "packages/memory/src/temporal.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-08",
+      "statement": "Contradictory claims for the same slot coexist without silent overwrite and are exposed to high-risk calculations (FR-016, §44.11).",
+      "criterionIds": [
+        "CRT-MEM-08-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projections.test.ts",
+        "packages/context/src/context.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-09",
+      "statement": "Corrections (same valid period) and changes (later non-overlapping valid period) are represented differently (FR-017, §57).",
+      "criterionIds": [
+        "CRT-MEM-09-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/canonicalization.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-10",
+      "statement": "Frame-instance and entity merge and split are governed belief transactions that preserve lineage, keep old identifiers resolvable, never repurpose identifiers, and rebuild affected projections (FR-018, §14, §44.13, §44.14).",
+      "criterionIds": [
+        "CRT-MEM-10-A",
+        "CRT-MEM-10-B",
+        "CRT-MEM-10-C"
+      ],
+      "testPaths": [
+        "packages/api/src/lineage.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-11",
+      "statement": "Entity and frame-instance matching defaults to under-merge: only CONFIRMED_MATCH reuses an instance for a material accepted update and same-name entities are not merged without sufficient evidence (§13.4, §44.2, §44.12).",
+      "criterionIds": [
+        "CRT-MEM-11-A",
+        "CRT-MEM-11-B",
+        "CRT-MEM-11-C"
+      ],
+      "testPaths": [
+        "packages/memory/src/canonicalization.test.ts",
+        "packages/memory/src/identity.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-12",
+      "statement": "Repeated messages from the same source, quoted history, and model summaries of the same source are not counted as independent support, and circular support is rejected (FR-043, §15.4).",
+      "criterionIds": [
+        "CRT-MEM-12-A",
+        "CRT-MEM-12-B"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts",
+        "packages/belief/src/support.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-13",
+      "statement": "Modality (ACTUAL, SCHEDULED, INTENDED, COMMITTED, EXPECTED, PREDICTED, RECOMMENDED, CONDITIONAL) is stored separately from belief status and claim origin (§11.7, invariant 14).",
+      "criterionIds": [
+        "CRT-MEM-13-A"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-14",
+      "statement": "Claims preserve multidimensional confidence (at least extraction, entity-resolution, temporal-resolution, and instance-resolution confidence) rather than a single opaque score (§15.3).",
+      "criterionIds": [
+        "CRT-MEM-14-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/identity.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-MEM-15",
+      "statement": "User-confirmed corrections are protected evidence anchors that new extraction may contest but never silently reverse (§15.5, invariant 38).",
+      "criterionIds": [
+        "CRT-MEM-15-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/overlay.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0015-canonical-identity-schema-decisions.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-01",
+      "statement": "Excluding final LLM generation, evidence-ingestion acknowledgement P95 is under 1 second, current typed-projection read P95 is under 500 ms, and normal context-packet assembly P95 is under 1.5 seconds (§41 Performance).",
+      "criterionIds": [
+        "CRT-NFR-01-A"
+      ],
+      "testPaths": [
+        "packages/api/src/performance.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-02",
+      "statement": "Background jobs are durable with idempotency, attempt count, lease, retries, and inspectable dead-letter handling (§33.15, §41 Reliability).",
+      "criterionIds": [
+        "CRT-NFR-02-A"
+      ],
+      "testPaths": [
+        "packages/api/src/ops.test.ts",
+        "packages/jobs/src/index.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-03",
+      "statement": "Backup and restore procedures are tested and state can be rebuilt from evidence and committed transactions (§41 Reliability).",
+      "criterionIds": [
+        "CRT-NFR-03-A"
+      ],
+      "testPaths": [
+        "packages/domain/src/operations.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md",
+        "docs/adr/0034-coordinated-recovery-and-bounded-evidence.md",
+        "docs/adr/0035-historical-deviation-inventory.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-04",
+      "statement": "The user can export raw evidence and canonical memory, and embeddings can be regenerated (§41 Portability).",
+      "criterionIds": [
+        "CRT-NFR-04-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-05",
+      "statement": "Every pipeline stage emits correlation ID, owner scope without sensitive payload, duration, result, retry state, version identifiers, and cost where applicable through OpenTelemetry-compatible tracing, metrics, and structured logs (§41 Observability, §28).",
+      "criterionIds": [
+        "CRT-NFR-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts",
+        "packages/observability/src/index.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-06",
+      "statement": "All model calls pass through a provider-independent LLM gateway that schema-validates extraction output and records model, prompt, cost, latency, and correlation IDs (§28 design constraints).",
+      "criterionIds": [
+        "CRT-NFR-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/extraction-pipeline.test.ts",
+        "packages/model/src/gateway.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-07",
+      "statement": "The implementation uses the §28 reference stack (TypeScript monorepo, Fastify API, Next.js web, Zod-validated schemas, PostgreSQL source of truth with pgvector and a PostgreSQL-backed job queue, S3-compatible encrypted object storage, SQL migrations in Git) with no graph database and no separate vector database, or records an ADR for a deviation preserving the §28 alternative-stack properties.",
+      "criterionIds": [
+        "CRT-NFR-07-A"
+      ],
+      "testPaths": [
+        "packages/api/src/reference-stack.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-NFR-08",
+      "statement": "Domain packages do not import web UI code and the belief engine executes in unit tests without an LLM (§32 rules).",
+      "criterionIds": [
+        "CRT-NFR-08-A"
+      ],
+      "testPaths": [
+        "packages/belief/src/no-llm.test.ts",
+        "src/boundaries.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0001-reference-stack.md",
+        "docs/adr/0004-migration-ledger.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0012-durable-job-queue.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OPS-01",
+      "statement": "Operations documentation covers backup, restore, deletion, registry migration, projection rebuild, and connector revocation (§54.16).",
+      "criterionIds": [
+        "CRT-OPS-01-A"
+      ],
+      "testPaths": [
+        "packages/domain/src/operations.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0033-v0-operations-evidence.md",
+        "docs/adr/0034-coordinated-recovery-and-bounded-evidence.md",
+        "docs/adr/0035-historical-deviation-inventory.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OPS-02",
+      "statement": "Deliberate deviations from the PRD are recorded in ADRs under docs/adr before implementation, including initial ADRs (§0.7, §46).",
+      "criterionIds": [
+        "CRT-OPS-02-A"
+      ],
+      "testPaths": [
+        "packages/domain/src/operations.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0033-v0-operations-evidence.md",
+        "docs/adr/0034-coordinated-recovery-and-bounded-evidence.md",
+        "docs/adr/0035-historical-deviation-inventory.md"
+      ],
+      "review": {
+        "classification": "RETROSPECTIVE_PROCESS_RECORD",
+        "adr": "docs/adr/0035-historical-deviation-inventory.md",
+        "detail": "Existing same-commit, missing-date and merged-history records cannot establish advance recording. Retrospective records dated 2026-09-19 do not cure that timing requirement."
+      }
+    },
+    {
+      "requirementId": "REQ-OPS-03",
+      "statement": "V0 is declared done only with no unresolved P0 or P1 correctness or security defect (§54.17).",
+      "criterionIds": [
+        "CRT-OPS-03-A"
+      ],
+      "testPaths": [
+        "packages/domain/src/operations.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-01",
+      "statement": "Resolution assertions are the sole canonical outcome authority and no canonical contract defines a parallel outcome status predicate (FR-030, FR-031, §16.1).",
+      "criterionIds": [
+        "CRT-OUT-01-A",
+        "CRT-OUT-01-B"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projections.test.ts",
+        "packages/memory/src/resolutions.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-02",
+      "statement": "Target-less resolution assertions are supported (FR-032, §16.2, §44.4).",
+      "criterionIds": [
+        "CRT-OUT-02-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/resolutions.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-03",
+      "statement": "REALIZES and RESOLVES are explicit links that never rewrite the source proposition or frame (FR-033, §16.3, §16.4, §44.7).",
+      "criterionIds": [
+        "CRT-OUT-03-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/resolutions.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-04",
+      "statement": "Resolution assertions must reference a registry-defined transition contract that allows their outcome code (FR-034, §34.5).",
+      "criterionIds": [
+        "CRT-OUT-04-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/resolutions.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-05",
+      "statement": "Source plans, schedules, commitments, and predictions remain historically intact after an outcome is recorded (FR-035, §44.9).",
+      "criterionIds": [
+        "CRT-OUT-05-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/resolutions.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-06",
+      "statement": "Financial allocation arithmetic is capability-owned: allocation frames are canonical, advisory coverage is never canonical arithmetic input, and unallocated payment remainder stays unclassified (FR-036, §16.7, §26.4).",
+      "criterionIds": [
+        "CRT-OUT-06-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/money.test.ts",
+        "packages/capabilities/src/projections.test.ts",
+        "src/architecture.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-07",
+      "statement": "Passage of time may set derived projection flags such as overdue or dueSoon but never creates a canonical resolution assertion without supporting evidence or an explicit registry expiry rule (§12.6).",
+      "criterionIds": [
+        "CRT-OUT-07-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-OUT-08",
+      "statement": "A source frame's outcome projection is derived from accepted resolution assertions as UNRESOLVED, PARTIALLY_RESOLVED, RESOLVED, or CONTESTED (§16.6).",
+      "criterionIds": [
+        "CRT-OUT-08-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/resolutions.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-01",
+      "statement": "V0 implements typed open_commitments_projection, obligations_projection, and schedule_projection with the §25.3 fields as typed columns for query-critical values (FR-080, §33.12).",
+      "criterionIds": [
+        "CRT-PRJ-01-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projections.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-02",
+      "statement": "Projections are rebuildable from canonical memory, versioned, and deterministic for pinned inputs, and incremental results equal full replay (FR-081, FR-084, §25.4, §49).",
+      "criterionIds": [
+        "CRT-PRJ-02-A",
+        "CRT-PRJ-02-B"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projection-replay.test.ts",
+        "packages/capabilities/src/projections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-03",
+      "statement": "Every projection row carries owner scope, canonical source frame ID, projection version, canonical transaction watermark, owner overlay watermark, reducer version, is_complete, source manifest, and updated_at (FR-082, FR-083, §33.12).",
+      "criterionIds": [
+        "CRT-PRJ-03-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projections.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-04",
+      "statement": "GET /v1/projections/commitments and GET /v1/projections/obligations responses include completeness and overlay watermark (§35.9).",
+      "criterionIds": [
+        "CRT-PRJ-04-A"
+      ],
+      "testPaths": [
+        "packages/api/src/projections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-05",
+      "statement": "The Daniel obligation evolution scenario produces the §44.1 and §56 outcome: one obligation, reminder with no effect on amount or outcome, payment that does not self-settle, a canonical ILS 50 allocation resolving it FULFILLED, and an unclassified ILS 10 remainder.",
+      "criterionIds": [
+        "CRT-PRJ-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-06",
+      "statement": "A corrected amount shares the existing slot and creates a new proposition while preserving the earlier claim (§44.3).",
+      "criterionIds": [
+        "CRT-PRJ-06-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/canonicalization.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-PRJ-07",
+      "statement": "Commitments are created only from commitment language, not from consideration language, and completion is recorded as a resolution assertion (§26.2, §44.8, §58).",
+      "criterionIds": [
+        "CRT-PRJ-07-A"
+      ],
+      "testPaths": [
+        "packages/capabilities/src/projections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-QA-01",
+      "statement": "CI runs lint, unit tests, property-based tests, registry validation, registry contract tests, connector integration tests, security tests, corpus tests, and end-to-end tests from source evidence through Today/Ask output and explanation (§43, §46 exit criteria).",
+      "criterionIds": [
+        "CRT-QA-01-A"
+      ],
+      "testPaths": [
+        "packages/domain/src/operations.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-QA-02",
+      "statement": "A private gold corpus of at least ten real user-selected labeled Gmail threads is stored encrypted or locally gitignored, cannot be committed accidentally, has committed synthetic equivalents, and identity acceptance thresholds on it are recorded in CI (§43.4, §46, §47).",
+      "criterionIds": [
+        "CRT-QA-02-A"
+      ],
+      "testPaths": [
+        "packages/registry/src/evaluation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "DOCUMENTED_GATE_PLACEMENT_DEVIATION",
+        "adr": "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+        "detail": "Private real-corpus verification remains in the operator phase-exit gate; ordinary CI evaluates synthetic equivalents. Real-corpus verification is not claimed or waived."
+      }
+    },
+    {
+      "requirementId": "REQ-QA-03",
+      "statement": "No production canonical keying rule is approved solely on synthetic data (invariant 40, §46 exit criteria).",
+      "criterionIds": [
+        "CRT-QA-03-A"
+      ],
+      "testPaths": [
+        "packages/registry/src/evaluation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-QA-04",
+      "statement": "The system passes every acceptance scenario in §44.1 through §44.20 (§54.15).",
+      "criterionIds": [
+        "CRT-QA-04-A"
+      ],
+      "testPaths": [
+        "src/acceptance-gate.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+        "docs/adr/0033-v0-operations-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-01",
+      "statement": "All LLM and plugin memory reads pass through the Context Broker (FR-060, §23).",
+      "criterionIds": [
+        "CRT-RD-01-A"
+      ],
+      "testPaths": [
+        "src/boundaries.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-02",
+      "statement": "Every context request declares owner scope, requesting actor, purpose, world time, knowledge time, maximum sensitivity, and action risk, and is authorized before retrieval (FR-061, §23.1, §23.2).",
+      "criterionIds": [
+        "CRT-RD-02-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/context/src/context.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-03",
+      "statement": "Current-state selection is deterministic code that filters by valid time, knowledge time, context, modality, lifecycle, correction and supersession, includes conflicts and overlay deltas, and returns the selected state with its selection reason, without the language model choosing the latest value (FR-062, §23.4).",
+      "criterionIds": [
+        "CRT-RD-03-A"
+      ],
+      "testPaths": [
+        "packages/context/src/answering.test.ts",
+        "packages/context/src/question.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-04",
+      "statement": "Structured and temporal retrieval precede semantic ranking, and semantic search runs only after hard filters for owner, permission, time, source, and entity (FR-063, §23.2).",
+      "criterionIds": [
+        "CRT-RD-04-A"
+      ],
+      "testPaths": [
+        "packages/context/src/semantic.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-05",
+      "statement": "Context packets include current and historical beliefs, future claims, resolution assertions, conflicts, unknowns, owner overlay deltas, projection fragments with completeness, evidence references, redactions, and watermarks (FR-064, §23.5).",
+      "criterionIds": [
+        "CRT-RD-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/context/src/context.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md",
+        "docs/adr/0034-coordinated-recovery-and-bounded-evidence.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-06",
+      "statement": "Every generated personal answer persists an answer manifest with packet ID and hash, belief, claim, evidence and overlay delta IDs, projection versions, watermarks, registry release, and model and prompt version (FR-065, §23.6, §33.14).",
+      "criterionIds": [
+        "CRT-RD-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-07",
+      "statement": "No surface or API claims that an answer manifest proves which items the model internally used (FR-066, §44.20).",
+      "criterionIds": [
+        "CRT-RD-07-A"
+      ],
+      "testPaths": [
+        "apps/web/components/AnswerProvenance.test.ts",
+        "packages/api/src/answers.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-08",
+      "statement": "A grounding validator checks every personal answer before presentation that material factual statements map to packet objects, future claims are not worded as completed, contested beliefs are not worded as certain, inferences are not represented as source evidence, and no hidden sensitivity scope leaks, and it can regenerate, downgrade wording, add uncertainty, or block (FR-067, FR-072, FR-073, §24.6).",
+      "criterionIds": [
+        "CRT-RD-08-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-09",
+      "statement": "GET /v1/memory/propositions/{id}/explain returns current assessment, claims, evidence anchors, support graph, contradictions, temporal history, resolution links, registry versions, and projection consumers (§35.8).",
+      "criterionIds": [
+        "CRT-RD-09-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/context/src/context.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-10",
+      "statement": "Memory threads are exposed through GET /v1/memory/threads/{id} and POST /v1/memory/threads/{id}/members, and one object can belong to several threads without duplicating evidence (§11.14, §35.13).",
+      "criterionIds": [
+        "CRT-RD-10-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/context/src/context.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-11",
+      "statement": "When a belief or overlay delta changes materially, previous answers whose packets contained it can be identified through answer manifests (§23.7).",
+      "criterionIds": [
+        "CRT-RD-11-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RD-12",
+      "statement": "Question answering classifies the requested answer type (current state, historical state, episode recall, causal explanation, future commitment, prediction review, aggregation, contradiction check) and labels uncertainty with source links (§8.2, §23.3).",
+      "criterionIds": [
+        "CRT-RD-12-A"
+      ],
+      "testPaths": [
+        "packages/api/src/ask.test.ts",
+        "packages/context/src/answering.test.ts",
+        "packages/context/src/question.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-01",
+      "statement": "The registry is a set of Git-versioned declarative contract files loaded from immutable Git-tagged releases, with no runtime registry service (FR-022, §17.1).",
+      "criterionIds": [
+        "CRT-REG-01-A",
+        "CRT-REG-01-B"
+      ],
+      "testPaths": [
+        "packages/api/src/ops.test.ts",
+        "packages/api/src/registry-boundary.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-02",
+      "statement": "The CLI commands uai registry lint, uai registry test, uai registry shadow-diff, and uai registry projection-replay exist and run in CI (§35.14).",
+      "criterionIds": [
+        "CRT-REG-02-A"
+      ],
+      "testPaths": [
+        "packages/registry/src/evaluation-db.test.ts",
+        "packages/registry/src/evaluation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-03",
+      "statement": "Registry release 0.1.0 contains contracts for shared.obligation (monetary only), shared.commitment, shared.event_occurrence, and finance.payment_allocation, each defining every §17.3 frame-contract field and §17.4 predicate field.",
+      "criterionIds": [
+        "CRT-REG-03-A"
+      ],
+      "testPaths": [],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-04",
+      "statement": "Unknown surface predicates are preserved, indexable, and attachable provisionally to memory threads but cannot supersede an accepted canonical belief, resolve a canonical conflict, become an authoritative current value, or trigger a high-risk action (FR-021, §17.5).",
+      "criterionIds": [
+        "CRT-REG-04-A"
+      ],
+      "testPaths": [
+        "packages/belief/src/unregistered-predicates.test.ts",
+        "packages/context/src/answering.test.ts",
+        "packages/context/src/question.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-05",
+      "statement": "Identity-affecting, transition-affecting, and breaking registry changes require shadow evaluation, an explicit migration manifest, slot and proposition diff, projection replay, and a rollback plan (FR-023, §17.7).",
+      "criterionIds": [
+        "CRT-REG-05-A"
+      ],
+      "testPaths": [
+        "packages/registry/src/evaluation-db.test.ts",
+        "packages/registry/src/evaluation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-06",
+      "statement": "Context kind is a closed set of BASE, QUOTED, and TEST; canonicalization defaults to BASE and extractors cannot select context kind (FR-024, FR-025, §11.6, §44.16).",
+      "criterionIds": [
+        "CRT-REG-06-A",
+        "CRT-REG-06-B"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts",
+        "packages/memory/src/canonicalization.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-REG-07",
+      "statement": "The registry supports exactly the FUNCTIONAL, SET, and EVENT cardinalities (FR-026).",
+      "criterionIds": [
+        "CRT-REG-07-A"
+      ],
+      "testPaths": [],
+      "adrPaths": [
+        "docs/adr/0011-git-registry-release.md",
+        "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+        "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RYW-01",
+      "statement": "Direct user writes receive an owner-scoped, transactionally allocated, strictly monotonic owner sequence unique per owner scope (FR-050, §33.10, §34.9).",
+      "criterionIds": [
+        "CRT-RYW-01-A"
+      ],
+      "testPaths": [
+        "packages/memory/src/overlay.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RYW-02",
+      "statement": "An acknowledged direct user assertion, correction, confirmation, suppression, or deletion request is observed by the next read for that owner from any device (FR-051, §21.2, §44.5).",
+      "criterionIds": [
+        "CRT-RYW-02-A",
+        "CRT-RYW-02-B"
+      ],
+      "testPaths": [
+        "packages/api/src/corrections.test.ts",
+        "packages/memory/src/overlay.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RYW-03",
+      "statement": "Unattached overlay deltas remain retrievable through candidate entities, candidate memory threads, discourse anchors, candidate frame types, recent owner sequence, and bounded semantic fallback (FR-052, §21.4).",
+      "criterionIds": [
+        "CRT-RYW-03-A"
+      ],
+      "testPaths": [
+        "packages/context/src/context.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RYW-04",
+      "statement": "Typed projections apply pending owner deltas or return persisted state plus the pending assertion marked incomplete while blocking high-risk actions, never silently stale state (FR-053, §21.6, §44.17).",
+      "criterionIds": [
+        "CRT-RYW-04-A"
+      ],
+      "testPaths": [
+        "packages/api/src/lineage.test.ts",
+        "packages/capabilities/src/projections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RYW-05",
+      "statement": "A pending delta that later fails validation transitions to CONTESTED with recorded failure reason, conflicting evidence, affected projections, and containing context-packet manifests, and never disappears (FR-054, §21.7, §44.6).",
+      "criterionIds": [
+        "CRT-RYW-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/answers.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-RYW-06",
+      "statement": "POST /v1/memory/corrections creates evidence, an owner overlay delta, and a proposed transaction without updating any row in place (§35.10, §8.3).",
+      "criterionIds": [
+        "CRT-RYW-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/corrections.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+        "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-01",
+      "statement": "Every evidence item and semantic object is owner-scoped and owner-scoped reads are enforced by row-level security or an equivalent enforced boundary plus application checks (FR-100, §30.5, §34.1).",
+      "criterionIds": [
+        "CRT-SEC-01-A"
+      ],
+      "testPaths": [
+        "packages/api/src/ops.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-02",
+      "statement": "Every memory read and action declares a purpose that policy evaluates (FR-101, §30.2).",
+      "criterionIds": [
+        "CRT-SEC-02-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/belief/src/governor.test.ts",
+        "packages/context/src/context.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-03",
+      "statement": "Plugins receive only the least context required for the requested operation (FR-102, §27.3).",
+      "criterionIds": [
+        "CRT-SEC-03-A"
+      ],
+      "testPaths": [
+        "packages/connectors/src/bundle.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-04",
+      "statement": "Connected content is untrusted data that cannot change policy, grant permissions, trigger tools, delete memory, exfiltrate context, or override instructions (FR-103, §27.4, §44.19).",
+      "criterionIds": [
+        "CRT-SEC-04-A"
+      ],
+      "testPaths": [
+        "packages/api/src/security.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-05",
+      "statement": "Secrets are held in a secrets manager and never enter model prompts or normal logs (FR-104, §30.5).",
+      "criterionIds": [
+        "CRT-SEC-05-A"
+      ],
+      "testPaths": [
+        "packages/api/src/security.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-06",
+      "statement": "Permanent deletion removes or invalidates raw evidence, parsed content, source anchors, claims, unsupported derived beliefs, embeddings, summaries, search indexes, projection rows, and Uai-controlled plugin caches, and audit records retain no prohibited content (FR-105, §30.7, §44.18).",
+      "criterionIds": [
+        "CRT-SEC-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-07",
+      "statement": "Every material read, write, projection rebuild, export, deletion, and external action records an append-only audit event with actor, owner scope, purpose, objects and fields accessed, policy decision, model or code version, result, and correlation ID (FR-106, §30.6).",
+      "criterionIds": [
+        "CRT-SEC-07-A"
+      ],
+      "testPaths": [
+        "apps/web/components/AuditLog.test.ts",
+        "packages/api/src/audit.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "DOCUMENTED_DEVIATION",
+        "adr": "docs/adr/0011-git-registry-release.md",
+        "detail": "Global registry publication cannot supply an owner/user audit principal; immutable release metadata and a structured trace/log form its publication audit."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-08",
+      "statement": "Data is encrypted in transit and at rest, and raw evidence object keys are separate from public identifiers (§30.5).",
+      "criterionIds": [
+        "CRT-SEC-08-A"
+      ],
+      "testPaths": [
+        "packages/api/src/security.test.ts",
+        "packages/api/src/transport.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-09",
+      "statement": "Sensitivity levels NORMAL, PRIVATE, and RESTRICTED are enforced so a context request never receives objects above its maximum sensitivity (§30.3, §23.1).",
+      "criterionIds": [
+        "CRT-SEC-09-A"
+      ],
+      "testPaths": [
+        "packages/api/src/context.test.ts",
+        "packages/context/src/context.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-10",
+      "statement": "Security tests for cross-owner access, cross-scope leakage, malicious email and document instructions, secret redaction, policy bypass, deleted-data search, plugin least privilege, and write-transaction replay pass before V0 completion (§31, §43.7, §54.14).",
+      "criterionIds": [
+        "CRT-SEC-10-A"
+      ],
+      "testPaths": [
+        "packages/api/src/security.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-SEC-11",
+      "statement": "High-risk actions cannot rely solely on provisional, contested, stale, or incomplete memory (invariant 42).",
+      "criterionIds": [
+        "CRT-SEC-11-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0002-ownership-and-audit.md",
+        "docs/adr/0005-object-storage-encryption.md",
+        "docs/adr/0013-secrets-manager-handles.md",
+        "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+        "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-01",
+      "statement": "The Today view delivers a daily briefing that uses owner-local date and timezone, includes only current or imminent material items by default, includes unresolved planned outcomes past their target time, surfaces decision-affecting conflicts, avoids repeating unchanged low-priority items daily, explains why each item is surfaced, offers at most a few recommendations, records a context packet manifest, and never implies a planned event happened without resolution evidence (§7.1, §38, FR-093).",
+      "criterionIds": [
+        "CRT-UX-01-A",
+        "CRT-UX-01-B"
+      ],
+      "testPaths": [
+        "packages/api/src/today.test.ts",
+        "packages/context/src/ranking.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-02",
+      "statement": "Today ranks items by consequence, urgency, goal relevance, confidence, required effort, reversibility, and attention budget, never purely by newest timestamp (§37.6).",
+      "criterionIds": [
+        "CRT-UX-02-A"
+      ],
+      "testPaths": [
+        "packages/api/src/today.test.ts",
+        "packages/context/src/ranking.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-03",
+      "statement": "The Ask surface answers natural-language questions about personal context through the Context Broker with source links and explanation controls (§7.2, FR-090).",
+      "criterionIds": [
+        "CRT-UX-03-A"
+      ],
+      "testPaths": [
+        "apps/web/e2e/ask.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-04",
+      "statement": "The Commitments surface shows open commitments, due dates, overdue projections, related people and sources, resolution evidence, and uncertain or contested commitments (§7.3, FR-090).",
+      "criterionIds": [
+        "CRT-UX-04-A"
+      ],
+      "testPaths": [
+        "apps/web/e2e/memory.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-05",
+      "statement": "The Weekly Review compares stated priorities with calendar allocation, open commitments with completed resolutions, decisions with outcomes where available, planned with observed spending where available, and reports material changes (§7.5, §39).",
+      "criterionIds": [
+        "CRT-UX-05-A"
+      ],
+      "testPaths": [
+        "apps/web/e2e/memory.test.ts",
+        "packages/api/src/weekly-review.test.ts",
+        "packages/review/src/review.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-06",
+      "statement": "Behavioral observations require multiple supporting episodes, counterexample search, an observation window, confidence, and a review or expiry date, and a single event never creates a stable personality claim (FR-094, §39).",
+      "criterionIds": [
+        "CRT-UX-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/weekly-review.test.ts",
+        "packages/review/src/review.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-07",
+      "statement": "The Memory Inspector shows current belief, historical timeline, original evidence, claims and asserting actors, inferences, conflicts, resolution assertions, connected memory threads, access history, and registry and extractor versions (§7.6, FR-090).",
+      "criterionIds": [
+        "CRT-UX-07-A"
+      ],
+      "testPaths": [
+        "apps/web/e2e/memory.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-08",
+      "statement": "The Memory Inbox presents batched review cards that group related uncertainty and state why each matters and what will change (§7.7, §37.4, FR-090).",
+      "criterionIds": [
+        "CRT-UX-08-A"
+      ],
+      "testPaths": [
+        "packages/api/src/inbox.test.ts",
+        "packages/review/src/review.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-09",
+      "statement": "The Permissions and Integrations surface lets the user inspect and change connected sources, read and write scopes, domain sensitivity, plugin capabilities, attention budgets, data retention, and export and deletion (§7.8).",
+      "criterionIds": [
+        "CRT-UX-09-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-10",
+      "statement": "The user has separate Correct, Changed, Confirm, Reject, Keep uncertain, Suppress, Archive, Delete, Merge, and Split actions backed by separate API semantics, never a single edit-memory action (FR-091, §37.3, §35.11, §35.12).",
+      "criterionIds": [
+        "CRT-UX-10-A",
+        "CRT-UX-10-B"
+      ],
+      "testPaths": [
+        "apps/web/components/Ask.test.ts",
+        "apps/web/components/CorrectionControls.test.ts",
+        "apps/web/components/Today.test.ts",
+        "apps/web/e2e/memory.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-11",
+      "statement": "Every material personal statement exposes a Why?/Sources action opening the accepted belief or overlay assertion, claiming actor, source excerpt, effective time, confidence and conflict status, and derivation path if inferred (FR-092, §37.1).",
+      "criterionIds": [
+        "CRT-UX-11-A"
+      ],
+      "testPaths": [
+        "apps/web/components/WhySources.test.ts",
+        "apps/web/e2e/ask.test.ts",
+        "packages/api/src/today.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-12",
+      "statement": "The UI visibly distinguishes confirmed, reported, inferred, contested, pending owner assertion, scheduled/planned, and resolved memory without relying on color alone (§37.2, §41 Accessibility).",
+      "criterionIds": [
+        "CRT-UX-12-A"
+      ],
+      "testPaths": [
+        "apps/web/components/Labels.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-13",
+      "statement": "The UI makes clear whether Uai observed, suggested, drafted, requested approval, executed, or received confirmation of execution (§37.8).",
+      "criterionIds": [
+        "CRT-UX-13-A"
+      ],
+      "testPaths": [
+        "packages/api/src/control.test.ts",
+        "packages/control/src/permissions.test.ts",
+        "packages/postgres/src/isolation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-14",
+      "statement": "Core views are keyboard navigable and usable with screen readers (§41 Accessibility).",
+      "criterionIds": [
+        "CRT-UX-14-A"
+      ],
+      "testPaths": [
+        "apps/web/components/Accessibility.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-UX-15",
+      "statement": "A memory thread view presents current projection, timeline, plans and expected outcomes, actual events, resolution links, open uncertainties, and related people, documents, and decisions (§37.5).",
+      "criterionIds": [
+        "CRT-UX-15-A"
+      ],
+      "testPaths": [
+        "apps/web/e2e/memory.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+        "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+        "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0030-governed-action-and-data-control.md",
+        "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-01",
+      "statement": "Language models may propose semantic updates but cannot commit accepted memory except through a Belief Transaction (FR-040, §19.1).",
+      "criterionIds": [
+        "CRT-WRT-01-A"
+      ],
+      "testPaths": [
+        "packages/model/src/assessment-boundary.test.ts",
+        "src/boundaries.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-02",
+      "statement": "Belief Transaction commit is atomic and idempotent (FR-041, §35.5).",
+      "criterionIds": [
+        "CRT-WRT-02-A",
+        "CRT-WRT-02-B"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts",
+        "packages/memory/src/canonicalization.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-03",
+      "statement": "Local policy ports EvaluateMemoryWrite, EvaluateMemoryRead, and EvaluateMemoryAction are implemented behind stable interfaces, evaluated before commit, read, or action, and Uai functions fully without Cordum (FR-042, §29.3, §29.4).",
+      "criterionIds": [
+        "CRT-WRT-03-A",
+        "CRT-WRT-03-B",
+        "CRT-WRT-03-C"
+      ],
+      "testPaths": [
+        "packages/belief/src/governor.test.ts",
+        "packages/context/src/context.test.ts",
+        "packages/domain/src/operations.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-04",
+      "statement": "Admission supports SOURCE_ONLY, INDEX_ONLY, AUTO_CLAIM, AUTO_ACCEPT, AUTO_PROVISIONAL, BATCH_REVIEW, and JUST_IN_TIME modes, with AUTO_ACCEPT only when all §19.2 conditions hold (FR-044).",
+      "criterionIds": [
+        "CRT-WRT-04-A"
+      ],
+      "testPaths": [
+        "packages/belief/src/admission.test.ts",
+        "packages/belief/src/governor.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-05",
+      "statement": "Proactive clarification obeys configurable attention budgets defaulting to at most three cards per owner per day, at most one per sensitivity scope per day, and no repeat of an unresolved question within seven days absent material new evidence, with policy inputs and decision reason logged (FR-045, §19.3, §19.4).",
+      "criterionIds": [
+        "CRT-WRT-05-A",
+        "CRT-WRT-05-B"
+      ],
+      "testPaths": [
+        "packages/api/src/inbox.test.ts",
+        "packages/review/src/review.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-06",
+      "statement": "Learned approval rules become active only after explicit user approval and remain inspectable, reversible, and scoped (§19.5).",
+      "criterionIds": [
+        "CRT-WRT-06-A"
+      ],
+      "testPaths": [
+        "packages/api/src/inbox.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-07",
+      "statement": "Triage routes every source item through deterministic Tier-0 parsing and a Tier-1 decision (SOURCE_ONLY, INDEX_ONLY, ENTITY_EXTRACTION, FULL_EXTRACTION, DEFER_UNTIL_RELEVANT) with a recorded routing reason before any deep extraction (§20.1-§20.5).",
+      "criterionIds": [
+        "CRT-WRT-07-A",
+        "CRT-WRT-07-B"
+      ],
+      "testPaths": [
+        "packages/api/src/extraction-pipeline.test.ts",
+        "packages/extraction/src/triage.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-08",
+      "statement": "Every extraction run records model/provider, prompt version, registry release, normalization version, entity-resolver and temporal-resolver versions, run timestamp, cost, and latency, and re-extraction creates new claims without mutating old ones (§22.1).",
+      "criterionIds": [
+        "CRT-WRT-08-A"
+      ],
+      "testPaths": [
+        "packages/api/src/extraction-pipeline.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-09",
+      "statement": "Shadow re-extraction and registry evaluation change no production state and produce instance-match, slot-collision, proposition, belief-status, resolution, projection, and cost/latency diffs (§22.2, §43.5).",
+      "criterionIds": [
+        "CRT-WRT-09-A"
+      ],
+      "testPaths": [
+        "packages/postgres/src/isolation.test.ts",
+        "packages/registry/src/evaluation-db.test.ts",
+        "packages/registry/src/evaluation.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    },
+    {
+      "requirementId": "REQ-WRT-10",
+      "statement": "The system tracks the economic metrics of §20.6 and §45.5, including cost per source item, cost per accepted belief, and tier routing distribution.",
+      "criterionIds": [
+        "CRT-WRT-10-A"
+      ],
+      "testPaths": [
+        "packages/api/src/metrics.test.ts"
+      ],
+      "adrPaths": [
+        "docs/adr/0016-model-path-triage-and-extraction.md",
+        "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+        "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+        "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md"
+      ],
+      "review": {
+        "classification": "NO_UNDOCUMENTED_DELIBERATE_DEVIATION_IDENTIFIED",
+        "detail": "Mapped implementation choices and contract tests retain this requirement. Passing tests and an ADR do not replace independent criterion verification."
+      }
+    }
+  ],
+  "historicalAdrs": [
+    {
+      "path": "docs/adr/0001-reference-stack.md",
+      "title": "ADR 0001: Phase 0 reference stack",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0002-ownership-and-audit.md",
+      "title": "ADR 0002: Ownership and audit foundation",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0003-device-owner-boundary.md",
+      "title": "ADR 0003: Explicit device ownership",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0004-migration-ledger.md",
+      "title": "ADR 0004: Transactional migration ledger",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0005-object-storage-encryption.md",
+      "title": "ADR 0005: S3 transport and encryption boundary",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0006-transaction-commit-receipt.md",
+      "title": "ADR 0006: Verify the database commit receipt",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0007-storage-response-lifecycle.md",
+      "title": "ADR 0007: Close rejected object response streams",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0008-authentication-and-responsive-web.md",
+      "title": "ADR 0008: Delegated sign-in, sessions and responsive web",
+      "date": "2026-09-14",
+      "history": "888e9f1395a8c077bf57d242e80273b03e19ecc2 2026-09-14T21:40:54+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0009-definer-role.md",
+      "title": "ADR 0009: Explicit restricted definer role",
+      "date": "2026-09-14",
+      "history": "2c75d0fd9c305bf8cfb104b782b88eb8ae17e0f4 2026-09-14T22:05:43+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0010-synchronous-evidence-runtime.md",
+      "title": "ADR 0010: Synchronous evidence persistence",
+      "date": "2026-09-14",
+      "history": "9048d308b5cb58862e3139cd6849cc5a40e9b4de 2026-09-15T00:25:27+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0011-git-registry-release.md",
+      "title": "ADR 0011: Git registry release 0.1.0, loader, lint and snapshot",
+      "date": "2026-09-16",
+      "history": "2ce84e5a56ce1ae0ff8b7abd3b409d416316ffb7 2026-09-17T09:28:14+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0012-durable-job-queue.md",
+      "title": "ADR 0012: Durable PostgreSQL job queue, leases and dead letter",
+      "date": "2026-09-17",
+      "history": "361909707c44f6c43d4e061371b6b104adde9128 2026-09-18T11:38:51+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0013-secrets-manager-handles.md",
+      "title": "ADR 0013: Secrets-manager handles for runtime credentials",
+      "date": "2026-09-18",
+      "history": "361909707c44f6c43d4e061371b6b104adde9128 2026-09-18T11:38:51+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0014-registry-snapshot-view-and-base-context-spaces.md",
+      "title": "ADR 0014: Read-only registry snapshot view, lint report artifact and BASE context spaces",
+      "date": "2026-09-18",
+      "history": "6f0bf817b595a1e757c62cbab6f3a0ccac960e1c 2026-09-18T12:24:43+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0015-canonical-identity-schema-decisions.md",
+      "title": "ADR 0015: Canonical identity schema — placeholder references, the release pin and under-merge strength",
+      "date": "2026-09-18",
+      "history": "c9730b35820f7b384a2e0185a38cab94d7166dcd 2026-09-18T12:49:20+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0016-model-path-triage-and-extraction.md",
+      "title": "ADR 0016: The model path — a provider-independent gateway, deterministic triage, and bounded extraction",
+      "date": "2026-09-18",
+      "history": "5ec23819262f97d7331385f90dc0a35a766dcc81 2026-09-18T13:19:27+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0017-belief-governor-transactions-support-and-policy-ports.md",
+      "title": "ADR 0017: The write governor — belief transactions, the support graph, and the local policy ports",
+      "date": "2026-09-18",
+      "history": "a86a4ba5e9924437744289631ddd48319f72ee40 2026-09-18T13:52:06+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0018-canonicalization-instance-matching-and-bitemporal-queries.md",
+      "title": "ADR 0018 — Canonicalization, frame-instance matching and the bitemporal query modes",
+      "history": "5ab1470b7af8a55b380ef376d63d3ae4342c3d16 2026-09-18T14:15:05+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0019-owner-sequence-overlay-deltas-and-correction-endpoints.md",
+      "title": "ADR 0019 — The owner sequence allocator, overlay deltas and the correction write paths",
+      "history": "120c2b856bb20dd26c0d724c4e47815c71e1442f 2026-09-18T14:39:43+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0020-resolution-assertions-links-and-outcome-projection.md",
+      "title": "ADR 0020 — Resolution assertions, protocol links and the derived outcome projection",
+      "history": "0de3b2bb91b4d59e4e5f0212e997d63e71ae8211 2026-09-18T15:02:19+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0021-typed-projections-replay-and-capability-arithmetic.md",
+      "title": "ADR 0021: Typed projections, projection replay and capability-owned arithmetic",
+      "date": "2026-09-18",
+      "history": "6eba5ccf0e133d08b50dd5f998daa578b027154d 2026-09-18T15:43:34+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0022-context-broker-packets-explain-and-memory-threads.md",
+      "title": "ADR 0022: The Context Broker, the belief explanation and memory threads",
+      "date": "2026-09-18",
+      "history": "7c68730350ae140b02d470d9c7719656b9bd9f2e 2026-09-18T21:12:47+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0023-connector-capabilities-required-connectors-and-lifecycle.md",
+      "title": "ADR 0023: Connector capabilities, the required V0 connectors and the connector lifecycle",
+      "date": "2026-09-18",
+      "history": "049e0a752e23ea267b9c13741954350aae6fdeae 2026-09-19T00:55:00+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0024-deterministic-selection-semantic-index-and-ask.md",
+      "title": "ADR 0024: Deterministic selection, the semantic index and the Ask pipeline",
+      "date": "2026-09-18",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0025-governed-merge-split-lineage-and-surrogate-identity.md",
+      "title": "ADR 0025: Governed merge and split, lineage, and the surrogate-identity invariant",
+      "date": "2026-09-18",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0026-answer-manifests-grounding-and-reconsideration.md",
+      "title": "ADR 0026: Answer manifests, the grounding validator and reconsideration",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0027-web-shell-labels-today-briefing-and-ask.md",
+      "title": "ADR 0027: The web shell, the uncertainty labels, the Today briefing and the Ask screen",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0028-commitments-inspector-thread-and-correction-controls.md",
+      "title": "ADR 0028: Commitments, Obligations, Memory inspector, Memory thread and the Correction controls",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0029-goals-decisions-prediction-review-and-mentor.md",
+      "title": "ADR 0029: Goals, decisions, prediction review and the mentor",
+      "date": "2026-09-19",
+      "history": "ea097486e08d5758b26e6a7e025f61f1f7511bf4 2026-09-19T12:55:50+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0029-memory-inbox-attention-budgets-and-weekly-review.md",
+      "title": "ADR 0029: Memory inbox, attention budgets, learned approval rules and the weekly review",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0030-governed-action-and-data-control.md",
+      "title": "ADR 0030: Governed action, the Permissions surface, export and the deletion cascade",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+      "title": "ADR 0031: Package boundaries, the gold corpus, shadow evaluation, registry migration governance and metrics",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    },
+    {
+      "path": "docs/adr/0032-audit-trail-security-suite-and-accessibility-checks.md",
+      "title": "ADR 0032: The audit trail, the CI security suite and the accessibility checks",
+      "date": "2026-09-19",
+      "history": "8a6bb3689f5aafc145868d7127545605958ef5c6 2026-09-19T17:30:34+03:00",
+      "historyNote": "Git introduction metadata, not proof that the ADR preceded its implementing edit."
+    },
+    {
+      "path": "docs/adr/0033-v0-operations-evidence.md",
+      "title": "ADR 0033: Operations evidence and release gate",
+      "date": "2026-09-19",
+      "history": "",
+      "historyNote": "No standalone add event found in simplified merged history; advance timing is UNVERIFIED."
+    }
+  ],
+  "knownVerificationGaps": [
+    "Hosted default-branch run: deferred to operator phase-exit gate, not waived.",
+    "Historical ADR predating: UNVERIFIED; never backdated.",
+    "Live connector credentials and real private corpus remain dependency/product checks; fixture success is not live-provider or real-corpus evidence."
+  ]
+}

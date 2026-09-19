@@ -201,3 +201,4 @@ export { agingKindSchema, freshnessStateSchema, freshnessPrecisionSchema, agingP
   type AgingPolicyBinding, type FreshnessEvidence, type FreshnessAssessment } from './aging.js';
 export { initiativeSettingsInputSchema, initiativeSettingsSchema, initiativeWatchInputSchema, initiativeWatchPatchSchema,
   initiativeWatchSchema, initiativeNoticeSchema, type InitiativeSettings, type InitiativeWatch } from './initiative.js';
+export {RUNBOOK_IDS,V0_CI_STAGES,operationsReportSchema,evaluateV0Release,type OperationsReport} from './operations.js';
