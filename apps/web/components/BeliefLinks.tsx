@@ -2,7 +2,7 @@ import React from 'react';
 
 /**
  * The one way any surface opens a belief in the Memory inspector or in the
- * Correction controls (ADR 0027 §5; CRT-UX-10-B). A surface passes the object it
+ * Correction controls (ADR 0028 §5; CRT-UX-10-B). A surface passes the object it
  * already shows -- the proposition behind a Today item or an Ask statement, a
  * claim, the frame behind a commitment row, a resolution assertion or the
  * owner's own pending statement -- and the inspector route resolves it to the

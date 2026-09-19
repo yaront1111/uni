@@ -260,7 +260,7 @@ async function inspect(app:InjectApp,type:string,id:string):Promise<Inspection>{
 }
 /** A correction control's write exactly as the same-origin proxy forwards it:
  * the session's owner scope, the control's purpose and the pinned evidence
- * context (ADR 0027 §4). */
+ * context (ADR 0028 §4). */
 async function post(app:InjectApp,purpose:string,path:string,body:unknown){
   const response=await app.inject({method:'POST',url:'/v1/'+path,headers:{cookie:SESSION_COOKIE+'='+token,'x-owner-scope-id':owner,
     'x-purpose':purpose,'x-correlation-id':randomUUID(),'idempotency-key':randomBytes(16).toString('hex'),'x-data-purpose':PURPOSE,

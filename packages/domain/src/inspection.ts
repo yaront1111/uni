@@ -4,7 +4,7 @@ import { memoryOperationKindSchema, targetObjectRefSchema } from './overlay.js';
 import { sensitivitySchema } from './evidence.js';
 
 /** The Memory inspector and the related context behind the Commitments and
- * Obligations screens (PRD §7.3, §7.6; ADR 0027).
+ * Obligations screens (PRD §7.3, §7.6; ADR 0028).
  *
  * Schemas only, as every file in this package. Both reads are inspection reads:
  * they answer what memory already holds and never compute a new belief.
@@ -16,7 +16,7 @@ const label = z.string().max(200).nullable();
 const excerpt = z.string().max(2000).nullable();
 
 /** What a surface may hand the inspector: whatever object it showed. The route
- * resolves it to the belief it is about (ADR 0027 §1). */
+ * resolves it to the belief it is about (ADR 0028 §1). */
 export const inspectableObjectTypeSchema = z.enum(['proposition', 'claim', 'frame_instance', 'resolution_assertion', 'owner_overlay_delta']);
 export type InspectableObjectType = z.infer<typeof inspectableObjectTypeSchema>;
 
@@ -64,7 +64,7 @@ export const inspectorThreadSchema = z.strictObject({
 
 /** One access to the belief. `AUDIT_EVENT` is a recorded read or write that
  * named it; `ANSWER_MANIFEST` is an answer given with it in context. Neither
- * carries any payload (ADR 0027 §2). */
+ * carries any payload (ADR 0028 §2). */
 export const inspectorAccessSchema = z.strictObject({
   kind: z.enum(['AUDIT_EVENT', 'ANSWER_MANIFEST']),
   id: z.uuid(),

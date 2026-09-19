@@ -1,4 +1,4 @@
-# ADR 0027: Commitments, Obligations, Memory inspector, Memory thread and the Correction controls
+# ADR 0028: Commitments, Obligations, Memory inspector, Memory thread and the Correction controls
 
 Date: 2026-09-19
 Status: Accepted
@@ -7,7 +7,7 @@ goal-b2cc3b54-1876-401e-a6a2-527f99b679bc (design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494).
 Criteria: CRT-UX-04-A, CRT-UX-07-A, CRT-UX-10-A, CRT-UX-10-B, CRT-UX-15-A.
 
-Recorded before the implementing change, per PRD §0.7 and §46. ADRs 0001–0026
+Recorded before the implementing change, per PRD §0.7 and §46. ADRs 0001–0027
 were read and are retained unchanged.
 
 ## 1. Two read routes are added for the drawn screens

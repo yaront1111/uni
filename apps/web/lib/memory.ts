@@ -6,7 +6,7 @@ import {commitmentsProjectionViewSchema,inspectableObjectTypeSchema,memoryInspec
 
 /**
  * The reads behind the Commitments, Obligations, Memory inspector, Memory thread
- * and Correction controls screens (ADR 0027 §5), as plain functions over an API
+ * and Correction controls screens (ADR 0028 §5), as plain functions over an API
  * call. `getServerSideProps` passes `apiRequest` from `lib/server.ts`; the
  * end-to-end tests pass the real platform API over an in-process transport.
  * Nothing here touches a database: every read is a call to `@unai/api`, and
@@ -68,7 +68,7 @@ const COMMITMENTS_UNAVAILABLE='Your commitments could not be read. Please reload
 
 /** GET /v1/projections/commitments with the person and due-window filters the
  * route offers, then the related context of every row. The thread filter is
- * applied here over the threads that read returned (ADR 0027 §5). */
+ * applied here over the threads that read returned (ADR 0028 §5). */
 export async function loadCommitments(call:ApiCall,caller:Caller,filters:CommitmentFilters):Promise<Loaded<CommitmentsLoad>>{
   const base={view:null,related:null,filters,error:null};
   const query=new URLSearchParams();

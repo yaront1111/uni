@@ -5,7 +5,7 @@ import { ContextBrokerError, MEMORY_INSPECT_PURPOSE, inspectMemory, readRelatedF
 
 /**
  * The Memory inspector and the related context of the Commitments and
- * Obligations screens (ADR 0027 §1):
+ * Obligations screens (ADR 0028 §1):
  *
  *  - GET /v1/memory/inspector/{objectType}/{id}
  *  - GET /v1/memory/frames/related?ids=<uuid>,<uuid>,...

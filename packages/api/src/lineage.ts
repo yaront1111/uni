@@ -38,7 +38,7 @@ import { ingestOwnerStatement, type EvidenceObjects } from './evidence.js';
  * The Merge and Split correction controls are these endpoints. Each committed
  * merge or split is also recorded as a `memory_operations` row of kind MERGE or
  * SPLIT, beside the owner's statement stored as evidence, so every one of the ten
- * controls leaves its own persisted kind (ADR 0027 §3; CRT-UX-10-A).
+ * controls leaves its own persisted kind (ADR 0028 §3; CRT-UX-10-A).
  */
 
 export const LINEAGE_WRITE_PURPOSE = BELIEF_PURPOSES.govern;
@@ -201,7 +201,7 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
    * evidence row and one MERGE or SPLIT memory operation naming the committed
    * transaction. Written under `memory.correct`, chosen here and never read from
    * a header. No overlay delta: the change is already canonical, and a delta on
-   * the frame would be one no projection can fold (ADR 0027 §3). A retry finds the
+   * the frame would be one no projection can fold (ADR 0028 §3). A retry finds the
    * operation already recorded for the transaction and writes nothing.
    */
   async function recordOperation(request: FastifyRequest, input: {

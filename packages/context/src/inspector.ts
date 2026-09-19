@@ -8,7 +8,7 @@ import { explainProposition } from './explain.js';
 
 /**
  * The Memory inspector and the related context of the Commitments and
- * Obligations screens (PRD §7.3, §7.6, §37.1; ADR 0027).
+ * Obligations screens (PRD §7.3, §7.6, §37.1; ADR 0028).
  *
  * The inspector is the ADR 0022 explanation plus the sections PRD §7.6 lists
  * that the explanation does not carry: who asserted each claim, the original
@@ -164,7 +164,7 @@ export async function inspectMemory(tx: MemoryTransaction, input: {
   const seenThreads = new Set<string>();
 
   // Access history: audit rows naming the belief, a claim of it or its frame,
-  // and the answers given with it in context (ADR 0027 §2).
+  // and the answers given with it in context (ADR 0028 §2).
   const named = [subject.propositionId, explanation.frameInstanceId, ...claimIds].map(id => JSON.stringify([{ id }]));
   const auditRows = (await tx.query(
     `SELECT id,purpose,result,created_at,objects_and_fields_accessed FROM audit_events
@@ -238,7 +238,7 @@ export async function inspectMemory(tx: MemoryTransaction, input: {
 
 /** The people, sources, resolution evidence, beliefs and threads of a set of
  * frame instances: what the Commitments and Obligations screens show beside
- * each typed projection row (ADR 0027 §1). */
+ * each typed projection row (ADR 0028 §1). */
 export async function readRelatedFrames(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceIds: readonly string[]; readAt: Date;
 }): Promise<RelatedFrames> {

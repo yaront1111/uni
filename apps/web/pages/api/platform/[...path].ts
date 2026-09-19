@@ -30,7 +30,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       // claims it reassigns) passes the evidence gate with the same pinned context.
       ...(evidencePath||purpose==='memory.govern'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{}),
       // A correction control stores the owner's own words as evidence; they are
-      // kept PRIVATE, and the browser can raise neither value (ADR 0027 §4).
+      // kept PRIVATE, and the browser can raise neither value (ADR 0028 §4).
       ...(purpose==='memory.correct'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'PRIVATE'}:{})},body);
     return res.status(response.status).json(response.body);
   }catch{return res.status(503).json({code:'SERVICE_UNAVAILABLE'});}

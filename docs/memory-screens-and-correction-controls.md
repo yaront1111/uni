@@ -3,8 +3,8 @@
 Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `commitments-obligations-inspector-and-correction-controls`. This node owns
-CRT-UX-04-A, CRT-UX-07-A, CRT-UX-10-A, CRT-UX-10-B and CRT-UX-15-A. ADR 0027
-records its decisions; ADRs 0001–0026 were read and retained unchanged.
+CRT-UX-04-A, CRT-UX-07-A, CRT-UX-10-A, CRT-UX-10-B and CRT-UX-15-A. ADR 0028
+records its decisions; ADRs 0001–0027 were read and retained unchanged.
 
 The branch was brought up to master (merge-split lineage, connectors, semantic
 index, answer manifests) before this work. The web shell / Today / Ask node's
@@ -45,7 +45,7 @@ panel.
 ## Design entities
 
 No table is added. The node writes **`memory_operations`** rows of kind `MERGE`
-and `SPLIT` (the lineage endpoints now record them, ADR 0027 §3) and reads
+and `SPLIT` (the lineage endpoints now record them, ADR 0028 §3) and reads
 `open_commitments_projection`, `obligations_projection`, `memory_threads`,
 `memory_thread_members`, `memory_operations`, `owner_overlay_deltas`,
 `derived_proposition_dependencies`, `resolution_assertions`, `answer_manifests`

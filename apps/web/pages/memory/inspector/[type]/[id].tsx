@@ -5,7 +5,7 @@ import {apiRequest,identity} from '../../../../lib/server';
 export default MemoryInspector;
 
 /** Any object a surface showed -- a belief, a claim, a situation, a resolution
- * or the owner's own statement -- opens here (ADR 0027 §1). The loader validates
+ * or the owner's own statement -- opens here (ADR 0028 §1). The loader validates
  * both path segments before they reach a URL. */
 export const getServerSideProps:GetServerSideProps=async({req,res,params})=>{
   res.setHeader('Cache-Control','no-store');

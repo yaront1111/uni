@@ -241,7 +241,7 @@ it('CRT-MEM-10-A: merging two obligation instances keeps both old ids resolvable
     expect((await admin.query("SELECT count(*)::int n FROM frame_instance_lineage WHERE from_frame_instance_id=$1", [second.frameInstanceId])).rows[0].n).toBe(1);
 
     // The Merge correction control's own persisted kind, recorded once for the
-    // transaction with the owner's reason as new evidence (ADR 0027 §3).
+    // transaction with the owner's reason as new evidence (ADR 0028 §3).
     const operations = (await admin.query(`SELECT o.id,o.operation_kind,o.target_object_type,o.target_object_id,o.overlay_delta_id,
       s.source_type FROM memory_operations o JOIN source_items s ON s.owner_scope_id=o.owner_scope_id AND s.id=o.evidence_id
       WHERE o.transaction_id=$1`, [body.transactionId])).rows;
