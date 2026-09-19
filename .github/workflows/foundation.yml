@@ -17,7 +17,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # The whole suite, including the CI security suite (packages/api/src/security.test.ts,
+      # transport.test.ts and audit.test.ts: cross-owner access, cross-scope leakage,
+      # malicious email and document instructions, secret redaction, policy bypass,
+      # deleted-data search, plugin least privilege, write replay, TLS, encryption at
+      # rest, object keys and the audit trail) and the accessibility checks with the
+      # keyboard-only walkthrough of the core views (apps/web/components/Accessibility.test.ts).
       - run: pnpm test
+      # The accessibility report and the keyboard-only walkthrough transcript are a
+      # required CI artifact beside the automated checks (CRT-UX-14-A).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: accessibility-keyboard-walkthrough
+          path: test-results/accessibility/
+          if-no-files-found: error
       - run: pnpm build
       # Lint runs here and in the CLI, never in the deployment (ADR 0014). The
       # report is the artifact the operations registry screen displays.

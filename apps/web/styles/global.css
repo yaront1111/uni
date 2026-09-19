@@ -14,3 +14,4 @@ details>summary{cursor:pointer;min-height:44px;display:flex;align-items:center}d
 .advanced{margin-top:12px;font-size:13px}.advanced code{word-break:break-all}
 .notice{padding:14px 18px;border:2px dashed #111111;background:#ffffff}
 .label-key dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}
+.table-scroll{overflow-x:auto}.table-scroll:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex="0"]:focus-visible{outline:3px solid #b06b12;outline-offset:4px}.audit-objects,.audit-notes{margin:0;padding-left:18px}.audit-objects code{word-break:break-all}

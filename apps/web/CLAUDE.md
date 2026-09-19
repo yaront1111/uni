@@ -50,6 +50,8 @@ Run them alone from the repository root; they need no database or TLS:
 pnpm exec vitest run apps/web
 ```
 
+`/ops/audit` (`AuditLog.tsx`) reads `GET /v1/audit-events` under `audit.read`, forwarding only filters `auditLogQuerySchema` accepts; it offers no control that changes an event (its test counts the buttons). `pages/_document.tsx` declares `lang="en"`; the accessibility suite reads the language from that file.
+
 `/ops/metrics` (`Metrics.tsx`) reads `GET /v1/ops/metrics`. `/ops/corpus` (`Corpus.tsx`) reads the JSON `uai corpus status --report` wrote, from `UNAI_CORPUS_STATUS_FILE` when set, through `lib/corpus-status.ts`, which refuses a path under the private corpus; the private corpus itself never reaches this app, and `lib/corpus-status.test.ts` fails if any server module names it. `/ops/registry` also reads `GET /v1/ops/shadow-evaluations` and renders the lint report's `migrations` array.
 
 ## Checklist: adding a screen or a browser write
@@ -58,6 +60,10 @@ pnpm exec vitest run apps/web
 2. Add the page with the `getServerSideProps` pattern above; parse API bodies with a `public*Schema` from `@unai/domain` rather than a local type.
 3. In `Navigation.tsx`, move the label out of the disabled `navigation` array into a real link and extend the `current` union.
 4. For a new write, extend the path-to-purpose chain in `pages/api/platform/[...path].ts` with an anchored pattern, and keep it identical to the purpose the API expects for that route in `packages/api/src/platform.ts`.
+
+## Accessibility suite
+
+`components/Accessibility.test.ts` is the one test file here that runs in a DOM: it renders the six core views (and the Audit log) with `react-dom/client` in jsdom, runs axe-core (every rule but colour contrast; a critical or serious violation fails), and walks each core task with `KeyboardUser` from `components/testing/keyboard.ts` -- Tab/Shift+Tab over the computed focus order and Enter/Space/Arrow Down/typing with native default actions, no pointer. Its fixtures are `components/testing/screens.ts` and `components/testing/audit.ts`. A new interactive element must be a native control (the file's static check fails on pointer handlers or `onClick` on anything but `button`/`a`), have an accessible name, and not break the skip-link-first order. A changed label or link text can break a task's `tabTo(named(/…/))`; update the task, not the assertion that the task completes.
 
 ## Traps
 

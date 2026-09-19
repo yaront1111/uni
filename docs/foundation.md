@@ -22,6 +22,9 @@ desktop resolve the same personal owner scope through issuer/subject identity.
 Owner-sequence allocation remains with uai-overlay-projections (CRT-RYW-01-A);
 this node does not fabricate that downstream behavior or a completed journey.
 Audit log UI and whole-system audit coverage remain with uai-production-operations.
+(Since delivered: the Audit log screen, the event kinds and the audit immutability
+trigger, by `accessibility-audit-trail-and-security-test-suite`; see
+`docs/accessibility-audit-and-security.md`.)
 
 The stack includes TypeScript/pnpm, Next.js, Fastify, Zod, PostgreSQL/pgvector,
 Git SQL migrations, the encrypted S3 adapter and OpenTelemetry primitives. Domain
@@ -142,6 +145,10 @@ Set these application environment variables before starting services:
   `secret://mounted/runtime/app-database#url`. The resolved URL carries no query
   option that downgrades certificate verification.
 - UNAI_DATABASE_CA_FILE: trusted PostgreSQL CA file for runtime services.
+- The database must declare the encryption at rest its storage was provisioned
+  with, or the API refuses to start (`DATABASE_ENCRYPTION_AT_REST_REQUIRED`):
+  `ALTER DATABASE <name> SET unai.encryption_at_rest = 'volume-kms:<key reference>'`
+  (or `tde:…`, `managed:…`). Keep the provider's evidence as well (ADR 0002, ADR 0032 §4).
 - NEXTAUTH_URL: canonical HTTPS web origin, including the port when nonstandard.
 - NEXTAUTH_SECRET: handle for a session secret of at least 32 characters.
 - GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET: configured Google OAuth application;
