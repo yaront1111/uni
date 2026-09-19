@@ -365,8 +365,9 @@ describe('CRT-DEC-02-A: "Why did I make this decision?" and the prediction revie
       .toEqual({ status: 422, code: 'TRANSITION_CONTRACT_UNKNOWN' });
     expect(await refuse({ actualOutcome: 'Commute halved', outcomeCode: 'CONFIRMED', transitionContractId: 'shared.commitment.resolution' }))
       .toEqual({ status: 422, code: 'TRANSITION_SOURCE_FRAME_TYPE_REFUSED' });
-    // No contracts given and none of the published snapshot's allow it: refused, never waved through.
-    expect(await refuse({ actualOutcome: 'Commute halved', outcomeCode: 'CONFIRMED' }, api({ transitionContracts: null })))
+    // An explicitly empty deployment contract set refuses the review regardless of
+    // other suites publishing a newer snapshot with a valid decision contract.
+    expect(await refuse({ actualOutcome: 'Commute halved', outcomeCode: 'CONFIRMED' }, api({ transitionContracts: [] })))
       .toEqual({ status: 422, code: 'TRANSITION_CONTRACT_UNKNOWN' });
     expect(await refuse({ outcomeCode: 'CONFIRMED' })).toEqual({ status: 400, code: 'DECISION_INPUT_INVALID' });
     const unpredicted = await recordDecision(o, { question: 'Paint the flat?', options: ['Blue', 'White'] });

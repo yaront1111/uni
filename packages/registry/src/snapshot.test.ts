@@ -44,11 +44,11 @@ it('materializes the tag-loaded release immutably with public UUIDv7 identifiers
   // On a freshly provisioned database this publishes; against a server a previous run
   // already used, the immutable snapshot must answer ALREADY_PUBLISHED and still carry
   // the correlation id of the publication that created the row.
-  const prior = (await pool.query('SELECT correlation_id FROM registry_releases')).rows[0]?.correlation_id as string | undefined;
+  const prior = (await pool.query('SELECT correlation_id FROM registry_releases WHERE semantic_version=$1', [release.version])).rows[0]?.correlation_id as string | undefined;
   const outcome = await registry.publishRegistryRelease(pool, release, correlationId);
   if (prior) expect(outcome.outcome).toBe('ALREADY_PUBLISHED');
   expect(outcome.releaseId).toMatch(uuidV7);
-  const row = (await pool.query('SELECT *, current_user AS principal FROM registry_releases')).rows[0];
+  const row = (await pool.query('SELECT *, current_user AS principal FROM registry_releases WHERE id=$1', [outcome.releaseId])).rows[0];
   expect(row).toMatchObject({ id: outcome.releaseId, semantic_version: '0.1.0', git_tag: 'registry-v0.1.0', git_commit: release.gitCommit,
     content_hash: release.contentHash, lifecycle: 'RELEASED', correlation_id: prior ?? row.correlation_id });
   // PUBLISHED exactly when this call created the row. Other suites that need the
@@ -76,7 +76,8 @@ it('is idempotent for the same tag and refuses a different hash or commit for a 
   const first = await registry.publishRegistryRelease(pool, release, randomUUID());
   const again = await registry.publishRegistryRelease(pool, release, randomUUID());
   expect(again).toEqual({ releaseId: first.releaseId, outcome: 'ALREADY_PUBLISHED' });
-  expect((await pool.query('SELECT count(*)::int AS n FROM registry_releases')).rows[0].n).toBe(1);
+  // Other suites publish additional versions into the shared database.
+  expect((await pool.query('SELECT count(*)::int AS n FROM registry_releases WHERE semantic_version=$1', [release.version])).rows[0].n).toBe(1);
   await expect(registry.publishRegistryRelease(pool, { ...release, contentHash: 'b'.repeat(64) }, randomUUID()))
     .rejects.toThrow('REGISTRY_RELEASE_CONFLICT');
   await expect(registry.publishRegistryRelease(pool, { ...release, gitCommit: 'c'.repeat(40) }, randomUUID()))

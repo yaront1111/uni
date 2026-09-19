@@ -819,7 +819,8 @@ it('keeps mixed-source claim identities, attribution and fallback intervals with
   const allowed = await readContextPacket(runner,
     request({ worldTime: T('2026-01-15').toISOString(), maximumSensitivity: 'RESTRICTED' }), options());
   expect(allowed.selections.find(selection => selection.selectedPropositionId === mixed.propositionId)?.claimOrigins).toContain('USER_STATEMENT');
-});
+  // Three complete temporal/source-authority reads; latency has a separate gate.
+}, 15000);
 
 it('does not turn a withheld same-proposition retraction into an external retraction', async () => {
   const source = await item('hidden-retract-' + randomUUID(), 'DOCUMENT', { sensitivity: 'RESTRICTED' });

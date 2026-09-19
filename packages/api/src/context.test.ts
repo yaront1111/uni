@@ -596,6 +596,9 @@ it.each(['sensitivity', 'purpose'])('inspector publishes only complete readable 
   } finally { await app.close(); }
 });
 
+// Four real inspector/related-frame requests cover both denied and permitted
+// sources. Their combined runtime can exceed 5s under the four-worker harness;
+// keep this journey bounded without changing any per-request assertion.
 it.each(['sensitivity', 'purpose'])('inspection does not authorize an unsourced thread title through %s-readable membership', async boundary => {
   const f = await inspectionFixture(boundary), app = api(), threadId = randomUUID();
   const title = 'private-thread-title-' + randomUUID();
@@ -616,4 +619,4 @@ it.each(['sensitivity', 'purpose'])('inspection does not authorize an unsourced 
       expect(related.body).not.toContain(title);
     }
   } finally { await app.close(); }
-});
+}, 20000);
