@@ -3,7 +3,7 @@ import {
   type AdmissionMode, type BeliefOperation, type CommitReceipt, type ObjectRef, type PolicyVerdict,
   type ProposeBeliefTransaction, type ValidationReport,
 } from '@unai/domain';
-import { createBeliefSlot, createProposition, recordClaim, recordFrameInstanceRole } from '@unai/memory';
+import { createBeliefSlot, createProposition, indexClaimEmbeddings, recordClaim, recordFrameInstanceRole } from '@unai/memory';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { admittedAssessmentStatus, selectAdmissionMode, type AdmissionCandidate } from './admission.js';
 import { recordBeliefAssessment, recordDerivedDependency, reassessDerivedPropositions, type StoredAssessment } from './assessments.js';
@@ -240,6 +240,132 @@ async function contractPresent(tx: BeliefTransactionStore, releaseId: string, co
   return row?.['present'] === true;
 }
 
+/** The contracts one proposition, slot or instance reference sits under that the
+ * pinned release does not hold. */
+type UnregisteredContracts = string[];
+
+/**
+ * Which of this transaction's operations touch a predicate or frame type absent
+ * from the pinned release (PRD §17.5; ADR 0024 §4).
+ *
+ * "Touch" is any operation over a slot, a proposition, a claim, a support row, an
+ * assessment or a derivation whose contracts are unregistered -- including a
+ * support row whose *supporting* proposition is. Storing such a claim is allowed;
+ * what the caller decides next is whether the same transaction also uses it for
+ * something PRD §17.5 forbids.
+ */
+async function unregisteredTouches(
+  tx: BeliefTransactionStore, ownerScopeId: string, releaseId: string, operations: readonly BeliefOperation[],
+): Promise<Map<number, { propositionRef: string | null; contracts: UnregisteredContracts }>> {
+  const presence = new Map<string, boolean>();
+  const absent = async (contractId: string | null, kind: 'FRAME' | 'PREDICATE'): Promise<string[]> => {
+    if (contractId === null) return [];
+    const key = kind + ':' + contractId;
+    if (!presence.has(key)) presence.set(key, await contractPresent(tx, releaseId, contractId, kind));
+    return presence.get(key) ? [] : [contractId];
+  };
+  const ofProposition = async (ref: ObjectRef): Promise<string[]> => {
+    const contracts = await resolvePropositionContracts(tx, ownerScopeId, operations, ref);
+    return [...await absent(contracts.predicateId, 'PREDICATE'), ...await absent(contracts.frameTypeId, 'FRAME')];
+  };
+  const touches = new Map<number, { propositionRef: string | null; contracts: UnregisteredContracts }>();
+  for (const [order, operation] of operations.entries()) {
+    let propositionRef: string | null = null;
+    let contracts: string[] = [];
+    switch (operation.kind) {
+      case 'CREATE_FRAME_INSTANCE': contracts = await absent(operation.frameTypeId, 'FRAME'); break;
+      case 'CREATE_SLOT': {
+        const instance = isPendingRef(operation.frameInstance)
+          ? operations.find(op => op.kind === 'CREATE_FRAME_INSTANCE' && op.operationRef === operation.frameInstance)
+          : null;
+        const frameTypeId = instance && instance.kind === 'CREATE_FRAME_INSTANCE' ? instance.frameTypeId
+          : isPendingRef(operation.frameInstance) ? null
+            : (await tx.query('SELECT frame_type_id FROM frame_instances WHERE owner_scope_id=$1 AND id=$2',
+              [ownerScopeId, operation.frameInstance])).rows[0]?.['frame_type_id'] as string | undefined ?? null;
+        contracts = [...await absent(operation.predicateId, 'PREDICATE'), ...await absent(frameTypeId, 'FRAME')];
+        break;
+      }
+      case 'CREATE_PROPOSITION': propositionRef = operation.operationRef; contracts = await ofProposition(operation.operationRef); break;
+      case 'ADD_CLAIM':
+        if (operation.proposition) { propositionRef = operation.proposition; contracts = await ofProposition(operation.proposition); }
+        break;
+      case 'ADD_SUPPORT':
+        propositionRef = operation.proposition;
+        contracts = [...await ofProposition(operation.proposition),
+          ...(operation.supportingProposition ? await ofProposition(operation.supportingProposition) : [])];
+        break;
+      case 'SET_BELIEF_ASSESSMENT': propositionRef = operation.proposition; contracts = await ofProposition(operation.proposition); break;
+      case 'DERIVE': propositionRef = operation.derivedProposition; contracts = await ofProposition(operation.derivedProposition); break;
+      case 'SUPPRESS': case 'ARCHIVE': case 'DELETE':
+        if (operation.targetObjectType === 'proposition') { propositionRef = operation.target; contracts = await ofProposition(operation.target); }
+        break;
+      case 'QUALIFY': case 'MERGE': case 'SPLIT': break;
+    }
+    if (contracts.length > 0) touches.set(order, { propositionRef, contracts: [...new Set(contracts)].sort() });
+  }
+  return touches;
+}
+
+/** The live verdict over an existing proposition, and whether its slot holds a
+ * second live value -- the two facts that make a verdict change a supersession or
+ * a conflict resolution. */
+async function liveVerdict(tx: BeliefTransactionStore, ownerScopeId: string, propositionId: string): Promise<{
+  status: string | null; competingLive: number;
+}> {
+  const row = (await tx.query(
+    `SELECT (SELECT a.assessment_status FROM belief_assessments a WHERE a.owner_scope_id=p.owner_scope_id
+         AND a.proposition_id=p.id AND a.superseded_recorded_at IS NULL) AS status,
+       (SELECT count(*)::int FROM propositions q
+         JOIN belief_assessments b ON b.owner_scope_id=q.owner_scope_id AND b.proposition_id=q.id
+           AND b.superseded_recorded_at IS NULL
+         WHERE q.owner_scope_id=p.owner_scope_id AND q.belief_slot_id=p.belief_slot_id AND q.id<>p.id
+           AND q.lifecycle<>'RETIRED'
+           AND b.assessment_status NOT IN ('REJECTED','SUPERSEDED','UNSUPPORTED','SUPPRESSED','CANDIDATE')) AS competing
+     FROM propositions p WHERE p.owner_scope_id=$1 AND p.id=$2`, [ownerScopeId, propositionId])).rows[0];
+  return { status: (row?.['status'] as string | null) ?? null, competingLive: (row?.['competing'] as number | null) ?? 0 };
+}
+
+/**
+ * The uses PRD §17.5 forbids an unregistered surface predicate, found in one
+ * transaction (CRT-REG-04-A; ADR 0024 §4).
+ *
+ * Nothing here refuses *storing* the claim or indexing it. A transaction that
+ * touches an unregistered contract is refused when it also supersedes or rejects
+ * an accepted belief, changes the verdict of a contested one or of one with a live
+ * competitor, accepts the unregistered value as current, or is declared HIGH risk.
+ */
+async function unregisteredPredicateUses(
+  tx: BeliefTransactionStore, ownerScopeId: string, transaction: StoredTransaction, operations: readonly BeliefOperation[],
+): Promise<{ touched: string[]; uses: ValidationReport['unregisteredPredicateUses'] }> {
+  const touches = await unregisteredTouches(tx, ownerScopeId, transaction.registryReleaseId, operations);
+  if (touches.size === 0) return { touched: [], uses: [] };
+  const touched = [...new Set([...touches.values()].flatMap(touch => touch.contracts))].sort();
+  const uses: ValidationReport['unregisteredPredicateUses'] = [];
+  for (const [order, operation] of operations.entries()) {
+    if (operation.kind !== 'SET_BELIEF_ASSESSMENT') continue;
+    // Accepting a value in a transaction that also carries an unregistered one is
+    // refused whichever of the two the verdict names: the unregistered claim could
+    // otherwise become current by standing as the support of a registered slot.
+    // A caller that means two unrelated things splits them into two transactions.
+    if (operation.assessmentStatus === 'ACCEPTED') {
+      uses.push({ use: 'SET_CURRENT_VALUE', operationOrder: order, propositionRef: operation.proposition,
+        contractIds: touches.get(order)?.contracts ?? touched });
+    }
+    if (isPendingRef(operation.proposition)) continue;
+    const live = await liveVerdict(tx, ownerScopeId, operation.proposition);
+    if (live.status === 'ACCEPTED' && (operation.assessmentStatus === 'SUPERSEDED' || operation.assessmentStatus === 'REJECTED')) {
+      uses.push({ use: 'SUPERSEDE_ACCEPTED_BELIEF', operationOrder: order, propositionRef: operation.proposition, contractIds: touched });
+    }
+    if (operation.assessmentStatus !== live.status && (live.status === 'CONTESTED' || live.competingLive > 0)) {
+      uses.push({ use: 'RESOLVE_CONFLICT', operationOrder: order, propositionRef: operation.proposition, contractIds: touched });
+    }
+  }
+  if (transaction.risk === 'HIGH') {
+    uses.push({ use: 'AUTHORIZE_HIGH_RISK_ACTION', operationOrder: null, propositionRef: null, contractIds: touched });
+  }
+  return { touched, uses };
+}
+
 async function originForAnchor(
   tx: BeliefTransactionStore, ownerScopeId: string, sourceAnchorId: string, assertedByEntityId: string | null,
 ): Promise<SupportOrigin> {
@@ -332,6 +458,13 @@ async function buildValidationReport(
     }
   }
 
+  // 1b. What the transaction would *use* an unregistered contract for. Storing a
+  //     claim under one is permitted; superseding, resolving, becoming current and
+  //     authorizing a high-risk action are not (PRD §17.5, CRT-REG-04-A).
+  const { touched: touchedUnregistered, uses: unregisteredUses } =
+    await unregisteredPredicateUses(tx, request.ownerScopeId, transaction, operations);
+  if (touchedUnregistered.length > 0) predicateRegistered = false;
+
   // 2. Circular support over the graph the commit would leave behind.
   const edges: SupportEdge[] = (await tx.query(
     'SELECT proposition_id,supporting_proposition_id FROM belief_support WHERE owner_scope_id=$1 AND supporting_proposition_id IS NOT NULL',
@@ -397,7 +530,7 @@ async function buildValidationReport(
 
   const admitted = admittedAssessmentStatus(admission.mode);
   const decision: ValidationReport['decision'] =
-    unregistered.length > 0 || warnings.includes('CONTRACT_UNRESOLVABLE') ? 'REJECTED'
+    unregistered.length > 0 || unregisteredUses.length > 0 || warnings.includes('CONTRACT_UNRESOLVABLE') ? 'REJECTED'
       : circularSupport.length > 0 ? 'REJECTED'
         : policy.outcome === 'DENY' ? 'REJECTED'
           : accepted.length > 0 && admitted !== 'ACCEPTED'
@@ -409,7 +542,7 @@ async function buildValidationReport(
   const report = validationReportSchema.parse({
     transactionId: transaction.id, decision, policy, admissionMode: admission.mode,
     withheldAutoAcceptConditions: [...admission.withheldConditions], unregisteredContracts: unregistered,
-    circularSupport, independenceGroups, conflicts: materialConflict ? [{ code: 'COMPETING_ACCEPTED_PROPOSITION_IN_SLOT' }] : [],
+    unregisteredPredicateUses: unregisteredUses, circularSupport, independenceGroups, conflicts: materialConflict ? [{ code: 'COMPETING_ACCEPTED_PROPOSITION_IN_SLOT' }] : [],
     warnings: [...new Set(warnings)], validationVersion: VALIDATION_VERSION,
   });
   return { report, policy, policyRequest: policyRequest as unknown as Record<string, unknown> };
@@ -615,7 +748,7 @@ async function applyOperation(context: CommitContext, order: number, operation: 
 }
 
 /**
- * A governed merge or split (PRD §14, ADR 0023). The operation body lives in
+ * A governed merge or split (PRD §14, ADR 0025). The operation body lives in
  * `lineage.ts`; here it is bound to the committing transaction, its created rows
  * join the receipt, and its detail is what the operation's `result_object_refs`
  * records, so the endpoint can answer a retried request from the stored commit
@@ -735,6 +868,15 @@ export async function commitBeliefTransaction(
     context.assessments.push(...await reassessDerivedPropositions(tx, {
       ownerScopeId: request.ownerScopeId, transactionId: transaction.id,
     }));
+    // Every claim this commit created is indexed in the same transaction, so it is
+    // semantically searchable the moment it is visible -- an unregistered surface
+    // predicate included, which PRD §17.5 allows to be indexed -- and a rolled-back
+    // commit leaves no index row behind (ADR 0024 §3). The index is not a belief
+    // object, so the receipt does not list it.
+    await indexClaimEmbeddings(tx, {
+      ownerScopeId: request.ownerScopeId,
+      claimIds: context.createdObjects.filter(object => object.objectType === 'claims').map(object => object.objectId),
+    });
 
     const committedAt = (await tx.query('SELECT now() AS at')).rows[0]!['at'] as Date;
     const receipt = commitReceiptSchema.parse({

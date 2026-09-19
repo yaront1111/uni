@@ -60,3 +60,6 @@ export { BITEMPORAL_QUERY_VERSION, BITEMPORAL_POLICY_VERSION, queryCurrentState,
   queryHistoricalBeliefState, queryBeliefState, readBeliefTimeline, recordBeliefStateVersion,
   type BeliefQueryMode, type AssessmentStatusName, type BeliefStateRow, type BeliefStateAnswer,
   type BeliefStateScope, type BeliefStateVersion } from './bitemporal.js';
+export { EMBEDDING_MODEL, EMBEDDING_VERSION, EMBEDDING_DIMENSIONS, hashedLexicalEmbedder, embeddingTokens, vectorLiteral,
+  indexClaimEmbeddings, searchMemoryEmbeddings,
+  type Embedder, type IndexedClaims, type SemanticSearchRequest } from './embeddings.js';

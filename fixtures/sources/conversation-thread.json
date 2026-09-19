@@ -1,0 +1,32 @@
+{
+  "conversationId": "conv-2026-09-14-a7f2",
+  "title": "Planning the lease renewal",
+  "messages": [
+    {
+      "messageId": "msg-conv-0001",
+      "role": "USER",
+      "text": "I told the landlord I would send the signed renewal by Friday.",
+      "createdAt": "2026-09-14T08:02:00Z"
+    },
+    {
+      "messageId": "msg-conv-0002",
+      "role": "ASSISTANT",
+      "text": "Noted. I have recorded that as something you said, not as a confirmed fact about the landlord.",
+      "createdAt": "2026-09-14T08:02:09Z",
+      "authorRef": "uai-assistant-0.1.0"
+    },
+    {
+      "messageId": "msg-conv-0003",
+      "role": "USER",
+      "text": "Remind me on Thursday evening.",
+      "createdAt": "2026-09-14T08:03:41Z"
+    },
+    {
+      "messageId": "msg-conv-0004",
+      "role": "ASSISTANT",
+      "text": "I will surface it in Thursday's briefing.",
+      "createdAt": "2026-09-14T08:03:47Z",
+      "authorRef": "uai-assistant-0.1.0"
+    }
+  ]
+}

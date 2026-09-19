@@ -60,7 +60,7 @@ export async function listScheduledFrameInstanceIds(tx: MemoryTransaction, input
 }): Promise<string[]> {
   const only = input.frameInstanceIds ? [...input.frameInstanceIds] : null;
   // A scheduled slot of a frame merged into this one schedules this one: the
-  // slot row keeps naming the frame it was recorded against (ADR 0023 §2).
+  // slot row keeps naming the frame it was recorded against (ADR 0025 §2).
   const rows = (await tx.query(
     `WITH RECURSIVE members(member_id,survivor_id,depth) AS (
        SELECT f.id,f.id,0 FROM frame_instances f

@@ -5,7 +5,7 @@ import { CANONICAL_NORMALIZATION_VERSION, recordSlotFingerprint, slotFingerprint
 import { MemoryStoreError, type MemoryTransaction } from './transaction.js';
 
 /** Lineage: how an old identifier stays resolvable after a merge or a split
- * (PRD §13.1, §13.6, §14, §44.13, §44.14; ADR 0023).
+ * (PRD §13.1, §13.6, §14, §44.13, §44.14; ADR 0025).
  *
  * Nothing here deletes, re-points or reuses an identifier. A merged or split
  * object keeps its row and its id; its lifecycle leaves ACTIVE once and a lineage
@@ -156,7 +156,7 @@ export async function resolveFrameInstanceSurvivors(tx: MemoryTransaction, input
 }
 
 /** Which live entity each named entity means today, through MERGED_INTO. A split
- * parent keeps its own id: roles that name it stay on it (ADR 0023 §2). */
+ * parent keeps its own id: roles that name it stay on it (ADR 0025 §2). */
 export async function resolveEntitySurvivors(tx: MemoryTransaction, input: {
   ownerScopeId: string; entityIds: readonly string[];
 }): Promise<Map<string, string>> {

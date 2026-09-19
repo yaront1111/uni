@@ -17,7 +17,7 @@ import { uuidV7 } from '../../../src/kernel/identities.js';
 
 /**
  * CRT-MEM-03-A: the surrogate-identity invariant across every durable object
- * kind the criterion names (PRD §13.1, §42 invariant 27; ADR 0023 §5).
+ * kind the criterion names (PRD §13.1, §42 invariant 27; ADR 0025 §5).
  *
  * Frame instances, belief slots, propositions, claims, resolution assertions,
  * registry releases, belief transactions, overlay deltas and projection versions

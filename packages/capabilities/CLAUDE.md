@@ -37,7 +37,7 @@ tells you.
   and `last_material_update` are the newest *input* time, and `asOf` is a
   parameter. `projection_version` is the one column a rebuild changes, and
   `projectionRowContent` excludes exactly it.
-- **Readers follow lineage** (ADR 0023 §3). A merged frame's slots, roles,
+- **Readers follow lineage** (ADR 0025 §3). A merged frame's slots, roles,
   resolutions, realizations and allocations are read for its survivor, a
   merged proposition's claims count for the one it merged into, a claim a split
   assigned (support row of a SPLIT transaction) counts for the new proposition,

@@ -17,7 +17,7 @@ import { type PendingAssertion } from '@unai/domain';
  * no reader looks at the wall clock. That is what makes a full replay equal an
  * incremental apply (CRT-PRJ-02-A).
  *
- * Every reader follows lineage (ADR 0023 §3). A frame merged into a survivor
+ * Every reader follows lineage (ADR 0025 §3). A frame merged into a survivor
  * keeps its rows; the readers read them for the survivor and report them under
  * the survivor's id, a proposition merged away counts its claims for the
  * proposition it merged into, a claim a split assigned counts for the new
@@ -148,7 +148,7 @@ export async function readSlotValues(tx: MemoryTransaction, input: {
 /**
  * The claims a proposition carries through lineage: those of every proposition
  * merged into it (transitively), and those a split assigned to it with a support
- * row of the split transaction (ADR 0023 §2). Only propositions that carry any
+ * row of the split transaction (ADR 0025 §2). Only propositions that carry any
  * are returned, with their whole claim set -- attached and inherited -- in the
  * order the main query uses, so a proposition with no lineage keeps the answer
  * the main query gave it.
@@ -372,7 +372,7 @@ export async function readOwnerDeltas(tx: MemoryTransaction, ownerScopeId: strin
      ORDER BY d.owner_sequence`, [ownerScopeId])).rows;
   // A delta about a merged frame speaks about its survivor. One about a split
   // frame resolves to no frame and is reported as unattached, never re-attached
-  // to a guessed half (ADR 0023 §3).
+  // to a guessed half (ADR 0025 §3).
   const survivors = await resolveFrameInstanceSurvivors(tx, { ownerScopeId,
     frameInstanceIds: rows.map(row => row['frame_instance_id'] as string | null).filter((id): id is string => id !== null) });
   return rows.map(row => Object.freeze({

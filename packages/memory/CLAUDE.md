@@ -30,12 +30,22 @@ here that touches `belief_assessments`, `recordBeliefStateVersion`, appends a
 recorded-time version at a stated knowledge time and names the governed
 transaction it belongs to.
 
+It also owns the semantic index (`embeddings.ts`): the pinned
+`hashed-lexical-256-0.1.0` embedder, `indexClaimEmbeddings` (called by the
+belief governor inside every commit) and `searchMemoryEmbeddings`, which runs the
+owner, permission, sensitivity, knowledge-time, time-window, source and entity
+filters inside a `MATERIALIZED` expression *before* ranking by distance. Keep it
+that way: a filter moved after the `ORDER BY`, or an approximate index queried
+first, lets the nearest match cross a boundary (CRT-RD-04-A). The embedded text is
+canonical memory only, never raw evidence. Schema: `migrations/0019_semantic_index.sql`;
+decisions: ADR 0024; report: `docs/semantic-index-and-ask.md`.
+
 It also owns lineage (`lineage.ts`): the append-only `frame_instance_lineage`,
 `proposition_lineage` and `entity_lineage` writers, governed retirement of a
 frame instance or entity, slot rehoming, and the resolvers that follow a merged
 or split id (`listMergedFrameMembers`, `resolveFrameInstanceSurvivors`,
 `resolveEntitySurvivors`, `resolveIdentity`). Schema:
-`migrations/0018_merge_split_lineage.sql`; decisions: ADR 0023; report:
+`migrations/0020_merge_split_lineage.sql`; decisions: ADR 0025; report:
 `docs/merge-split-lineage.md`. The MERGE and SPLIT operation bodies are
 `@unai/belief`'s, because a merge or split is a belief transaction.
 
@@ -147,7 +157,7 @@ or split id (`listMergedFrameMembers`, `resolveFrameInstanceSurvivors`,
   (`LINEAGE_REQUIRES_GOVERNED_TRANSACTION`); a frame instance leaves ACTIVE only
   under a committing transaction and never returns. Write lineage *before* the
   retirement so the old id resolves throughout, and never re-point a claim to
-  follow a merge or split: readers follow lineage instead (ADR 0023 §2).
+  follow a merge or split: readers follow lineage instead (ADR 0025 §2).
 - Recomputation appends and closes; it never rewrites. `recomputeCanonicalFingerprints`
   inserts the new-version rows before closing the old ones, so no reader is left
   without an index, and the database's `FINGERPRINT_IMMUTABLE` trigger enforces

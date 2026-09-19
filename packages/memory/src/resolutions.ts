@@ -551,7 +551,7 @@ const isPartial = (code: OutcomeCode) => PARTIAL_OUTCOME_CODES.includes(code);
  *
  * A survivor of a merge answers for every frame merged into it: a resolution
  * asserted against the old id still settles the situation that id now names
- * (PRD §14.1, ADR 0023 §3). With no lineage the member set is the frame itself.
+ * (PRD §14.1, ADR 0025 §3). With no lineage the member set is the frame itself.
  */
 export async function frameOutcomeProjection(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceId: string;

@@ -1,4 +1,4 @@
-# ADR 0023: Governed merge and split, lineage, and the surrogate-identity invariant
+# ADR 0025: Governed merge and split, lineage, and the surrogate-identity invariant
 
 Date: 2026-09-18
 Status: Accepted
@@ -8,6 +8,12 @@ goal-b2cc3b54-1876-401e-a6a2-527f99b679bc (design v1, sealed graph
 Criteria: CRT-MEM-03-A, CRT-MEM-10-A, CRT-MEM-10-B, CRT-MEM-10-C.
 
 Recorded before the implementing change, per PRD §0.7 and §46.
+
+Written as ADR 0023 and renumbered 0025 when master landed ADR 0023 for the
+connector capabilities and ADR 0024 for the semantic index; its migration moved
+from 0018 to `migrations/0020_merge_split_lineage.sql` for the same reason. That
+migration's header still says "ADR 0023" because its bytes were kept unchanged:
+it means this record.
 
 ## 1. A merge or split is a belief transaction, and the schema refuses anything else
 

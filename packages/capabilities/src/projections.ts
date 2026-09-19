@@ -419,7 +419,7 @@ async function buildScheduleRows(
     frameTypeId: SCHEDULE_FRAME_TYPE, frameInstanceIds: ids });
   const state = await readScheduleState(tx, { ownerScopeId: context.ownerScopeId, frameInstanceIds: ids });
   // A participant named by value reads as its survivor after an entity merge, as
-  // one named by role already does (ADR 0023 §3).
+  // one named by role already does (ADR 0025 §3).
   const participantSurvivors = await resolveEntitySurvivors(tx, { ownerScopeId: context.ownerScopeId,
     entityIds: state.participantValues.map(value => readEntityReference(value.normalizedValue))
       .filter((entityId): entityId is string => entityId !== null) });
@@ -581,7 +581,7 @@ async function writeRows(tx: MemoryTransaction, projection: ProjectionName, rows
  * more; its situation is projected under the survivor or the new instances, and a
  * row still keyed by the old id would show one situation twice. A projection row
  * is a rebuildable cache (ADR 0021 §7), so removing it destroys nothing canonical:
- * the old id keeps resolving through lineage (ADR 0023 §3). With `keep` given,
+ * the old id keeps resolving through lineage (ADR 0025 §3). With `keep` given,
  * every row outside it goes too, which is what a full replay means by "rebuild".
  */
 async function pruneRows(tx: MemoryTransaction, ownerScopeId: string, projection: ProjectionName,

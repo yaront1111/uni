@@ -103,7 +103,7 @@ export async function readAllocations(tx: MemoryTransaction, input: {
   const wanted = new Set(input.obligationFrameInstanceIds);
   // An allocation recorded against an obligation that was later merged applies to
   // the survivor; one against a split obligation applies to neither half until
-  // the owner says which (ADR 0023 §3).
+  // the owner says which (ADR 0025 §3).
   const survivors = await resolveFrameInstanceSurvivors(tx, { ownerScopeId: input.ownerScopeId,
     frameInstanceIds: frames.map(frame => readFrameReference(roleValue(roles, frame.frameInstanceId, 'obligation')))
       .filter((id): id is string => id !== null) });

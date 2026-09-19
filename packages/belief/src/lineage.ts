@@ -14,7 +14,7 @@ import { independenceGroupKey } from './support.js';
 
 /**
  * Governed merge and split (PRD §14; CRT-MEM-10-A, CRT-MEM-10-B, CRT-MEM-10-C;
- * ADR 0023).
+ * ADR 0025).
  *
  * These are the bodies of the `MERGE` and `SPLIT` operations a belief
  * transaction commits. They run only inside the governor's commit: the
@@ -102,7 +102,7 @@ async function assess(tx: MemoryTransaction, context: LineageOperationContext, p
  * merged into the survivor slot's proposition with the same value, or into a new
  * one there, through governed lineage (6); assessments are carried and competing
  * accepted values in one slot become CONTESTED (7). The rebuild of every affected
- * projection (8) is the caller's, in its own transaction (ADR 0023 §3). The old
+ * projection (8) is the caller's, in its own transaction (ADR 0025 §3). The old
  * id keeps its row (9) and can never be merged again (10).
  */
 export async function applyFrameMerge(tx: MemoryTransaction, context: LineageOperationContext, input: {

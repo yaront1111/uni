@@ -4,19 +4,19 @@ Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `merge-split-lineage-and-uuidv7-identity-invariant`, and approved
 contract-uai-v0/rev-uai-v0-001. This node owns CRT-MEM-03-A, CRT-MEM-10-A,
-CRT-MEM-10-B and CRT-MEM-10-C. ADR 0023 records its decisions; the earlier
+CRT-MEM-10-B and CRT-MEM-10-C. ADR 0025 records its decisions; the earlier
 slices were inspected and retained, with the changes listed under "What changed
 in earlier slices".
 
 ## Design entities implemented here
 
 **`frame_instance_lineage`** and **`proposition_lineage`**, added by
-`migrations/0018_merge_split_lineage.sql` with forced RLS, purpose-gated
+`migrations/0020_merge_split_lineage.sql` with forced RLS, purpose-gated
 policies, composite owner foreign keys, a governed-insert trigger and an
 append-only trigger. **`entity_lineage`** (migration 0010) is now written by the
 governed entity merge and split and gains the same append-only trigger and a
-governed-insert check for any row that names a transaction. There are now 51
-application tables, 49 of them owner-scoped and classified in
+governed-insert check for any row that names a transaction. There are now 53
+application tables (with the connector grants and the semantic index), 51 of them owner-scoped and classified in
 `packages/postgres/src/ownership.ts`.
 
 The node also writes, through the stores that own them, `frame_instances`,
@@ -52,7 +52,7 @@ Split controls inside the Correction controls screen belong to
 | `POST /v1/memory/frame-instances/{id}/split` | `memory.govern` | new instances, reassigned claims, contested and retained claims, new slots, lineage, rebuild receipts, resolution |
 | `POST /v1/memory/entities/merge` | `memory.govern` | survivor, lineage, alias records, affected frames, rebuild receipts, resolution |
 | `POST /v1/memory/entities/{id}/split` | `memory.govern` | new entities, lineage, assigned and ambiguous aliases, roles left on the parent, rebuild receipts, resolution |
-| `GET /v1/memory/merge-split/review` | `memory.inspect` | the review screen's read (added for the drawn screen; ADR 0023 §4) |
+| `GET /v1/memory/merge-split/review` | `memory.inspect` | the review screen's read (added for the drawn screen; ADR 0025 §4) |
 
 Each POST proposes and commits a `MERGE` or `SPLIT` belief transaction through
 `@unai/belief` (policy decision, idempotency key and stored receipt are the
@@ -137,7 +137,7 @@ it; a key already used for another kind is refused `IDEMPOTENCY_KEY_REUSED`.
   role meant is what a split cannot know; reassigning them is a later governed
   correction.
 - The **UUIDv7 invariant is proven by tests, not by a schema constraint**
-  (ADR 0023 §5): fixtures across the suite still insert v4 ids directly as the
+  (ADR 0025 §5): fixtures across the suite still insert v4 ids directly as the
   privileged principal, and a format `CHECK` would fail them without making any
   production path safer.
 - The **Merge and Split controls** of the Correction controls screen, and their

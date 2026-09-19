@@ -32,6 +32,11 @@ describe('real PostgreSQL owner isolation', () => {
       const connector=randomUUID(),source=randomUUID();
       const retry=randomUUID();
       await pool.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'DOCUMENT',$3,'{}','ACTIVE')",[connector,owner,owner]);
+      // One grant row per discrete manifest capability: an upload capability the
+      // owner granted, and a read capability they did not (CRT-CON-07-A).
+      await pool.query(`INSERT INTO connector_capability_grants(id,owner_scope_id,connector_id,capability_id,risk_class,access_kind,granted,granted_at)
+        VALUES($1,$2,$3,'documents.upload','LOW','READ',true,now()),($4,$2,$3,'documents.read','LOW','READ',false,NULL)`,
+        [randomUUID(),owner,connector,randomUUID()]);
       await pool.query("INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key) VALUES($1,$2,$3,'DOCUMENT','fixture',$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)",[source,owner,connector,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),'a'.repeat(64),randomUUID()]);
       await pool.query("INSERT INTO evidence_object_keys(id,owner_scope_id,source_item_id,object_store_key,encryption_key_ref) VALUES($1,$2,$3,$4,'kms:test')",[randomUUID(),owner,source,'raw/'+randomUUID()]);
       await pool.query("INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor) VALUES($1,$2,$3,'CONNECTOR_JSON_PATH','{\"path\":\"$.text\"}')",[randomUUID(),owner,source]);
@@ -185,6 +190,13 @@ describe('real PostgreSQL owner isolation', () => {
         await client.query('COMMIT');
       }catch(error){await client.query('ROLLBACK');throw error;}
       finally{client.release();}
+      // The semantic index: one embedding of the claim above, carrying the
+      // evidence's purposes and sensitivity as its own hard-filter columns.
+      await pool.query(`INSERT INTO memory_embeddings(id,owner_scope_id,object_type,object_id,proposition_id,predicate_id,
+        embedding_model,embedding_version,vector,security_scope,allowed_purposes,source_item_ids,source_types,recorded_at,content_hash)
+        VALUES($1,$2,'claim',$3,$4,'shared.obligation.principal_amount','unai-hashed-lexical','hashed-lexical-256-0.1.0',
+        $5,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],ARRAY[$6::uuid],ARRAY['DOCUMENT'],now(),$7)`,
+        [randomUUID(),owner,claim,proposition,'['+Array.from({length:256},(_,i)=>i===0?1:0).join(',')+']',source,'f'.repeat(64)]);
     }
   });
   afterAll(async()=>{await appPool.end();await pool.end();});
@@ -671,7 +683,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(51);
+    expect(rows.length).toBe(53);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -705,6 +717,56 @@ describe('real PostgreSQL owner isolation', () => {
       expect((await tx.query('SELECT owner_scope_id FROM devices')).rows).toEqual([{owner_scope_id:b}]);
     });
   });
+  it('CRT-SEC-01-A: hides B from unfiltered owner A capability-grant queries and keeps grant identity immutable',async()=>{
+    await asOwner(a,alice,async c=>{
+      const rows=(await readUnfiltered(c,'connector_capability_grants')).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every(row=>row.owner_scope_id===a)).toBe(true);
+      // The grant set is per capability, and the two rows disagree: one granted,
+      // one not. Nothing in the schema lets one stand for the other.
+      expect(rows.filter(row=>row.granted).map(row=>row.capability_id)).toEqual(['documents.upload']);
+    },'connector.read');
+    await asOwner(b,alice,async c=>{
+      expect((await c.query('SELECT * FROM connector_capability_grants')).rows).toEqual([]);
+    },'connector.read');
+    // Purpose-bound: a read purpose that is not a connector purpose sees none of it.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM connector_capability_grants')).rows).toEqual([]);
+    });
+    // Consent is the only path that may change a grant, and it may move only the
+    // grant flag: a denied capability cannot become a granted one by renaming.
+    // A sync's own purpose matches no row of the UPDATE policy, so the statement
+    // changes nothing rather than widening the grant it runs under.
+    await asOwner(a,alice,async c=>{
+      const changed=await c.query("UPDATE connector_capability_grants SET granted=true WHERE capability_id='documents.read'");
+      expect(changed.rowCount).toBe(0);
+    },'connector.sync');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("SELECT granted FROM connector_capability_grants WHERE capability_id='documents.read'")).rows)
+        .toEqual([{granted:false}]);
+    },'connector.read');
+    await expect(pool.query("UPDATE connector_capability_grants SET capability_id='documents.upload' WHERE owner_scope_id=$1 AND capability_id='documents.read'",[a]))
+      .rejects.toThrow('CONNECTOR_GRANT_IDENTITY_IMMUTABLE');
+    // V0 is read-only: a granted write capability is unrepresentable.
+    await expect(pool.query(`INSERT INTO connector_capability_grants(id,owner_scope_id,connector_id,capability_id,risk_class,access_kind,granted,granted_at)
+      SELECT $1,owner_scope_id,connector_id,'gmail.send','HIGH','WRITE',true,now() FROM connector_capability_grants WHERE owner_scope_id=$2 LIMIT 1`,[randomUUID(),a]))
+      .rejects.toMatchObject({constraint:'connector_capability_grants_read_only'});
+    // A connector's identity never moves, and a disconnected connector ingests
+    // nothing: both are refused by the schema, not only by the service.
+    await expect(pool.query("UPDATE connectors SET connector_type='GMAIL' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CONNECTOR_IDENTITY_IMMUTABLE');
+    const connector=(await pool.query('SELECT id FROM connectors WHERE owner_scope_id=$1',[a])).rows[0].id;
+    await pool.query("UPDATE connectors SET status='DISCONNECTED',disconnected_at=now(),secret_ref=NULL WHERE id=$1",[connector]);
+    try{
+      await expect(pool.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
+        VALUES($1,$2,$3,'DOCUMENT','after-disconnect',$4,$5,$6,$7,'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$8)`,
+        [randomUUID(),a,connector,JSON.stringify({type:'USER',id:alice}),alice,randomUUID(),'d'.repeat(64),randomUUID()]))
+        .rejects.toThrow('CONNECTOR_INGESTION_STOPPED');
+    }finally{
+      await pool.query("UPDATE connectors SET status='ACTIVE',disconnected_at=NULL WHERE id=$1",[connector]);
+    }
+  });
+
   it('refuses success when a caught SQL error causes COMMIT to roll back',async()=>{
     const correlationId=randomUUID();
     await expect(withOwnerTransaction(appPool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId},async tx=>{
@@ -774,6 +836,53 @@ describe('real PostgreSQL owner isolation', () => {
     await asOwner(a,alice,async c=>{
       expect((await c.query('SELECT * FROM unai_private.evidence_labels($1)',[a])).rows).toEqual([]);
     },'memory.govern');
+  });
+  it('CRT-SEC-01-A and CRT-RD-04-A: hides B from unfiltered owner A semantic-index queries and applies the evidence gate to every row',async()=>{
+    await asOwner(a,alice,async c=>{
+      const rows=(await readUnfiltered(c,'memory_embeddings')).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every(row=>row.owner_scope_id===a)).toBe(true);
+    },'memory.read');
+    await asOwner(b,alice,async c=>{
+      expect((await c.query('SELECT * FROM memory_embeddings')).rows).toEqual([]);
+    },'memory.read');
+    // An unrelated product purpose reads nothing, and neither does the model read
+    // purpose under a ceiling below the row's security scope or a data purpose
+    // the evidence behind it never admitted -- even with no application filter.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM memory_embeddings')).rows).toEqual([]);
+    });
+    for(const [dataPurpose,ceiling] of [['PERSONAL_ASSISTANCE','NORMAL'],['ADVERTISING','RESTRICTED']]){
+      await asOwner(a,alice,async c=>{
+        await c.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",[dataPurpose,ceiling]);
+        expect((await c.query('SELECT * FROM memory_embeddings')).rows,dataPurpose+' '+ceiling).toEqual([]);
+      },'memory.read');
+    }
+    // The read path cannot write the index, and nobody can rewrite a row of it.
+    await expect(asOwner(a,alice,c=>c.query(`INSERT INTO memory_embeddings(id,owner_scope_id,object_type,object_id,
+      embedding_model,embedding_version,vector,security_scope,allowed_purposes,source_item_ids,source_types,recorded_at,content_hash)
+      SELECT gen_random_uuid(),owner_scope_id,'claim',object_id,embedding_model,'other-version',vector,security_scope,
+      allowed_purposes,source_item_ids,source_types,recorded_at,content_hash FROM memory_embeddings`).then(()=>{}),'memory.read'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,alice,c=>c.query('DELETE FROM memory_embeddings').then(()=>{}),'memory.read'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(pool.query("UPDATE memory_embeddings SET security_scope='NORMAL' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICALIZATION_RECORD_IMMUTABLE');
+    // The indexer's evidence reader answers labels only, for this owner, and only
+    // under the governed purpose that indexes.
+    await asOwner(a,alice,async c=>{
+      const anchors=(await c.query('SELECT id FROM source_anchors')).rows.map(row=>row.id);
+      const scope=(await c.query('SELECT * FROM unai_private.anchor_evidence_scope($1,$2)',[a,anchors])).rows;
+      expect(anchors.length).toBeGreaterThan(0);
+      expect(scope.length).toBe(anchors.length);
+      expect(Object.keys(scope[0]!).sort()).toEqual(['allowed_purposes','occurred_at','sensitivity','source_anchor_id',
+        'source_item_id','source_type']);
+      expect((await c.query('SELECT * FROM unai_private.anchor_evidence_scope($1,$2)',[b,anchors])).rows).toEqual([]);
+    },'memory.govern');
+    await asOwner(a,alice,async c=>{
+      const anchors=(await pool.query('SELECT id FROM source_anchors WHERE owner_scope_id=$1',[a])).rows.map(row=>row.id);
+      expect((await c.query('SELECT * FROM unai_private.anchor_evidence_scope($1,$2)',[a,anchors])).rows).toEqual([]);
+    },'memory.read');
   });
   it('refuses an elevated application database connection',async()=>{
     await expect(withOwnerTransaction(pool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId:randomUUID()},async()=>{})).rejects.toThrow('DATABASE_ROLE_UNSAFE');

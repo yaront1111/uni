@@ -85,14 +85,22 @@ it('CRT-NFR-02-A: an exhausted job is listed in the dead-letter route with its e
  * deployment runs no registry logic (CRT-REG-01-B). */
 it('CRT-REG-01-B: serves the materialized release read-only and refuses every other verb and purpose',async()=>{
   const f=await fixture('ops-registry@example.test');try{
-    const headers={...f.headers,'x-purpose':'ops.registry.read','x-correlation-id':randomUUID()};
-    const response=await f.app.inject({url:'/v1/ops/registry-snapshot',headers});
+    // Whatever this database holds, the view is exactly the committed snapshot:
+    // the release publication is what puts a row there, never a request. Other
+    // suites publish the 0.1.0 snapshot concurrently, so the view is compared with
+    // a snapshot that stayed the same across the whole request.
+    const latest=async()=>(await admin.query(`SELECT id,semantic_version,git_tag,git_commit,content_hash FROM registry_releases
+      WHERE lifecycle='RELEASED' ORDER BY string_to_array(semantic_version,'.')::int[] DESC,released_at DESC LIMIT 1`)).rows[0];
+    let headers,response,loaded;
+    for(let attempt=0;;attempt++){
+      headers={...f.headers,'x-purpose':'ops.registry.read','x-correlation-id':randomUUID()};
+      const before=await latest();
+      response=await f.app.inject({url:'/v1/ops/registry-snapshot',headers});
+      loaded=await latest();
+      if(before?.id===loaded?.id||attempt>=4)break;
+    }
     expect(response.statusCode).toBe(200);
     const view=registrySnapshotViewSchema.parse(response.json());
-    // Whatever this database holds, the view is exactly the committed snapshot:
-    // the release publication is what puts a row there, never a request.
-    const loaded=(await admin.query(`SELECT id,semantic_version,git_tag,git_commit,content_hash FROM registry_releases
-      WHERE lifecycle='RELEASED' ORDER BY string_to_array(semantic_version,'.')::int[] DESC,released_at DESC LIMIT 1`)).rows[0];
     if(loaded){
       expect(view.release).toMatchObject({id:loaded.id,semanticVersion:loaded.semantic_version,gitTag:loaded.git_tag,
         gitCommit:loaded.git_commit,contentHash:loaded.content_hash,lifecycle:'RELEASED'});

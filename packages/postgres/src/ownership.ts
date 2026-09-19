@@ -7,7 +7,8 @@ const classifiedTables=new Map([
   ['users','id'],['owner_scopes','id'],['owner_scope_members','owner_scope_id'],
   ['devices','owner_scope_id'],['audit_events','owner_scope_id'],
   ['auth_identities','owner_scope_id'],['auth_sessions','owner_scope_id'],
-  ['connectors','owner_scope_id'],['source_items','owner_scope_id'],['source_anchors','owner_scope_id'],
+  ['connectors','owner_scope_id'],['connector_capability_grants','owner_scope_id'],
+  ['source_items','owner_scope_id'],['source_anchors','owner_scope_id'],
   ['evidence_object_keys','owner_scope_id'],
   ['evidence_ingestion_receipts','owner_scope_id'],['jobs','owner_scope_id'],
   ['context_spaces','owner_scope_id'],
@@ -29,6 +30,7 @@ const classifiedTables=new Map([
   ['memory_threads','owner_scope_id'],['memory_thread_members','owner_scope_id'],
   ['context_packets','owner_scope_id'],
   ['frame_instance_lineage','owner_scope_id'],['proposition_lineage','owner_scope_id'],
+  ['memory_embeddings','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a

@@ -27,7 +27,7 @@ export const publicDeviceSchema=registerDeviceSchema.extend({id:z.uuid(),lastSee
 export type PublicDevice=z.infer<typeof publicDeviceSchema>;
 export {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,type EvidenceInput,type PublicEvidence} from './evidence.js';
 export {sourceAnchorKindSchema,parsedSourceAnchorSchema,parsedSourceItemSchema,parsedSourceTypeSchema,
-  gmailThreadSchema,googleCalendarEventSchema,githubIssueThreadSchema,uploadedDocumentSchema,
+  conversationSchema,gmailThreadSchema,googleCalendarEventSchema,githubIssueThreadSchema,uploadedDocumentSchema,
   parseSourcePayload,SourcePayloadInvalid,
   type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType} from './sources.js';
 export {registryVersionSchema,registryContentHashSchema,registryContractKindSchema,publicRegistryContractSchema,
@@ -62,6 +62,7 @@ export {mergeTargetTypeSchema,objectRefSchema,beliefTransactionKindSchema,belief
   autoAcceptConditionSchema,assessmentStatusSchema,supportKindSchema,independenceGroupSchema,beliefOperationKindSchema,
   beliefOperationSchema,proposeBeliefTransactionSchema,policyPortSchema,writePolicyOutcomeSchema,readPolicyOutcomeSchema,
   actionPolicyOutcomeSchema,policyVerdictSchema,validationDecisionSchema,validationReportSchema,commitReceiptSchema,
+  unregisteredPredicateUseSchema,type UnregisteredPredicateUse,
   type ObjectRef,type AdmissionMode,type AutoAcceptCondition,type AssessmentStatus,type BeliefOperation,
   type ProposeBeliefTransaction,type PolicyVerdict,type ValidationReport,type CommitReceipt} from './governance.js';
 export {overlayDeltaKindSchema,overlayLifecycleSchema,memoryOperationKindSchema,memoryObjectTypeSchema,
@@ -96,6 +97,24 @@ export {answerTypeSchema,worldTimeSchema,knowledgeTimeSchema,certaintySchema,act
   type ContextActionKind,type IntendedAction,
   type ContextRedaction,type ContextPacket,type BeliefExplanation,type ThreadMemberInput,type ThreadMember,
   type MemoryThreadView} from './context.js';
+export {SELECTION_RULES,selectionRuleSchema,selectionOutcomeSchema,selectionStepSchema,contextSelectionSchema,
+  semanticFiltersSchema,semanticMatchSchema,semanticSearchSchema,
+  type SelectionRule,type SelectionOutcome,type SelectionStep,type ContextSelection,type SemanticFilters,
+  type SemanticMatch,type SemanticSearch} from './selection.js';
+export {questionTypeSchema,historicalModeSchema,certaintyLabelSchema,REQUIRED_ASK_FIELDS,askRequestSchema,
+  askSourceLinkSchema,askStatementKindSchema,askStatementSchema,askAnswerSchema,
+  type QuestionType,type HistoricalMode,type CertaintyLabel,type RequiredAskField,type AskRequest,
+  type AskSourceLink,type AskStatement,type AskAnswer} from './ask.js';
+export {capabilityIdSchema,connectorTypeSchema,connectorStatusSchema,capabilityAccessSchema,capabilityRiskClassSchema,
+  capabilityContextProfileSchema,manifestCapabilitySchema,connectorManifestSchema,connectorCursorSchema,
+  connectCapabilityRequestSchema,createConnectorSchema,grantCapabilitiesSchema,publicCapabilityGrantSchema,
+  publicConnectorSchema,syncModeSchema,syncRequestSchema,syncRefusalSchema,syncResultSchema,disconnectResultSchema,
+  documentUploadSchema,extractionPlanReasonSchema,documentReceiptSchema,documentSearchHitSchema,
+  documentSearchResultSchema,bundleWithholdingSchema,pluginContextBundleSchema,
+  type ConnectorType,type ConnectorStatus,type CapabilityContextProfile,type ManifestCapability,
+  type ConnectorManifest,type ConnectorCursor,type CreateConnector,type PublicCapabilityGrant,type PublicConnector,
+  type SyncRequest,type SyncResult,type DisconnectResult,type DocumentUpload,type ExtractionPlanReason,
+  type DocumentReceipt,type DocumentSearchResult,type PluginContextBundle} from './connectors.js';
 export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJobSchema,publicJobSchema,
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';

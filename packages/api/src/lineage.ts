@@ -156,7 +156,7 @@ export function registerLineageRoutes(app: FastifyInstance, work: Work, options:
   }
 
   /** Rebuild the typed projections under the reducer's own purpose. The purpose is
-   * chosen here, by server code, never by a header (ADR 0023 §4). */
+   * chosen here, by server code, never by a header (ADR 0025 §4). */
   async function rebuild(request: FastifyRequest, trigger: 'MERGE' | 'SPLIT', transactionId: string,
     frameInstanceIds: readonly string[]): Promise<ProjectionRebuildReceipt[]> {
     return await work(request, tx => rebuildProjectionsAfterLineageChange(tx, {

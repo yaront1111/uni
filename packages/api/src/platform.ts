@@ -11,6 +11,13 @@ import {registerOpsRoutes} from './ops.js';
 import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
+import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
+import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
+  type ConnectorRouteOptions} from './connectors.js';
+import {ConnectorError} from '@unai/connectors';
+import {enqueueJob,JOB_PURPOSES} from '@unai/jobs';
+import {EXTRACTION_JOB_KIND} from '@unai/extraction';
+import {createHash} from 'node:crypto';
 import type {PolicyPorts} from '@unai/belief';
 
 /** The owner's correction controls and their overlay read. One purpose covers
@@ -29,10 +36,16 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   /** The policy ports the Context Broker evaluates reads through. The local
    * adapters are the default; a deployment that installs Cordum supplies them
    * here and no route changes (PRD §29.4). */
-  policyPorts?:PolicyPorts}){
+  policyPorts?:PolicyPorts;
+  /** The connector runtime's ports: the read-only provider clients, the token
+   * revoker a disconnect calls, and the extraction enqueue a FULL document plan
+   * uses. A deployment without them still serves the inspection routes and
+   * refuses a sync rather than pretending to run one. */
+  connectors?:ConnectorRouteOptions}){
   const purposes=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
+    CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
     'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
-    CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
+    CONTEXT_READ_PURPOSE,ASK_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
     'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read']);
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
@@ -54,9 +67,18 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/sessions/revoke-all'?'auth.sign_out_all':
       request.routeOptions.url==='/v1/evidence'?'evidence.ingest':
       request.routeOptions.url==='/v1/evidence/:id'?'evidence.read':
+      request.routeOptions.url==='/v1/documents'?'evidence.ingest':
+      request.routeOptions.url==='/v1/documents/search'?'evidence.read':
+      request.routeOptions.url==='/v1/connectors/:id/sync'?CONNECTOR_SYNC_PURPOSE:
+      request.routeOptions.url==='/v1/connectors/:id/capabilities'&&request.method==='POST'?CONNECTOR_MANAGE_PURPOSE:
+      request.routeOptions.url==='/v1/connectors/:id/disconnect'?CONNECTOR_MANAGE_PURPOSE:
+      request.routeOptions.url==='/v1/connectors'&&request.method==='POST'?CONNECTOR_MANAGE_PURPOSE:
+      request.routeOptions.url==='/v1/connectors'?'connector.read':
+      request.routeOptions.url==='/v1/connectors/:id/capabilities'?'connector.read':
       request.routeOptions.url==='/v1/connectors/:id'?'connector.read':
       request.routeOptions.url?.startsWith('/v1/memory/transactions')?'memory.govern':
       request.routeOptions.url==='/v1/memory/context'?CONTEXT_READ_PURPOSE:
+      request.routeOptions.url==='/v1/ask'?ASK_PURPOSE:
       request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
@@ -73,7 +95,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   });
   /** `purpose` lets a route open one transaction under a purpose its server code
    * names -- the projection rebuild after a merge runs under `memory.project`
-   * (ADR 0023 §4). It is never read from a header, and the session is re-verified
+   * (ADR 0025 §4). It is never read from a header, and the session is re-verified
    * exactly as for every other transaction. */
   async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>,purpose?:string){
     const token=sessionToken(request.headers.cookie);
@@ -125,12 +147,37 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     return {revoked:true};
   });
   registerEvidenceRoutes(app,deviceWork,options.evidenceObjects);
+  registerConnectorRoutes(app,deviceWork,{
+    ...(options.evidenceObjects?{evidenceObjects:options.evidenceObjects}:{}),
+    ...(options.connectors ?? {}),
+    // The queue is the API's own, so the enqueue port is composed here rather
+    // than handed in: a document whose plan is FULL is queued in its own owner
+    // transaction under `jobs.enqueue`, after the evidence has committed.
+    enqueueExtraction:options.connectors?.enqueueExtraction ?? (async input=>{
+      // The extraction worker pins its run to a registry release; a deployment
+      // that has loaded none cannot queue a run it could not reproduce, and says
+      // so rather than queueing a payload that would dead-letter.
+      if(!options.registryReleaseId)throw new ConnectorError('DOCUMENT_EXTRACTION_UNAVAILABLE');
+      const job=await withOwnerTransaction(options.appPool,{...input.context,purpose:JOB_PURPOSES.enqueue},tx=>
+        enqueueJob(tx,{jobKind:EXTRACTION_JOB_KIND,
+          payload:{ownerScopeId:input.context.ownerScopeId,sourceItemId:input.evidenceId,runKind:'FULL',
+            registryReleaseId:options.registryReleaseId!,correlationId:input.context.correlationId,
+            dataPurpose:input.dataPurpose,maximumSensitivity:input.maximumSensitivity,
+            referenceInstant:new Date().toISOString(),timeZone:'UTC'},
+          idempotencyKey:createHash('sha256').update('document-extraction:'+input.evidenceId).digest('hex'),
+          maxAttempts:3}));
+      return {jobId:job.jobId};
+    }),
+  });
   registerMemoryGovernorRoutes(app,deviceWork);
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId});
   registerOpsRoutes(app,deviceWork);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{
+    ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
+    registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null});
+  registerAskRoutes(app,deviceWork,{
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
     registryReleaseId:options.registryReleaseId??null,registryRelease:options.registryRelease??null});
   return app;

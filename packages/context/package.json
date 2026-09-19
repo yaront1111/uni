@@ -14,6 +14,7 @@
   "devDependencies": {
     "@types/pg": "^8.15.0",
     "@unai/postgres": "workspace:*",
+    "@unai/registry": "workspace:*",
     "pg": "^8.16.0"
   }
 }

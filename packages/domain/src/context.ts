@@ -5,6 +5,7 @@ import { claimOriginSchema, claimLifecycleSchema, modalitySchema, polaritySchema
 import { memoryLinkKindSchema, outcomeCodeSchema } from './outcomes.js';
 import { publicOverlayDeltaSchema } from './overlay.js';
 import { pendingAssertionSchema, projectionNameSchema } from './projections.js';
+import { contextSelectionSchema, semanticSearchSchema } from './selection.js';
 
 /** The Context Broker's vocabularies and record shapes (PRD §21.4, §23, §33.11,
  * §33.14, §35.7, §35.8).
@@ -105,6 +106,18 @@ export const contextRequestSchema = z.strictObject({
   intendedAction: intendedActionSchema.nullable().default(null),
   tokenBudget: z.number().int().min(256).max(200_000).default(5000),
   includeEvidence: z.enum(['NEVER', 'WHEN_NEEDED', 'ALWAYS']).default('WHEN_NEEDED'),
+  /** The query mode a caller already classified the question into (the Ask
+   * pipeline does). Null leaves the broker to classify the query text itself. */
+  answerType: answerTypeSchema.nullable().default(null),
+  /** Hard filters for the semantic step (PRD §23.2 step 10). Owner, permission
+   * and sensitivity come from the declarations above and are never optional; a
+   * time window and source types narrow further, and the entity filter is the
+   * request's entity hints. */
+  timeWindow: z.strictObject({
+    from: z.iso.datetime({ offset: true }).nullable().default(null),
+    to: z.iso.datetime({ offset: true }).nullable().default(null),
+  }).nullable().default(null),
+  sourceTypes: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(32).default([]),
 });
 export type ContextRequest = z.infer<typeof contextRequestSchema>;
 
@@ -156,6 +169,9 @@ export const contextFutureClaimSchema = z.strictObject({
   normalizedValue: z.unknown().optional(),
   validFrom: z.iso.datetime().nullable().optional(),
   lifeCategories: z.array(lifeCategorySchema),
+  /** The evidence the claim rests on, so an answer about a plan or a prediction
+   * can link its source. Redactable like a belief's. */
+  evidenceIds: z.array(z.uuid()).max(256).optional(),
 });
 
 /** Two values in one slot, both retained (PRD §16.5, CRT-MEM-08-A). The broker
@@ -261,6 +277,9 @@ export const selectionReasonSchema = z.strictObject({
   appliedRules: z.array(reasonCode).max(32),
   overlayDeltasApplied: z.array(z.uuid()).max(200),
   selectorVersion: version,
+  /** SHA-256 of the canonical JSON of the packet's `selections`: the same memory
+   * and the same request give the same digest, run after run (CRT-RD-03-A). */
+  selectionsDigest: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
 /** The recorded `EvaluateMemoryAction` verdict over a declared intended action.
@@ -306,6 +325,11 @@ export const contextPacketSchema = z.strictObject({
   actionDecision: contextActionDecisionSchema.nullable(),
   redactions: z.array(contextRedactionSchema).max(500),
   watermarks: contextWatermarksSchema,
+  /** The deterministic selector's state per slot, with the reason (PRD §23.4). */
+  selections: z.array(contextSelectionSchema).max(500),
+  /** The semantic step, run only after the hard filters (PRD §23.2 step 10).
+   * Null when the query carries nothing an embedding can be made of. */
+  semanticSearch: semanticSearchSchema.nullable(),
   selectionReason: selectionReasonSchema,
   policy: z.strictObject({
     outcome: z.enum(['ALLOW', 'REDACT']),

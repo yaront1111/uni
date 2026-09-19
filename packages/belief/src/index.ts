@@ -7,7 +7,7 @@
  * transition, the support graph with independence groups and circular-support
  * rejection, the seven admission modes, the three local policy ports with
  * their persisted decisions, and the governed merge and split operations with
- * their lineage (`lineage.ts`, ADR 0023).
+ * their lineage (`lineage.ts`, ADR 0025).
  *
  * Every function takes a transaction runner the caller supplied, exactly as
  * `@unai/extraction` does. Nothing here opens a connection, commits on its own

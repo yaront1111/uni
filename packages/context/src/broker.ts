@@ -4,15 +4,16 @@ import {
   contextRequestSchema, contextPacketSchema, contextBeliefSchema, contextFutureClaimSchema, contextConflictSchema,
   contextUnknownSchema, contextEvidenceRefSchema, contextResolutionSchema, contextRedactionSchema,
   contextActionDecisionSchema,
-  REQUIRED_CONTEXT_FIELDS, REDACTABLE_BELIEF_FIELDS, answerTypeSchema,
+  REQUIRED_CONTEXT_FIELDS, REDACTABLE_BELIEF_FIELDS, SELECTION_RULES, answerTypeSchema,
   type AnswerType, type ContextPacket, type ContextRequest, type ContextRedaction, type LifeCategory,
   type RequiredContextField, type PolicyVerdict,
 } from '@unai/domain';
-import { canonicalJson, readOwnerOverlay, type MemoryTransaction } from '@unai/memory';
+import { canonicalJson, readOwnerOverlay, searchMemoryEmbeddings, type MemoryTransaction } from '@unai/memory';
 import { createLocalPolicyAdapters, recordPolicyDecision, type PolicyPorts } from '@unai/belief';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { categoryOfPurpose, deriveLifeCategories, inCategoryView } from './categories.js';
 import { readProjectionFragments } from './fragments.js';
+import { SELECTION_VERSION, modalitiesForAnswerType, selectCurrentStates, selectionsDigest } from './selector.js';
 import { listThreadsForObject } from './threads.js';
 
 /**
@@ -45,7 +46,7 @@ import { listThreadsForObject } from './threads.js';
  */
 
 export const BROKER_VERSION = 'context-broker-0.1.0';
-export const SELECTOR_VERSION = 'deterministic-selector-0.1.0';
+export const SELECTOR_VERSION = SELECTION_VERSION;
 /** The route purpose the broker runs under. It appears in no INSERT, UPDATE or
  * DELETE policy on any canonical table: this path cannot write memory. */
 export const CONTEXT_READ_PURPOSE = 'memory.read';
@@ -248,7 +249,7 @@ export async function authorizeContextRead(
     ownerScopeId: request.ownerScopeId, correlationId: options.correlationId, port: 'EvaluateMemoryRead',
     request: {
       purpose: request.purpose, routePurpose: CONTEXT_READ_PURPOSE,
-      answerType: classifyAnswerType(request.query),
+      answerType: request.answerType ?? classifyAnswerType(request.query),
       maximumSensitivity: request.maximumSensitivity, actionRisk: request.actionRisk,
       lifeCategory: request.lifeCategory ?? categoryOfPurpose(request.purpose),
       evidenceConsidered: labels.length, evidenceAdmittedByPurpose: admitted.length,
@@ -323,7 +324,9 @@ async function assemble(
   const now = options.now ?? new Date();
   const worldTime = request.worldTime === 'NOW' ? now : new Date(request.worldTime);
   const knowledgeTime = request.knowledgeTime === 'LATEST' ? now : new Date(request.knowledgeTime);
-  const answerType = answerTypeSchema.parse(classifyAnswerType(request.query));
+  // A caller that already classified the question (the Ask pipeline) declares the
+  // mode; otherwise the broker reads it from the query text.
+  const answerType = answerTypeSchema.parse(request.answerType ?? classifyAnswerType(request.query));
   const category: LifeCategory | null = request.lifeCategory ?? categoryOfPurpose(request.purpose);
   const frameLimit = Math.min(Math.max(options.frameLimit ?? 100, 1), 500);
 
@@ -398,18 +401,31 @@ async function assemble(
   const frameTypeById = new Map(frames.map(frame => [frame.frameInstanceId, frame.frameTypeId]));
 
   // Steps 6 and 7: the propositions in those frames with the assessment that
-  // stands over each of them now, the claims behind them and the evidence those
-  // claims are anchored in. One query, because "which evidence supports this
-  // value" is the question every later step asks.
+  // stood over each of them at the knowledge time, the claims behind them and the
+  // evidence those claims are anchored in. One query, because "which evidence
+  // supports this value" is the question every later step asks. The assessment is
+  // the version live at the knowledge time -- recorded by then and not yet
+  // superseded then -- which is what "what did Uai believe then" means (PRD
+  // §12.3); the live row alone would answer "now" for every knowledge time.
   const beliefRows = frameIds.length === 0 ? [] : (await tx.query(
     `SELECT p.id AS proposition_id,p.belief_slot_id,p.normalized_value,p.polarity,p.lifecycle AS proposition_lifecycle,
        s.frame_instance_id,s.predicate_id,s.modality,
        (SELECT b.assessment_status FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
-          AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL AND b.recorded_at<=$3
+          AND b.proposition_id=p.id AND b.recorded_at<=$3
+          AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
           ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_status,
        (SELECT b.recorded_at FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
-          AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL AND b.recorded_at<=$3
+          AND b.proposition_id=p.id AND b.recorded_at<=$3
+          AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
           ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_recorded_at,
+       (SELECT b.valid_from FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
+          AND b.proposition_id=p.id AND b.recorded_at<=$3
+          AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
+          ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_valid_from,
+       (SELECT b.valid_to FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
+          AND b.proposition_id=p.id AND b.recorded_at<=$3
+          AND (b.superseded_recorded_at IS NULL OR b.superseded_recorded_at>$3)
+          ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1) AS assessment_valid_to,
        (SELECT min(c.valid_from) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id) AS valid_from,
        (SELECT max(c.valid_to) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id) AS valid_to,
        coalesce((SELECT array_agg(DISTINCT c.id) FROM claims c WHERE c.owner_scope_id=p.owner_scope_id
@@ -436,6 +452,9 @@ async function assemble(
   const futureClaims: Array<z.infer<typeof contextFutureClaimSchema>> = [];
   const evidenceInPacket = new Set<string>();
   const bySlot = new Map<string, Array<Record<string, unknown>>>();
+  // What the selector must treat as not a candidate: a proposition the read
+  // policy withheld, and one outside the requested life-category view.
+  const outOfView = new Set<string>();
 
   for (const row of beliefRows) {
     const slotId = row['belief_slot_id'] as string;
@@ -465,18 +484,22 @@ async function assemble(
       frameTypeId,
       allowedPurposes: labels.filter(label => evidenceIds.includes(label.evidenceId)).flatMap(label => [...label.allowedPurposes]),
     });
-    if (!inCategoryView(category, categories)) continue;
+    if (!inCategoryView(category, categories)) { outOfView.add(propositionId); continue; }
     for (const evidenceId of evidenceIds) evidenceInPacket.add(evidenceId);
     const status = (row['assessment_status'] as string | null) ?? null;
     const certainty = certaintyOf(status);
-    const validTo = row['valid_to'] ? (row['valid_to'] as Date) : null;
+    // The valid interval is the verdict's when it states one -- a change closes
+    // the earlier value's period on its assessment, not on its claim -- and the
+    // claims' otherwise.
+    const validFrom = (row['assessment_valid_from'] as Date | null) ?? (row['valid_from'] as Date | null) ?? null;
+    const validTo = (row['assessment_valid_to'] as Date | null) ?? (row['valid_to'] as Date | null) ?? null;
     const modality = row['modality'] as string;
     if (FUTURE_MODALITIES.has(modality)) {
       futureClaims.push(contextFutureClaimSchema.parse(withoutFields({
         propositionId, frameInstanceId, frameTypeId, predicateId: row['predicate_id'], modality,
         normalizedValue: row['normalized_value'],
-        validFrom: row['valid_from'] ? (row['valid_from'] as Date).toISOString() : null,
-        lifeCategories: categories,
+        validFrom: validFrom ? validFrom.toISOString() : null,
+        lifeCategories: categories, evidenceIds,
       }, redactions.fields.get(propositionId))));
       continue;
     }
@@ -487,7 +510,7 @@ async function assemble(
       predicateId: row['predicate_id'], modality, polarity: row['polarity'],
       normalizedValue: row['normalized_value'], assessmentStatus: status,
       assessmentRecordedAt: row['assessment_recorded_at'] ? (row['assessment_recorded_at'] as Date).toISOString() : null,
-      validFrom: row['valid_from'] ? (row['valid_from'] as Date).toISOString() : null,
+      validFrom: validFrom ? validFrom.toISOString() : null,
       validTo: validTo ? validTo.toISOString() : null,
       certainty, lifeCategories: categories,
       claimIds: (row['claim_ids'] as string[] | null) ?? [], evidenceIds,
@@ -502,13 +525,20 @@ async function assemble(
   }
 
   // Step 7: competing beliefs. Two live propositions in one slot are a conflict
-  // the packet reports and never resolves (PRD §16.5, CRT-MEM-08-A).
+  // the packet reports and never resolves (PRD §16.5, CRT-MEM-08-A). "Live" is at
+  // the world time as well: a value whose verdict closed its period before then
+  // was superseded by a change, which is history, not a disagreement.
+  const heldAtWorldTime = (row: Record<string, unknown>) => {
+    const from = (row['assessment_valid_from'] as Date | null) ?? null;
+    const to = (row['assessment_valid_to'] as Date | null) ?? null;
+    return (from === null || from.getTime() <= worldTime.getTime()) && (to === null || to.getTime() > worldTime.getTime());
+  };
   const conflicts = [];
   for (const [slotId, rows] of bySlot) {
     const live = rows.filter(row => {
       const status = (row['assessment_status'] as string | null) ?? null;
       return row['proposition_lifecycle'] !== 'RETIRED' && status !== 'REJECTED' && status !== 'SUPERSEDED'
-        && !redactions.objects.has(row['proposition_id'] as string);
+        && heldAtWorldTime(row) && !redactions.objects.has(row['proposition_id'] as string);
     });
     if (live.length < 2) continue;
     const first = live[0]!;
@@ -573,6 +603,55 @@ async function assemble(
     }));
   }
 
+  // PRD §23.4: the deterministic selection over every slot of those frames. It is
+  // a pure function of the rows and the request's two instants, so the same
+  // memory and the same request select the same state for the same reason on
+  // every run -- no model, no clock, no row order decides "the latest"
+  // (CRT-RD-03-A). A value under a contract the pinned release does not hold is
+  // never selected (CRT-REG-04-A).
+  const selections = (await selectCurrentStates(tx, {
+    ownerScopeId: request.ownerScopeId, frameInstanceIds: frameIds, registryReleaseId: options.registryReleaseId ?? null,
+    parameters: {
+      worldTime: worldTime.toISOString(), knowledgeTime: knowledgeTime.toISOString(),
+      modalities: modalitiesForAnswerType(answerType), admitProvisional: request.requiredCertainty.includes('PROVISIONAL'),
+    },
+    withheldPropositionIds: redactions.objects, outOfViewPropositionIds: outOfView, overlayDeltas: overlay.deltas,
+  })).map(selection => {
+    // A field-level redaction over the selected value reaches the selection too,
+    // or the selection would state what the belief was not allowed to.
+    const fields = selection.selectedPropositionId ? redactions.fields.get(selection.selectedPropositionId) : undefined;
+    if (!fields || fields.size === 0) return selection;
+    const withheldFields = new Set([...fields].map(name => name === 'normalizedValue' ? 'selectedValue' : name));
+    return withoutFields(selection, withheldFields);
+  });
+  const registeredBySlot = new Map(selections.map(selection => [selection.beliefSlotId, selection.predicateRegistered]));
+
+  // Step 10: semantic search, only after the hard filters. Owner, permission and
+  // sensitivity are the request's own declarations; knowledge time, the time
+  // window, source types and the entity hints narrow further. The ranking sees
+  // the filtered rows and no others, so the nearest embedding never crosses a
+  // boundary the request drew (CRT-RD-04-A).
+  const semantic = await searchMemoryEmbeddings(tx, {
+    ownerScopeId: request.ownerScopeId, query: request.query, dataPurpose: request.purpose,
+    maximumSensitivity: request.maximumSensitivity, knowledgeTime,
+    timeWindow: request.timeWindow ? {
+      from: request.timeWindow.from ? new Date(request.timeWindow.from) : null,
+      to: request.timeWindow.to ? new Date(request.timeWindow.to) : null,
+    } : null,
+    entityIds: request.entityHints.length > 0 ? request.entityHints : null,
+    sourceTypes: request.sourceTypes.length > 0 ? request.sourceTypes : null,
+    registryReleaseId: options.registryReleaseId ?? null, limit: 10,
+  });
+  // What the owner removed from normal retrieval, or a verdict withheld, is not
+  // recalled by similarity either. Dropping after ranking only ever narrows.
+  const removedFromRetrieval = new Set([...overlay.suppressedTargets, ...overlay.deletedTargets].map(target => target.objectId));
+  const semanticSearch = semantic === null ? null : {
+    ...semantic,
+    matches: semantic.matches.filter(match => !removedFromRetrieval.has(match.objectId)
+      && !(match.propositionId !== null && (removedFromRetrieval.has(match.propositionId) || redactions.objects.has(match.propositionId)))),
+  };
+  const semanticEvidence = new Set((semanticSearch?.matches ?? []).flatMap(match => match.evidenceIds));
+
   // Steps 3 and 4: the typed projection state, with its completeness and its
   // watermarks carried rather than implied.
   const projectionFragments = await readProjectionFragments(tx, {
@@ -605,7 +684,7 @@ async function assemble(
   if (request.includeEvidence !== 'NEVER') {
     const wanted = request.includeEvidence === 'ALWAYS'
       ? admitted.filter(label => !withheldEvidence.has(label.evidenceId)).map(label => label.evidenceId)
-      : [...evidenceInPacket];
+      : [...new Set([...evidenceInPacket, ...semanticEvidence])];
     if (wanted.length > 0) {
       const rows = (await tx.query(
         `SELECT s.id,s.source_type,s.sensitivity,s.occurred_at,s.allowed_purposes,
@@ -688,6 +767,9 @@ async function assemble(
       allowedPurposes: admitsAction ? [CONTEXT_ACTION_PURPOSE] : [],
       actionKind: intent.actionKind, capabilityGranted: intent.capabilityGranted,
       supportingAssessment, projectionComplete: projectionFragments.every(fragment => fragment.isComplete),
+      // PRD §17.5: memory under an unregistered contract may be recalled, never
+      // the authority for a high-risk action (CRT-REG-04-A).
+      unregisteredPredicateSupport: currentBeliefs.some(belief => registeredBySlot.get(belief.beliefSlotId) !== true),
     });
     const actionDecisionId = await recordPolicyDecision(tx, {
       ownerScopeId: request.ownerScopeId, correlationId: options.correlationId, port: 'EvaluateMemoryAction',
@@ -696,6 +778,7 @@ async function assemble(
         readPurpose: request.purpose, actionRisk: request.actionRisk, capabilityGranted: intent.capabilityGranted,
         evidenceConsidered: supportingEvidence.length, evidenceAdmittingActionPurpose: admittingEvidence.length,
         supportingAssessment, answerType,
+        unregisteredPredicateSupport: currentBeliefs.some(belief => registeredBySlot.get(belief.beliefSlotId) !== true),
       },
       verdict: actionVerdict,
     });
@@ -727,7 +810,7 @@ async function assemble(
     worldTime: worldTime.toISOString(), knowledgeTime: knowledgeTime.toISOString(),
     currentBeliefs, historicalBeliefs, futureClaims, resolutionAssertions, conflicts, unknowns,
     ownerOverlayDeltas, projectionFragments, evidenceRefs, memoryThreads, allowedActions, actionDecision,
-    redactions: redactions.listed,
+    redactions: redactions.listed, selections, semanticSearch,
     watermarks: {
       ownerOverlayWatermark: Math.max(overlay.ownerOverlayWatermark,
         ...projectionFragments.map(fragment => fragment.ownerOverlayWatermark), 0),
@@ -740,11 +823,10 @@ async function assemble(
     selectionReason: {
       answerType, worldTimeFilter: worldTime.toISOString(), knowledgeTimeFilter: knowledgeTime.toISOString(),
       requiredCertainty: request.requiredCertainty, contextKind: 'BASE',
-      appliedRules: ['FILTER_VALID_TIME', 'FILTER_KNOWLEDGE_TIME', 'APPLY_CONTEXT_AND_MODALITY',
-        'APPLY_BELIEF_LIFECYCLE', 'APPLY_CORRECTION_AND_SUPERSESSION', 'INCLUDE_UNRESOLVED_CONFLICTS',
-        'INCLUDE_APPLICABLE_OVERLAY_DELTAS'],
+      appliedRules: [...SELECTION_RULES],
       overlayDeltasApplied: ownerOverlayDeltas.map(delta => delta.overlayDeltaId),
       selectorVersion: SELECTOR_VERSION,
+      selectionsDigest: selectionsDigest(selections),
     },
     policy: {
       outcome: verdict.outcome === 'REDACT' ? 'REDACT' as const : 'ALLOW' as const,
@@ -768,7 +850,8 @@ async function assemble(
         actionRisk: request.actionRisk, tokenBudget: request.tokenBudget, includeEvidence: request.includeEvidence,
         lifeCategory: category, entityHints: request.entityHints, worldlineHints: request.worldlineHints,
         discourseAnchors: request.discourseAnchors, frameTypeHints: request.frameTypeHints,
-        intendedAction: request.intendedAction,
+        intendedAction: request.intendedAction, answerType: request.answerType, timeWindow: request.timeWindow,
+        sourceTypes: request.sourceTypes,
       }),
       JSON.stringify(packet), packetHash, options.registryReleaseId ?? null,
       JSON.stringify(packet.selectionReason)]);
