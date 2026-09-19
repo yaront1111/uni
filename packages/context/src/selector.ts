@@ -21,7 +21,7 @@ import { canonicalJson, type MemoryTransaction } from '@unai/memory';
  * the selection is its own explanation.
  */
 
-export const SELECTION_VERSION = 'deterministic-selector-0.3.0';
+export const SELECTION_VERSION = 'deterministic-selector-0.4.0';
 
 const FUTURE_MODALITIES = ['SCHEDULED', 'INTENDED', 'COMMITTED', 'EXPECTED', 'PREDICTED', 'RECOMMENDED', 'CONDITIONAL'] as const;
 
@@ -331,6 +331,9 @@ export async function selectCurrentStates(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceIds: readonly string[]; registryReleaseId: string | null;
   parameters: SelectionParameters; withheldPropositionIds: ReadonlySet<string>;
   outOfViewPropositionIds: ReadonlySet<string>; overlayDeltas: readonly PublicOverlayDelta[];
+  /** Broker-authorized provenance; omission retains the standalone reader's
+   * existing contract, while an explicit empty set admits no claim metadata. */
+  allowedClaimIds?: ReadonlySet<string>;
 }): Promise<ContextSelection[]> {
   if (input.frameInstanceIds.length === 0) return [];
   const slots = (await tx.query(
@@ -349,21 +352,27 @@ export async function selectCurrentStates(tx: MemoryTransaction, input: {
   const assessments = propositionIds.length === 0 ? [] : (await tx.query(
     `SELECT b.id,b.proposition_id,b.assessment_status,
        coalesce(b.valid_from,(SELECT min(c.valid_from) FROM claims c
-         WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3)) AS valid_from,
+         WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3
+           AND ($4::uuid[] IS NULL OR c.id=ANY($4::uuid[])))) AS valid_from,
        coalesce(b.valid_to,(SELECT max(c.valid_to) FROM claims c
-         WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3)) AS valid_to,
+         WHERE c.owner_scope_id=b.owner_scope_id AND c.proposition_id=b.proposition_id AND c.recorded_at<=$3
+           AND ($4::uuid[] IS NULL OR c.id=ANY($4::uuid[])))) AS valid_to,
        b.recorded_at,b.superseded_recorded_at
      FROM belief_assessments b WHERE b.owner_scope_id=$1 AND b.proposition_id=ANY($2::uuid[]) ORDER BY b.recorded_at,b.id`,
-    [input.ownerScopeId, propositionIds, input.parameters.knowledgeTime])).rows;
+    [input.ownerScopeId, propositionIds, input.parameters.knowledgeTime,
+      input.allowedClaimIds === undefined ? null : [...input.allowedClaimIds]])).rows;
   const claims = propositionIds.length === 0 ? [] : (await tx.query(
     `SELECT c.id,c.proposition_id,c.claim_origin,c.recorded_at,a.source_item_id
      FROM claims c LEFT JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     WHERE c.owner_scope_id=$1 AND c.proposition_id=ANY($2::uuid[]) ORDER BY c.id`,
-    [input.ownerScopeId, propositionIds])).rows;
+     WHERE c.owner_scope_id=$1 AND c.proposition_id=ANY($2::uuid[])
+       AND ($3::uuid[] IS NULL OR c.id=ANY($3::uuid[])) ORDER BY c.id`,
+    [input.ownerScopeId, propositionIds, input.allowedClaimIds === undefined ? null : [...input.allowedClaimIds]])).rows;
   const claimIds = claims.map(row => row['id'] as string);
   const relations = claimIds.length === 0 ? [] : (await tx.query(
     `SELECT from_claim_id,to_claim_id,relation_kind,valid_from,created_at FROM claim_relations
-     WHERE owner_scope_id=$1 AND to_claim_id=ANY($2::uuid[]) ORDER BY id`, [input.ownerScopeId, claimIds])).rows;
+     WHERE owner_scope_id=$1 AND to_claim_id=ANY($2::uuid[])
+       AND ($3::uuid[] IS NULL OR from_claim_id=ANY($3::uuid[])) ORDER BY id`,
+    [input.ownerScopeId, claimIds, input.allowedClaimIds === undefined ? null : [...input.allowedClaimIds]])).rows;
 
   const presence = new Map<string, boolean>();
   const present = async (contract: string, kind: 'FRAME' | 'PREDICATE'): Promise<boolean> => {

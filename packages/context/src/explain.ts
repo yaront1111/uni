@@ -5,6 +5,7 @@ import {
 } from '@unai/domain';
 import { CANONICALIZATION_VERSION, readOwnerOverlay, type MemoryTransaction } from '@unai/memory';
 import { ContextBrokerError } from './broker.js';
+import { readPropositionAuthority } from './support-authority.js';
 
 /**
  * The belief explanation behind the Memory inspector (PRD §35.8, §37.1;
@@ -22,7 +23,7 @@ import { ContextBrokerError } from './broker.js';
  * not hold.
  */
 
-export const EXPLANATION_VERSION = 'belief-explanation-0.1.0';
+export const EXPLANATION_VERSION = 'belief-explanation-0.2.0';
 
 /** Which projection column consumes which predicate. It is read from the registry
  * contract the release pinned, so the consumer list is the registry's statement
@@ -37,6 +38,38 @@ async function projectionContracts(tx: MemoryTransaction, predicateId: string, r
   return rows[0]?.['present'] === true ? [predicateId] : [];
 }
 
+/** A link is readable only when both objects it describes have readable support. */
+async function readableLinks(tx: MemoryTransaction, ownerScopeId: string, rows: Record<string, unknown>[], readAt: Date) {
+  if (rows.length === 0) return [];
+  const refs = rows.flatMap(row => [
+    { type: row['from_object_type'] as string, id: row['from_object_id'] as string },
+    { type: row['to_object_type'] as string, id: row['to_object_id'] as string },
+  ]);
+  const ids = [...new Set(refs.map(ref => ref.id))];
+  const readable = new Set<string>();
+  const sources = (await tx.query(`SELECT 'source_item' AS kind,id FROM source_items WHERE owner_scope_id=$1 AND id=ANY($2::uuid[])
+    UNION ALL SELECT 'claim',c.id FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+      WHERE c.owner_scope_id=$1 AND c.id=ANY($2::uuid[]) AND c.recorded_at<=$3
+    UNION ALL SELECT 'resolution_assertion',r.id FROM resolution_assertions r
+      JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+      WHERE r.owner_scope_id=$1 AND r.id=ANY($2::uuid[]) AND r.recorded_at<=$3 AND c.recorded_at<=$3
+    UNION ALL SELECT 'entity',a.entity_id FROM entity_aliases a
+      JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+      WHERE a.owner_scope_id=$1 AND a.entity_id=ANY($2::uuid[]) AND a.created_at<=$3`, [ownerScopeId, ids, readAt])).rows;
+  for (const row of sources) readable.add(row['kind'] + ':' + row['id']);
+  const propositions = (await tx.query(`SELECT p.id,s.frame_instance_id FROM propositions p
+    JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
+    WHERE p.owner_scope_id=$1 AND (p.id=ANY($2::uuid[]) OR s.frame_instance_id=ANY($2::uuid[]))`, [ownerScopeId, ids])).rows;
+  const authority = await readPropositionAuthority(tx, { ownerScopeId, knowledgeTime: readAt,
+    propositionIds: propositions.map(row => row['id'] as string) });
+  for (const row of propositions) if (authority.get(row['id'] as string)?.readable) {
+    readable.add('proposition:' + row['id']); readable.add('frame_instance:' + row['frame_instance_id']);
+  }
+  return rows.filter(row => readable.has(row['from_object_type'] + ':' + row['from_object_id'])
+    && readable.has(row['to_object_type'] + ':' + row['to_object_id']));
+}
+
 export async function explainProposition(tx: MemoryTransaction, input: {
   ownerScopeId: string; propositionId: string; readAt: Date; registryRelease?: string | null;
 }): Promise<BeliefExplanation> {
@@ -48,38 +81,53 @@ export async function explainProposition(tx: MemoryTransaction, input: {
      JOIN frame_instances f ON f.owner_scope_id=s.owner_scope_id AND f.id=s.frame_instance_id
      WHERE p.owner_scope_id=$1 AND p.id=$2`, [input.ownerScopeId, input.propositionId])).rows[0];
   if (!subject) throw new ContextBrokerError('PROPOSITION_NOT_FOUND');
+  const authority = (await readPropositionAuthority(tx, { ownerScopeId: input.ownerScopeId,
+    propositionIds: [input.propositionId], knowledgeTime: input.readAt })).get(input.propositionId);
+  if (!authority?.readable) throw new ContextBrokerError('PROPOSITION_SOURCE_WITHHELD');
   const slotId = subject['belief_slot_id'] as string;
   const frameInstanceId = subject['frame_instance_id'] as string;
 
   // Temporal history over both axes: every assessment version ever recorded, in
   // recorded-time order, with the valid period each one spoke about.
   const assessmentRows = (await tx.query(
-    `SELECT id,assessment_status,valid_from,valid_to,recorded_at,superseded_recorded_at,transaction_id,policy_version,
-       decision_reason
+    `SELECT id,assessment_status,valid_from,valid_to,recorded_at,superseded_recorded_at,transaction_id,policy_version
      FROM belief_assessments WHERE owner_scope_id=$1 AND proposition_id=$2 ORDER BY recorded_at,id`,
     [input.ownerScopeId, input.propositionId])).rows;
   const live = assessmentRows.filter(row => row['superseded_recorded_at'] === null).at(-1) ?? null;
 
   const claimRows = (await tx.query(
-    `SELECT id,claim_origin,lifecycle,asserted_by_entity_id,extraction_run_id,recorded_at,valid_from,valid_to,
-       source_anchor_id
-     FROM claims WHERE owner_scope_id=$1 AND proposition_id=$2 ORDER BY recorded_at,id`,
-    [input.ownerScopeId, input.propositionId])).rows;
+    `SELECT c.id,c.claim_origin,c.lifecycle,c.asserted_by_entity_id,c.extraction_run_id,c.recorded_at,c.valid_from,c.valid_to,
+       c.source_anchor_id
+     FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE c.owner_scope_id=$1 AND c.proposition_id=$2 AND c.recorded_at<=$3 ORDER BY c.recorded_at,c.id`,
+    [input.ownerScopeId, input.propositionId, input.readAt])).rows;
+  // Direct assertions remain separate from transitive leaf citations: a
+  // computation must not invent a person who directly asserted its result.
+  const claimIds = claimRows.map(row => row['id'] as string);
 
-  const anchorRows = claimRows.length === 0 ? [] : (await tx.query(
+  const anchorRows = (await tx.query(
     `SELECT a.id,a.anchor_kind,a.source_item_id,s.source_type,s.sensitivity,s.occurred_at,
        coalesce(array_agg(c.id ORDER BY c.id),'{}') AS claim_ids
      FROM source_anchors a
      JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
      JOIN claims c ON c.owner_scope_id=a.owner_scope_id AND c.source_anchor_id=a.id
-     WHERE a.owner_scope_id=$1 AND c.proposition_id=$2
+     WHERE a.owner_scope_id=$1 AND c.id=ANY($2::uuid[])
      GROUP BY a.id,a.anchor_kind,a.source_item_id,s.source_type,s.sensitivity,s.occurred_at
-     ORDER BY a.id`, [input.ownerScopeId, input.propositionId])).rows;
+     ORDER BY a.id`, [input.ownerScopeId, authority.claimIds])).rows;
 
-  const supportRows = (await tx.query(
-    `SELECT id,support_kind,claim_id,supporting_proposition_id,independence_group
-     FROM belief_support WHERE owner_scope_id=$1 AND proposition_id=$2 ORDER BY id`,
-    [input.ownerScopeId, input.propositionId])).rows;
+  const supportCandidates = (await tx.query(
+    `SELECT b.id,b.support_kind,b.claim_id,b.supporting_proposition_id,b.independence_group
+     FROM belief_support b WHERE b.owner_scope_id=$1 AND b.proposition_id=$2
+       AND (b.claim_id IS NULL OR EXISTS(SELECT 1 FROM claims c
+         JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+         WHERE c.owner_scope_id=b.owner_scope_id AND c.id=b.claim_id AND c.recorded_at<=$3))
+       AND (b.claim_id IS NOT NULL OR b.supporting_proposition_id IS NOT NULL)
+     ORDER BY b.id`,
+    [input.ownerScopeId, input.propositionId, input.readAt])).rows;
+  const supportAuthority = await readPropositionAuthority(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt,
+    propositionIds: supportCandidates.map(row => row['supporting_proposition_id'] as string | null).filter((id): id is string => id !== null) });
+  const supportRows = supportCandidates.filter(row => row['supporting_proposition_id'] === null
+    || supportAuthority.get(row['supporting_proposition_id'] as string)?.readable);
   const groups = new Map<string, number>();
   for (const row of supportRows) {
     const group = (row['independence_group'] as string | null) ?? null;
@@ -90,12 +138,15 @@ export async function explainProposition(tx: MemoryTransaction, input: {
   // proposition in the same slot, a CORRECTS/SUPERSEDES/CONTRADICTS claim
   // relation, a CONTRADICTS memory link, and a contested owner assertion.
   const contradictions = [];
-  const competing = (await tx.query(
+  const competingCandidates = (await tx.query(
     `SELECT p.id,coalesce((SELECT b.assessment_status FROM belief_assessments b
        WHERE b.owner_scope_id=p.owner_scope_id AND b.proposition_id=p.id AND b.superseded_recorded_at IS NULL
        ORDER BY b.recorded_at DESC,b.id DESC LIMIT 1),'CANDIDATE') AS assessment_status
      FROM propositions p WHERE p.owner_scope_id=$1 AND p.belief_slot_id=$2 AND p.id<>$3 AND p.lifecycle<>'RETIRED'
      ORDER BY p.id`, [input.ownerScopeId, slotId, input.propositionId])).rows;
+  const competingAuthority = await readPropositionAuthority(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt,
+    propositionIds: competingCandidates.map(row => row['id'] as string) });
+  const competing = competingCandidates.filter(row => competingAuthority.get(row['id'] as string)?.readable);
   for (const row of competing) {
     if (row['assessment_status'] === 'REJECTED' || row['assessment_status'] === 'SUPERSEDED') continue;
     contradictions.push(explainContradictionSchema.parse({
@@ -103,13 +154,17 @@ export async function explainProposition(tx: MemoryTransaction, input: {
       relation: 'SAME_SLOT_DIFFERENT_VALUE', detail: 'COMPETING_LIVE_PROPOSITIONS_IN_ONE_SLOT',
     }));
   }
-  const claimIds = claimRows.map(row => row['id'] as string);
   if (claimIds.length > 0) {
     const relationRows = (await tx.query(
-      `SELECT id,from_claim_id,to_claim_id,relation_kind FROM claim_relations
-       WHERE owner_scope_id=$1 AND (from_claim_id=ANY($2::uuid[]) OR to_claim_id=ANY($2::uuid[]))
-         AND relation_kind IN ('CORRECTS','SUPERSEDES','CONTRADICTS') ORDER BY id`,
-      [input.ownerScopeId, claimIds])).rows;
+      `SELECT r.id,r.from_claim_id,r.to_claim_id,r.relation_kind FROM claim_relations r
+       JOIN claims f ON f.owner_scope_id=r.owner_scope_id AND f.id=r.from_claim_id
+       JOIN source_anchors fa ON fa.owner_scope_id=f.owner_scope_id AND fa.id=f.source_anchor_id
+       JOIN claims t ON t.owner_scope_id=r.owner_scope_id AND t.id=r.to_claim_id
+       JOIN source_anchors ta ON ta.owner_scope_id=t.owner_scope_id AND ta.id=t.source_anchor_id
+       WHERE r.owner_scope_id=$1 AND (r.from_claim_id=ANY($2::uuid[]) OR r.to_claim_id=ANY($2::uuid[]))
+         AND f.recorded_at<=$3 AND t.recorded_at<=$3
+         AND r.relation_kind IN ('CORRECTS','SUPERSEDES','CONTRADICTS') ORDER BY r.id`,
+      [input.ownerScopeId, claimIds, input.readAt])).rows;
     for (const row of relationRows) {
       contradictions.push(explainContradictionSchema.parse({
         kind: 'CLAIM_RELATION', objectType: 'claim_relations', objectId: row['id'],
@@ -118,18 +173,21 @@ export async function explainProposition(tx: MemoryTransaction, input: {
     }
   }
   const linkRows = (await tx.query(
-    `SELECT id,link_kind,from_object_id,to_object_id FROM memory_links
+    `SELECT id,link_kind,from_object_type,from_object_id,to_object_type,to_object_id FROM memory_links
      WHERE owner_scope_id=$1 AND link_kind='CONTRADICTS'
        AND ((from_object_type='proposition' AND from_object_id=$2) OR (to_object_type='proposition' AND to_object_id=$2))
      ORDER BY id`, [input.ownerScopeId, input.propositionId])).rows;
-  for (const row of linkRows) {
+  for (const row of await readableLinks(tx, input.ownerScopeId, linkRows, input.readAt)) {
     contradictions.push(explainContradictionSchema.parse({
       kind: 'MEMORY_LINK', objectType: 'memory_links', objectId: row['id'],
       relation: row['link_kind'] as string, detail: 'CONTRADICTS_LINK_RECORDED',
     }));
   }
 
-  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId });
+  const readableEvidenceIds = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
+    [input.ownerScopeId])).rows.map(row => row['id'] as string);
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId,
+    knowledgeTime: input.readAt, readableEvidenceIds });
   const ownerOverlayDeltas = overlay.deltas.filter(delta =>
     (delta.target !== null && delta.target.objectType === 'proposition' && delta.target.objectId === input.propositionId)
     || (delta.target !== null && delta.target.objectType === 'claim' && claimIds.includes(delta.target.objectId))
@@ -145,16 +203,22 @@ export async function explainProposition(tx: MemoryTransaction, input: {
   // Resolution links: the assertions that settle the frame this value belongs to,
   // and the protocol links that carry them.
   const resolutionRows = (await tx.query(
-    `SELECT id,outcome_code,effective_at,lifecycle FROM resolution_assertions
-     WHERE owner_scope_id=$1 AND (source_frame_instance_id=$2 OR target_frame_instance_id=$2
-       OR source_proposition_id=$3 OR target_proposition_id=$3) ORDER BY effective_at,id`,
-    [input.ownerScopeId, frameInstanceId, input.propositionId])).rows;
-  const resolutionLinkRows = (await tx.query(
-    `SELECT id,link_kind,lifecycle FROM memory_links
+    `SELECT r.id,r.outcome_code,r.effective_at,r.lifecycle FROM resolution_assertions r
+     JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     WHERE r.owner_scope_id=$1 AND (r.source_frame_instance_id=$2 OR r.target_frame_instance_id=$2
+       OR r.source_proposition_id=$3 OR r.target_proposition_id=$3)
+       AND r.recorded_at<=$4 AND c.recorded_at<=$4 ORDER BY r.effective_at,r.id`,
+    [input.ownerScopeId, frameInstanceId, input.propositionId, input.readAt])).rows;
+  const resolutionLinkCandidates = (await tx.query(
+    `SELECT id,link_kind,lifecycle,from_object_type,from_object_id,to_object_type,to_object_id FROM memory_links
      WHERE owner_scope_id=$1 AND link_kind IN ('RESOLVES','REALIZES','SUPERSEDES','DERIVED_FROM')
        AND ((from_object_type='proposition' AND from_object_id=$2) OR (to_object_type='proposition' AND to_object_id=$2)
          OR (from_object_type='frame_instance' AND from_object_id=$3) OR (to_object_type='frame_instance' AND to_object_id=$3))
-     ORDER BY id`, [input.ownerScopeId, input.propositionId, frameInstanceId])).rows;
+       AND (from_object_type<>'resolution_assertion' OR from_object_id=ANY($4::uuid[]))
+       AND (to_object_type<>'resolution_assertion' OR to_object_id=ANY($4::uuid[]))
+     ORDER BY id`, [input.ownerScopeId, input.propositionId, frameInstanceId, resolutionRows.map(row => row['id'] as string)])).rows;
+  const resolutionLinkRows = await readableLinks(tx, input.ownerScopeId, resolutionLinkCandidates, input.readAt);
 
   // The extractor versions every claim was produced under, and the release each
   // run was pinned to.
@@ -198,7 +262,9 @@ export async function explainProposition(tx: MemoryTransaction, input: {
       assessmentStatus: (live?.['assessment_status'] as string | null) ?? null,
       recordedAt: live?.['recorded_at'] ? (live['recorded_at'] as Date).toISOString() : null,
       policyVersion: (live?.['policy_version'] as string | null) ?? null,
-      decisionReason: (live?.['decision_reason'] as Record<string, unknown> | null) ?? null,
+      // Opaque rationale JSON has no per-field source provenance. Do not let it
+      // reintroduce a protected input beside an otherwise readable value.
+      decisionReason: null,
     },
     claims: claimRows.map(row => explainClaimSchema.parse({
       claimId: row['id'], claimOrigin: row['claim_origin'], lifecycle: row['lifecycle'],

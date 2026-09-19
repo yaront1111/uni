@@ -5,7 +5,7 @@
 **Tech Stack:** TypeScript, Zod, Fastify, Next.js, PostgreSQL/pgvector, encrypted S3, the existing model gateway and Git-versioned semantic registry.
 
 **Date:** 2026-09-19. **Inspected baseline:** `fbce0aa`.
-**Status:** The first Task A implementation tranche is delivered; see [privacy and temporal read boundaries](../privacy-and-temporal-read-boundaries.md) for reproduced defects, verification, and remaining audit scope. Tasks B–E remain planned. The table below records the initial inspected baseline, not the current implementation. The earlier review mentioned in the product direction was not supplied.
+**Status:** Two Task A implementation tranches are delivered; see [privacy and temporal read boundaries](../privacy-and-temporal-read-boundaries.md) and [derived evidence and inspector privacy](../derived-evidence-privacy.md) for reproduced defects, verification, and remaining audit scope. Task A is not fully exited; Tasks B–E remain planned. The table below records the initial inspected baseline, not the current implementation. The earlier review mentioned in the product direction was not supplied.
 
 The changed product authority is [PRD.md](../../PRD.md), particularly §§8.5–8.6, 12.7–12.10, 23.8, and 44.21–44.28. Existing phase order remains in force: a later feature does not excuse a missing earlier correctness gate. Deliver each task as a separate, reviewable change; do not implement this whole roadmap in one patch.
 

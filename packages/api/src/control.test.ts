@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
@@ -11,7 +11,8 @@ import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 // The registry library stays out of the API's manifest (registry-boundary.test.ts);
 // only this test publishes the pinned release, through the package's own source.
 import { loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
-import { actionHistoryEntrySchema, exportBundleSchema, permissionsViewSchema } from '@unai/domain';
+import { actionHistoryEntrySchema, contextPacketSchema, exportBundleSchema, permissionsViewSchema } from '@unai/domain';
+import { canonicalJson } from '@unai/memory';
 import { decideInterruption } from '@unai/review';
 import { readPersistedPacket } from '@unai/context';
 import { createPlatformApi } from './platform.js';
@@ -670,6 +671,207 @@ it('CRT-SEC-06-A: retained assistant history cannot reconstruct erased memory', 
       expect(packet.semanticSearch!.matches.map(match => match.objectId)).toContain(control.claimId);
       expect((packet.semanticSearch?.matches ?? []).flatMap(match => match.evidenceIds)).not.toContain(assistantEvidenceId);
     }
+  } finally { await app.close(); }
+});
+
+/** Two inputs to one recorded computation; its output supports another one.
+ * The optional independent support proves deletion does not erase a fact merely
+ * because one of its several derivations is broken (ADR 0033). */
+async function derivedErasureFixture(inputKind: 'claim' | 'proposition',
+  independent?: 'claim' | 'support' | 'computation') {
+  const app = api(), o = await newOwner('derivation-' + inputKind);
+  const marker = 'Erased-derivation-' + randomUUID();
+  const upload = async (title: string, text: string) => {
+    const response = await app.inject({ method: 'POST', url: '/v1/documents', headers: evidenceHeaders(o, 'evidence.ingest'),
+      payload: { documentId: title, title, pages: [{ page: 1, text }], sensitivity: 'PRIVATE',
+        allowedPurposes: [FINANCE], base64: Buffer.from(text).toString('base64') } });
+    expect(response.statusCode, response.body).toBe(201);
+    const evidenceId = response.json().evidenceId as string;
+    const anchorId = (await admin.query("SELECT id FROM source_anchors WHERE source_item_id=$1 AND anchor_kind='DOCUMENT_RANGE'",
+      [evidenceId])).rows[0].id as string;
+    return { evidenceId, anchorId };
+  };
+  const a = await upload('erased-input', marker), b = await upload('retained-input', 'Retained operand'),
+    c = await upload('independent-control', 'Independent observation: total 88.88 ILS; unrelated obligation 9.87 ILS.');
+  const baseValue = async (anchorId: string, amount: string) => {
+    const frame = await obligation(o, await entity(o, 'Input ' + amount));
+    return { ...frame, ...await belief(o, { slot: frame.slot, value: { amount, currency: 'ILS' }, anchorId, assessment: 'ACCEPTED' }) };
+  };
+  const av = await baseValue(a.anchorId, '31.25'), bv = await baseValue(b.anchorId, '57.63'), control = await baseValue(c.anchorId, '9.87');
+  const derivedValue = async (amount: string) => {
+    const creditor = await entity(o, 'Derived ' + amount), frame = await obligation(o, creditor), propositionId = randomUUID();
+    await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
+      [propositionId, o.owner, frame.slot, JSON.stringify({ amount, currency: 'ILS', ...(independent ? {} : { note: marker }) })]);
+    await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,policy_version,
+      transaction_id,decision_reason,recorded_at) VALUES($1,$2,$3,'ACCEPTED','local-policy-0.1.0',$4,'{"code":"DERIVED"}',$5)`,
+      [randomUUID(), o.owner, propositionId, o.transaction, RECORDED_AT]);
+    return { ...frame, creditor, propositionId };
+  };
+  const d = await derivedValue('88.88'), e = await derivedValue('177.76');
+  const dependency = async (output: string, claims: string[], propositions: string[], inputs: Record<string, unknown>) => {
+    const id = randomUUID();
+    await admin.query(`INSERT INTO derived_proposition_dependencies(id,owner_scope_id,derived_proposition_id,input_claim_ids,
+      input_proposition_ids,evaluator_id,model_or_code_version,registry_release_id,calculation_inputs,created_by_transaction_id)
+      VALUES($1,$2,$3,$4,$5,'finance.obligation_total','obligation-total-0.1.0',$6,$7,$8)`,
+      [id, o.owner, output, claims, propositions, registryReleaseId, JSON.stringify(inputs), o.transaction]);
+    return id;
+  };
+  const brokenDependency = await dependency(d.propositionId, inputKind === 'claim' ? [av.claimId, bv.claimId] : [],
+    inputKind === 'proposition' ? [av.propositionId, bv.propositionId] : [], { operands: ['31.25', '57.63'], privateNote: marker });
+  const downstreamDependency = await dependency(e.propositionId, [], [d.propositionId], { multiplier: 2 });
+  // A surviving operand is not a replacement for the broken two-input calculation.
+  await admin.query(`INSERT INTO belief_support(id,owner_scope_id,proposition_id,supporting_proposition_id,support_kind,created_by_transaction_id)
+    VALUES($1,$2,$3,$4,'DERIVATION',$5)`, [randomUUID(), o.owner, d.propositionId, bv.propositionId, o.transaction]);
+  let completeDependency: string | null = null;
+  if (independent === 'computation') {
+    const confirmation = await baseValue(c.anchorId, '88.88');
+    completeDependency = await dependency(d.propositionId, [confirmation.claimId], [], { observation: '88.88' });
+  } else if (independent) {
+    const claim = randomUUID();
+    await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,recorded_at)
+      VALUES($1,$2,$3,$4,'USER_CONFIRMATION',$5,$6)`,
+      [claim, o.owner, c.anchorId, independent === 'claim' ? d.propositionId : null,
+        independent === 'claim' ? 'PROVISIONAL' : 'CANDIDATE', RECORDED_AT]);
+    if (independent === 'support') await admin.query(`INSERT INTO belief_support(id,owner_scope_id,proposition_id,claim_id,
+      support_kind,created_by_transaction_id) VALUES($1,$2,$3,$4,'DIRECT_ASSERTION',$5)`,
+      [randomUUID(), o.owner, d.propositionId, claim, o.transaction]);
+  }
+  const summary = randomUUID(), downstreamSummary = randomUUID(), controlSummary = randomUUID();
+  for (const [id, proposition, text] of [[summary, d.propositionId, marker], [downstreamSummary, e.propositionId, marker],
+    [controlSummary, control.propositionId, 'Retained control summary']]) {
+    await admin.query(`INSERT INTO memory_summaries(id,owner_scope_id,summary_text,source_object_manifest,source_object_ids,model_id,prompt_version)
+      VALUES($1,$2,$3,'[]',ARRAY[$4::uuid],'fixture-model','summary-0.1.0')`, [id, o.owner, text, proposition]);
+  }
+  const context = async (historicalAt?: string, onlyDerived = false) => {
+    const response = await app.inject({ method: 'POST', url: '/v1/memory/context', headers: headers(o, 'memory.read'),
+      payload: { ownerScopeId: o.owner, requestingActorId: o.actor, purpose: FINANCE, query: 'Current obligation principal amounts',
+        worldTime: historicalAt ?? 'NOW', knowledgeTime: historicalAt ?? 'LATEST', maximumSensitivity: 'RESTRICTED', actionRisk: 'LOW',
+        ...(onlyDerived ? { entityHints: [d.creditor] } : {}),
+        ...(historicalAt ? { answerType: 'HISTORICAL_BELIEF_STATE' } : {}) } });
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json();
+  };
+  const currentPacket = contextPacketSchema.parse(await context(undefined, true));
+  expect(currentPacket.currentBeliefs.map(value => value.propositionId)).toContain(d.propositionId);
+  // Earlier broker versions cached the accepted output without its transitive
+  // citations. Keep that schema-valid legacy cache as an explicit migration
+  // fixture; the current broker is free to include the full source authority.
+  const { packetId: _id, packetHash: _hash, createdAt, ...currentBody } = currentPacket;
+  const legacyBody = { ...currentBody,
+    currentBeliefs: currentPacket.currentBeliefs.filter(value => value.propositionId === d.propositionId)
+      .map(value => ({ ...value, claimIds: [], evidenceIds: [] })),
+    historicalBeliefs: [], futureClaims: [], resolutionAssertions: [], conflicts: [], unknowns: [],
+    ownerOverlayDeltas: [], projectionFragments: [], evidenceRefs: [], memoryThreads: [], redactions: [], selections: [],
+    semanticSearch: null,
+    selectionReason: { ...currentPacket.selectionReason, selectionsDigest: createHash('sha256').update('[]').digest('hex') } };
+  const packet = contextPacketSchema.parse({ ...legacyBody, packetId: randomUUID(), createdAt,
+    packetHash: createHash('sha256').update(canonicalJson(legacyBody)).digest('hex') });
+  await admin.query(`INSERT INTO context_packets(id,owner_scope_id,purpose,requesting_actor_id,answer_type_classification,
+    request,packet,packet_hash,registry_release_id,selection_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [packet.packetId, o.owner, FINANCE, o.actor, packet.answerType, JSON.stringify({ query: 'Legacy derived-only cache' }),
+      JSON.stringify(packet), packet.packetHash, registryReleaseId, JSON.stringify(packet.selectionReason)]);
+  expect(JSON.stringify(packet)).not.toContain(av.propositionId);
+  expect(JSON.stringify(packet)).not.toContain(a.evidenceId);
+  const historicalAt = new Date().toISOString();
+  const erase = async (evidenceIds: string[], preview = false) => {
+    const response = await app.inject({ method: 'POST', url: '/v1/data/deletions' + (preview ? '/preview' : ''),
+      headers: headers(o, 'data.delete'), payload: { evidenceIds, ...(preview ? {} : { confirmation: 'DELETE' }) } });
+    expect(response.statusCode, response.body).toBe(200);
+    return response.json();
+  };
+  const exported = async () => {
+    const response = await app.inject({ method: 'POST', url: '/v1/export', headers: evidenceHeaders(o, 'data.export'),
+      payload: { includeRawEvidence: false } });
+    expect(response.statusCode, response.body).toBe(201);
+    return exportBundleSchema.parse(response.json().bundle);
+  };
+  return { app, o, marker, a, b, av, bv, control, d, e, brokenDependency, downstreamDependency, completeDependency,
+    summary, downstreamSummary, controlSummary, packet, historicalAt, context, erase, exported };
+}
+
+it.each([
+  { inputKind: 'claim' as const, deletion: 'partial' }, { inputKind: 'proposition' as const, deletion: 'partial' },
+  { inputKind: 'claim' as const, deletion: 'sequential' }, { inputKind: 'proposition' as const, deletion: 'sequential' },
+  { inputKind: 'claim' as const, deletion: 'batch' }, { inputKind: 'proposition' as const, deletion: 'batch' },
+])('erases a broken $inputKind derivation through $deletion deletion', async ({ inputKind, deletion }) => {
+  const fixture = await derivedErasureFixture(inputKind);
+  const { app, o, marker, a, b, av, bv, control, d, e, brokenDependency, downstreamDependency,
+    summary, controlSummary, packet, historicalAt, context, erase, exported } = fixture;
+  try {
+    const before = await exported();
+    expect(JSON.stringify(before.canonicalMemory)).toContain(marker);
+    const evidenceIds = deletion === 'batch' ? [a.evidenceId, b.evidenceId] : [a.evidenceId];
+    const preview = await erase(evidenceIds, true);
+    expect.soft(preview.cascade.unsupportedBeliefs).toBe(deletion === 'batch' ? 4 : 3);
+    expect(await count('SELECT count(*) AS n FROM propositions WHERE id=ANY($1::uuid[])', [[av.propositionId, d.propositionId, e.propositionId]])).toBe(3);
+    expect(await count('SELECT count(*) AS n FROM memory_summaries WHERE id=$1', [summary])).toBe(1);
+    expect((await admin.query('SELECT deleted_at FROM source_items WHERE id=$1', [a.evidenceId])).rows[0].deleted_at).toBeNull();
+    expect((await admin.query('SELECT packet FROM context_packets WHERE id=$1', [packet.packetId])).rows[0].packet).toEqual(packet);
+
+    await erase(evidenceIds);
+    if (deletion === 'sequential') await erase([b.evidenceId]);
+    expect.soft(await count('SELECT count(*) AS n FROM propositions WHERE id=ANY($1::uuid[])',
+      [[av.propositionId, d.propositionId, e.propositionId]])).toBe(0);
+    expect.soft(await count('SELECT count(*) AS n FROM derived_proposition_dependencies WHERE id=ANY($1::uuid[])',
+      [[brokenDependency, downstreamDependency]])).toBe(0);
+    expect.soft(await count('SELECT count(*) AS n FROM memory_summaries WHERE id=$1', [summary])).toBe(0);
+    expect(await count('SELECT count(*) AS n FROM memory_summaries WHERE id=$1', [controlSummary])).toBe(1);
+    expect.soft((await admin.query('SELECT packet,request FROM context_packets WHERE id=$1', [packet.packetId])).rows[0])
+      .toEqual({ packet: { erased: true }, request: { erased: true } });
+    const afterExport = await exported();
+    expect.soft(JSON.stringify(afterExport.canonicalMemory)).not.toContain(marker);
+    expect(afterExport.canonicalMemory.propositions.map(value => value['id'])).toContain(control.propositionId);
+    if (deletion === 'partial') expect(afterExport.canonicalMemory.propositions.map(value => value['id'])).toContain(bv.propositionId);
+    for (const instant of [undefined, historicalAt]) {
+      const after = await context(instant);
+      expect.soft(JSON.stringify(after)).not.toContain(marker);
+      expect(after.currentBeliefs.map((value: { propositionId: string }) => value.propositionId)).toContain(control.propositionId);
+    }
+    const projection = await app.inject({ method: 'GET', url: '/v1/projections/obligations', headers: headers(o, 'projection.read') });
+    expect(projection.statusCode, projection.body).toBe(200);
+    expect.soft(projection.body).not.toContain(d.propositionId);
+    expect.soft(projection.body).not.toContain(e.propositionId);
+    expect(projection.body).toContain(control.propositionId);
+    const regenerated = await app.inject({ method: 'POST', url: '/v1/memory/embeddings/regenerate',
+      headers: headers(o, 'memory.reindex'), payload: {} });
+    expect(regenerated.statusCode, regenerated.body).toBe(200);
+    expect.soft(JSON.stringify(await context())).not.toContain(marker);
+  } finally { await app.close(); }
+});
+
+it.each(['claim', 'support', 'computation'] as const)('preserves independent %s support while erasing a broken derivation', async independent => {
+  const { app, o, marker, a, d, e, brokenDependency, completeDependency, summary, downstreamSummary, controlSummary, packet, erase, exported } =
+    await derivedErasureFixture('proposition', independent);
+  try {
+    await erase([a.evidenceId]);
+    expect(await count('SELECT count(*) AS n FROM propositions WHERE id=ANY($1::uuid[])', [[d.propositionId, e.propositionId]])).toBe(2);
+    expect.soft(await count('SELECT count(*) AS n FROM derived_proposition_dependencies WHERE id=$1', [brokenDependency])).toBe(0);
+    expect.soft(await count("SELECT count(*) AS n FROM belief_support WHERE owner_scope_id=$1 AND proposition_id=$2 AND support_kind='DERIVATION'",
+      [o.owner, d.propositionId])).toBe(0);
+    if (completeDependency) expect(await count('SELECT count(*) AS n FROM derived_proposition_dependencies WHERE id=$1', [completeDependency])).toBe(1);
+    expect.soft(await count('SELECT count(*) AS n FROM memory_summaries WHERE id=$1', [summary])).toBe(0);
+    expect.soft(await count('SELECT count(*) AS n FROM memory_summaries WHERE id=$1', [downstreamSummary])).toBe(0);
+    expect(await count('SELECT count(*) AS n FROM memory_summaries WHERE id=$1', [controlSummary])).toBe(1);
+    expect.soft((await admin.query('SELECT packet FROM context_packets WHERE id=$1', [packet.packetId])).rows[0].packet).toEqual({ erased: true });
+    expect.soft(JSON.stringify((await exported()).canonicalMemory)).not.toContain(marker);
+  } finally { await app.close(); }
+});
+
+it('does not let circular derivations rescue themselves after their grounding evidence is erased', async () => {
+  const { app, o, a, av, control, d, e, erase, exported } = await derivedErasureFixture('proposition');
+  try {
+    // A has the only direct evidence grounding this cycle: A -> D -> E -> A.
+    // DERIVE writes are not part of ADD_SUPPORT's cycle check.
+    await admin.query(`INSERT INTO derived_proposition_dependencies(id,owner_scope_id,derived_proposition_id,input_proposition_ids,
+      evaluator_id,model_or_code_version,registry_release_id,calculation_inputs,created_by_transaction_id)
+      VALUES($1,$2,$3,ARRAY[$4::uuid],'finance.obligation_total','obligation-total-0.1.0',$5,'{}',$6)`,
+      [randomUUID(), o.owner, av.propositionId, e.propositionId, registryReleaseId, o.transaction]);
+    await erase([a.evidenceId]);
+    const ids = (await exported()).canonicalMemory.propositions.map(value => value['id']);
+    expect(ids).toContain(control.propositionId);
+    expect.soft(ids).not.toContain(av.propositionId);
+    expect.soft(ids).not.toContain(d.propositionId);
+    expect.soft(ids).not.toContain(e.propositionId);
   } finally { await app.close(); }
 });
 

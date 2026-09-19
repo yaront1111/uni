@@ -16,6 +16,7 @@ import { categoryOfPurpose, deriveLifeCategories, inCategoryView } from './categ
 import { readProjectionFragments } from './fragments.js';
 import { SELECTION_VERSION, modalitiesForAnswerType, selectCurrentStates, selectionsDigest } from './selector.js';
 import { listThreadsForObject } from './threads.js';
+import { readPropositionAuthority } from './support-authority.js';
 
 /**
  * The Context Broker (PRD §23, §36.11; design POST /v1/memory/context).
@@ -46,7 +47,7 @@ import { listThreadsForObject } from './threads.js';
  * completeness and watermarks are all present rather than implied (CRT-RD-05-A).
  */
 
-export const BROKER_VERSION = 'context-broker-0.2.1';
+export const BROKER_VERSION = 'context-broker-0.3.1';
 export const SELECTOR_VERSION = SELECTION_VERSION;
 /** The route purpose the broker runs under. It appears in no INSERT, UPDATE or
  * DELETE policy on any canonical table: this path cannot write memory. */
@@ -475,6 +476,25 @@ async function assemble(
      ORDER BY s.frame_instance_id,s.id,p.id`,
     [request.ownerScopeId, frameIds, knowledgeTime])).rows;
 
+  const supportAuthority = await readPropositionAuthority(tx, {
+    ownerScopeId: request.ownerScopeId,
+    propositionIds: beliefRows.map(row => row['proposition_id'] as string), knowledgeTime, readableEvidenceIds,
+    withheldObjectIds: redactions.objects,
+    withheldValueIds: new Set([...redactions.fields].filter(([, fields]) => fields.has('normalizedValue')).map(([id]) => id)),
+    removedObjectIds: removedFromRetrieval,
+  });
+  const authorizedClaimIds = new Set([...supportAuthority.values()].flatMap(authority => authority.claimIds));
+  const authorizedClaimRows = authorizedClaimIds.size === 0 ? [] : (await tx.query(
+    `SELECT id,claim_origin,valid_from,valid_to FROM claims
+     WHERE owner_scope_id=$1 AND id=ANY($2::uuid[]) ORDER BY id`,
+    [request.ownerScopeId, [...authorizedClaimIds]])).rows;
+  const authorizedClaims = new Map(authorizedClaimRows.map(row => [row['id'] as string, row]));
+  for (const [id, authority] of supportAuthority) {
+    if (authority.claimIds.some(claimId => !authorizedClaims.has(claimId))) {
+      supportAuthority.set(id, { readable: false, evidenceIds: [], claimIds: [] });
+    }
+  }
+
   const FUTURE_MODALITIES = new Set(['SCHEDULED', 'INTENDED', 'COMMITTED', 'EXPECTED', 'PREDICTED', 'RECOMMENDED', 'CONDITIONAL']);
   const certaintyOf = (status: string | null): 'ACCEPTED' | 'PROVISIONAL' | 'CONTESTED' =>
     status === 'ACCEPTED' ? 'ACCEPTED' : status === 'CONTESTED' ? 'CONTESTED' : 'PROVISIONAL';
@@ -496,17 +516,26 @@ async function assemble(
     if (redactions.objects.has(propositionId)) continue;
     const frameInstanceId = row['frame_instance_id'] as string;
     const frameTypeId = frameTypeById.get(frameInstanceId) ?? '';
-    const evidenceIds = ((row['evidence_ids'] as string[] | null) ?? []).filter(id => !withheldEvidence.has(id));
-    // A belief whose every support is withheld is not supplied at all; it is a
-    // redaction and an unknown, so the answer still knows it is there.
-    //
-    // The comparison is between the claims that exist and the evidence this
-    // request can actually read. A RESTRICTED item is invisible to a PRIVATE
-    // request all the way down to its anchors, so "the claim is there and its
-    // evidence is not" is exactly the signal, and it is reached without reading
-    // one field of the withheld item (CRT-SEC-09-A).
-    const claimCount = (row['claim_count'] as number | null) ?? 0;
-    if (claimCount > 0 && evidenceIds.length === 0) {
+    const authority = supportAuthority.get(propositionId);
+    const evidenceIds = authority?.evidenceIds ?? [];
+    // Leaf claims of a computation are citations, not direct assertions of its
+    // output. Intersect only this proposition's direct claims with its proof;
+    // hidden assertions must not supply attribution or widen the valid interval.
+    const directClaimIds = ((row['claim_ids'] as string[] | null) ?? [])
+      .filter(id => authority?.claimIds.includes(id)).sort();
+    const directClaims = directClaimIds.map(id => authorizedClaims.get(id)!);
+    row['claim_ids'] = directClaimIds;
+    row['claim_origins'] = [...new Set(directClaims.map(claim => claim['claim_origin'] as string))].sort();
+    const froms = directClaims.flatMap(claim => claim['valid_from'] ? [claim['valid_from'] as Date] : []);
+    const tos = directClaims.flatMap(claim => claim['valid_to'] ? [claim['valid_to'] as Date] : []);
+    row['valid_from'] = froms.length === 0 ? null : new Date(Math.min(...froms.map(date => date.getTime())));
+    row['valid_to'] = tos.length === 0 ? null : new Date(Math.max(...tos.map(date => date.getTime())));
+    // An assessment grants no source authority. A zero-direct-claim derivation
+    // needs a complete readable input path just as a direct value needs a source.
+    // Store only its authorized proof so conflicts and every temporal surface
+    // inherit exactly the same citations.
+    row['evidence_ids'] = evidenceIds;
+    if (!authority?.readable) {
       redactions.listed.push(contextRedactionSchema.parse({
         objectType: 'propositions', objectId: propositionId, fields: [], reason: 'SUPPORTING_EVIDENCE_WITHHELD',
       }));
@@ -655,12 +684,15 @@ async function assemble(
       modalities: modalitiesForAnswerType(answerType), admitProvisional: request.requiredCertainty.includes('PROVISIONAL'),
     },
     withheldPropositionIds: redactions.objects, outOfViewPropositionIds: outOfView, overlayDeltas: ownerOverlayDeltas,
+    allowedClaimIds: authorizedClaimIds,
   })).map(selection => {
     // A readable proposition may have both readable and withheld support. Its
     // citations still have to obey the source policy applied to the packet.
     const authorizedSelection = { ...selection,
       ...(selection.evidenceIds === undefined ? {} : {
-        evidenceIds: selection.evidenceIds.filter(id => !withheldEvidence.has(id)),
+        evidenceIds: selection.selectedPropositionId
+          ? supportAuthority.get(selection.selectedPropositionId)?.evidenceIds ?? []
+          : selection.evidenceIds.filter(id => !withheldEvidence.has(id)),
       }) };
     // A field-level redaction over the selected value reaches the selection too,
     // or the selection would state what the belief was not allowed to.

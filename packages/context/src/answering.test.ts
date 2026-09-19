@@ -12,7 +12,8 @@ import { indexClaimEmbeddings } from '@unai/memory';
 import type { PolicyVerdict, QuestionType } from '@unai/domain';
 import { createLocalPolicyAdapters, type PolicyPorts } from '@unai/belief';
 import { uuidV7 } from '../../../src/kernel/identities.js';
-import { answerQuestion, readContextPacket, type ContextRunner } from './index.js';
+import { answerQuestion, explainProposition, inspectMemory, readContextPacket, readWhySources, type ContextRunner } from './index.js';
+import { readPropositionAuthority } from './support-authority.js';
 
 /**
  * Deterministic selection and the Ask pipeline over real PostgreSQL, the real
@@ -127,6 +128,30 @@ async function relation(from: string, to: string, kind: 'CORRECTS' | 'SUPERSEDES
   await admin.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,temporal_effect,
     valid_from,created_by_transaction_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
     [randomUUID(), owner, from, to, kind, kind === 'CORRECTS' ? 'SAME_VALID_INTERVAL' : 'NEW_VALID_PERIOD', validFrom, transactionId, createdAt]);
+}
+
+async function derivedValue(marker: string, input: { modality?: string; validTo?: Date; slotId?: string } = {}) {
+  const derivedSlot = input.slotId ?? await slot(await frame('shared.obligation'), 'shared.obligation.description', input.modality ?? 'ACTUAL');
+  const propositionId = uuidV7();
+  await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
+    [propositionId, owner, derivedSlot, JSON.stringify({ text: marker })]);
+  await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,valid_to,
+    recorded_at,policy_version,decision_reason,transaction_id)
+    VALUES($1,$2,$3,'ACCEPTED',$4,$5,$4,'local-policy-0.1.0','{"code":"DERIVED"}',$6)`,
+    [uuidV7(), owner, propositionId, T('2026-02-01'), input.validTo ?? null, transactionId]);
+  return { propositionId, slotId: derivedSlot };
+}
+
+async function dependency(propositionId: string, input: {
+  claimIds?: string[]; propositionIds?: string[]; createdAt?: Date;
+}) {
+  const id = uuidV7();
+  await admin.query(`INSERT INTO derived_proposition_dependencies(id,owner_scope_id,derived_proposition_id,input_claim_ids,
+    input_proposition_ids,evaluator_id,model_or_code_version,registry_release_id,calculation_inputs,created_by_transaction_id,created_at)
+    VALUES($1,$2,$3,$4,$5,'finance.obligation_total','obligation-total-0.1.0',$6,'{}',$7,$8)`,
+    [id, owner, propositionId, input.claimIds ?? [], input.propositionIds ?? [], registryReleaseId, transactionId,
+      input.createdAt ?? T('2026-02-05')]);
+  return id;
 }
 
 beforeAll(async () => {
@@ -282,7 +307,7 @@ it('CRT-RD-03-A: the broker returns the same selected current state and selectio
     predicateRegistered: false, selectedPropositionId: null });
   expect(of(slots.principal).predicateRegistered).toBe(true);
   // The selection reason travels with the packet and the stored record.
-  expect(first!.selectionReason).toMatchObject({ selectorVersion: 'deterministic-selector-0.3.0' });
+  expect(first!.selectionReason).toMatchObject({ selectorVersion: 'deterministic-selector-0.4.0' });
   const stored = (await admin.query('SELECT selection_reason,packet FROM context_packets WHERE id=$1', [first!.packetId])).rows[0];
   expect(stored.selection_reason.selectionsDigest).toBe(first!.selectionReason.selectionsDigest);
   expect(stored.packet.selections).toEqual(JSON.parse(JSON.stringify(first!.selections)));
@@ -612,4 +637,202 @@ it('does not expose an outcome linking a removed frame to a still-visible frame'
   const after = await readContextPacket(runner, request(), options());
   expect(after.currentBeliefs.some(belief => belief.propositionId === p.principal60)).toBe(true);
   expect(after.resolutionAssertions.map(resolution => resolution.resolutionAssertionId)).not.toContain(resolutionId);
+});
+
+it.each(['claim', 'proposition'] as const)('requires every %s input before exposing a derived value on any packet surface', async (kind) => {
+  const protectedSource = await item('derived-input-' + kind + '-' + randomUUID(), 'DOCUMENT', { sensitivity: 'RESTRICTED' });
+  const input = await value({ slotId: await slot(await frame('shared.obligation'), 'shared.obligation.description'),
+    value: { text: 'protected input ' + kind }, source: 'document', sourceAnchorId: protectedSource.anchorId,
+    claimRecordedAt: T('2026-02-01'), versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-01') }] });
+  const current = await derivedValue('private derived current ' + kind);
+  const conflicting = await derivedValue('private derived conflict ' + kind, { slotId: current.slotId });
+  const historical = await derivedValue('private derived history ' + kind, { validTo: T('2026-02-15') });
+  const future = await derivedValue('private derived future ' + kind, { modality: 'COMMITTED' });
+  for (const output of [current, conflicting, historical, future]) {
+    await dependency(output.propositionId, kind === 'claim'
+      ? { claimIds: [input.claimId, claimIds[0]!] }
+      : { propositionIds: [input.propositionId, p.principal60] });
+  }
+  const packet = await readContextPacket(runner, request(), options());
+  expect(packet.currentBeliefs.some(belief => belief.propositionId === p.principal60)).toBe(true);
+  expect(JSON.stringify(packet)).not.toContain('private derived');
+  const stored = (await admin.query('SELECT packet FROM context_packets WHERE id=$1', [packet.packetId])).rows[0].packet;
+  expect(JSON.stringify(stored)).not.toContain('private derived');
+  expect(packet.selections.filter(selection => [current.slotId, historical.slotId, future.slotId].includes(selection.beliefSlotId))
+    .every(selection => selection.outcome === 'WITHHELD')).toBe(true);
+  const allowed = await readContextPacket(runner, request({ maximumSensitivity: 'RESTRICTED' }), options());
+  expect(allowed.currentBeliefs.find(belief => belief.propositionId === current.propositionId)?.evidenceIds).toContain(protectedSource.evidenceId);
+  expect(allowed.historicalBeliefs.find(belief => belief.propositionId === historical.propositionId)?.evidenceIds).toContain(protectedSource.evidenceId);
+  expect(allowed.futureClaims.find(belief => belief.propositionId === future.propositionId)?.evidenceIds).toContain(protectedSource.evidenceId);
+  expect(allowed.conflicts.find(conflict => conflict.beliefSlotId === current.slotId)?.positions
+    .every(position => position.evidenceIds?.includes(protectedSource.evidenceId))).toBe(true);
+});
+
+it('cites transitive readable inputs and preserves an independent complete derivation', async () => {
+  const hidden = await item('derived-alternative-' + randomUUID(), 'DOCUMENT', { purpose: 'FAMILY_COORDINATION' });
+  const hiddenInput = await value({ slotId: await slot(await frame('shared.obligation'), 'shared.obligation.description'),
+    value: { text: 'hidden alternative input' }, source: 'document', sourceAnchorId: hidden.anchorId,
+    claimRecordedAt: T('2026-02-01'), versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-01') }] });
+  const first = await derivedValue('readable derived intermediate');
+  await dependency(first.propositionId, { claimIds: [hiddenInput.claimId, claimIds[0]!] });
+  await dependency(first.propositionId, { propositionIds: [p.principal60] });
+  const nested = await derivedValue('readable nested derived result');
+  await dependency(nested.propositionId, { propositionIds: [first.propositionId] });
+  const packet = await readContextPacket(runner, request(), options());
+  for (const output of [first, nested]) {
+    const belief = packet.currentBeliefs.find(entry => entry.propositionId === output.propositionId)!;
+    expect(belief).toBeDefined();
+    expect(belief.evidenceIds).toContain(evidence.document.evidenceId);
+    expect(belief.evidenceIds).not.toContain(hidden.evidenceId);
+    const selection = packet.selections.find(entry => entry.selectedPropositionId === output.propositionId)!;
+    expect(selection).toBeDefined();
+    expect(selection.evidenceIds).toContain(evidence.document.evidenceId);
+    expect(selection.evidenceIds).not.toContain(hidden.evidenceId);
+  }
+  const panels = await withOwnerTransaction(appPool,
+    { actorId: actor, ownerScopeId: owner, purpose: 'memory.inspect', correlationId: randomUUID() }, async tx => {
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE]);
+      return {
+        explanation: await explainProposition(tx, { ownerScopeId: owner, propositionId: nested.propositionId, readAt: NOW }),
+        inspector: await inspectMemory(tx, { ownerScopeId: owner, objectType: 'proposition', objectId: nested.propositionId, readAt: NOW }),
+        why: await readWhySources(tx, { ownerScopeId: owner, ref: { objectType: 'propositions', objectId: nested.propositionId }, readAt: NOW }),
+      };
+    });
+  expect(panels.explanation.normalizedValue).toEqual({ text: 'readable nested derived result' });
+  expect(panels.inspector.explanation.normalizedValue).toEqual({ text: 'readable nested derived result' });
+  expect(panels.explanation.claims).toEqual([]);
+  expect(panels.inspector.assertingActors).toEqual([]);
+  expect(panels.why.label).toBe('INFERRED');
+  expect(panels.why.sources.map(source => source.evidenceId)).toContain(evidence.document.evidenceId);
+  expect(panels.why.sources.map(source => source.evidenceId)).not.toContain(hidden.evidenceId);
+  expect(panels.inspector.originalEvidence.map(source => source.evidenceId)).toContain(evidence.document.evidenceId);
+});
+
+it('requires dependencies and input claims to exist at the requested knowledge time', async () => {
+  const lateInput = await value({ slotId: await slot(await frame('shared.obligation'), 'shared.obligation.description'),
+    value: { text: 'late derived input' }, source: 'document', claimRecordedAt: T('2026-02-25'),
+    versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-25') }] });
+  const lateDependency = await derivedValue('late dependency derived output');
+  await dependency(lateDependency.propositionId, { propositionIds: [p.principal60], createdAt: T('2026-02-20') });
+  const lateClaim = await derivedValue('late claim derived output');
+  await dependency(lateClaim.propositionId, { claimIds: [lateInput.claimId], createdAt: T('2026-02-20') });
+  const early = await readContextPacket(runner, request({ knowledgeTime: T('2026-02-15').toISOString() }), options());
+  expect(JSON.stringify(early)).not.toContain('late dependency derived output');
+  expect(JSON.stringify(early)).not.toContain('late claim derived output');
+  const middle = await readContextPacket(runner, request({ knowledgeTime: T('2026-02-22').toISOString() }), options());
+  expect(middle.selections.some(selection => selection.selectedPropositionId === lateDependency.propositionId)).toBe(true);
+  expect(JSON.stringify(middle)).not.toContain('late claim derived output');
+  const latest = await readContextPacket(runner, request(), options());
+  expect(latest.selections.find(selection => selection.selectedPropositionId === lateClaim.propositionId)?.evidenceIds)
+    .toContain(evidence.document.evidenceId);
+});
+
+it('fails closed on source-free, missing and cyclic derivations while admitting a grounded cycle alternative', async () => {
+  const absent = await derivedValue('no provenance accepted value');
+  const missing = await derivedValue('missing input derived output');
+  await dependency(missing.propositionId, { claimIds: [randomUUID()] });
+  const a = await derivedValue('cycle derived A'), b = await derivedValue('cycle derived B');
+  await dependency(a.propositionId, { propositionIds: [b.propositionId] });
+  await dependency(b.propositionId, { propositionIds: [a.propositionId] });
+  const blocked = await readContextPacket(runner, request(), options());
+  for (const output of [absent, missing, a, b]) {
+    expect(blocked.currentBeliefs.map(belief => belief.propositionId)).not.toContain(output.propositionId);
+    expect(blocked.selections.find(selection => selection.beliefSlotId === output.slotId)?.outcome).toBe('WITHHELD');
+  }
+  await dependency(a.propositionId, { propositionIds: [p.principal60] });
+  const grounded = await readContextPacket(runner, request(), options());
+  for (const output of [a, b]) {
+    expect(grounded.selections.find(selection => selection.selectedPropositionId === output.propositionId)?.evidenceIds)
+      .toContain(evidence.document.evidenceId);
+  }
+});
+
+it('propagates input policy redactions and present owner removals through derivations', async () => {
+  const input = await value({ slotId: await slot(await frame('shared.obligation'), 'shared.obligation.description'),
+    value: { text: 'controlled derived input' }, source: 'document', claimRecordedAt: T('2026-02-01'),
+    versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-01') }] });
+  const output = await derivedValue('controlled derived output');
+  await dependency(output.propositionId, { propositionIds: [input.propositionId] });
+  const allowed = await readContextPacket(runner, request(), options());
+  expect(allowed.selections.some(selection => selection.selectedPropositionId === output.propositionId)).toBe(true);
+  for (const redaction of [
+    { objectType: 'propositions', objectId: input.propositionId, fields: ['normalizedValue'] },
+    { objectType: 'source_items', objectId: evidence.document.evidenceId, fields: [] },
+  ]) {
+    const ports: PolicyPorts = { ...createLocalPolicyAdapters(), async evaluateMemoryRead(): Promise<PolicyVerdict> {
+      return { outcome: 'REDACT', requiredConfirmation: false, obligations: [], expiry: null,
+        reason: 'INPUT_REDACTED', policyVersion: 'test-policy-0.1.0', redactions: [{ ...redaction, reason: 'INPUT_REDACTED' }] };
+    } };
+    const withheld = await readContextPacket(runner, request(), { ...options(), ports });
+    expect(JSON.stringify(withheld)).not.toContain('controlled derived output');
+  }
+  await admin.query(`INSERT INTO owner_overlay_deltas(id,owner_scope_id,owner_sequence,source_evidence_id,raw_text,
+    delta_kind,lifecycle,target_object_type,target_object_id,created_at)
+    SELECT $1,$2,coalesce(max(owner_sequence),0)+1,$3,'Suppress operand','SUPPRESSION','USER_ASSERTED','proposition',$4,$5
+    FROM owner_overlay_deltas WHERE owner_scope_id=$2`,
+    [uuidV7(), owner, evidence.conversation.evidenceId, input.propositionId, T('2026-02-26')]);
+  const removed = await readContextPacket(runner, request({ knowledgeTime: T('2026-02-15').toISOString() }), options());
+  expect(JSON.stringify(removed)).not.toContain('controlled derived output');
+});
+
+it('bounds provenance traversal and fails closed instead of accepting a partial graph', async () => {
+  const chain: string[] = [];
+  const chainFrame = await frame('shared.obligation');
+  for (let index = 0; index < 66; index++) {
+    const chainSlot = await slot(chainFrame, 'shared.obligation.description');
+    chain.push((await derivedValue('bounded derivation ' + index, { slotId: chainSlot })).propositionId);
+  }
+  for (let index = 0; index < chain.length; index++) {
+    await dependency(chain[index]!, { propositionIds: [chain[index + 1] ?? p.principal60] });
+  }
+  const check = (ids: string[]) => runner(async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE]);
+    return readPropositionAuthority(tx, { ownerScopeId: owner, propositionIds: ids, knowledgeTime: NOW });
+  });
+  const bounded = await check([chain[0]!]);
+  expect(bounded.get(chain[0]!)).toMatchObject({ readable: false, evidenceIds: [], claimIds: [] });
+  // A separate bounded read of an ordinary direct assertion is still available.
+  const direct = await check([p.principal60]);
+  expect(direct.get(p.principal60)?.readable).toBe(true);
+  expect(direct.get(p.principal60)?.evidenceIds).toContain(evidence.document.evidenceId);
+}, 15000);
+
+it('keeps mixed-source claim identities, attribution and fallback intervals within source authority', async () => {
+  const protectedSource = await item('mixed-origin-' + randomUUID(), 'DOCUMENT', { sensitivity: 'RESTRICTED' });
+  const mixed = await value({ slotId: await slot(await frame('shared.obligation'), 'shared.obligation.description'),
+    value: { text: 'mixed authority interval value' }, source: 'document', origin: 'MODEL_INFERENCE',
+    claimRecordedAt: T('2026-02-01'), claimValidFrom: T('2026-02-01'),
+    versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-01') }] });
+  const hiddenClaim = uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
+    VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL',$5,$6)`,
+    [hiddenClaim, owner, protectedSource.anchorId, mixed.propositionId, T('2026-01-01'), T('2026-02-01')]);
+  const current = await readContextPacket(runner, request(), options());
+  expect.soft(current.currentBeliefs.find(belief => belief.propositionId === mixed.propositionId)?.claimIds).toEqual([mixed.claimId]);
+  expect.soft(current.selections.find(selection => selection.selectedPropositionId === mixed.propositionId)?.claimOrigins).toEqual(['MODEL_INFERENCE']);
+  const early = await readContextPacket(runner, request({ worldTime: T('2026-01-15').toISOString() }), options());
+  expect.soft(early.currentBeliefs.map(belief => belief.propositionId)).not.toContain(mixed.propositionId);
+  expect.soft(early.selections.map(selection => selection.selectedPropositionId)).not.toContain(mixed.propositionId);
+  const allowed = await readContextPacket(runner,
+    request({ worldTime: T('2026-01-15').toISOString(), maximumSensitivity: 'RESTRICTED' }), options());
+  expect(allowed.selections.find(selection => selection.selectedPropositionId === mixed.propositionId)?.claimOrigins).toContain('USER_STATEMENT');
+});
+
+it('does not turn a withheld same-proposition retraction into an external retraction', async () => {
+  const source = await item('hidden-retract-' + randomUUID(), 'DOCUMENT', { sensitivity: 'RESTRICTED' });
+  const visible = await value({ slotId: await slot(await frame('shared.obligation'), 'shared.obligation.description'),
+    value: { text: 'independently readable retraction control' }, source: 'document',
+    claimRecordedAt: T('2026-02-01'), versions: [{ status: 'ACCEPTED', recordedAt: T('2026-02-01') }] });
+  const hiddenClaim = uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
+    VALUES($1,$2,$3,$4,'USER_STATEMENT','PROVISIONAL',$5,$5)`,
+    [hiddenClaim, owner, source.anchorId, visible.propositionId, T('2026-02-01')]);
+  await admin.query(`INSERT INTO claim_relations(id,owner_scope_id,from_claim_id,to_claim_id,relation_kind,temporal_effect,
+    created_by_transaction_id,created_at) VALUES($1,$2,$3,$4,'RETRACTS','NO_VALID_TIME_EFFECT',$5,$6)`,
+    [uuidV7(), owner, hiddenClaim, visible.claimId, transactionId, T('2026-02-02')]);
+  const allowed = await readContextPacket(runner, request({ maximumSensitivity: 'RESTRICTED' }), options());
+  expect(allowed.selections.some(selection => selection.selectedPropositionId === visible.propositionId)).toBe(true);
+  const packet = await readContextPacket(runner, request(), options());
+  expect(packet.selections.some(selection => selection.selectedPropositionId === visible.propositionId)).toBe(true);
+  expect(packet.selections.find(selection => selection.selectedPropositionId === visible.propositionId)?.appliedRelations).toEqual([]);
 });

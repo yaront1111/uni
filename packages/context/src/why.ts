@@ -6,6 +6,7 @@ import { readOwnerOverlay, type MemoryTransaction } from '@unai/memory';
 import { ContextBrokerError } from './broker.js';
 import { explainProposition } from './explain.js';
 import { describeContract, describeValue } from './wording.js';
+import { readPropositionAuthority } from './support-authority.js';
 
 /**
  * The Why? / Sources panel (design screen "Why? / Sources panel"; PRD §24.5,
@@ -26,7 +27,7 @@ import { describeContract, describeValue } from './wording.js';
  * of being shown.
  */
 
-export const WHY_PANEL_VERSION = 'why-sources-0.2.0';
+export const WHY_PANEL_VERSION = 'why-sources-0.3.0';
 const EXCERPT_LENGTH = 600;
 const MODEL_ORIGINS = new Set(['MODEL_EXTRACTION', 'MODEL_INFERENCE', 'MODEL_RECOMMENDATION', 'MODEL_PREDICTION']);
 const OWNER_OR_AUTHORITY = new Set(['USER_STATEMENT', 'USER_CONFIRMATION', 'USER_CORRECTION',
@@ -119,7 +120,7 @@ async function readClaims(tx: MemoryTransaction, ownerScopeId: string,
      FROM claims c
      LEFT JOIN entities e ON e.owner_scope_id=c.owner_scope_id AND e.id=c.asserted_by_entity_id
      LEFT JOIN extraction_runs r ON r.owner_scope_id=c.owner_scope_id AND r.id=c.extraction_run_id
-     WHERE c.owner_scope_id=$1 AND (c.proposition_id=$2 OR c.id=ANY($3::uuid[]))
+     WHERE c.owner_scope_id=$1 AND (c.proposition_id=$2 OR c.id=ANY($3::uuid[])) AND c.recorded_at<=$4
      ORDER BY c.recorded_at,c.id`,
     [ownerScopeId, where.propositionId ?? null, [...(where.claimIds ?? [])], readAt])).rows;
   const anchors = await readAnchors(tx, ownerScopeId, rows.map(row => row['source_anchor_id'] as string));
@@ -169,45 +170,57 @@ function distinctSources<T extends { evidenceId: string; anchorKind: string; exc
     .filter(source => { const key = source.evidenceId + source.anchorKind + (source.excerpt ?? ''); return !seen.has(key) && !!seen.add(key); });
 }
 
-async function propositionStatement(tx: MemoryTransaction, ownerScopeId: string, ids: readonly string[]): Promise<Map<string, string>> {
+async function propositionStatement(tx: MemoryTransaction, ownerScopeId: string, ids: readonly string[], readAt: Date): Promise<Map<string, string>> {
   if (ids.length === 0) return new Map();
+  const authority = await readPropositionAuthority(tx, { ownerScopeId, propositionIds: ids, knowledgeTime: readAt });
+  const readable = [...new Set(ids)].filter(id => authority.get(id)?.readable);
   const rows = (await tx.query(
     `SELECT p.id,p.normalized_value,s.predicate_id,f.frame_type_id FROM propositions p
      JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
      JOIN frame_instances f ON f.owner_scope_id=s.owner_scope_id AND f.id=s.frame_instance_id
-     WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])
-       AND EXISTS(SELECT 1 FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-         WHERE c.owner_scope_id=p.owner_scope_id AND c.proposition_id=p.id)`, [ownerScopeId, [...new Set(ids)]])).rows;
+     WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])`, [ownerScopeId, readable])).rows;
   return new Map(rows.map(row => [row['id'] as string,
     describeContract(row['frame_type_id'] as string, row['predicate_id'] as string) + ': ' + describeValue(row['normalized_value'])]));
 }
 
 async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: string; propositionId: string; readAt: Date }): Promise<WhySources> {
-  const explanation = await explainProposition(tx, { ownerScopeId: input.ownerScopeId, propositionId: input.propositionId, readAt: input.readAt });
-  const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { propositionId: input.propositionId }, input.readAt);
-  if (claims.length === 0) {
-    return withheldPanel({ objectType: 'propositions', objectId: input.propositionId }, 'BELIEF', input.readAt);
+  let explanation: Awaited<ReturnType<typeof explainProposition>>;
+  try {
+    explanation = await explainProposition(tx, { ownerScopeId: input.ownerScopeId, propositionId: input.propositionId, readAt: input.readAt });
+  } catch (error) {
+    if (error instanceof ContextBrokerError && error.message === 'PROPOSITION_SOURCE_WITHHELD') {
+      return withheldPanel({ objectType: 'propositions', objectId: input.propositionId }, 'BELIEF', input.readAt);
+    }
+    throw error;
   }
+  const { claims, redactions } = await readClaims(tx, input.ownerScopeId, { propositionId: input.propositionId }, input.readAt);
+  const supportingAnchors = await readAnchors(tx, input.ownerScopeId, explanation.evidenceAnchors.map(anchor => anchor.sourceAnchorId));
   const origins = claims.map(claim => claim.value.claimOrigin);
 
   // The derivation path: the recorded dependencies of a derived value, and any
   // proposition that lends it DERIVATION support (PRD §16.4).
-  const dependencies = (await tx.query(
+  const dependencyCandidates = (await tx.query(
     `SELECT evaluator_id,model_or_code_version,input_claim_ids,input_proposition_ids FROM derived_proposition_dependencies
-     WHERE owner_scope_id=$1 AND derived_proposition_id=$2 ORDER BY created_at,id`, [input.ownerScopeId, input.propositionId])).rows;
+     WHERE owner_scope_id=$1 AND derived_proposition_id=$2 AND created_at<=$3 ORDER BY created_at,id`,
+    [input.ownerScopeId, input.propositionId, input.readAt])).rows;
   const derivedSupport = explanation.supportGraph.filter(support => support.supportKind === 'DERIVATION' && support.supportingPropositionId);
-  const inputClaimIds = dependencies.flatMap(row => row['input_claim_ids'] as string[]);
+  const inputClaimIds = dependencyCandidates.flatMap(row => row['input_claim_ids'] as string[]);
   const inputClaimRows = inputClaimIds.length === 0 ? [] : (await tx.query(
     `SELECT c.id,c.proposition_id,c.claim_origin FROM claims c
      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     WHERE c.owner_scope_id=$1 AND c.id=ANY($2::uuid[])`,
-    [input.ownerScopeId, [...new Set(inputClaimIds)]])).rows;
+     WHERE c.owner_scope_id=$1 AND c.id=ANY($2::uuid[]) AND c.recorded_at<=$3`,
+    [input.ownerScopeId, [...new Set(inputClaimIds)], input.readAt])).rows;
+  const inputAuthority = await readPropositionAuthority(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt,
+    propositionIds: dependencyCandidates.flatMap(row => row['input_proposition_ids'] as string[]) });
+  const readableClaimIds = new Set(inputClaimRows.map(row => row['id'] as string));
+  const dependencies = dependencyCandidates.filter(row => (row['input_claim_ids'] as string[]).every(id => readableClaimIds.has(id))
+    && (row['input_proposition_ids'] as string[]).every(id => inputAuthority.get(id)?.readable));
   const statements = await propositionStatement(tx, input.ownerScopeId, [
     ...dependencies.flatMap(row => row['input_proposition_ids'] as string[]),
     ...inputClaimRows.map(row => row['proposition_id'] as string | null).filter((id): id is string => id !== null),
     ...derivedSupport.map(support => support.supportingPropositionId!),
     ...explanation.contradictions.filter(entry => entry.kind === 'COMPETING_PROPOSITION').map(entry => entry.objectId),
-  ]);
+  ], input.readAt);
   const claimStatement = (claimId: string) => {
     const row = inputClaimRows.find(entry => entry.id === claimId);
     const proposition = row?.['proposition_id'] as string | null | undefined;
@@ -276,7 +289,7 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
     confidence: { ...weakest(claims), assessmentStatus: status },
     claims: claims.map(claim => claim.value),
     claimingActors: distinctActors(claims.map(claim => claim.value.claimingActor)),
-    sources: distinctSources(claims.map(claim => claim.value.source)),
+    sources: distinctSources([...claims.map(claim => claim.value.source), ...[...supportingAnchors.values()].map(excerptOf)]),
     redactions,
     conflict: {
       status: contested ? 'CONTESTED' : corrected ? 'CORRECTED_OR_SUPERSEDED' : 'NO_CONFLICT',

@@ -101,7 +101,7 @@ function Inspector({inspector}:{inspector:Inspection}){
     </Section>
     <Section id="threads" title="Connected memory threads">
       {inspector.connectedThreads.length===0?<p>Not part of any thread.</p>:<ul>{inspector.connectedThreads.map(thread=><li key={thread.memoryThreadId}>
-        <a href={'/memory/threads/'+thread.memoryThreadId}>{thread.displayTitle??'Untitled thread'}</a> ({thread.membershipKind.toLowerCase()}, {thread.lifecycle.toLowerCase()})
+        <a href={'/memory/threads/'+thread.memoryThreadId}>{thread.displayTitle??'Memory thread'}</a> ({thread.membershipKind.toLowerCase()}, {thread.lifecycle.toLowerCase()})
       </li>)}</ul>}
     </Section>
     <Section id="access" title="Access history">

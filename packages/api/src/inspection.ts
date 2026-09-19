@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
-import { inspectableObjectTypeSchema, memoryInspectorSchema, relatedFramesSchema } from '@unai/domain';
+import { dataPurposeSchema, sensitivitySchema, inspectableObjectTypeSchema, memoryInspectorSchema, relatedFramesSchema } from '@unai/domain';
 import { ContextBrokerError, MEMORY_INSPECT_PURPOSE, inspectMemory, readRelatedFrames } from '@unai/context';
 
 /**
@@ -37,10 +37,13 @@ export function registerInspectionRoutes(app: FastifyInstance, work: Work, optio
   const gate = (request: FastifyRequest, tx: OwnerTransaction) => tx.query(
     "SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
     [request.headers['x-data-purpose'] ?? '', request.headers['x-maximum-sensitivity'] ?? '']);
+  const declared = (request: FastifyRequest) => dataPurposeSchema.safeParse(request.headers['x-data-purpose']).success
+    && sensitivitySchema.safeParse(request.headers['x-maximum-sensitivity']).success;
 
   app.get<{ Params: { objectType: string; id: string } }>('/v1/memory/inspector/:objectType/:id', async (request, reply) => {
     const objectType = inspectableObjectTypeSchema.safeParse(request.params.objectType);
     if (!objectType.success || !UUID.test(request.params.id)) return refuse(request, reply, 400, 'INSPECTOR_REQUEST_INVALID');
+    if (!declared(request)) return refuse(request, reply, 400, 'INSPECTOR_REQUEST_INVALID');
     let inspector;
     try {
       inspector = await work(request, async tx => {
@@ -60,6 +63,9 @@ export function registerInspectionRoutes(app: FastifyInstance, work: Work, optio
       if (error instanceof ContextBrokerError && error.message === 'INSPECTOR_TARGET_NOT_FOUND') {
         return refuse(request, reply, 404, error.message);
       }
+      if (error instanceof ContextBrokerError && ['PROPOSITION_SOURCE_WITHHELD', 'INSPECTOR_TARGET_SOURCE_WITHHELD'].includes(error.message)) {
+        return refuse(request, reply, 403, error.message);
+      }
       throw error;
     }
     return inspector;
@@ -70,6 +76,7 @@ export function registerInspectionRoutes(app: FastifyInstance, work: Work, optio
     if (ids.length === 0 || ids.length > MAX_FRAMES || !ids.every(id => UUID.test(id))) {
       return refuse(request, reply, 400, 'RELATED_FRAMES_REQUEST_INVALID');
     }
+    if (!declared(request)) return refuse(request, reply, 400, 'RELATED_FRAMES_REQUEST_INVALID');
     return work(request, async tx => {
       await gate(request, tx);
       const related = relatedFramesSchema.parse(await readRelatedFrames(tx, {
