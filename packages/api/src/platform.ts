@@ -10,6 +10,7 @@ import {registerCorrectionRoutes,CORRECTION_PURPOSE} from './corrections.js';
 import {registerOpsRoutes} from './ops.js';
 import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
+import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
@@ -25,6 +26,10 @@ import type {PolicyPorts} from '@unai/belief';
 const CORRECTION_URLS=new Set(['/v1/memory/overlay-deltas','/v1/memory/corrections','/v1/memory/state-changes',
   '/v1/memory/confirmations','/v1/memory/rejections','/v1/memory/keep-uncertain','/v1/memory/suppressions',
   '/v1/memory/archives','/v1/memory/deletions']);
+/** Governed merge and split (PRD §35.11). Each is a belief transaction, so each
+ * runs under the governing purpose like every other governed write. */
+const LINEAGE_URLS=new Set(['/v1/memory/frame-instances/merge','/v1/memory/frame-instances/:id/split',
+  '/v1/memory/entities/merge','/v1/memory/entities/:id/split']);
 
 export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];
   evidenceObjects?:EvidenceObjects;registryReleaseId?:string;registryRelease?:string;
@@ -77,6 +82,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
+      request.routeOptions.url&&LINEAGE_URLS.has(request.routeOptions.url)?LINEAGE_WRITE_PURPOSE:
+      request.routeOptions.url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
       request.routeOptions.url&&CORRECTION_URLS.has(request.routeOptions.url)?CORRECTION_PURPOSE:
       request.routeOptions.url?.startsWith('/v1/projections/')?PROJECTION_READ_PURPOSE:
       request.routeOptions.url==='/v1/ops/projections'?PROJECTION_HEALTH_PURPOSE:
@@ -86,11 +93,16 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/ops/registry-snapshot'?'ops.registry.read':null;
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
-  async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>){
+  /** `purpose` lets a route open one transaction under a purpose its server code
+   * names -- the projection rebuild after a merge runs under `memory.project`
+   * (ADR 0025 §4). It is never read from a header, and the session is re-verified
+   * exactly as for every other transaction. */
+  async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>,purpose?:string){
     const token=sessionToken(request.headers.cookie);
     const session=token?await resolveSession(options.authPool,token):null;
     if(!session||session.ownerScopeId!==request.ownerContext!.ownerScopeId)throw new Error('SESSION_EXPIRED');
-    return withOwnerTransaction(options.appPool,request.ownerContext!,async tx=>{
+    const context=purpose===undefined?request.ownerContext!:{...request.ownerContext!,purpose};
+    return withOwnerTransaction(options.appPool,context,async tx=>{
       const live=await tx.query('SELECT id FROM auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp() FOR UPDATE',[session.id]);
       if(live.rowCount!==1)throw new Error('SESSION_EXPIRED');
       return run(tx,session.id);
@@ -159,6 +171,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   });
   registerMemoryGovernorRoutes(app,deviceWork);
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
+  registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId});
   registerOpsRoutes(app,deviceWork);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{

@@ -5,8 +5,9 @@
  * service (propose, validate, atomic and idempotent commit), the append-only
  * belief assessment engine with its derived-dependency record and UNSUPPORTED
  * transition, the support graph with independence groups and circular-support
- * rejection, the seven admission modes, and the three local policy ports with
- * their persisted decisions.
+ * rejection, the seven admission modes, the three local policy ports with
+ * their persisted decisions, and the governed merge and split operations with
+ * their lineage (`lineage.ts`, ADR 0025).
  *
  * Every function takes a transaction runner the caller supplied, exactly as
  * `@unai/extraction` does. Nothing here opens a connection, commits on its own
@@ -22,6 +23,10 @@ export {
   recordDerivedDependency, readDerivedDependencies, reassessDerivedPropositions,
   type StoredAssessment, type DerivedDependency,
 } from './assessments.js';
+export {
+  LineageOperationError, applyFrameMerge, applyFrameSplit, applyEntityMerge, applyEntitySplit, lineageErrorCode,
+  type LineageOperationContext, type LineageOperationResult,
+} from './lineage.js';
 export {
   independenceGroupKey, derivedIndependenceGroupKey, independentSourceCount, findSupportCycle,
   type SupportOrigin, type SupportEdge,

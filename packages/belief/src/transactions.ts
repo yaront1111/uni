@@ -7,6 +7,7 @@ import { createBeliefSlot, createProposition, indexClaimEmbeddings, recordClaim,
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { admittedAssessmentStatus, selectAdmissionMode, type AdmissionCandidate } from './admission.js';
 import { recordBeliefAssessment, recordDerivedDependency, reassessDerivedPropositions, type StoredAssessment } from './assessments.js';
+import { applyEntityMerge, applyEntitySplit, applyFrameMerge, applyFrameSplit, lineageErrorCode } from './lineage.js';
 import { createLocalPolicyAdapters, recordPolicyDecision, type PolicyPorts, type Sensitivity } from './policy.js';
 import { derivedIndependenceGroupKey, findSupportCycle, independenceGroupKey, independentSourceCount, type SupportEdge, type SupportOrigin } from './support.js';
 
@@ -72,7 +73,11 @@ interface StoredOperation { id: string; order: number; kind: string; payload: Re
 const MODEL_ORIGINS = new Set(['MODEL_EXTRACTION', 'MODEL_INFERENCE', 'MODEL_RECOMMENDATION', 'MODEL_PREDICTION']);
 /** Operation kinds another node of the sealed plan owns. The governor refuses them
  * by name rather than half-implementing somebody else's deliverable. */
-const NOT_DELIVERED_HERE = new Set(['MERGE', 'SPLIT', 'ARCHIVE', 'DELETE']);
+const NOT_DELIVERED_HERE = new Set(['ARCHIVE', 'DELETE']);
+/** Merge and split write lineage, and migration 0018 accepts lineage only from a
+ * transaction of the same kind. Refusing the mismatch at propose names it before
+ * the database would. */
+const KIND_BOUND_OPERATIONS = new Set(['MERGE', 'SPLIT']);
 
 /** Both settings the evidence policies read, set transaction-local so nothing
  * survives on a pooled connection. */
@@ -127,6 +132,9 @@ export async function proposeBeliefTransaction(
   for (const operation of proposal.operations) {
     if (NOT_DELIVERED_HERE.has(operation.kind)) {
       throw new BeliefTransactionError('BELIEF_OPERATION_NOT_DELIVERED', { operationKind: operation.kind });
+    }
+    if (KIND_BOUND_OPERATIONS.has(operation.kind) && operation.kind !== proposal.transactionKind) {
+      throw new BeliefTransactionError('BELIEF_OPERATION_KIND_MISMATCH', { operationKind: operation.kind });
     }
   }
   // Every `#ref` an operation consumes has to be produced by an earlier operation:
@@ -732,9 +740,55 @@ async function applyOperation(context: CommitContext, order: number, operation: 
       context.touchedPropositions.add(targetId);
       return record('belief_assessments', assessment.id);
     }
-    case 'MERGE': case 'SPLIT': case 'ARCHIVE': case 'DELETE':
+    case 'MERGE': case 'SPLIT':
+      return applyLineageOperation(context, order, operation);
+    case 'ARCHIVE': case 'DELETE':
       throw new BeliefTransactionError('BELIEF_OPERATION_NOT_DELIVERED', { operationKind: operation.kind });
   }
+}
+
+/**
+ * A governed merge or split (PRD §14, ADR 0025). The operation body lives in
+ * `lineage.ts`; here it is bound to the committing transaction, its created rows
+ * join the receipt, and its detail is what the operation's `result_object_refs`
+ * records, so the endpoint can answer a retried request from the stored commit
+ * rather than from a second run.
+ */
+async function applyLineageOperation(
+  context: CommitContext, order: number, operation: Extract<BeliefOperation, { kind: 'MERGE' | 'SPLIT' }>,
+): Promise<Record<string, unknown>> {
+  const bound = {
+    ownerScopeId: context.request.ownerScopeId, transactionId: context.transaction.id,
+    registryReleaseId: context.transaction.registryReleaseId,
+  };
+  const targetObjectType = operation.targetObjectType ?? 'frame_instance';
+  const target = resolveRef(context, operation.target);
+  let result;
+  try {
+    if (operation.kind === 'MERGE') {
+      const survivor = resolveRef(context, operation.survivor);
+      result = targetObjectType === 'entity'
+        ? await applyEntityMerge(context.tx, bound, { mergedEntityId: target, survivorEntityId: survivor, reason: operation.reason })
+        : await applyFrameMerge(context.tx, bound, { mergedFrameInstanceId: target, survivorFrameInstanceId: survivor, reason: operation.reason });
+    } else {
+      result = targetObjectType === 'entity'
+        ? await applyEntitySplit(context.tx, bound, { parentEntityId: target, partitions: operation.partitions,
+          partitionSpecs: operation.partitionSpecs, reason: operation.reason,
+          aliasAssignments: operation.aliasAssignments?.map(assignment => ({ aliasId: assignment.aliasId, partition: assignment.partition })) })
+        : await applyFrameSplit(context.tx, bound, { parentFrameInstanceId: target, partitions: operation.partitions,
+          partitionSpecs: operation.partitionSpecs, reason: operation.reason,
+          claimAssignments: operation.claimAssignments?.map(assignment => ({ claimId: assignment.claimId, partition: assignment.partition })) });
+    }
+  } catch (error) {
+    const code = lineageErrorCode(error);
+    if (code !== null) throw new BeliefTransactionError(code, { operationKind: operation.kind });
+    throw error;
+  }
+  for (const object of result.created) context.createdObjects.push({ operationOrder: order, ...object });
+  context.assessments.push(...result.assessments);
+  for (const propositionId of result.touchedPropositions) context.touchedPropositions.add(propositionId);
+  return { objectType: targetObjectType === 'entity' ? 'entities' : 'frame_instances', objectId: target,
+    targetObjectType, [operation.kind === 'MERGE' ? 'merge' : 'split']: result.detail };
 }
 
 /**

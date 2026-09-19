@@ -1,4 +1,6 @@
-import type { MemoryTransaction } from '@unai/memory';
+import {
+  listMergedFrameMembers, resolveEntitySurvivors, resolveFrameInstanceSurvivors, type MemoryTransaction,
+} from '@unai/memory';
 import { type PendingAssertion } from '@unai/domain';
 
 /**
@@ -14,7 +16,25 @@ import { type PendingAssertion } from '@unai/domain';
  * total `ORDER BY`, every selection rule breaks its ties on an identifier, and
  * no reader looks at the wall clock. That is what makes a full replay equal an
  * incremental apply (CRT-PRJ-02-A).
+ *
+ * Every reader follows lineage (ADR 0025 §3). A frame merged into a survivor
+ * keeps its rows; the readers read them for the survivor and report them under
+ * the survivor's id, a proposition merged away counts its claims for the
+ * proposition it merged into, a claim a split assigned counts for the new
+ * instance's proposition, and a merged entity reads as its survivor. With no
+ * lineage every map below is the identity and the readers answer exactly what
+ * they answered before.
  */
+
+/** Re-sort rows whose frame id was mapped to a survivor, so the order is the one
+ * the SQL would have produced had the rows been recorded against the survivor. */
+function byFrameThen<T extends { frameInstanceId: string }>(rows: T[], rest: (left: T, right: T) => number): T[] {
+  return rows.sort((left, right) =>
+    left.frameInstanceId < right.frameInstanceId ? -1 : left.frameInstanceId > right.frameInstanceId ? 1 : rest(left, right));
+}
+const compareIds = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+const compareTimes = (left: Date, right: Date) => left.getTime() - right.getTime();
+const mapped = (members: ReadonlyMap<string, string>) => [...members].some(([member, survivor]) => member !== survivor);
 
 /** The two watermarks every projection row carries (PRD §33.12). */
 export interface CanonicalWatermarks {
@@ -88,6 +108,7 @@ export async function readSlotValues(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceIds: readonly string[]; predicateId: string; modality: string;
 }): Promise<SlotValue[]> {
   if (input.frameInstanceIds.length === 0) return [];
+  const members = await listMergedFrameMembers(tx, { ownerScopeId: input.ownerScopeId, frameInstanceIds: input.frameInstanceIds });
   const rows = (await tx.query(
     `SELECT s.frame_instance_id, s.id AS belief_slot_id, s.predicate_id, p.id AS proposition_id,
        p.normalized_value, p.created_at,
@@ -102,18 +123,75 @@ export async function readSlotValues(tx: MemoryTransaction, input: {
        AND s.modality=$4 AND s.lifecycle='ACTIVE'
      GROUP BY s.frame_instance_id,s.id,s.predicate_id,p.id,p.normalized_value,p.created_at
      ORDER BY s.frame_instance_id,p.created_at,p.id`,
-    [input.ownerScopeId, [...input.frameInstanceIds], input.predicateId, input.modality])).rows;
-  return rows.map(row => Object.freeze({
-    frameInstanceId: row['frame_instance_id'] as string,
-    beliefSlotId: row['belief_slot_id'] as string,
-    predicateId: row['predicate_id'] as string,
-    propositionId: row['proposition_id'] as string,
-    normalizedValue: row['normalized_value'],
-    claimIds: Object.freeze([...(row['claim_ids'] as string[])]),
-    claimOrigins: Object.freeze([...(row['claim_origins'] as string[])].sort()),
-    latestClaimAt: (row['latest_claim_at'] as Date | null) ?? null,
-    createdAt: row['created_at'] as Date,
-  }));
+    [input.ownerScopeId, [...members.keys()], input.predicateId, input.modality])).rows;
+  const inherited = await readInheritedClaims(tx, input.ownerScopeId, rows.map(row => row['proposition_id'] as string));
+  const values = rows.map(row => {
+    const propositionId = row['proposition_id'] as string;
+    const extra = inherited.get(propositionId);
+    return Object.freeze({
+      frameInstanceId: members.get(row['frame_instance_id'] as string) ?? row['frame_instance_id'] as string,
+      beliefSlotId: row['belief_slot_id'] as string,
+      predicateId: row['predicate_id'] as string,
+      propositionId,
+      normalizedValue: row['normalized_value'],
+      claimIds: Object.freeze(extra ? extra.claimIds : [...(row['claim_ids'] as string[])]),
+      claimOrigins: Object.freeze(extra ? extra.claimOrigins : [...(row['claim_origins'] as string[])].sort()),
+      latestClaimAt: extra ? extra.latestClaimAt : (row['latest_claim_at'] as Date | null) ?? null,
+      createdAt: row['created_at'] as Date,
+    });
+  });
+  return mapped(members)
+    ? byFrameThen(values, (left, right) => compareTimes(left.createdAt, right.createdAt) || compareIds(left.propositionId, right.propositionId))
+    : values;
+}
+
+/**
+ * The claims a proposition carries through lineage: those of every proposition
+ * merged into it (transitively), and those a split assigned to it with a support
+ * row of the split transaction (ADR 0025 §2). Only propositions that carry any
+ * are returned, with their whole claim set -- attached and inherited -- in the
+ * order the main query uses, so a proposition with no lineage keeps the answer
+ * the main query gave it.
+ */
+async function readInheritedClaims(tx: MemoryTransaction, ownerScopeId: string, propositionIds: readonly string[]): Promise<Map<string, {
+  claimIds: string[]; claimOrigins: string[]; latestClaimAt: Date | null;
+}>> {
+  const result = new Map<string, { claimIds: string[]; claimOrigins: string[]; latestClaimAt: Date | null }>();
+  if (propositionIds.length === 0) return result;
+  const rows = (await tx.query(
+    `WITH RECURSIVE merged(proposition_id,into_id,depth) AS (
+       SELECT l.from_proposition_id,l.to_proposition_id,1 FROM proposition_lineage l
+        WHERE l.owner_scope_id=$1 AND l.lineage_kind='MERGED_INTO' AND l.to_proposition_id=ANY($2::uuid[])
+       UNION
+       SELECT l.from_proposition_id,m.into_id,m.depth+1 FROM proposition_lineage l JOIN merged m ON l.to_proposition_id=m.proposition_id
+        WHERE l.owner_scope_id=$1 AND l.lineage_kind='MERGED_INTO' AND m.depth<32),
+     inherited(proposition_id,claim_id) AS (
+       SELECT m.into_id,c.id FROM merged m JOIN claims c ON c.owner_scope_id=$1 AND c.proposition_id=m.proposition_id
+       UNION
+       SELECT s.proposition_id,s.claim_id FROM belief_support s
+        JOIN belief_transactions t ON t.owner_scope_id=s.owner_scope_id AND t.id=s.created_by_transaction_id
+         AND t.transaction_kind='SPLIT'
+        WHERE s.owner_scope_id=$1 AND s.proposition_id=ANY($2::uuid[]) AND s.claim_id IS NOT NULL),
+     carriers AS (SELECT DISTINCT proposition_id FROM inherited),
+     every_claim(proposition_id,claim_id) AS (
+       SELECT proposition_id,claim_id FROM inherited
+       UNION
+       SELECT c.proposition_id,c.id FROM claims c JOIN carriers k ON k.proposition_id=c.proposition_id WHERE c.owner_scope_id=$1)
+     SELECT e.proposition_id,c.id,c.claim_origin,c.recorded_at FROM every_claim e
+     JOIN claims c ON c.owner_scope_id=$1 AND c.id=e.claim_id AND c.lifecycle NOT IN ('REJECTED','SUPPRESSED')
+     ORDER BY e.proposition_id,c.recorded_at,c.id`, [ownerScopeId, [...new Set(propositionIds)]])).rows;
+  for (const row of rows) {
+    const propositionId = row['proposition_id'] as string;
+    const entry = result.get(propositionId) ?? { claimIds: [], claimOrigins: [], latestClaimAt: null };
+    entry.claimIds.push(row['id'] as string);
+    const origin = row['claim_origin'] as string;
+    if (!entry.claimOrigins.includes(origin)) entry.claimOrigins.push(origin);
+    const at = row['recorded_at'] as Date;
+    if (entry.latestClaimAt === null || at.getTime() > entry.latestClaimAt.getTime()) entry.latestClaimAt = at;
+    result.set(propositionId, entry);
+  }
+  for (const entry of result.values()) entry.claimOrigins.sort();
+  return result;
 }
 
 /**
@@ -146,16 +224,30 @@ export async function readRoles(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceIds: readonly string[];
 }): Promise<RoleFill[]> {
   if (input.frameInstanceIds.length === 0) return [];
+  const members = await listMergedFrameMembers(tx, { ownerScopeId: input.ownerScopeId, frameInstanceIds: input.frameInstanceIds });
   const rows = (await tx.query(
-    `SELECT frame_instance_id,role_id,entity_id,typed_value,created_at FROM frame_instance_roles
+    `SELECT id,frame_instance_id,role_id,entity_id,typed_value,created_at FROM frame_instance_roles
      WHERE owner_scope_id=$1 AND frame_instance_id=ANY($2::uuid[])
      ORDER BY frame_instance_id,role_id,created_at,id`,
-    [input.ownerScopeId, [...input.frameInstanceIds]])).rows;
-  return rows.map(row => Object.freeze({
-    frameInstanceId: row['frame_instance_id'] as string, roleId: row['role_id'] as string,
-    entityId: (row['entity_id'] as string | null) ?? null, typedValue: row['typed_value'],
+    [input.ownerScopeId, [...members.keys()]])).rows;
+  // A merged entity reads as its survivor, so the person a role names is the one
+  // identity the owner said it is (PRD §14.3).
+  const entities = await resolveEntitySurvivors(tx, { ownerScopeId: input.ownerScopeId,
+    entityIds: rows.map(row => row['entity_id'] as string | null).filter((id): id is string => id !== null) });
+  const roles = rows.map(row => ({
+    frameInstanceId: members.get(row['frame_instance_id'] as string) ?? row['frame_instance_id'] as string,
+    roleId: row['role_id'] as string,
+    entityId: row['entity_id'] === null || row['entity_id'] === undefined ? null
+      : entities.get(row['entity_id'] as string) ?? row['entity_id'] as string,
+    typedValue: row['typed_value'] as unknown,
     createdAt: row['created_at'] as Date,
+    id: row['id'] as string,
   }));
+  const ordered = mapped(members)
+    ? byFrameThen(roles, (left, right) => compareIds(left.roleId, right.roleId) || compareTimes(left.createdAt, right.createdAt)
+      || compareIds(left.id, right.id))
+    : roles;
+  return ordered.map(({ id: _id, ...role }) => Object.freeze(role));
 }
 
 /** The first filler of one role, or null. First rather than last: a role names a
@@ -186,14 +278,15 @@ export async function readResolutions(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceIds: readonly string[];
 }): Promise<ResolutionRow[]> {
   if (input.frameInstanceIds.length === 0) return [];
+  const members = await listMergedFrameMembers(tx, { ownerScopeId: input.ownerScopeId, frameInstanceIds: input.frameInstanceIds });
   const rows = (await tx.query(
     `SELECT id,source_frame_instance_id,outcome_code,lifecycle,advisory_coverage,effective_at,recorded_at
      FROM resolution_assertions WHERE owner_scope_id=$1 AND source_frame_instance_id=ANY($2::uuid[])
      ORDER BY source_frame_instance_id,effective_at,recorded_at,id`,
-    [input.ownerScopeId, [...input.frameInstanceIds]])).rows;
-  return rows.map(row => Object.freeze({
+    [input.ownerScopeId, [...members.keys()]])).rows;
+  const resolutions = rows.map(row => Object.freeze({
     resolutionAssertionId: row['id'] as string,
-    sourceFrameInstanceId: row['source_frame_instance_id'] as string,
+    sourceFrameInstanceId: members.get(row['source_frame_instance_id'] as string) ?? row['source_frame_instance_id'] as string,
     outcomeCode: row['outcome_code'] as string,
     lifecycle: row['lifecycle'] as string,
     advisoryCoverage: row['advisory_coverage'] === null || row['advisory_coverage'] === undefined
@@ -201,6 +294,10 @@ export async function readResolutions(tx: MemoryTransaction, input: {
     effectiveAt: row['effective_at'] as Date,
     recordedAt: row['recorded_at'] as Date,
   }));
+  if (!mapped(members)) return resolutions;
+  return resolutions.sort((left, right) => compareIds(left.sourceFrameInstanceId, right.sourceFrameInstanceId)
+    || compareTimes(left.effectiveAt, right.effectiveAt) || compareTimes(left.recordedAt, right.recordedAt)
+    || compareIds(left.resolutionAssertionId, right.resolutionAssertionId));
 }
 
 export interface RealizationRow {
@@ -214,15 +311,20 @@ export async function readRealizations(tx: MemoryTransaction, input: {
   ownerScopeId: string; frameInstanceIds: readonly string[];
 }): Promise<RealizationRow[]> {
   if (input.frameInstanceIds.length === 0) return [];
+  const members = await listMergedFrameMembers(tx, { ownerScopeId: input.ownerScopeId, frameInstanceIds: input.frameInstanceIds });
   const rows = (await tx.query(
     `SELECT id,to_object_id,from_object_id,created_at FROM memory_links
      WHERE owner_scope_id=$1 AND link_kind='REALIZES' AND to_object_type='frame_instance'
        AND to_object_id=ANY($2::uuid[]) AND lifecycle<>'RETRACTED'
-     ORDER BY to_object_id,created_at,id`, [input.ownerScopeId, [...input.frameInstanceIds]])).rows;
-  return rows.map(row => Object.freeze({
-    memoryLinkId: row['id'] as string, sourceFrameInstanceId: row['to_object_id'] as string,
+     ORDER BY to_object_id,created_at,id`, [input.ownerScopeId, [...members.keys()]])).rows;
+  const links = rows.map(row => Object.freeze({
+    memoryLinkId: row['id'] as string,
+    sourceFrameInstanceId: members.get(row['to_object_id'] as string) ?? row['to_object_id'] as string,
     realizingFrameInstanceId: row['from_object_id'] as string, createdAt: row['created_at'] as Date,
   }));
+  if (!mapped(members)) return links;
+  return links.sort((left, right) => compareIds(left.sourceFrameInstanceId, right.sourceFrameInstanceId)
+    || compareTimes(left.createdAt, right.createdAt) || compareIds(left.memoryLinkId, right.memoryLinkId));
 }
 
 export interface OwnerDelta {
@@ -268,13 +370,20 @@ export async function readOwnerDeltas(tx: MemoryTransaction, ownerScopeId: strin
      LEFT JOIN belief_slots cs ON cs.owner_scope_id=cp.owner_scope_id AND cs.id=cp.belief_slot_id
      WHERE d.owner_scope_id=$1
      ORDER BY d.owner_sequence`, [ownerScopeId])).rows;
+  // A delta about a merged frame speaks about its survivor. One about a split
+  // frame resolves to no frame and is reported as unattached, never re-attached
+  // to a guessed half (ADR 0025 §3).
+  const survivors = await resolveFrameInstanceSurvivors(tx, { ownerScopeId,
+    frameInstanceIds: rows.map(row => row['frame_instance_id'] as string | null).filter((id): id is string => id !== null) });
   return rows.map(row => Object.freeze({
     overlayDeltaId: row['id'] as string,
     ownerSequence: Number(row['owner_sequence']),
     deltaKind: row['delta_kind'] as string,
     lifecycle: row['lifecycle'] as string,
     rawText: row['raw_text'] as string,
-    frameInstanceId: (row['frame_instance_id'] as string | null) ?? null,
+    frameInstanceId: row['frame_instance_id'] === null || row['frame_instance_id'] === undefined ? null
+      : survivors.has(row['frame_instance_id'] as string) ? survivors.get(row['frame_instance_id'] as string)!
+        : row['frame_instance_id'] as string,
     beliefSlotId: (row['belief_slot_id'] as string | null) ?? null,
     predicateId: (row['predicate_id'] as string | null) ?? null,
     createdAt: row['created_at'] as Date,

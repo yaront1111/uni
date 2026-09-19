@@ -44,6 +44,23 @@ const anchor = () => anchors[nextAnchor++]!;
 const NOW = new Date('2026-03-02T09:00:00.000Z');
 const FRIDAY = new Date('2026-02-27T17:00:00.000Z');
 
+/** Migrate a database of this file's own. Roles are cluster-global and migration
+ * 0001 alters them, while `runMigrations` serializes only within one database, so
+ * two files migrating fresh databases at once would race on the same role rows.
+ * Both such files take this advisory lock on the shared suite database first. */
+async function migrateScratch(pool: Pool): Promise<void> {
+  const shared = new Pool({ connectionString: serverUrl, max: 1 });
+  const client = await shared.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock(1970170217, 3)');
+    await runMigrations(pool, resolve('migrations'));
+  } finally {
+    await client.query('SELECT pg_advisory_unlock(1970170217, 3)').catch(() => undefined);
+    client.release();
+    await shared.end().catch(() => undefined);
+  }
+}
+
 beforeAll(async () => {
   const server = new Pool({ connectionString: serverUrl, max: 1 });
   try { await server.query('CREATE DATABASE ' + databaseName); }
@@ -52,7 +69,7 @@ beforeAll(async () => {
 
   const url = new URL(serverUrl); url.pathname = '/' + databaseName;
   admin = new Pool({ connectionString: url.href });
-  await runMigrations(admin, resolve('migrations'));
+  await migrateScratch(admin);
   await admin.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='replay_test_app') THEN CREATE ROLE replay_test_app LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_app TO replay_test_app");
   const appUrl = new URL(url.href); appUrl.username = 'replay_test_app'; appUrl.password = 'test-only';
   appPool = new Pool({ connectionString: appUrl.href });
@@ -214,6 +231,15 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // deployment applies, digests and order checked by `runMigrations` as always.
   await admin!.query('DROP TABLE memory_thread_members, memory_threads, context_packets CASCADE');
   await admin!.query('DROP FUNCTION IF EXISTS unai_private.memory_thread_identity(), unai_private.evidence_labels(uuid)');
+  // Migration 0020's lineage tables, its triggers on two earlier tables, the
+  // retirement policy it added and its functions go the same way. The policies it
+  // replaced are dropped and recreated by 0020 itself.
+  await admin!.query('DROP TABLE frame_instance_lineage, proposition_lineage CASCADE');
+  await admin!.query(`DROP TRIGGER frame_instance_governed_retirement ON frame_instances;
+    DROP TRIGGER entity_lineage_governed ON entity_lineage; DROP TRIGGER entity_lineage_immutable ON entity_lineage;
+    DROP POLICY governed_retire ON frame_instances; REVOKE UPDATE(lifecycle,retired_at) ON frame_instances FROM unai_app`);
+  await admin!.query(`DROP FUNCTION unai_private.lineage_governed(), unai_private.entity_lineage_governed(),
+    unai_private.lineage_immutable(), unai_private.frame_instance_governed_retirement()`);
   // Migration 0019's semantic index and its evidence-scope reader likewise; its
   // registry reader is a CREATE OR REPLACE and re-applies over itself.
   await admin!.query('DROP TABLE memory_embeddings CASCADE');
@@ -246,7 +272,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
-    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql']);
+    '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

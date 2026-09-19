@@ -168,6 +168,28 @@ describe('real PostgreSQL owner isolation', () => {
         answer_type_classification,request,packet,packet_hash,selection_reason)
         VALUES($1,$2,'PERSONAL_ASSISTANCE',$3,'CURRENT_VALUE','{}','{}',$4,'{}')`,
         [randomUUID(),owner,actor,'e'.repeat(64)]);
+      // Merge lineage: an older instance and proposition merged into the ones
+      // above. Lineage is accepted only from a MERGE or SPLIT transaction that is
+      // committing in the same database transaction, so the fixture does what the
+      // governor does: COMMITTING, the marker, the rows, then COMMITTED.
+      const mergedInstance=randomUUID(),mergedProposition=randomUUID(),merge=randomUUID();
+      const client=await pool.connect();
+      try{
+        await client.query('BEGIN');
+        await client.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id,lifecycle,retired_at) VALUES($1,$2,'shared.obligation',$3,'MERGED',now())",[mergedInstance,owner,context]);
+        await client.query(`INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value,lifecycle,retired_at) VALUES($1,$2,$3,'{"amount":"50.00","currency":"ILS"}','MERGED',now())`,[mergedProposition,owner,slot]);
+        await client.query(`INSERT INTO belief_transactions(id,owner_scope_id,transaction_kind,requested_by_actor_id,
+          registry_release_id,status,risk,idempotency_key) VALUES($1,$2,'MERGE',$3,$4,'COMMITTING','MEDIUM',$5)`,
+          [merge,owner,actor,randomUUID(),randomUUID().replaceAll('-','')]);
+        await client.query("SELECT set_config('unai.belief_transaction_id',$1,true)",[merge]);
+        await client.query(`INSERT INTO frame_instance_lineage(id,owner_scope_id,from_frame_instance_id,to_frame_instance_id,
+          lineage_kind,transaction_id) VALUES($1,$2,$3,$4,'MERGED_INTO',$5)`,[randomUUID(),owner,mergedInstance,instance,merge]);
+        await client.query(`INSERT INTO proposition_lineage(id,owner_scope_id,from_proposition_id,to_proposition_id,
+          lineage_kind,transaction_id) VALUES($1,$2,$3,$4,'MERGED_INTO',$5)`,[randomUUID(),owner,mergedProposition,proposition,merge]);
+        await client.query("UPDATE belief_transactions SET status='COMMITTED',committed_at=now(),commit_receipt='{}' WHERE id=$1",[merge]);
+        await client.query('COMMIT');
+      }catch(error){await client.query('ROLLBACK');throw error;}
+      finally{client.release();}
       // The semantic index: one embedding of the claim above, carrying the
       // evidence's purposes and sensitivity as its own hard-filter columns.
       await pool.query(`INSERT INTO memory_embeddings(id,owner_scope_id,object_type,object_id,proposition_id,predicate_id,
@@ -541,6 +563,51 @@ describe('real PostgreSQL owner isolation', () => {
       'schedule_projection.start_time':'timestamp with time zone',
     });
   });
+  it('CRT-SEC-01-A and CRT-MEM-10-A: hides B from unfiltered owner A lineage queries and keeps lineage governed and append-only',async()=>{
+    const lineageTables=['frame_instance_lineage','proposition_lineage'];
+    await asOwner(a,alice,async c=>{
+      for(const table of lineageTables){
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length,table).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+      }
+    },'memory.inspect');
+    await asOwner(b,alice,async c=>{
+      for(const table of lineageTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    },'memory.inspect');
+    // Purpose-bound: an unrelated product purpose reads no lineage.
+    await asOwner(a,alice,async c=>{
+      for(const table of lineageTables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+    });
+    // Lineage is history: no grant removes or edits it, and the privileged
+    // principal is refused by the trigger.
+    for(const table of lineageTables){
+      await expect(asOwner(a,alice,c=>c.query('DELETE FROM '+table).then(()=>{}),'memory.govern'),table).rejects.toMatchObject({code:'42501'});
+      await expect(asOwner(a,alice,c=>c.query("UPDATE "+table+" SET lineage_kind='MERGED_INTO'").then(()=>{}),'memory.govern'),table)
+        .rejects.toMatchObject({code:'42501'});
+      await expect(pool.query("UPDATE "+table+" SET reason='{\"forged\":true}' WHERE owner_scope_id=$1",[a]),table)
+        .rejects.toThrow('LINEAGE_IMMUTABLE');
+    }
+    await expect(pool.query("UPDATE entity_lineage SET lineage_kind='ALIAS_OF' WHERE owner_scope_id=$1",[a])).rejects.toThrow('LINEAGE_IMMUTABLE');
+    // Merge and split are belief transactions, not database shortcuts (PRD §14):
+    // a lineage row outside a committing MERGE or SPLIT is refused for every principal.
+    const [from,to]=(await pool.query('SELECT id FROM frame_instances WHERE owner_scope_id=$1 ORDER BY created_at LIMIT 2',[a])).rows.map(row=>row.id);
+    const settled=(await pool.query("SELECT id FROM belief_transactions WHERE owner_scope_id=$1 AND transaction_kind='MERGE'",[a])).rows[0].id;
+    await expect(pool.query(`INSERT INTO frame_instance_lineage(id,owner_scope_id,from_frame_instance_id,to_frame_instance_id,lineage_kind,transaction_id)
+      VALUES(gen_random_uuid(),$1,$2,$3,'MERGED_INTO',$4)`,[a,to,from,settled])).rejects.toThrow('LINEAGE_REQUIRES_GOVERNED_TRANSACTION');
+    // Retiring an instance is governed the same way, and its identity never moves.
+    await expect(pool.query("UPDATE frame_instances SET lifecycle='MERGED',retired_at=now() WHERE owner_scope_id=$1 AND lifecycle='ACTIVE'",[a]))
+      .rejects.toThrow('FRAME_RETIREMENT_REQUIRES_TRANSACTION');
+    await expect(pool.query("UPDATE frame_instances SET lifecycle='ACTIVE',retired_at=NULL WHERE owner_scope_id=$1 AND lifecycle='MERGED'",[a]))
+      .rejects.toThrow('FRAME_INSTANCE_ALREADY_RETIRED');
+    await expect(pool.query("UPDATE frame_instances SET frame_type_id='shared.commitment' WHERE owner_scope_id=$1",[a]))
+      .rejects.toThrow('CANONICAL_IDENTITY_IMMUTABLE');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("UPDATE frame_instances SET lifecycle='RETIRED',retired_at=now()")).rowCount).toBe(0);
+    },'memory.canonicalize');
+    await expect(asOwner(a,alice,c=>c.query("UPDATE frame_instances SET lifecycle='MERGED',retired_at=now() WHERE lifecycle='ACTIVE'").then(()=>{}),'memory.govern'))
+      .rejects.toThrow('FRAME_RETIREMENT_REQUIRES_TRANSACTION');
+  });
   it('holds exactly one active BASE context space per owner scope and keeps it permanent',async()=>{
     // Created with the owner scope, so no scope exists without a context to
     // assert a belief in, and the owner sees only its own.
@@ -616,7 +683,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(51);
+    expect(rows.length).toBe(53);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
