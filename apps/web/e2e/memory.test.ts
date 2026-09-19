@@ -359,7 +359,8 @@ it('CRT-UX-07-A: the Memory inspector shows current belief, timeline, original e
       derivedAssessmentStatus:'ACCEPTED'})]);
     expect(inspector.explanation.contradictions).toContainEqual(expect.objectContaining({kind:'COMPETING_PROPOSITION',objectId:beliefs.danielAmount}));
     expect(inspector.explanation.resolutionLinks).toContainEqual(expect.objectContaining({objectType:'resolution_assertion',objectId:resolutions.payment}));
-    expect(inspector.connectedThreads.map(thread=>thread.displayTitle).sort()).toEqual(['Concert trip','Daniel payment']);
+    expect(inspector.connectedThreads.map(thread=>thread.memoryThreadId).sort()).toEqual([threads.trip,threads.payment].sort());
+    expect(inspector.connectedThreads.map(thread=>thread.displayTitle)).toEqual([null,null]);
     expect(inspector.accessHistory).toContainEqual(expect.objectContaining({kind:'AUDIT_EVENT',purpose:'memory.inspect',result:'SUCCESS'}));
     expect(inspector.explanation.registryVersions.registryRelease).toBe('0.1.0');
 
@@ -376,7 +377,8 @@ it('CRT-UX-07-A: the Memory inspector shows current belief, timeline, original e
     expect(html).toContain('Used to derive <a href="/memory/inspector/proposition/'+beliefs.remaining+'">another belief</a>');
     expect(html).toContain('Another value is held for the same thing');
     expect(html).toContain('partially fulfilled');
-    expect(html).toContain('>Daniel payment</a>');
+    expect(html).toContain('href="/memory/threads/'+threads.payment+'">Memory thread</a>');
+    expect(html).not.toContain('>Daniel payment</a>');
     expect(html).toContain('Read or written for inspection');
     expect(html).toContain('Registry release 0.1.0');
     expect(html).toContain('<code>'+beliefs.principal+'</code>');

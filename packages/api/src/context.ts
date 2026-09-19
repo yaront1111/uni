@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
-import { threadMemberInputSchema } from '@unai/domain';
+import { dataPurposeSchema, sensitivitySchema, threadMemberInputSchema } from '@unai/domain';
 import type { PolicyPorts } from '@unai/belief';
 import {
   CONTEXT_READ_PURPOSE, MEMORY_INSPECT_PURPOSE, MEMORY_THREAD_PURPOSE, ContextBrokerError, MemoryThreadError,
@@ -38,6 +38,7 @@ const REFUSAL_STATUS = new Map<string, number>([
   ['CONTEXT_READ_DENIED', 403],
   ['CONTEXT_ACTION_DENIED', 403],
   ['PROPOSITION_NOT_FOUND', 404],
+  ['PROPOSITION_SOURCE_WITHHELD', 403],
   ['MEMORY_THREAD_NOT_FOUND', 404],
   ['MEMORY_THREAD_OBJECT_NOT_FOUND', 404],
   ['MEMORY_THREAD_OBJECT_TYPE_UNKNOWN', 400],
@@ -105,13 +106,16 @@ export function registerContextRoutes(app: FastifyInstance, work: Work, options:
 
   app.get<{ Params: { id: string } }>('/v1/memory/propositions/:id/explain', async (request, reply) => {
     if (!UUID.test(request.params.id)) return refuse(request, reply, 'CONTEXT_REQUEST_INVALID');
+    const purpose = dataPurposeSchema.safeParse(request.headers['x-data-purpose']);
+    const sensitivity = sensitivitySchema.safeParse(request.headers['x-maximum-sensitivity']);
+    if (!purpose.success || !sensitivity.success) return refuse(request, reply, 'CONTEXT_REQUEST_INVALID');
     return guarded(request, reply, async () => {
       const explanation = await work(request, async tx => {
         // The inspector reads evidence anchors, so the data purpose and the
         // ceiling the request declared decide what it may see, exactly as they do
         // on the evidence routes.
         await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
-          [request.headers['x-data-purpose'] ?? '', request.headers['x-maximum-sensitivity'] ?? '']);
+          [purpose.data, sensitivity.data]);
         return explainProposition(tx, {
           ownerScopeId: tx.context.ownerScopeId, propositionId: request.params.id, readAt: new Date(),
           registryRelease: options.registryRelease ?? null,

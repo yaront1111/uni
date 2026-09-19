@@ -113,7 +113,7 @@ function Filters({filters,related}:{filters:CommitmentFiltersProps;related:Recor
   const people=new Map<string,string>();
   for(const frame of frames)for(const person of frame.people)people.set(person.entityId,personName(person));
   const threads=new Map<string,string>();
-  for(const frame of frames)for(const thread of frame.threads)threads.set(thread.memoryThreadId,thread.displayTitle??'Untitled thread');
+  for(const frame of frames)for(const thread of frame.threads)threads.set(thread.memoryThreadId,thread.displayTitle??'Memory thread');
   const active=[filters.person&&'person',filters.thread&&'thread',(filters.dueBefore||filters.dueAfter)&&'due window'].filter(Boolean);
   return <section className="card" aria-labelledby="filters">
     <h2 id="filters">Filter</h2>
