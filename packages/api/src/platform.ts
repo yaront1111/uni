@@ -12,6 +12,7 @@ import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPO
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
+import {registerInspectionRoutes,INSPECTION_PURPOSE,INSPECTION_URLS} from './inspection.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
 import {registerTodayRoutes,TODAY_PURPOSE,WHY_PURPOSE,type TodayRouteOptions} from './today.js';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
@@ -93,6 +94,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       request.routeOptions.url==='/v1/memory/propositions/:id/explain'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id'?MEMORY_INSPECT_PURPOSE:
       request.routeOptions.url==='/v1/memory/threads/:id/members'?MEMORY_THREAD_PURPOSE:
+      request.routeOptions.url&&INSPECTION_URLS.includes(request.routeOptions.url)?INSPECTION_PURPOSE:
       request.routeOptions.url==='/v1/answers/:id/manifest'?ANSWER_READ_PURPOSE:
       request.routeOptions.url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
       request.routeOptions.url&&LINEAGE_URLS.has(request.routeOptions.url)?LINEAGE_WRITE_PURPOSE:
@@ -185,7 +187,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   });
   registerMemoryGovernorRoutes(app,deviceWork);
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
-  registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId});
+  registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId,evidenceObjects:options.evidenceObjects});
   registerOpsRoutes(app,deviceWork);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{
@@ -197,6 +199,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     evidenceObjects:options.evidenceObjects,phraser:options.answerPhraser,
     purposeWork:(request,purpose,run)=>deviceWork(request,tx=>run(tx),purpose)});
   registerAnswerRoutes(app,deviceWork);
+  registerInspectionRoutes(app,deviceWork,{registryRelease:options.registryRelease??null});
   registerTodayRoutes(app,deviceWork,{
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),
     ...(options.todayClock?{clock:options.todayClock}:{}),

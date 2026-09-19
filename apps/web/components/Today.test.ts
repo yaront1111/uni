@@ -157,3 +157,17 @@ it('shows an empty day and a failure in fixed words',()=>{
   const failed=render({state:'error',error:'Today\'s briefing could not be loaded. Please reload to retry.'});
   expect(failed).toContain('role="alert"');expect(failed).not.toContain('Uai recommends');
 });
+
+it('links every item to the Memory inspector and the Correction controls, from its primary source (CRT-UX-10-B)',()=>{
+  const html=render({briefing,why:{}});
+  for(const shown of briefing.sections.flatMap(section=>section.items)){
+    const ref=shown.sourceRefs[0]!;
+    const type=ref.objectType==='propositions'?'proposition':'owner_overlay_delta';
+    expect(html,shown.headline).toContain('<a href="/memory/inspector/'+type+'/'+ref.objectId+'">Inspect');
+    expect(html,shown.headline).toContain('<a href="/memory/correct/'+type+'/'+ref.objectId+'">Correct');
+  }
+  // An item with no source reference opens through the object it is about.
+  const bare=todayBriefingSchema.parse({...briefing,sections:[{domain:'PERSONAL',items:[item(1,{sourceRefs:[]})]}]});
+  expect(render({briefing:bare,why:{}})).toContain('<a href="/memory/inspector/frame_instance/'+id(201)+'">Inspect');
+  expect(readingPath(html)).not.toMatch(UUID);
+});
