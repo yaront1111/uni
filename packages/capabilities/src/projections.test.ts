@@ -15,7 +15,7 @@ import {
   applyProjectionDelta, calculateObligation, canonicalizeCommitmentStatement, classifyCommitmentLanguage,
   projectionRowContent, readCommitmentsProjection, readObligationsProjection, readProjectionHealth,
   readProjectionRows, readScheduleProjection, recordCommitmentCompletion, replayProjection, runProjectionReplay,
-  REDUCER_VERSION,
+  REDUCER_VERSION, DECISION_REDUCER_VERSION, applyDecisionProjection, canonicalizeDecision,
 } from './index.js';
 
 /**
@@ -408,10 +408,18 @@ it('CRT-PRJ-03-A: every row of every projection table carries the nine required 
     modality: 'SCHEDULED', value: { start: '2026-03-10T09:00:00.000Z', end: '2026-03-10T10:00:00.000Z' },
     claimOrigin: 'STRUCTURED_CONNECTOR_OBSERVATION' });
 
+  // A recorded decision so the decision projection of release 0.2.0 has a row too.
+  await write(tx => canonicalizeDecision(tx, {
+    ownerScopeId: owner, contextSpaceId: baseContextSpaceId, deciderEntityId: ownerEntityId, anchorFor: () => anchor(),
+    statedAt: NOW, decision: { question: 'Which laptop?', options: ['Keep the old one', 'Buy a new one'],
+      userChoice: 'Keep the old one', expectedResult: 'It lasts another year', reviewDate: '2027-03-01T00:00:00.000Z' },
+  }));
+
   await reduce(async tx => {
     for (const projectionName of ['open_commitments_projection', 'obligations_projection', 'schedule_projection'] as const) {
       await applyProjectionDelta(tx, { ownerScopeId: owner, projectionName, asOf: NOW });
     }
+    await applyDecisionProjection(tx, { ownerScopeId: owner, asOf: NOW });
   });
 
   // Read the table list from the catalog rather than from a hand-kept list, so a
@@ -429,7 +437,11 @@ it('CRT-PRJ-03-A: every row of every projection table carries the nine required 
     open_commitments_projection: 'commitment_frame_instance_id',
     obligations_projection: 'obligation_frame_instance_id',
     schedule_projection: 'scheduled_frame_instance_id',
+    decision_projection: 'decision_frame_instance_id',
   };
+  // Each reducer names its own version; the decision reducer is release 0.2.0's.
+  const reducer: Record<string, string> = { decision_projection: DECISION_REDUCER_VERSION };
+  expect(tables).toContain('decision_projection');
   for (const table of tables) {
     const rows = (await admin.query('SELECT * FROM ' + table + ' WHERE owner_scope_id=$1', [owner])).rows;
     expect(rows.length, table).toBeGreaterThan(0);
@@ -439,7 +451,7 @@ it('CRT-PRJ-03-A: every row of every projection table carries the nine required 
         expect(row[column], table + '.' + column).not.toBeUndefined();
       }
       // The columns are what they claim to be, not placeholders.
-      expect(row['reducer_version']).toBe(REDUCER_VERSION);
+      expect(row['reducer_version']).toBe(reducer[table] ?? REDUCER_VERSION);
       expect(row['projection_version']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
       expect(typeof row['is_complete']).toBe('boolean');
       expect(typeof row['source_manifest']).toBe('object');

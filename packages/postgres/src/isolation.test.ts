@@ -218,6 +218,25 @@ describe('real PostgreSQL owner isolation', () => {
         behavioral_observation_ids,context_packet_id,packet_hash,manifest,statement_count,review_version)
         VALUES($1,$2,'2026-03-02','2026-03-08','UTC','{}','{}','{}','{}','{}','{}',ARRAY[$3::uuid],$4,$5,'{}',0,'weekly-review-0.1.0')`,
         [review,owner,observation,packet,'e'.repeat(64)]);
+      // Goals, decisions and the mentor (migration 0026): a goal with its INITIAL
+      // history row (one statement, because a goal without one is refused at
+      // commit), the decision projection row over the obligation frame above, and
+      // a mentor card composed from the packet above.
+      const goal=randomUUID(),goalHistory=randomUUID();
+      await pool.query(`WITH g AS (INSERT INTO goals(id,owner_scope_id,title,domain,current_priority,created_by_user_id)
+          VALUES($1,$2,'Run a half marathon','HEALTH','HIGH',$3) RETURNING id)
+        INSERT INTO goal_priority_history(id,owner_scope_id,goal_id,change_kind,priority,valid_from,reason,recorded_by_user_id)
+          SELECT $4,$2,g.id,'INITIAL','HIGH',now(),'Stated when the goal was set.',$3 FROM g`,[goal,owner,actor,goalHistory]);
+      await pool.query(`INSERT INTO decision_projection(owner_scope_id,decision_frame_instance_id,question,outcome_state,related_goal_id,
+        projection_version,canonical_transaction_watermark,owner_overlay_watermark,reducer_version,is_complete,source_manifest,updated_at)
+        VALUES($1,$2,'Which job offer?','UNRESOLVED',$3,$4,now(),0,'decision-reducer-0.1.0',true,'{}',now())`,[owner,instance,goal,randomUUID()]);
+      await pool.query(`INSERT INTO mentor_cards(id,owner_scope_id,card_kind,goal_id,goal_priority_history_id,evidence,inference,recommendation,
+        observation_window_start,observation_window_end,confidence,sensitivity_scope,decision,reason,policy_inputs,owner_local_date,
+        policy_version,composer_version,context_packet_id,packet_hash)
+        VALUES($1,$2,'GOAL_CALENDAR_CONTRADICTION',$3,$4,'[{}]','{"text":"x","confidence":0.6,"counterexampleSearch":{}}','{"text":"y"}',
+        '2026-02-09T00:00:00Z','2026-03-09T00:00:00Z',0.6,'HEALTH/PRIVATE','ASK','WITHIN_ATTENTION_BUDGET',
+        '{"errorProbability":0.6,"consequence":"HIGH","irreversibility":"COSTLY_TO_REVERSE","urgency":"MEDIUM","interruptionCost":"LOW","budget":{}}',
+        '2026-03-09','interruption-policy-0.1.0','mentor-contradictions-0.1.0',$5,$6)`,[randomUUID(),owner,goal,goalHistory,packet,'e'.repeat(64)]);
       // Merge lineage: an older instance and proposition merged into the ones
       // above. Lineage is accepted only from a MERGE or SPLIT transaction that is
       // committing in the same database transaction, so the fixture does what the
@@ -772,7 +791,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(74);
+    expect(rows.length).toBe(78);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -1291,6 +1310,63 @@ describe('real PostgreSQL owner isolation', () => {
       SELECT gen_random_uuid(),owner_scope_id,'REPEATED_POSTPONEMENT','One postponement.',ARRAY[gen_random_uuid()],'[{}]',
       '{"searched":"x","counterexamplesFound":0,"counterexampleIds":[]}','2026-02-09T00:00:00Z','2026-03-09T00:00:00Z',1,'2026-04-05',context_packet_id
       FROM behavioral_observations WHERE owner_scope_id=$1 LIMIT 1`,[a])).rejects.toMatchObject({code:'23514'});
+  });
+
+  it('CRT-SEC-01-A, CRT-DEC-01-A: hides B from unfiltered owner A goal, decision and mentor queries, and a priority change appends history and overwrites nothing',async()=>{
+    for(const [tables,purpose] of [[['goals','goal_priority_history'],'goals.read'],[['decision_projection'],'projection.read'],
+      [['mentor_cards'],'mentor.advise']] as const){
+      await asOwner(a,alice,async c=>{
+        for(const table of tables){
+          const rows=(await readUnfiltered(c,table)).rows;
+          expect(rows.length,table).toBeGreaterThan(0);
+          expect(rows.every(row=>row.owner_scope_id===a),table).toBe(true);
+        }
+      },purpose);
+      await asOwner(b,alice,async c=>{
+        for(const table of tables) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
+      },purpose);
+      // Purpose-bound: the model read path and an unrelated purpose see none of it.
+      for(const other of ['memory.read','evidence.read']){
+        await asOwner(a,alice,async c=>{
+          for(const table of tables) expect((await c.query('SELECT * FROM '+table)).rows,table+' '+other).toEqual([]);
+        },other);
+      }
+    }
+    // History is append-only for the application and for the migration owner.
+    await expect(asOwner(a,alice,c=>c.query("UPDATE goal_priority_history SET priority='LOW'").then(()=>{}),'goals.manage'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(asOwner(a,alice,c=>c.query('DELETE FROM goal_priority_history').then(()=>{}),'goals.manage'))
+      .rejects.toMatchObject({code:'42501'});
+    await expect(pool.query("UPDATE goal_priority_history SET priority='LOW' WHERE owner_scope_id=$1",[a])).rejects.toThrow('GOAL_PRIORITY_HISTORY_IMMUTABLE');
+    await expect(pool.query('DELETE FROM goal_priority_history WHERE owner_scope_id=$1',[a])).rejects.toThrow('GOAL_PRIORITY_HISTORY_IMMUTABLE');
+    // The cached priority moves only with a history row appended in the same
+    // transaction, and never on another purpose.
+    await expect(asOwner(a,alice,c=>c.query("UPDATE goals SET current_priority='LOW'").then(()=>{}),'goals.manage'))
+      .rejects.toThrow('GOAL_PRIORITY_REQUIRES_HISTORY');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query("UPDATE goals SET current_priority='LOW'")).rowCount).toBe(0);
+    },'goals.read');
+    await asOwner(a,alice,async c=>{
+      const goal=(await c.query('SELECT id FROM goals LIMIT 1')).rows[0].id;
+      await c.query(`INSERT INTO goal_priority_history(id,owner_scope_id,goal_id,change_kind,priority,valid_from,reason,recorded_by_user_id)
+        VALUES(gen_random_uuid(),$1,$2,'CHANGE','LOW',now(),'Other things first this quarter.',$3)`,[a,goal,alice]);
+      expect((await c.query("UPDATE goals SET current_priority='LOW' RETURNING current_priority")).rows).toEqual([{current_priority:'LOW'}]);
+      // Both statements survive: the change appended, nothing overwritten.
+      expect((await c.query('SELECT change_kind,priority FROM goal_priority_history WHERE goal_id=$1 ORDER BY recorded_at,id',[goal])).rows)
+        .toEqual([{change_kind:'INITIAL',priority:'HIGH'},{change_kind:'CHANGE',priority:'LOW'}]);
+      await expect(c.query("UPDATE goals SET title='Something else'")).rejects.toMatchObject({code:'42501'});
+    },'goals.manage');
+    // A goal is never stated without its first priority on record.
+    await expect(asOwner(a,alice,async c=>{
+      await c.query("INSERT INTO goals(id,owner_scope_id,title,domain,current_priority,created_by_user_id) VALUES(gen_random_uuid(),$1,'Orphan','WORK','HIGH',$2)",[a,alice]);
+      await c.query('SET CONSTRAINTS ALL IMMEDIATE');
+    },'goals.manage')).rejects.toThrow('GOAL_INITIAL_HISTORY_REQUIRED');
+    // A mentor card is a statement about one moment; only the reducer writes the projection.
+    await expect(asOwner(a,alice,c=>c.query('UPDATE mentor_cards SET reason=reason').then(()=>{}),'mentor.advise')).rejects.toMatchObject({code:'42501'});
+    await expect(pool.query('UPDATE mentor_cards SET reason=reason WHERE owner_scope_id=$1',[a])).rejects.toThrow('MENTOR_CARD_IMMUTABLE');
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('DELETE FROM decision_projection')).rowCount).toBe(0);
+    },'projection.read');
   });
 
   it('CRT-SEC-01-A: covers every classified owner-scoped table with an unfiltered cross-owner query',async()=>{

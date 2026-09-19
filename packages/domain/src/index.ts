@@ -74,7 +74,7 @@ export {overlayDeltaKindSchema,overlayLifecycleSchema,memoryOperationKindSchema,
   publicOverlayDeltaSchema,ownerOverlaySchema,
   type OverlayDeltaKind,type OverlayLifecycle,type MemoryOperationKind,type TargetObjectRef,type OverlayDeltaInput,
   type MemoryWriteReceipt,type PublicOverlayDelta,type OwnerOverlay} from './overlay.js';
-export {moneyAmountSchema,currencyCodeSchema,moneySchema,projectionNameSchema,rebuildTriggerSchema,sourceStrengthSchema,
+export {moneyAmountSchema,currencyCodeSchema,moneySchema,projectionNameSchema,recordedProjectionNameSchema,rebuildTriggerSchema,sourceStrengthSchema,
   outcomeStateSchema,pendingAssertionReasonSchema,pendingAssertionSchema,projectionRowMetadataSchema,
   commitmentProjectionRowSchema,obligationProjectionRowSchema,scheduleProjectionRowSchema,
   commitmentsProjectionViewSchema,obligationsProjectionViewSchema,scheduleProjectionViewSchema,
@@ -161,6 +161,16 @@ export {jobStatusSchema,jobKindSchema,workerIdSchema,jobErrorCodeSchema,enqueueJ
   claimedJobSchema,queueDepthSchema,jobsViewSchema,deadLetterViewSchema,retryResultSchema,
   type JobStatus,type EnqueueJob,type PublicJob,type ClaimedJob,type QueueDepth,type JobsView} from './jobs.js';
 
+export {goalPrioritySchema,goalChangeKindSchema,goalPriorityHistoryEntrySchema,temporaryOverrideSchema,goalContradictionFlagSchema,
+  goalSchema,goalsViewSchema,createGoalSchema,goalPriorityChangeSchema,goalPriorityChangeResultSchema,DECISION_FRAME_TYPE,
+  DECISION_REVIEW_CONTRACT,recordDecisionSchema,decisionProjectionRowSchema,decisionProjectionViewSchema,decisionSourceSchema,
+  decisionRationaleItemSchema,decisionRationaleSchema,decisionReviewInputSchema,predictionComparisonSchema,
+  recordDecisionResultSchema,decisionDetailSchema,decisionReviewResultSchema,mentorGroundSchema,mentorEvidenceSchema,
+  mentorInferenceSchema,mentorRecommendationSchema,mentorCardSchema,mentorViewSchema,
+  type GoalPriority,type GoalPriorityHistoryEntry,type TemporaryOverride,type Goal,type GoalsView,type CreateGoal,
+  type GoalPriorityChange,type RecordDecision,type DecisionProjectionRow,type DecisionProjectionView,type DecisionSource,
+  type DecisionRationaleItem,type DecisionRationale,type DecisionReviewInput,type PredictionComparison,type DecisionDetail,
+  type DecisionReviewResult,type MentorGround,type MentorCard,type MentorView} from './decisions.js';
 export {actionKindSchema,externalActionKindSchema,actionStageSchema,ACTION_STAGE_LABELS,actionHistoryEntrySchema,
   actionHistoryViewSchema,actionBasisSchema,draftKindSchema,DRAFT_CAPABILITY,draftContentSchema,createDraftSchema,
   draftStatusSchema,publicDraftSchema,draftsViewSchema,draftDecisionSchema,executeActionSchema,

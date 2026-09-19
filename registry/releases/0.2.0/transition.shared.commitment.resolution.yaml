@@ -1,0 +1,21 @@
+kind: TRANSITION
+id: shared.commitment.resolution
+version: 0.2.0
+description: >-
+  RESOLVES a commitment. Completion ("Done, I sent it") is a target-less
+  FULFILLED assertion; an actual event occurrence may be the target.
+linkKind: RESOLVES
+sourceFrameTypes: [shared.commitment]
+targetFrameTypes: [shared.event_occurrence]
+targetRequired: false
+allowedOutcomes: [FULFILLED, PARTIALLY_FULFILLED, WITHDRAWN, CANCELLED, FAILED]
+authorityRules:
+  - A resolution assertion requires a source commitment frame and a claim.
+  - FAILED requires supporting evidence; passage of time alone never creates it.
+  - A reminder does not resolve the commitment.
+invariants:
+  - The source commitment and its propositions are never rewritten.
+  - Expiry of a due time creates no resolution.
+acceptanceTests:
+  - PRD §44.8 target-less FULFILLED completion
+  - PRD §12.6 overdue projection without FAILED or MISSED assertion

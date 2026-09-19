@@ -16,6 +16,7 @@
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/memory": "workspace:*",
+    "@unai/mentor": "workspace:*",
     "@unai/postgres": "workspace:*",
     "@unai/review": "workspace:*",
     "@unai/secrets": "workspace:*",

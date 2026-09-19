@@ -89,6 +89,15 @@ function cardRow(row: Record<string, unknown>): CardRow {
 
 const SELECT_CARD = `SELECT ${CARD_COLUMNS} FROM clarification_cards`;
 
+/** The owner's proactive items today, per sensitivity scope: asked clarification
+ * cards and the mentor's emitted cards (migration 0026), because the attention
+ * budget is one budget (ADR 0029 §7). `@unai/mentor` counts through the same union. */
+const PROACTIVE_TODAY = `SELECT sensitivity_scope,count(*)::int AS n FROM (
+    SELECT sensitivity_scope FROM clarification_cards WHERE owner_scope_id=$1 AND asked_on=$2::date
+    UNION ALL
+    SELECT sensitivity_scope FROM mentor_cards WHERE owner_scope_id=$1 AND owner_local_date=$2::date AND decision='ASK'
+  ) items GROUP BY sensitivity_scope`;
+
 function publicCard(row: Record<string, unknown>, decision: InterruptionDecision | null): ClarificationCard {
   const iso = (value: unknown) => value instanceof Date ? value.toISOString() : null;
   return clarificationCardSchema.parse({
@@ -203,9 +212,7 @@ export async function evaluateInbox(tx: MemoryTransaction, input: {
     cards.push({ draft, card: cardRow(row), evidenceChanged: false });
   }
 
-  const asked = (await tx.query(
-    `SELECT sensitivity_scope,count(*)::int AS n FROM clarification_cards WHERE owner_scope_id=$1 AND asked_on=$2::date
-     GROUP BY sensitivity_scope`, [input.ownerScopeId, today])).rows;
+  const asked = (await tx.query(PROACTIVE_TODAY, [input.ownerScopeId, today])).rows;
   const askedInScope = new Map(asked.map(row => [row['sensitivity_scope'] as string, row['n'] as number]));
   let askedToday = asked.reduce((sum, row) => sum + (row['n'] as number), 0);
 
@@ -301,9 +308,7 @@ export async function readInbox(tx: MemoryTransaction, input: {
      ORDER BY created_at,id`, [input.ownerScopeId, dayStart, dayEnd])).rows;
   const decisions = await latestDecisions(tx, input.ownerScopeId, rows.map(row => row['id'] as string));
   const cards = rows.map(row => ({ row: cardRow(row), card: publicCard(row, decisions.get(row['id'] as string) ?? null) }));
-  const askedRows = (await tx.query(
-    `SELECT sensitivity_scope,count(*)::int AS n FROM clarification_cards WHERE owner_scope_id=$1 AND asked_on=$2::date
-     GROUP BY sensitivity_scope`, [input.ownerScopeId, today])).rows;
+  const askedRows = (await tx.query(PROACTIVE_TODAY, [input.ownerScopeId, today])).rows;
   const askedToday = askedRows.reduce((sum, row) => sum + (row['n'] as number), 0);
   const scopes = new Set([...askedRows.map(row => row['sensitivity_scope'] as string),
     ...cards.filter(({ row }) => row.status === 'DEFERRED').map(({ row }) => row.sensitivityScope)]);

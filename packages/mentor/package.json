@@ -1,0 +1,14 @@
+{
+  "name": "@unai/mentor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@unai/context": "workspace:*",
+    "@unai/domain": "workspace:*",
+    "@unai/memory": "workspace:*",
+    "@unai/review": "workspace:*",
+    "zod": "^4.6.2"
+  }
+}

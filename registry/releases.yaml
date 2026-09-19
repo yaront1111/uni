@@ -4,3 +4,6 @@ releases:
   - version: 0.1.0
     tag: registry-v0.1.0
     contentHash: 6fec376b01ada0e5384374de58661b62ddf8816f797566dcd2b0be5e7218f6d5
+  - version: 0.2.0
+    tag: registry-v0.2.0
+    contentHash: e035974cf3b15fd7892aac28443f17e6e5e5bd3da2e854a5c4d621fd448d039a

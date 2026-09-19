@@ -46,8 +46,21 @@ async function repository() {
   await cp(resolve('corpus'), join(path, 'corpus'), { recursive: true,
     filter: source => resolve(source) !== privateCorpus && !resolve(source).startsWith(privateCorpus + sep) });
   await cp(resolve('.gitignore'), join(path, '.gitignore'));
+  await onlyBaseRelease(path);
   expect(git(path, 'init', '-q').status).toBe(0);
   return path;
+}
+/** Leaves release 0.1.0 as the throwaway repository's only release, so the
+ * fixture below is the release that follows it whatever this checkout records
+ * after 0.1.0 (its own 0.2.0 is linted from the checkout itself). */
+async function onlyBaseRelease(repo: string) {
+  for (const version of await readdir(join(repo, 'registry/releases'))) {
+    if (version !== '0.1.0') await rm(join(repo, 'registry/releases', version), { recursive: true, force: true });
+  }
+  const index = join(repo, 'registry/releases.yaml');
+  const text = await readFile(index, 'utf8');
+  const next = text.indexOf('  - version: ', text.indexOf('  - version: 0.1.0') + 1);
+  if (next >= 0) await writeFile(index, text.slice(0, next));
 }
 /** Records the release directory's content hash in the index, as a release PR does. */
 async function record(repo: string, version: string) {
@@ -232,7 +245,7 @@ describe('CRT-REG-02-A: uai registry test runs every contract through the ten PR
   it('exits zero from the CLI for the recorded release and prints only counts', () => {
     const result = run(resolve('.'), ['registry', 'test']);
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout.trim())).toMatchObject({ event: 'registry.test', result: 'PASS', releases: ['0.1.0'], contracts: 4, areas: 10 });
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({ event: 'registry.test', result: 'PASS', releases: ['0.1.0', '0.2.0'], contracts: 5, areas: 10 });
   }, 120000);
 });
 

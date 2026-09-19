@@ -30,6 +30,10 @@ export type Money = z.infer<typeof moneySchema>;
 export const PROJECTION_NAMES = Object.freeze(['open_commitments_projection', 'obligations_projection', 'schedule_projection'] as const);
 export const projectionNameSchema = z.enum(PROJECTION_NAMES);
 export type ProjectionName = z.infer<typeof projectionNameSchema>;
+/** Every projection a rebuild receipt may name: the three V0 projections and the
+ * decision projection of registry release 0.2.0 (ADR 0029 §4), which is reduced
+ * by its own reducer and is therefore not in `PROJECTION_NAMES`. */
+export const recordedProjectionNameSchema = z.enum([...PROJECTION_NAMES, 'decision_projection']);
 
 export const rebuildTriggerSchema = z.enum(['MERGE', 'SPLIT', 'MIGRATION', 'MANUAL_REPLAY', 'DROP_AND_REBUILD', 'INCREMENTAL_APPLY']);
 export type RebuildTrigger = z.infer<typeof rebuildTriggerSchema>;
@@ -160,7 +164,7 @@ export type ScheduleProjectionView = z.infer<typeof scheduleProjectionViewSchema
 
 export const projectionRebuildReceiptSchema = z.strictObject({
   projectionRebuildReceiptId: z.uuid(),
-  projectionName: projectionNameSchema,
+  projectionName: recordedProjectionNameSchema,
   trigger: rebuildTriggerSchema,
   transactionId: z.uuid().nullable(),
   rowsRebuilt: z.number().int().nonnegative(),

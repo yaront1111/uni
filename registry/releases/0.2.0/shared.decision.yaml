@@ -1,0 +1,242 @@
+kind: FRAME
+id: shared.decision
+version: 0.2.0
+description: >-
+  A decision the owner made or is making: the question, the options weighed,
+  the assumptions and cross-domain consequences considered, the recommendation
+  received, the choice made with its rationale, the result expected from it and
+  when to review it. The expected result is a PREDICTED statement; what actually
+  happened is recorded beside it and compared through a RESOLVES transition,
+  never written over it.
+contextPolicy:
+  allowedKinds: [BASE, QUOTED, TEST]
+  defaultKind: BASE
+  quotedRule: >-
+    No rule in this release creates QUOTED context. A decision recorded by the
+    owner canonicalizes into BASE with the owner as decider. Extractor output
+    cannot select the context kind.
+identityStrategy:
+  kind: SURROGATE
+  matching: >-
+    Surrogate UUIDv7 identity. A decision recorded through the Decisions
+    workspace is a new instance; a later statement about the same decision names
+    its instance explicitly. Only a CONFIRMED_MATCH reuses an instance for a
+    material accepted update.
+  descriptivePredicates:
+    - shared.decision.question
+    - shared.decision.review_date
+  newInstanceSignals:
+    - A different question creates a new decision instance.
+    - Revisiting a decided question later is a new decision that may reference the earlier one.
+identityAnchors: [decider, question]
+roles:
+  - id: decider
+    valueType: ENTITY
+    required: true
+    description: The person who made the decision.
+  - id: related_goal
+    valueType: EXTERNAL_REFERENCE
+    required: false
+    description: The owner goal the decision serves, by its goal record identifier.
+  - id: related_entity
+    valueType: ENTITY
+    required: false
+    description: A person or organization the decision concerns.
+  - id: related_document
+    valueType: EXTERNAL_REFERENCE
+    required: false
+    description: A document the decision relied on.
+predicates:
+  - id: shared.decision.question
+    frameType: shared.decision
+    description: The question being decided, in the owner's words.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: true
+    normalization: Unicode NFC, trimmed whitespace; original wording retained on the claim.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Fixed at the time the decision was recorded.
+    conflictBehavior: Different wordings coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: The decider's own statement is authoritative for the question.
+    projectionContracts:
+      - decision_projection.question
+  - id: shared.decision.option
+    frameType: shared.decision
+    description: One alternative that was considered.
+    valueType: TEXT
+    cardinality: SET
+    required: true
+    normalization: >-
+      Unicode NFC, trimmed whitespace. Each alternative is its own proposition in
+      its own slot, qualified by its position in the owner's list, so two
+      alternatives are two members of the set and never two competing values.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: [position]
+    temporalBehavior: Fixed at the time the decision was recorded.
+    conflictBehavior: Alternatives are a set; distinct alternatives never conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: The decider's own statement is authoritative for what was considered.
+    projectionContracts:
+      - decision_projection.alternatives
+  - id: shared.decision.assumption
+    frameType: shared.decision
+    description: >-
+      Something the decider took to hold when deciding. It is an expectation
+      about the world, not an established fact, and may cite the sources it rests on.
+    valueType: TEXT
+    cardinality: SET
+    required: false
+    normalization: >-
+      Unicode NFC, trimmed whitespace; each assumption sits in its own slot,
+      qualified by its position in the owner's list. Cited sources are linked, not copied.
+    allowedModalities: [EXPECTED]
+    slotQualifiers: [position]
+    temporalBehavior: Valid from the time the decision was recorded; a later finding does not rewrite it.
+    conflictBehavior: Assumptions are a set; a later contrary finding is recorded separately and reported.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: >-
+      The decider's statement records that the assumption was made; a cited source
+      supports the assumption only as far as that source's own authority goes.
+    projectionContracts:
+      - decision_projection.assumptions
+  - id: shared.decision.consequence
+    frameType: shared.decision
+    description: An expected consequence of the decision in a named life domain.
+    valueType: TEXT
+    cardinality: SET
+    required: false
+    normalization: >-
+      The consequence text with the life domain it falls in (FINANCE, FAMILY, WORK,
+      HEALTH, ADMIN or PERSONAL), in its own slot qualified by its position in the owner's list.
+    allowedModalities: [EXPECTED]
+    slotQualifiers: [position]
+    temporalBehavior: Valid from the time the decision was recorded.
+    conflictBehavior: Consequences are a set; distinct consequences never conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: The decider's own statement is authoritative for what was anticipated.
+    projectionContracts:
+      - decision_projection.cross_domain_consequences
+  - id: shared.decision.recommendation
+    frameType: shared.decision
+    description: The recommendation the decider received, never the decider's intent.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Unicode NFC, trimmed whitespace; who recommended it is the asserting actor of the claim.
+    allowedModalities: [RECOMMENDED]
+    slotQualifiers: []
+    temporalBehavior: Fixed at the time it was recorded.
+    conflictBehavior: Different recommendations coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: A recommendation never establishes the choice or an executed fact.
+    projectionContracts:
+      - decision_projection.recommendation
+  - id: shared.decision.choice
+    frameType: shared.decision
+    description: The alternative the decider chose.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Unicode NFC, trimmed whitespace.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Valid from the time the choice was made; a later reversal is a new decision.
+    conflictBehavior: Different stated choices coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Only the decider's own statement is authoritative for the choice.
+    projectionContracts:
+      - decision_projection.user_choice
+  - id: shared.decision.rationale
+    frameType: shared.decision
+    description: Why the decider chose as they did, in their own words.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Unicode NFC, trimmed whitespace; original wording retained on the claim.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Fixed at the time the decision was recorded; hindsight is recorded separately.
+    conflictBehavior: Different rationales coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Only the decider's own statement is authoritative for the rationale.
+    projectionContracts:
+      - decision_projection.source_manifest
+  - id: shared.decision.expected_result
+    frameType: shared.decision
+    description: The result the decider predicted the decision would bring.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Unicode NFC, trimmed whitespace.
+    allowedModalities: [PREDICTED]
+    slotQualifiers: []
+    temporalBehavior: >-
+      A prediction stays exactly as stated after the actual result is known; the
+      comparison is a resolution assertion, never an edit.
+    conflictBehavior: Different predictions coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Never superseded by the actual result; only a governed correction of the prediction itself.
+    sourceAuthorityPolicy: The decider's own statement is authoritative for what was predicted.
+    projectionContracts:
+      - decision_projection.expected_result
+      - decision_projection.predicted_outcome_proposition_ids
+  - id: shared.decision.review_date
+    frameType: shared.decision
+    description: When the decider intends to review the decision against its result.
+    valueType: TIMESTAMP
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: ISO 8601 instant with offset; the owner's own wording retained on the claim.
+    allowedModalities: [INTENDED]
+    slotQualifiers: []
+    temporalBehavior: Passing the review date creates no review and no resolution assertion.
+    conflictBehavior: Different review dates coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: Only the decider's own statement is authoritative for the review date.
+    projectionContracts:
+      - decision_projection.review_date
+  - id: shared.decision.observed_result
+    frameType: shared.decision
+    description: >-
+      What actually happened after the decision, as recorded at review. It sits in
+      its own ACTUAL slot beside the PREDICTED expected result and never replaces it.
+    valueType: TEXT
+    cardinality: FUNCTIONAL
+    required: false
+    normalization: Unicode NFC, trimmed whitespace; cited evidence is linked, not copied.
+    allowedModalities: [ACTUAL]
+    slotQualifiers: []
+    temporalBehavior: Valid from the time the result was observed.
+    conflictBehavior: Different observed results coexist as separate propositions and are reported as a conflict.
+    supersessionBehavior: Supersession only through a governed Belief Transaction; history is retained.
+    sourceAuthorityPolicy: >-
+      The owner's review statement records the observation; authoritative
+      external evidence of the result may be cited and outranks the statement.
+    projectionContracts:
+      - decision_projection.actual_outcome
+allowedModalities: [ACTUAL, EXPECTED, RECOMMENDED, PREDICTED, INTENDED]
+slotQualifiers: [position]
+authorityRules:
+  - Only the decider's own statements establish the question, the choice and the rationale.
+  - A recommendation is stored with RECOMMENDED semantics and never as the decider's intent or choice.
+  - The comparison of a prediction with its outcome is a resolution assertion; this frame defines no status predicate.
+  - Model output may propose but not commit; commits require a Belief Transaction.
+mergePolicy: Merge only by explicit user action in a governed transaction; both identifiers remain resolvable through lineage and are never reused.
+splitPolicy: >-
+  Split only through a governed transaction; ambiguous claims become CONTESTED or
+  stay with the retired parent, which remains lineage history.
+transitionContracts:
+  - shared.decision.prediction_review
+  - shared.decision.realization
+projectionConsumers:
+  - decision_projection
+invariants:
+  - The PREDICTED expected result and its claims are never rewritten by a review.
+  - A recommendation never becomes a choice without the decider's own statement.
+  - No parallel outcome status predicate.
+  - Identity is a surrogate UUIDv7, never a hash or fingerprint.
+acceptanceTests:
+  - PRD §7.4 decision workspace fields
+  - PRD §44.9 prediction resolved as confirmed, refuted or partially confirmed with the prediction intact
+  - PRD §52 reconstruct why a decision was made and compare prediction with outcome

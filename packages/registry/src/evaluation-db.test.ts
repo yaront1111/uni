@@ -188,6 +188,15 @@ async function candidateRepository(): Promise<string> {
   const repo = await mkdtemp(join(directory, 'repo-'));
   await cp(resolve('registry'), join(repo, 'registry'), { recursive: true });
   await cp(resolve('corpus'), join(repo, 'corpus'), { recursive: true });
+  // Release 0.1.0 alone, so this candidate is the release that follows it
+  // whatever this checkout records after 0.1.0.
+  for (const version of await readdir(join(repo, 'registry/releases'))) {
+    if (version !== '0.1.0') await rm(join(repo, 'registry/releases', version), { recursive: true, force: true });
+  }
+  const index = join(repo, 'registry/releases.yaml');
+  const recorded = await readFile(index, 'utf8');
+  const next = recorded.indexOf('  - version: ', recorded.indexOf('  - version: 0.1.0') + 1);
+  if (next >= 0) await writeFile(index, recorded.slice(0, next));
   const to = join(repo, 'registry/releases/0.2.0');
   await cp(join(repo, 'registry/releases/0.1.0'), to, { recursive: true });
   for (const name of await readdir(to)) {

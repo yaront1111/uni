@@ -24,6 +24,8 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       /^memory\/(frame-instances|entities)\/(merge|[0-9a-f-]{36}\/split)$/i.test(path)?'memory.govern':
       /^memory\/inbox\/cards\/[0-9a-f-]{36}\/decide$/i.test(path)?'memory.inbox':
       /^approval-rules\/[0-9a-f-]{36}\/(approve|revoke)$/i.test(path)?'approval.rules':
+      path==='goals'||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path)?'goals.manage':
+      path==='decisions'||/^decisions\/[0-9a-f-]{36}\/review$/i.test(path)?'decisions.record':
       // Governed action and the data-control surface (ADR 0030).
       // The attention budget is the memory inbox's setting (ADR 0029), changed here too.
       path==='settings/attention-budgets'?'settings.attention':
@@ -44,11 +46,15 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     // the same declared data purpose and sensitivity ceiling the evidence route
     // carries.
     const evidencePath=path==='evidence'||path==='documents'||/^connectors\/[0-9a-f-]{36}\/sync$/i.test(path);
-    const response=await apiRequest('/v1/'+path,settings?'PATCH':'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
+    // The browser POSTs a priority change; it is the PATCH the API expects for
+    // it, so the upstream method is chosen by the path, never by the browser.
+    const patch=settings||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path);
+    const response=await apiRequest('/v1/'+path,patch?'PATCH':'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
       // A merge or split (whose governed commit reads the evidence behind the
       // claims it reassigns) passes the evidence gate with the same pinned context,
-      // and so does an answer to an inbox card, which is stored as evidence.
-      ...(evidencePath||purpose==='memory.govern'||purpose==='memory.inbox'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{}),
+      // and so does an answer to an inbox card, which is stored as evidence, and a
+      // decision or its review, whose words are stored as evidence too.
+      ...(evidencePath||purpose==='memory.govern'||purpose==='memory.inbox'||purpose==='decisions.record'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{}),
       // A correction control stores the owner's own words as evidence; they are
       // kept PRIVATE, and the browser can raise neither value (ADR 0028 §4).
       ...(purpose==='memory.correct'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'PRIVATE'}:{}),

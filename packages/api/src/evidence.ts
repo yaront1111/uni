@@ -176,6 +176,10 @@ export interface OwnerStatementRequest {
   readonly sensitivity:EvidenceInput['sensitivity'];
   readonly allowedPurposes:readonly string[];
   readonly deterministicMetadata?:Record<string,unknown>;
+  /** Parts of the text that are each one stated value, anchored as spans of their
+   * own beside the whole text, so a claim made from one part points at exactly
+   * those words (a recorded decision, ADR 0029 §3). Answered in the same order. */
+  readonly spans?:ReadonlyArray<{start:number;end:number}>;
 }
 /** Store one owner statement as evidence and answer its anchor.
  *
@@ -187,7 +191,7 @@ export interface OwnerStatementRequest {
  * `evidence.ingest`.
  */
 export async function ingestOwnerStatement(tx:OwnerTransaction,objects:EvidenceObjects,request:OwnerStatementRequest):
-  Promise<{evidenceId:string;sourceAnchorId:string;stored:boolean}>{
+  Promise<{evidenceId:string;sourceAnchorId:string;stored:boolean;spanAnchorIds:string[]}>{
   // An assistant's answer is never recorded as the owner's own statement.
   if(!OBJECT_WRITE_PURPOSES.has(tx.context.purpose)||tx.context.purpose==='answer.record')throw new Refusal(403,'EVIDENCE_POLICY_REFUSED');
   const input=evidenceInputSchema.parse({
@@ -200,12 +204,24 @@ export async function ingestOwnerStatement(tx:OwnerTransaction,objects:EvidenceO
     sensitivity:request.sensitivity,allowedPurposes:[...request.allowedPurposes],idempotencyKey:request.idempotencyKey,
   });
   const result=await ingest(tx,input,objects);
-  await writeAnchors(tx,result.evidenceId,[{kind:'MESSAGE_SPAN',anchor:{start:0,end:request.text.length},normalizedText:request.text}]);
-  const anchor=(await tx.query(
-    `SELECT id FROM source_anchors WHERE owner_scope_id=$1 AND source_item_id=$2 AND anchor_kind='MESSAGE_SPAN' ORDER BY id LIMIT 1`,
-    [tx.context.ownerScopeId,result.evidenceId])).rows[0];
+  const spans=request.spans??[];
+  if(spans.some(span=>!Number.isInteger(span.start)||!Number.isInteger(span.end)||span.start<0||span.end<=span.start
+    ||span.end>request.text.length||(span.start===0&&span.end===request.text.length)))throw new Refusal(400,'EVIDENCE_SPAN_INVALID');
+  await writeAnchors(tx,result.evidenceId,[{start:0,end:request.text.length},...spans].map(span=>
+    ({kind:'MESSAGE_SPAN',anchor:{start:span.start,end:span.end},normalizedText:request.text.slice(span.start,span.end)})));
+  // Each anchor is found by its own span: the whole text first, then the parts.
+  const anchorOf=async(span:{start:number;end:number})=>(await tx.query(
+    `SELECT id FROM source_anchors WHERE owner_scope_id=$1 AND source_item_id=$2 AND anchor_kind='MESSAGE_SPAN' AND anchor=$3::jsonb`,
+    [tx.context.ownerScopeId,result.evidenceId,JSON.stringify({start:span.start,end:span.end})])).rows[0]?.id as string|undefined;
+  const anchor=await anchorOf({start:0,end:request.text.length});
   if(!anchor)throw new Refusal(503,'EVIDENCE_UNAVAILABLE');
-  return {evidenceId:result.evidenceId,sourceAnchorId:anchor.id as string,stored:result.stored};
+  const spanAnchorIds:string[]=[];
+  for(const span of spans){
+    const id=await anchorOf(span);
+    if(!id)throw new Refusal(503,'EVIDENCE_UNAVAILABLE');
+    spanAnchorIds.push(id);
+  }
+  return {evidenceId:result.evidenceId,sourceAnchorId:anchor,stored:result.stored,spanAnchorIds};
 }
 
 /** The source type every assistant answer is stored under (ADR 0026 §4). */

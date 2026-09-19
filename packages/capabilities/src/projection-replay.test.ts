@@ -291,6 +291,14 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     behavioral_observations, weekly_reviews CASCADE`);
   await admin!.query('DROP FUNCTION unai_private.learned_rule_transition(), unai_private.clarification_card_identity()');
 
+  // Migration 0026's goal, decision projection and mentor tables and the functions
+  // it created outright. The policies it replaced on 0023's tables and the
+  // receipts constraint it widened go with the tables they belong to.
+  await admin!.query('DROP TABLE mentor_cards, decision_projection, goal_priority_history, goals CASCADE');
+  await admin!.query(`DROP FUNCTION unai_private.goal_priority_history_stamp(), unai_private.goal_priority_history_immutable(),
+    unai_private.goal_update_guard(), unai_private.goal_has_history(), unai_private.decision_projection_identity(),
+    unai_private.mentor_card_immutable(), unai_private.registry_transition_contracts()`);
+
   // Migration 0024's governed-action and data-control tables, the functions it
   // created outright, and the export and erasure policies it added beside the
   // earlier tables' own. Its replaced trigger functions are CREATE OR REPLACE and
@@ -316,7 +324,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0018_connector_capabilities_and_lifecycle.sql', '0019_semantic_index.sql', '0020_merge_split_lineage.sql',
     '0021_answer_manifests_and_reconsideration.sql',
     '0022_today_briefing.sql', '0023_memory_inbox_and_weekly_review.sql', '0024_governed_action_and_data_control.sql',
-    '0025_evaluation_and_metrics.sql']);
+    '0025_evaluation_and_metrics.sql', '0026_goals_decisions_and_mentor.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

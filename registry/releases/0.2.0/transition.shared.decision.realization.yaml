@@ -1,0 +1,19 @@
+kind: TRANSITION
+id: shared.decision.realization
+version: 0.2.0
+description: >-
+  REALIZES links an actual event occurrence (target) to the decision (source)
+  whose choice it carried out. It carries no outcome code; how the result
+  compares with the prediction is recorded separately by the prediction review.
+linkKind: REALIZES
+sourceFrameTypes: [shared.decision]
+targetFrameTypes: [shared.event_occurrence]
+targetRequired: true
+allowedOutcomes: []
+authorityRules:
+  - The target occurrence must have ACTUAL modality supported by evidence.
+  - Only owner confirmation or authoritative receipts establish the link for accepted memory.
+invariants:
+  - REALIZES never rewrites the decision or its propositions.
+acceptanceTests:
+  - PRD §44.7 actual occurrence REALIZES its source, applied to a decision
