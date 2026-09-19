@@ -196,3 +196,4 @@ export {actionKindSchema,externalActionKindSchema,actionStageSchema,ACTION_STAGE
   type ActionBasis,type CreateDraft,type PublicDraft,type ExecuteAction,type CreateRecommendation,
   type PublicRecommendation,type ToolReceipt,type PublicPluginCapability,type RetentionRule,
   type PermissionsView,type ExportBundle,type CascadeCounts,type DeletionReceipt} from './control.js';
+export {RUNBOOK_IDS,V0_CI_STAGES,operationsReportSchema,evaluateV0Release,type OperationsReport} from './operations.js';

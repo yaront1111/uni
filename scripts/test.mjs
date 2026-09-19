@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 import {mkdir,readFile,writeFile,unlink} from 'node:fs/promises';
 import {acceptanceResults} from './acceptance-gate.mjs';
 import {deliveredStorage,startStorageHarness} from './storage-harness.mjs';
+import {stageFilters} from './test-stages.mjs';
+import {workspaceEvidence} from './workspace-evidence.mjs';
+import {databaseRoundtrip} from './database-roundtrip.mjs';
+
+const args=process.argv.slice(2);
+if(args.length&&!(args.length===2&&args[0]==='--stage'))throw new Error('TEST_ARGUMENTS_INVALID');
+const stage=args[1];
+const filters=stage?stageFilters(stage):[];
 
 const {Pool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg');
 const name = 'unai-test-' + randomUUID();
@@ -66,7 +74,11 @@ async function dropDatabase(url, name) {
 let created = false;
 let storage;
 let scratch;
+let sourceEvidence;
+const testReport=stage?'test-results/acceptance/'+stage+'.json':'test-results/acceptance/vitest.json';
 try {
+  sourceEvidence=await workspaceEvidence();
+  await unlink(testReport+'.provenance.json').catch(error=>{if(error.code!=='ENOENT')throw error;});
   let databaseUrl = delivered;
   if (delivered) {
     console.log('Using the delivered PostgreSQL/pgvector server for the full suite...');
@@ -95,11 +107,10 @@ try {
   // vitest runs as an awaited child, never spawnSync: a harness that serves object
   // storage from this process must keep answering requests while the suite runs.
   await mkdir('test-results/acceptance',{recursive:true});
-  const testReport='test-results/acceptance/vitest.json';
-  for(const path of [testReport,'test-results/acceptance/scenarios.json','test-results/performance/load.json','test-results/performance/trace.json']){
+  for(const path of stage?[testReport]:[testReport,'test-results/acceptance/scenarios.json','test-results/performance/load.json','test-results/performance/trace.json']){
     await unlink(path).catch(error=>{if(error.code!=='ENOENT')throw error;});
   }
-  const test=spawn(process.execPath,['node_modules/vitest/vitest.mjs','run','--silent=passed-only','--reporter=default','--reporter=json','--outputFile.json='+testReport],{
+  const test=spawn(process.execPath,['node_modules/vitest/vitest.mjs','run',...filters,'--maxWorkers=4','--silent=passed-only','--reporter=default','--reporter=json','--outputFile.json='+testReport],{
     stdio:'inherit',
     env:{...process.env,...storage.env,UNAI_TEST_DATABASE_URL:databaseUrl},
   });
@@ -107,11 +118,18 @@ try {
     test.once('error',reject);
     test.once('close',code=>resolve(code ?? 1));
   });
-  const acceptance=acceptanceResults(JSON.parse(await readFile(testReport,'utf8')));
-  await writeFile('test-results/acceptance/scenarios.json',JSON.stringify({format:'unai-acceptance/1',scenarios:acceptance},null,2)+'\n');
-  const failed=acceptance.filter(scenario=>!scenario.passed);
-  if(failed.length){console.error('ACCEPTANCE_SCENARIOS_FAILED: '+failed.map(row=>row.scenario).join(', '));process.exitCode=1;}
-  else console.log('Acceptance scenarios: 20/20 passed.');
+  const completedEvidence=await workspaceEvidence();
+  if(completedEvidence.workspaceDigest!==sourceEvidence.workspaceDigest){console.error('WORKSPACE_CHANGED_DURING_TEST');process.exitCode=1;}
+  if(!stage){
+    const acceptance=acceptanceResults(JSON.parse(await readFile(testReport,'utf8')));
+    await writeFile('test-results/acceptance/scenarios.json',JSON.stringify({format:'unai-acceptance/1',scenarios:acceptance},null,2)+'\n');
+    const failed=acceptance.filter(scenario=>!scenario.passed);
+    if(failed.length){console.error('ACCEPTANCE_SCENARIOS_FAILED: '+failed.map(row=>row.scenario).join(', '));process.exitCode=1;}
+    else console.log('Acceptance scenarios: 20/20 passed.');
+  }
+  if(!stage){
+    if(process.exitCode===0)await databaseRoundtrip(created?name:null,databaseUrl,{...process.env,...storage.env},sourceEvidence);
+  }
 } catch(error) {
   console.error(error.step?error.message:'TEST_HARNESS_FAILED: '+error.message); process.exitCode=1;
 } finally {
@@ -125,5 +143,13 @@ try {
   if(created) {
     try { docker(['stop',name]); }
     catch(error) { console.error('DATABASE_CLEANUP_FAILED: '+error.message); process.exitCode=1; }
+  }
+  if(sourceEvidence){
+    try{
+      const finalEvidence=await workspaceEvidence();
+      if(finalEvidence.workspaceDigest!==sourceEvidence.workspaceDigest)process.exitCode=1;
+      await mkdir('test-results/acceptance',{recursive:true});
+      await writeFile(testReport+'.provenance.json',JSON.stringify({...sourceEvidence,completedAt:new Date().toISOString(),exitCode:process.exitCode??1},null,2)+'\n');
+    }catch{console.error('TEST_PROVENANCE_WRITE_FAILED');process.exitCode=1;}
   }
 }

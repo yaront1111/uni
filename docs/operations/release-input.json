@@ -1,0 +1,33 @@
+{
+  "adrInventoryReviewedAt": "2026-09-19T16:05:50.287Z",
+  "deviations": [
+    {
+      "requirement": "REQ-SEC-07: global registry publication audit",
+      "adrPath": "docs/adr/0011-git-registry-release.md",
+      "implementedAt": "2026-09-17T06:28:14.000Z"
+    },
+    {
+      "requirement": "REQ-QA-02: private-corpus phase-exit gate placement",
+      "adrPath": "docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md",
+      "implementedAt": "2026-09-19T10:05:59.000Z"
+    },
+    {
+      "requirement": "REQ-OPS-02: historical ADR precedence is not established",
+      "adrPath": "docs/adr/0035-historical-deviation-inventory.md",
+      "implementedAt": "2026-09-14T18:40:54.000Z"
+    }
+  ],
+  "defects": {
+    "reviewedAt": "2026-09-19T16:08:01.816Z",
+    "items": []
+  },
+  "ci": null,
+  "restore": {
+    "result": "UNVERIFIED",
+    "emptyEnvironment": false,
+    "objectsRestored": false,
+    "keyRecoveryVerified": false,
+    "backupRef": null,
+    "fixtures": []
+  }
+}

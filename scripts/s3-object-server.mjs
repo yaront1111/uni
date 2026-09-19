@@ -100,6 +100,15 @@ export async function startS3ObjectServer({bucket, kmsKeyId}) {
         + `<KMSMasterKeyID>${escapeXml(kmsKeyId)}</KMSMasterKeyID></ApplyServerSideEncryptionByDefault>`
         + `</Rule></ServerSideEncryptionConfiguration>`);
     }
+    // Complete enumeration for the coordinated logical test backup. This
+    // disposable store has no object versioning; deletion removes the object.
+    if (request.method === 'GET' && !objectKey && url.searchParams.get('list-type') === '2') {
+      const entries = [...objects.entries()].sort(([a], [b]) => a.localeCompare(b));
+      return sendXml(response, 200, `${DOCUMENT}<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`
+        + `<Name>${escapeXml(bucket)}</Name><KeyCount>${entries.length}</KeyCount><IsTruncated>false</IsTruncated>`
+        + entries.map(([key, value]) => `<Contents><Key>${escapeXml(key)}</Key><Size>${value.ciphertext.length}</Size></Contents>`).join('')
+        + '</ListBucketResult>');
+    }
     // The SDK marks object requests with `?x-id=<operation>`; every other query
     // selects an S3 feature (multipart, versioning, tagging) this harness does not serve.
     const unsupported = [...url.searchParams.keys()].filter(parameter => parameter !== 'x-id');

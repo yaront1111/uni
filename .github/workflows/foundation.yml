@@ -1,11 +1,11 @@
-name: Foundation checks
+name: V0 pipeline
 on: [push, pull_request]
 permissions:
   contents: read
 jobs:
   foundation:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -16,14 +16,30 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
+      - name: Lint and type validation
+        run: pnpm lint
+      - name: Unit tests
+        run: node scripts/test.mjs --stage unit
+      - name: Property-based replay, reordering and identity tests
+        run: node scripts/test.mjs --stage property
+      - name: Connector integration
+        run: node scripts/test.mjs --stage connector-integration
+      - name: Security
+        run: node scripts/test.mjs --stage security
+      - name: Local policy dependency audit
+        run: node scripts/local-policy-audit.mjs
+      - name: End-to-end source, Today, Ask and explanation
+        run: node scripts/test.mjs --stage end-to-end
       # The whole suite, including the CI security suite (packages/api/src/security.test.ts,
       # transport.test.ts and audit.test.ts: cross-owner access, cross-scope leakage,
       # malicious email and document instructions, secret redaction, policy bypass,
       # deleted-data search, plugin least privilege, write replay, TLS, encryption at
       # rest, object keys and the audit trail) and the accessibility checks with the
       # keyboard-only walkthrough of the core views (apps/web/components/Accessibility.test.ts).
-      - run: pnpm test
+      - name: Full suite and all twenty acceptance scenarios
+        run: pnpm test
+      - name: Publish operations evidence
+        run: pnpm ops:report
       # The accessibility report and the keyboard-only walkthrough transcript are a
       # required CI artifact beside the automated checks (CRT-UX-14-A).
       - uses: actions/upload-artifact@v4
@@ -38,19 +54,22 @@ jobs:
       # Lint also refuses an identity-, transition-affecting or breaking release
       # without its migration manifest, shadow diff, projection replay output and
       # rollback plan (PRD §17.7, CRT-REG-05-A).
-      - run: pnpm validate:registry --report registry-lint-report.json
+      - name: Registry lint
+        run: pnpm validate:registry --report registry-lint-report.json
       # The other three registry commands (PRD §35.14, CRT-REG-02-A). The
       # database-backed shadow-diff and projection-replay runs, as real CLI
       # processes over TLS, are part of `pnpm test` above
       # (packages/registry/src/evaluation-db.test.ts).
-      - run: pnpm uai registry test --report registry-test-report.json
+      - name: Registry contract tests
+        run: pnpm uai registry test --report registry-test-report.json
       - run: pnpm uai registry shadow-diff --sample corpus:synthetic --report shadow-diff-report.json
       # The gold corpus (PRD §43.4, §46): the synthetic equivalents are scored
       # against the identity acceptance thresholds recorded in
       # corpus/expected/identity-thresholds.json, and nothing under the private
       # corpus path may be tracked, whatever a local hook did.
       - run: test -z "$(git ls-files corpus/private-local)"
-      - run: pnpm uai corpus run --corpus synthetic --report corpus-report.json
+      - name: Corpus evaluation
+        run: pnpm uai corpus run --corpus synthetic --report corpus-report.json
       - run: pnpm uai corpus status --report corpus-status.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -64,5 +83,6 @@ jobs:
             corpus-status.json
             test-results/acceptance/
             test-results/performance/
+            test-results/operations/
           if-no-files-found: ignore
 

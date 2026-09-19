@@ -47,7 +47,7 @@ import { readPropositionAuthority } from './support-authority.js';
  * completeness and watermarks are all present rather than implied (CRT-RD-05-A).
  */
 
-export const BROKER_VERSION = 'context-broker-0.3.0';
+export const BROKER_VERSION = 'context-broker-0.3.1';
 export const SELECTOR_VERSION = SELECTION_VERSION;
 /** The route purpose the broker runs under. It appears in no INSERT, UPDATE or
  * DELETE policy on any canonical table: this path cannot write memory. */
@@ -778,15 +778,18 @@ async function assemble(
     if (wanted.length > 0) {
       const rows = (await tx.query(
         `SELECT s.id,s.source_type,s.sensitivity,s.occurred_at,s.allowed_purposes,
-           coalesce((SELECT array_agg(a.id ORDER BY a.id) FROM source_anchors a
-             WHERE a.owner_scope_id=s.owner_scope_id AND a.source_item_id=s.id),'{}') AS anchor_ids
+           ARRAY(SELECT a.id FROM source_anchors a
+             WHERE a.owner_scope_id=s.owner_scope_id AND a.source_item_id=s.id ORDER BY a.id LIMIT 65) AS anchor_ids
          FROM source_items s WHERE s.owner_scope_id=$1 AND s.id=ANY($2::uuid[]) ORDER BY s.id`,
         [request.ownerScopeId, wanted])).rows;
+      if(rows.some(row=>(row['anchor_ids'] as string[]).length>64))unknowns.push(contextUnknownSchema.parse({
+        kind:'EVIDENCE_WITHHELD',objectType:'source_anchors',objectId:null,detail:'EVIDENCE_ANCHOR_LIMIT_REACHED',
+      }));
       for (const row of rows) {
         evidenceRefs.push(contextEvidenceRefSchema.parse({
           evidenceId: row['id'], sourceType: row['source_type'], sensitivity: row['sensitivity'],
           occurredAt: row['occurred_at'] ? (row['occurred_at'] as Date).toISOString() : null,
-          anchorIds: (row['anchor_ids'] as string[] | null) ?? [],
+          anchorIds: ((row['anchor_ids'] as string[] | null) ?? []).slice(0,64),
           lifeCategories: deriveLifeCategories({ allowedPurposes: row['allowed_purposes'] as string[] }),
         }));
       }

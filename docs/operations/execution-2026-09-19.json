@@ -1,0 +1,85 @@
+{
+  "recordedAt": "2026-09-19T16:19:13.542Z",
+  "environment": "TEST",
+  "command": "pnpm test",
+  "result": "PASS",
+  "passedTests": 925,
+  "skippedTests": 4,
+  "procedures": [
+    {
+      "name": "backup",
+      "command": "pnpm test",
+      "executedAt": "2026-09-19T16:19:13.542Z",
+      "result": "PASS",
+      "evidence": "coordinated-recovery-2026-09-19.json"
+    },
+    {
+      "name": "restore",
+      "command": "pnpm test",
+      "executedAt": "2026-09-19T16:19:13.542Z",
+      "result": "PASS",
+      "evidence": "coordinated-recovery-2026-09-19.json"
+    },
+    {
+      "name": "deletion",
+      "command": "pnpm test",
+      "executedAt": "2026-09-19T16:19:13.542Z",
+      "result": "PASS",
+      "testNames": [
+        "[AC44.18] CRT-NFR-04-A and CRT-SEC-06-A: export carries raw evidence and canonical memory, regeneration restores semantic search, and a deletion leaves nothing retrievable"
+      ],
+      "testFiles": [
+        "packages/api/src/control.test.ts"
+      ]
+    },
+    {
+      "name": "registry-migration",
+      "command": "pnpm test",
+      "executedAt": "2026-09-19T16:19:13.542Z",
+      "result": "PASS",
+      "testNames": [
+        "CRT-REG-05-A: publishing a migrating release materializes its manifest, and only after its base release"
+      ],
+      "testFiles": [
+        "packages/registry/src/evaluation-db.test.ts"
+      ]
+    },
+    {
+      "name": "projection-rebuild",
+      "command": "pnpm test",
+      "executedAt": "2026-09-19T16:19:13.542Z",
+      "result": "PASS",
+      "testNames": [
+        "CRT-PRJ-02-B: dropping the projection tables and running the projection replay tool rebuilds identical rows"
+      ],
+      "testFiles": [
+        "packages/capabilities/src/projection-replay.test.ts"
+      ]
+    },
+    {
+      "name": "connector-revocation",
+      "command": "pnpm test",
+      "executedAt": "2026-09-19T16:19:13.542Z",
+      "result": "PASS",
+      "testNames": [
+        "CRT-CON-06-A: a second sync resumes from the stored cursor, redelivery adds nothing, disconnect stops ingestion"
+      ],
+      "testFiles": [
+        "packages/api/src/connectors.test.ts"
+      ]
+    }
+  ],
+  "recovery": {
+    "archiveDigest": "eb51debfeea970d504c8e5c8354c7952a3792d014a68d6b542f9cbc89bbfd057",
+    "tables": 79,
+    "objects": 103,
+    "emptyDatabase": true,
+    "emptyObjectStore": true,
+    "independentBackupKeyRecovery": true,
+    "fixturePairs": 20,
+    "liveEvidenceObjectsVerified": 103,
+    "syntheticObjectMappings": 285
+  },
+  "scope": "Synthetic test environment. Connector provider revocation is simulated; no live-account evidence is asserted. Test-only backup key removed after successful independent recovery.",
+  "additionalVerifiedCommand": "node scripts/verifier-rehearsal.mjs 'pnpm test' (exit 0 in the earlier rehearsal)"
+}
