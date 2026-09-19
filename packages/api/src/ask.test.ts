@@ -2,7 +2,9 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
-import { runMigrations } from '@unai/postgres';
+import { runMigrations, withOwnerTransaction } from '@unai/postgres';
+import { attachOverlayDelta } from '@unai/memory';
+import type { AnswerPhraser, AnswerPhrasingRequest } from '@unai/context';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
@@ -23,7 +25,7 @@ const appPool = new Pool({ connectionString: url.href });
 
 const FINANCE = 'PERSONAL_FINANCE';
 const RECORDED_AT = new Date('2026-02-01T09:00:00.000Z');
-let owner = '', token = '', actor = '';
+let owner = '', token = '', actor = '', fixtureFrame = '';
 const evidenceIds: string[] = [];
 /** Every answer is recorded as assistant conversation evidence before it is
  * returned (ADR 0026), so the route needs somewhere to store it, as the
@@ -52,6 +54,7 @@ beforeAll(async () => {
     VALUES($1,$2,'CANONICALIZE',$3,'{}',$4,'COMMITTED','LOW',$5,'{}',$6)`,
     [transactionId, owner, actor, randomUUID(), randomUUID().replaceAll('-', ''), RECORDED_AT]);
   const frame = randomUUID(), slot = randomUUID();
+  fixtureFrame = frame;
   await admin.query("INSERT INTO frame_instances(id,owner_scope_id,frame_type_id,context_space_id) VALUES($1,$2,'shared.obligation',$3)",
     [frame, owner, context]);
   await admin.query(`INSERT INTO belief_slots(id,owner_scope_id,frame_instance_id,predicate_id,context_space_id,modality)
@@ -80,8 +83,9 @@ beforeAll(async () => {
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
-function api() {
-  const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects, registryReleaseId: randomUUID(), registryRelease: '0.1.0' });
+function api(phraser?: AnswerPhraser) {
+  const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects, registryReleaseId: randomUUID(), registryRelease: '0.1.0',
+    ...(phraser ? { answerPhraser: phraser } : {}) });
   app.addHook('onRequest', async request => { Object.defineProperty(request.raw.socket, 'encrypted', { value: true }); });
   return app;
 }
@@ -148,3 +152,63 @@ it('CRT-RD-12-A: POST /v1/ask refuses an incomplete, forged or unpermitted reque
       AND reason='PURPOSE_NOT_IN_ALLOWED_PURPOSES'`, [owner])).rows.length).toBeGreaterThan(0);
   } finally { await app.close(); }
 });
+
+it.each(['sensitivity', 'purpose', 'knowledge-time'] as const)(
+  'keeps %s-withheld assertions out of phrasing input, stored packets and answers', async boundary => {
+    const captured: AnswerPhrasingRequest[] = [];
+    const phraser: AnswerPhraser = {
+      modelProvider: 'test', modelId: 'capture-authorized-context', promptVersion: 'test-1',
+      async phrase(input) { captured.push(structuredClone(input)); return { statements: [...input.draft] }; },
+    };
+    const app = api(phraser);
+    const protectedPurpose = boundary === 'purpose' ? 'FAMILY_COORDINATION' : FINANCE;
+    const protectedSensitivity = boundary === 'sensitivity' ? 'RESTRICTED' : 'PRIVATE';
+    const markers = ['attached', 'unattached'].map(kind => 'phrasing-secret-' + boundary + '-' + kind);
+    try {
+      for (const [index, marker] of markers.entries()) {
+        const written = await app.inject({ method: 'POST', url: '/v1/memory/overlay-deltas',
+          headers: { ...headers('memory.correct'), 'x-data-purpose': protectedPurpose, 'x-maximum-sensitivity': protectedSensitivity },
+          payload: { deltaKind: 'USER_ASSERTION', rawText: marker, candidateFrameTypes: ['shared.obligation'] },
+        });
+        expect(written.statusCode, written.body).toBe(201);
+        // Exercise both immediate unattached retrieval and the later attachment
+        // through the memory store's actual owner-scoped write boundary.
+        if (index === 0) await withOwnerTransaction(appPool,
+          { actorId: actor, ownerScopeId: owner, purpose: 'memory.correct', correlationId: randomUUID() },
+          tx => attachOverlayDelta(tx, { ownerScopeId: owner, overlayDeltaId: written.json().overlayDeltaId,
+            attachedFrameInstanceId: fixtureFrame, lifecycle: 'USER_ASSERTED' }));
+      }
+
+      const denied = await app.inject({ method: 'POST', url: '/v1/ask', headers: headers(),
+        payload: body({ frameTypeHints: ['shared.obligation'],
+          ...(boundary === 'knowledge-time' ? { knowledgeTime: RECORDED_AT.toISOString() } : {}) }),
+      });
+      expect(denied.statusCode, denied.body).toBe(200);
+      expect(denied.json().composer.modelCalled).toBe(true);
+      expect(captured.length).toBeGreaterThan(0);
+      const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1', [denied.json().packetId])).rows[0].packet;
+      const answerObject = (await admin.query(`SELECT s.raw_object_ref FROM answer_manifests m
+        JOIN source_items s ON s.owner_scope_id=m.owner_scope_id AND s.id=m.conversation_message_id
+        WHERE m.id=$1`, [denied.json().answerManifestId])).rows[0].raw_object_ref;
+      const recorded = stored.get(answerObject);
+      expect(recorded).toBeDefined();
+      const surfaces = [...captured.map(value => JSON.stringify(value)), JSON.stringify(packet), denied.body,
+        new TextDecoder().decode(recorded!)];
+      for (const surface of surfaces) {
+        expect(surface).toContain('loan to repair the car');
+        for (const marker of markers) expect(surface).not.toContain(marker);
+      }
+
+      captured.length = 0;
+      const allowed = await app.inject({ method: 'POST', url: '/v1/ask', headers: headers(),
+        payload: body({ purpose: protectedPurpose, maximumSensitivity: protectedSensitivity,
+          frameTypeHints: ['shared.obligation'], knowledgeTime: 'LATEST' }),
+      });
+      expect(allowed.statusCode, allowed.body).toBe(200);
+      expect(captured.length).toBeGreaterThan(0);
+      for (const marker of markers) {
+        expect(JSON.stringify(captured)).toContain(marker);
+        expect(allowed.body).toContain(marker);
+      }
+    } finally { await app.close(); }
+  });
