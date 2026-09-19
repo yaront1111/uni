@@ -7,8 +7,8 @@ CRT-UX-04-A, CRT-UX-07-A, CRT-UX-10-A, CRT-UX-10-B and CRT-UX-15-A. ADR 0028
 records its decisions; ADRs 0001–0027 were read and retained unchanged.
 
 The branch was brought up to master (merge-split lineage, connectors, semantic
-index, answer manifests) before this work. The web shell / Today / Ask node's
-branch was **not** merged: see "What this node does not claim".
+index, answer manifests) before this work, and again once the web shell, Today
+and Ask node (ADR 0027) landed, so Today and Ask link their beliefs here too.
 
 ## Design screens implemented here
 
@@ -90,32 +90,37 @@ fixture does not reach are in the component tests.
   screen builds and exactly the headers the proxy sets, and the ten
   `memory_operations` rows carry ten different kinds. Suppress, archive and
   delete are `/suppressions`, `/archives` and `/deletions`.
-- **CRT-UX-10-B** — every Inspect and Correct link the Commitments screen renders
-  opens in the inspector, and a confirmation posted from a commitment row lands
-  on the belief that row showed. Every object an `/v1/ask` answer names opens in
-  the inspector and takes a correction. See the limits below for Today and
-  Weekly Review.
+- **CRT-UX-10-B** — the Commitments, Today and Ask screens are each loaded
+  through the loader their page calls (Today with its clock pinned to the
+  fixture's week) and rendered; every Inspect link on each opens a ready
+  inspector, every Correct link opens the Correction controls, whose Keep
+  uncertain control is posted and persists a `KEEP_UNCERTAIN` operation, and the
+  two sets of links match. Every Today item links its primary source; the Ask
+  conflict statement links both competing principal amounts. A confirmation
+  posted from a commitment row lands on the belief that row showed. Weekly
+  Review: see the limits below.
 - **CRT-UX-15-A** — the Daniel payment thread shows its obligations projection
   fragment, a timeline, the promise as a plan, the principal as an actual event,
   the partial repayment as a resolution link, Daniel's different figure as an
   open uncertainty, Daniel and Me as people and the bank transfer receipt as a
   document; the same obligation in a second thread carries identical evidence.
 
-`pnpm test` (71 files, 627 tests), `pnpm typecheck` and `pnpm build` pass.
+`pnpm test` (78 files passed and 1 skipped; 682 tests passed and 4 skipped), `pnpm typecheck`
+and `pnpm build` pass.
+
+One change outside this node's files keeps `pnpm test` stable: the registry
+snapshot test (`packages/registry/src/snapshot.test.ts`) now takes both registry
+locks `NOWAIT` before its refused TRUNCATE. It used to wait for its second lock
+while holding the first, and a belief transaction reading contracts joined to
+releases in parallel could be chosen as the deadlock victim. The assertion that
+the TRUNCATE is refused with `REGISTRY_SNAPSHOT_IMMUTABLE` is unchanged.
 
 ## What this node does not claim
 
-- **Today and Ask screens are not in this workspace.** They belong to
-  `web-shell-labels-today-briefing-and-ask-surface`, a dependency whose branch
-  has not landed and conflicts with master's answer-manifest files and migration
-  0021. `BeliefLinks` (`apps/web/components/BeliefLinks.tsx`) is the one function
-  those screens need to link any statement's object to the inspector and the
-  controls; the Ask half is proven at the API level above. Wiring it into the
-  Today and Ask components is left to whichever lands second, and is submitted as
-  a finding.
 - **Weekly Review** belongs to `memory-inbox-attention-budgets-and-weekly-review`,
-  which is neither an ancestor nor a descendant of this node; the plan gives this
-  node no way to reach it. Submitted as a finding.
+  which is neither an ancestor nor a descendant of this node and has not landed:
+  no Weekly Review screen or route exists. `BeliefRefLinks` is the one function
+  it needs to link its beliefs. Submitted as a finding against CRT-UX-10-B.
 - **No deletion cascade, no canonical archive.** The Delete and Archive controls
   record their requests exactly as ADR 0019 delivered them.
 - **Entity split from this screen** is not offered: it needs alias assignments

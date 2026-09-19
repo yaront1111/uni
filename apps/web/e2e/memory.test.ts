@@ -8,12 +8,15 @@ import {runMigrations,withOwnerTransaction} from '@unai/postgres';
 import {postgresAdapter,SESSION_COOKIE} from '@unai/auth';
 import type {MemoryInspector as Inspection} from '@unai/domain';
 import {beliefRefType} from '../components/BeliefLinks';
+import {Ask} from '../components/Ask';
 import {Commitments} from '../components/Commitments';
 import {CONTROLS,CorrectionControls,requestFor} from '../components/CorrectionControls';
 import {MemoryInspector} from '../components/MemoryInspector';
 import {MemoryThread} from '../components/MemoryThread';
 import {Obligations} from '../components/Obligations';
+import {Today} from '../components/Today';
 import {commitmentFilters,loadCommitments,loadInspector,loadObligations,loadThread,NO_FILTERS,type ApiCall} from '../lib/memory';
+import {loadAsk,loadToday} from '../lib/screens';
 
 /**
  * The Commitments, Obligations, Memory inspector, Memory thread and Correction
@@ -239,9 +242,11 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{await appPool.end();await admin.end();});
 
-async function api():Promise<InjectApp>{
+/** `todayClock` pins Today's "now" to the fixture's week; nothing else reads it. */
+async function api(todayClock?:()=>Date):Promise<InjectApp>{
   const {createPlatformApi}=await import(/* @vite-ignore */ API_MODULE) as {createPlatformApi:(options:unknown)=>InjectApp};
-  const app=createPlatformApi({authPool:admin,appPool,evidenceObjects,registryReleaseId:randomUUID(),registryRelease:'0.1.0'});
+  const app=createPlatformApi({authPool:admin,appPool,evidenceObjects,registryReleaseId:randomUUID(),registryRelease:'0.1.0',
+    ...(todayClock?{todayClock}:{})});
   app.addHook('onRequest',async request=>{Object.defineProperty(request.raw.socket,'encrypted',{value:true});});
   return app;
 }
@@ -498,20 +503,47 @@ it('CRT-UX-10-A: ten separately labelled controls each persist a different opera
   }finally{await app.close();}
 });
 
-it('CRT-UX-10-B: every belief the Commitments view and an Ask answer surface can be inspected and corrected',async()=>{
-  const app=await api();
+/** Every Inspect and Correct link a rendered screen carries. */
+function beliefLinksIn(html:string){
+  return [...html.matchAll(/href="\/memory\/(inspector|correct)\/([a-z_]+)\/([0-9a-f-]{36})"/g)].map(match=>({screen:match[1]!,type:match[2]!,id:match[3]!}));
+}
+/** Follows every link a surface rendered through the loader both pages call:
+ * each Inspect link opens a ready inspector, and each Correct link opens a
+ * Correction controls screen whose Keep uncertain control is posted exactly as
+ * the proxy forwards it and lands on the belief that screen showed. Every
+ * surfaced object has both links. */
+async function followEveryLink(app:InjectApp,surface:string,html:string){
+  const links=beliefLinksIn(html);
+  const inspectLinks=links.filter(link=>link.screen==='inspector'),correctLinks=links.filter(link=>link.screen==='correct');
+  expect(inspectLinks.length,surface+' shows no inspectable belief').toBeGreaterThan(0);
+  expect(correctLinks.map(link=>link.type+'/'+link.id).sort(),surface).toEqual(inspectLinks.map(link=>link.type+'/'+link.id).sort());
+  const keep=CONTROLS.find(control=>control.key==='keep-uncertain')!;
+  for(const link of inspectLinks){
+    const opened=await loadInspector(transport(app),caller(),link.type,link.id);
+    expect(opened.kind==='props'&&opened.props.state,surface+' inspect '+link.type+' '+link.id).toBe('ready');
+  }
+  for(const link of correctLinks){
+    const opened=await loadInspector(transport(app),caller(),link.type,link.id);
+    if(opened.kind!=='props'||!opened.props.inspector)throw new Error(surface+' correct '+link.type+' '+link.id+' did not open');
+    expect(render(CorrectionControls,opened.props),surface).toContain('>'+keep.label+'</h3>');
+    const request=requestFor(keep,opened.props.inspector,new Map());
+    const kept=await post(app,keep.purpose,request.path,request.body);
+    expect(kept.status,surface+' correct '+link.type+' '+JSON.stringify(kept.body)).toBe(201);
+    expect((await admin.query('SELECT operation_kind FROM memory_operations WHERE id=$1',[kept.body.memoryOperationId])).rows[0])
+      .toEqual({operation_kind:keep.operationKind});
+  }
+  return inspectLinks;
+}
+
+it('CRT-UX-10-B: every belief surfaced in Today, Ask and Commitments can be inspected and corrected',async()=>{
+  // Today is read in the fixture's week, the day before the promise to Daniel is due.
+  const app=await api(()=>new Date('2026-03-12T09:00:00.000Z'));
   try{
     // Commitments: every Inspect and Correct link on the screen opens.
     const loaded=await loadCommitments(transport(app),caller(),NO_FILTERS);
     if(loaded.kind!=='props')throw new Error('expired');
-    const html=render(Commitments,loaded.props);
-    const links=[...html.matchAll(/href="\/memory\/(inspector|correct)\/([a-z_]+)\/([0-9a-f-]{36})"/g)].map(match=>({screen:match[1]!,type:match[2]!,id:match[3]!}));
-    expect(links.filter(link=>link.screen==='inspector').length).toBeGreaterThan(3);
-    for(const link of links){
-      const opened=await loadInspector(transport(app),caller(),link.type,link.id);
-      expect(opened.kind==='props'&&opened.props.state,link.type+' '+link.id).toBe('ready');
-    }
-    // ...and a correction posted from it lands on the belief the row showed.
+    expect((await followEveryLink(app,'Commitments',render(Commitments,loaded.props))).length).toBeGreaterThan(3);
+    // ...and a correction posted from a row lands on the belief the row showed.
     const promise=await inspect(app,'frame_instance',frames.promise);
     const confirm=CONTROLS.find(control=>control.key==='confirm')!;
     const request=requestFor(confirm,promise,new Map([['rawText','Yes, I still owe him that']]));
@@ -520,20 +552,32 @@ it('CRT-UX-10-B: every belief the Commitments view and an Ask answer surface can
     expect((await admin.query('SELECT target_object_id FROM memory_operations WHERE id=$1',[confirmed.body.memoryOperationId])).rows[0])
       .toEqual({target_object_id:promise.subject.propositionId});
 
-    // Ask: every object an answer names opens in the inspector and can be corrected.
-    const asked=await app.inject({method:'POST',url:'/v1/ask',headers:{cookie:SESSION_COOKIE+'='+token,'x-owner-scope-id':owner,
-      'x-purpose':'memory.read','x-correlation-id':randomUUID(),'idempotency-key':randomBytes(16).toString('hex')},
-      payload:{ownerScopeId:owner,question:'Does anything I recorded about the loan contradict itself?',purpose:PURPOSE,
-        worldTime:'NOW',knowledgeTime:'LATEST',maximumSensitivity:'RESTRICTED'}});
-    expect(asked.statusCode,asked.body).toBe(200);
-    const refs=(JSON.parse(asked.body).statements as Array<{objectRefs:Array<{objectType:string;objectId:string}>}>)
-      .flatMap(statement=>statement.objectRefs).filter(ref=>beliefRefType(ref.objectType)!==null);
-    expect(refs.length).toBeGreaterThan(0);
-    for(const ref of refs){
-      const opened=await inspect(app,beliefRefType(ref.objectType)!,ref.objectId);
-      const keep=CONTROLS.find(control=>control.key==='keep-uncertain')!;
-      const kept=requestFor(keep,opened,new Map());
-      expect((await post(app,keep.purpose,kept.path,kept.body)).status,ref.objectType).toBe(201);
+    // Today: the rendered briefing links every item it shows.
+    const today=await loadToday(transport(app),caller(),'UTC');
+    if(today.kind!=='props')throw new Error('expired');
+    expect(today.props.state,today.props.error??'').toBe('ready');
+    const items=today.props.briefing!.sections.flatMap(section=>section.items);
+    expect(items.length).toBeGreaterThan(0);
+    const todayHtml=render(Today,today.props);
+    expect(todayHtml.match(/<li class="briefing-item">/g)?.length).toBe(items.length);
+    const todayLinks=await followEveryLink(app,'Today',todayHtml);
+    for(const item of items){
+      const primary=item.sourceRefs[0]??{objectType:item.itemObjectType,objectId:item.itemObjectId};
+      expect(todayLinks.map(link=>link.id),item.headline).toContain(primary.objectId);
     }
+
+    // Ask: every inspectable object the rendered answer's statements name. The
+    // conflict statement rests on both principal amounts, and each opens.
+    const question='Does anything I recorded about the loan contradict itself?';
+    const asked=await loadAsk(transport(app),caller(),question);
+    if(asked.kind!=='props')throw new Error('expired');
+    expect(asked.props.state).toBe('answered');
+    const askHtml=render(Ask,asked.props);
+    const askLinks=await followEveryLink(app,'Ask',askHtml);
+    const named=asked.props.answer!.statements.flatMap(statement=>statement.objectRefs)
+      .filter(ref=>beliefRefType(ref.objectType)!==null).map(ref=>beliefRefType(ref.objectType)+'/'+ref.objectId);
+    expect(new Set(askLinks.map(link=>link.type+'/'+link.id))).toEqual(new Set(named));
+    expect(named).toEqual(expect.arrayContaining(['proposition/'+beliefs.principal,'proposition/'+beliefs.danielAmount]));
+    expect(askHtml).toContain('Memory 2: ');
   }finally{await app.close();}
-});
+},120000);

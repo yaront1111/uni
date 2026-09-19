@@ -125,24 +125,33 @@ over the threads `frames/related` returned, because the projection read may not
 read memberships; person and due window are the projection route's own filters.
 
 Every belief a screen shows carries an "Inspect" and a "Correct" link built by one
-function, `beliefLinks` in `apps/web/components/BeliefLinks.tsx`, over the object
-reference the surface already has. Today, Ask and Weekly Review use the same
-function; see §6.
+function, `BeliefLinks` in `apps/web/components/BeliefLinks.tsx`, over the object
+reference the surface already has. `BeliefRefLinks` in the same file does the
+same for a statement that rests on several objects; see §6.
 
-## 6. What this node cannot wire, and says so
+## 6. Which surfaces link their beliefs
 
-CRT-UX-10-B names Today, Ask, Commitments and Weekly Review. In this workspace:
+CRT-UX-10-B names Today, Ask, Commitments and Weekly Review. The web shell,
+Today and Ask node (ADR 0027) landed on master after this node started, and this
+node's branch was brought up to it. In this workspace:
 
-- **Commitments** and **Obligations** link every row's beliefs to the inspector
-  and the controls.
-- **Today** and **Ask** are drawn by `web-shell-labels-today-briefing-and-ask-surface`,
-  a dependency of this node whose delivery has not landed on master; its branch
-  is based on an earlier master and conflicts with the landed answer-manifest
-  node, so merging it here would mean re-landing another node's work. The API
-  half is covered instead: an answer from the landed `POST /v1/ask` names its
-  objects, and the inspector route opens and the controls correct each of them.
+- **Commitments** and **Obligations** link every row's beliefs, resolutions and
+  pending owner statements to the inspector and the controls.
+- **Today** links each briefing item through `BeliefRefLinks` over the item's
+  `sourceRefs` (the same references its Why? / Sources panel opens, primary
+  first), falling back to the item's own frame or owner statement when it has
+  none.
+- **Ask** links each statement through `BeliefRefLinks` over its `objectRefs`:
+  one pair for one belief, a numbered "Memory 1, Memory 2" list for a statement
+  that rests on several (a conflict names both competing values). A belief slot,
+  which the inspector cannot open, is not linked, and a statement about the
+  absence of memory links nothing.
+
+The two components gain one line each; their own states, wording and tests are
+unchanged.
+
 - **Weekly Review** belongs to `memory-inbox-attention-budgets-and-weekly-review`,
-  which is not a dependency of this node in either direction.
-
-Both gaps are submitted as findings rather than closed by drawing screens this
-node does not own.
+  which is not a dependency of this node in either direction and has not landed:
+  no Weekly Review screen or route exists to link from. `BeliefRefLinks` is what
+  that screen needs; the gap is submitted as a finding rather than closed by
+  drawing a screen this node does not own.

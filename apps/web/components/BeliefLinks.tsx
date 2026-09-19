@@ -34,3 +34,28 @@ export function BeliefLinks({objectType,objectId,about}:{objectType:string;objec
     <a href={correctionHref(type,objectId)}>Correct<span className="sr-only"> {about}</span></a>
   </span>;
 }
+
+/** The inspectable objects among a surface's references, in order, each once.
+ * A reference the inspector cannot open (a belief slot, a source item) is
+ * dropped rather than linked to a page that would refuse it. */
+export function inspectableRefs(refs:ReadonlyArray<{objectType:string;objectId:string}>){
+  const seen=new Set<string>();
+  return refs.flatMap(ref=>{
+    const type=beliefRefType(ref.objectType);
+    if(!type||seen.has(type+'/'+ref.objectId))return [];
+    seen.add(type+'/'+ref.objectId);
+    return [{objectType:type,objectId:ref.objectId}];
+  });
+}
+
+/** Links for a statement that rests on one or several objects, as a Today item
+ * or an Ask statement does: one pair for one belief, and a numbered list when a
+ * statement names several (competing values, a resolution and its commitment),
+ * so every belief the statement surfaced can be opened and corrected. */
+export function BeliefRefLinks({refs,about}:{refs:ReadonlyArray<{objectType:string;objectId:string}>;about:string}){
+  const inspectable=inspectableRefs(refs);
+  if(inspectable.length===0)return null;
+  if(inspectable.length===1)return <p className="belief-refs"><BeliefLinks {...inspectable[0]!} about={about}/></p>;
+  return <ul className="belief-refs" aria-label="Memory behind this">{inspectable.map((ref,index)=><li key={ref.objectType+ref.objectId}>
+    Memory {index+1}: <BeliefLinks {...ref} about={about+' (memory '+(index+1)+')'}/></li>)}</ul>;
+}

@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import type {PublicOverlayDelta} from '@unai/domain';
 import * as screen from './CorrectionControls';
-import {BeliefLinks,beliefRefType,correctionHref,inspectorHref} from './BeliefLinks';
+import {BeliefLinks,BeliefRefLinks,beliefRefType,correctionHref,inspectableRefs,inspectorHref} from './BeliefLinks';
 import {inspection} from './testing/inspection';
 
 /** The Correction controls screen (journey J5; CRT-UX-10-A): ten separately
@@ -103,4 +103,16 @@ it('builds the inspect and correct links any surface uses, for every object type
   expect(html).toBe('<span class="belief-links"><a href="/memory/inspector/proposition/'+id(1)+'">Inspect<span class="sr-only"> what you owe Daniel</span></a> · '
     +'<a href="/memory/correct/proposition/'+id(1)+'">Correct<span class="sr-only"> what you owe Daniel</span></a></span>');
   expect(renderToStaticMarkup(createElement(BeliefLinks,{objectType:'source_items',objectId:id(1),about:'x'}))).toBe('');
+});
+
+it('links a surface that rests on several objects once per inspectable object, in order',()=>{
+  expect(inspectableRefs([{objectType:'belief_slots',objectId:id(1)},{objectType:'propositions',objectId:id(2)},
+    {objectType:'proposition',objectId:id(2)},{objectType:'frame_instances',objectId:id(3)}]))
+    .toEqual([{objectType:'proposition',objectId:id(2)},{objectType:'frame_instance',objectId:id(3)}]);
+  const one=renderToStaticMarkup(createElement(BeliefRefLinks,{refs:[{objectType:'propositions',objectId:id(2)}],about:'the loan'}));
+  expect(one).toBe('<p class="belief-refs">'+renderToStaticMarkup(createElement(BeliefLinks,{objectType:'proposition',objectId:id(2),about:'the loan'}))+'</p>');
+  const two=renderToStaticMarkup(createElement(BeliefRefLinks,{refs:[{objectType:'propositions',objectId:id(2)},{objectType:'propositions',objectId:id(3)}],about:'the loan'}));
+  expect(two).toContain('Memory 1: ');
+  expect(two).toContain('<span class="sr-only"> the loan (memory 2)</span>');
+  expect(renderToStaticMarkup(createElement(BeliefRefLinks,{refs:[{objectType:'belief_slots',objectId:id(1)}],about:'x'}))).toBe('');
 });
