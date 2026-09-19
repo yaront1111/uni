@@ -159,7 +159,7 @@ it('CRT-AI-03-A: a confirmation creates a USER_CONFIRMATION claim and leaves the
   } finally { await app.close(); }
 });
 
-it('CRT-RYW-02-A: the desktop\'s next read includes the phone\'s acknowledged write and distinguishes assertion from verification', async () => {
+it('[AC44.05] CRT-RYW-02-A: the desktop\'s next read includes the phone\'s acknowledged write and distinguishes assertion from verification', async () => {
   const app = api();
   try {
     const written = await app.inject({

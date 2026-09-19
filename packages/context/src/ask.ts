@@ -1,3 +1,4 @@
+import {traceStage,traceStageSync} from '@unai/observability';
 import {
   REQUIRED_ASK_FIELDS, answerCandidateSchema, askAnswerSchema, askRequestSchema, groundingResultSchema,
   type AnswerCandidate, type AnswerCandidateStatement, type AskAnswer, type AskStatement, type CertaintyLabel,
@@ -367,7 +368,7 @@ const BLOCKED_STATEMENT: AskStatement = Object.freeze({
  * assistant conversation evidence and the manifest of the context supplied is
  * recorded before the answer is returned (CRT-RD-06-A, CRT-AI-01-A).
  */
-export async function answerQuestion(runner: ContextRunner, raw: unknown, options: AskOptions): Promise<AskAnswer> {
+async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: AskOptions): Promise<AskAnswer> {
   const missing = missingAskFields(raw);
   if (missing.length > 0) throw new ContextBrokerError('ASK_REQUEST_INCOMPLETE', { missing });
   const parsed = askRequestSchema.safeParse(raw);
@@ -416,7 +417,9 @@ export async function answerQuestion(runner: ContextRunner, raw: unknown, option
   let finalSource: 'MODEL' | 'DETERMINISTIC_COMPOSER' = 'DETERMINISTIC_COMPOSER';
   let finalVerdict: Verdict = 'PASSED';
   const validate = (statements: readonly ValidatableStatement[]) =>
-    validateGrounding(packet, statements, { maximumSensitivity: ask.maximumSensitivity, index });
+    traceStageSync('answer.ground',{ownerScopeId:ask.ownerScopeId,correlationId:options.correlationId},
+      ()=>validateGrounding(packet, statements, { maximumSensitivity: ask.maximumSensitivity, index }),
+      {componentVersion:GROUNDING_VALIDATOR_VERSION,registryReleaseId:options.registryReleaseId});
 
   const phraser = options.phraser;
   if (phraser) {
@@ -424,10 +427,10 @@ export async function answerQuestion(runner: ContextRunner, raw: unknown, option
     for (let attempt = 1; attempt <= MAX_PHRASING_ATTEMPTS && presented === null; attempt++) {
       let candidate: AnswerCandidate;
       try {
-        candidate = answerCandidateSchema.parse(await phraser.phrase({
+        candidate = answerCandidateSchema.parse(await traceStage('model.generate',{ownerScopeId:ask.ownerScopeId,correlationId:options.correlationId},()=>phraser.phrase({
           ownerScopeId: ask.ownerScopeId, correlationId: options.correlationId, question: ask.question,
           answerType: classification.answerType, packet, draft: draftCandidate, attempt, violations: lastViolations,
-        }));
+        }),{attempt,registryReleaseId:options.registryReleaseId}));
       } catch {
         // A model that failed or answered outside its contract produced no
         // candidate (the gateway recorded the call); the composer answers.
@@ -508,14 +511,19 @@ export async function answerQuestion(runner: ContextRunner, raw: unknown, option
 
   let answerManifestId: string | null = null;
   if (options.recorder) {
-    answerManifestId = (await options.recorder({
+    const recorder=options.recorder;
+    answerManifestId = (await traceStage('answer.record',{ownerScopeId:ask.ownerScopeId,correlationId:options.correlationId},()=>recorder({
       packet, answer, grounding, modelCandidates,
       suppliedTo: phraser
         ? { modelProvider: phraser.modelProvider, modelId: phraser.modelId, promptVersion: phraser.promptVersion,
           composerVersion: ASK_COMPOSER_VERSION }
         : { modelProvider: DETERMINISTIC_COMPOSER_PROVIDER, modelId: ASK_COMPOSER_VERSION,
           promptVersion: DETERMINISTIC_PROMPT_VERSION, composerVersion: ASK_COMPOSER_VERSION },
-    })).answerManifestId;
+    }),{registryReleaseId:options.registryReleaseId})).answerManifestId;
   }
   return askAnswerSchema.parse({ ...answer, answerManifestId });
+}
+
+export function answerQuestion(...args:Parameters<typeof answerQuestionImpl>):ReturnType<typeof answerQuestionImpl>{
+  return traceStage('answer.compose',{ownerScopeId:askRequestSchema.safeParse(args[1]).data?.ownerScopeId??'INVALID',correlationId:args[2].correlationId},()=>answerQuestionImpl(...args),{registryReleaseId:args[2].registryReleaseId,componentVersion:ASK_COMPOSER_VERSION});
 }

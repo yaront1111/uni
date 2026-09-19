@@ -102,6 +102,9 @@ importers:
       '@unai/mentor':
         specifier: workspace:*
         version: link:../mentor
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@unai/postgres':
         specifier: workspace:*
         version: link:../postgres
@@ -149,6 +152,9 @@ importers:
       '@unai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       zod:
         specifier: ^4.6.2
         version: 4.6.2
@@ -177,6 +183,9 @@ importers:
       '@unai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       zod:
         specifier: ^4.6.2
         version: 4.6.2
@@ -236,6 +245,9 @@ importers:
       '@unai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       zod:
         specifier: ^4.6.2
         version: 4.6.2
@@ -291,6 +303,9 @@ importers:
       '@unai/model':
         specifier: workspace:*
         version: link:../model
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       zod:
         specifier: ^4.6.2
         version: 4.6.2
@@ -329,6 +344,9 @@ importers:
       '@unai/domain':
         specifier: workspace:*
         version: link:../domain
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       zod:
         specifier: ^4.6.2
         version: 4.6.2
@@ -369,6 +387,9 @@ importers:
       '@unai/domain':
         specifier: workspace:*
         version: link:../domain
+      '@unai/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@unai/secrets':
         specifier: workspace:*
         version: link:../secrets
@@ -391,6 +412,12 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.23.0
+
+  packages/observability:
+    dependencies:
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
 
   packages/postgres:
     dependencies:

@@ -135,7 +135,8 @@ does the gate. That failure is intended. The owner steps are listed below.
   | Source-only items later promoted | Source-only promotion records. |
   | False proposition-collision rate | Proposition-collision labels. |
   | Model cost by connector and capability | Per-connector and per-capability cost attribution on model call records. |
-  | Ingestion, projection read and packet assembly P95 | The load harness's `performance_measurements`. |
+  Performance P95 measurements are now supplied by the recorded load harness;
+  see [performance, tracing and acceptance](performance-tracing-and-acceptance.md).
 - **Annotation editor.** The CLI and file-based editor is the accepted design:
   annotation happens locally through `uai corpus annotate`, not in the web
   application (ADR 0031 §3). The Corpus and evaluation screen says so, shows the

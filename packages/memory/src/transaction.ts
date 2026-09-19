@@ -8,6 +8,7 @@
  * never commits and never audits on its own behalf.
  */
 export interface MemoryTransaction {
+  readonly context?:{readonly ownerScopeId:string;readonly correlationId:string};
   query(sql: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
 }
 

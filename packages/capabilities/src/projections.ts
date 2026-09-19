@@ -1,3 +1,4 @@
+import {traceStage} from '@unai/observability';
 import {
   PROJECTION_NAMES, commitmentProjectionRowSchema, obligationProjectionRowSchema, scheduleProjectionRowSchema,
   commitmentsProjectionViewSchema, obligationsProjectionViewSchema, scheduleProjectionViewSchema,
@@ -727,7 +728,7 @@ export interface ApplyProjectionInput {
  * the same reducer a replay uses, never patched. There is therefore no accumulated
  * state that could drift from the canonical rows between replays.
  */
-export async function applyProjectionDelta(tx: MemoryTransaction, input: ApplyProjectionInput): Promise<{
+async function applyProjectionDeltaImpl(tx: MemoryTransaction, input: ApplyProjectionInput): Promise<{
   readonly projectionName: ProjectionName; readonly projectionVersion: string; readonly rowsWritten: number;
   readonly pendingAssertions: readonly PendingAssertion[];
 }> {
@@ -1050,7 +1051,7 @@ export async function readCommitmentsProjection(tx: MemoryTransaction, filters: 
   });
 }
 
-export async function readObligationsProjection(tx: MemoryTransaction, filters: ProjectionReadFilters): Promise<ObligationsProjectionView> {
+async function readObligationsProjectionImpl(tx: MemoryTransaction, filters: ProjectionReadFilters): Promise<ObligationsProjectionView> {
   const { rows, pending, watermarks, unattached } = await readView(tx, 'obligations_projection', filters);
   const limit = Math.min(Math.max(filters.limit ?? 200, 1), 500);
   const selected = (rows as ObligationProjectionRow[]).filter(row => {
@@ -1125,3 +1126,11 @@ export async function readProjectionHealth(tx: MemoryTransaction, input: {
 }
 
 export { moneyKey };
+
+export function applyProjectionDelta(...args:Parameters<typeof applyProjectionDeltaImpl>):ReturnType<typeof applyProjectionDeltaImpl>{
+  return traceStage('projection.reduce',args[0].context??{ownerScopeId:args[1].ownerScopeId,correlationId:'INVALID'},()=>applyProjectionDeltaImpl(...args),{componentVersion:REDUCER_VERSION});
+}
+
+export function readObligationsProjection(...args:Parameters<typeof readObligationsProjectionImpl>):ReturnType<typeof readObligationsProjectionImpl>{
+  return traceStage('projection.read',args[0].context??{ownerScopeId:args[1].ownerScopeId,correlationId:'INVALID'},()=>readObligationsProjectionImpl(...args),{componentVersion:REDUCER_VERSION});
+}

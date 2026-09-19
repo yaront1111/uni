@@ -1,3 +1,4 @@
+import {traceStage,traceStageSync} from '@unai/observability';
 import {createHash,randomBytes} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
@@ -131,7 +132,10 @@ export function registerEvidenceRoutes(app:FastifyInstance,work:Work,objects:Evi
   }));
 }
 const metadataFields=['owner_scope_id','source_type','connector_id','external_id','actor_ref','occurred_at','observed_at','raw_object_ref','content_hash','sensitivity','allowed_purposes','ingestion_version','parent_external_id','deterministic_metadata'];
-async function ingest(tx:OwnerTransaction,input:EvidenceInput,objects:EvidenceObjects){
+function ingest(tx:OwnerTransaction,input:EvidenceInput,objects:EvidenceObjects){
+  return traceStage('evidence.persist',tx.context,()=>ingestImpl(tx,input,objects),{componentVersion:'evidence-json-v1'});
+}
+async function ingestImpl(tx:OwnerTransaction,input:EvidenceInput,objects:EvidenceObjects){
   const bytes=Buffer.from(canonical(input.content));
   const hash=createHash('sha256').update(bytes).digest('hex');
   const identity=[tx.context.ownerScopeId,input.connectorId,input.sourceType,input.externalId,hash];
@@ -159,10 +163,10 @@ async function ingest(tx:OwnerTransaction,input:EvidenceInput,objects:EvidenceOb
   // route is recorded in this transaction and every ingested item has one
   // (ADR 0016 §2, CRT-WRT-07-A). Deep extraction is not done here: it runs on
   // the durable queue, and evidence is acknowledged before it (PRD §35.1).
-  await recordTriageDecision(tx,{ownerScopeId:tx.context.ownerScopeId,sourceItemId:row.id,
+  await traceStage('evidence.triage',tx.context,()=>recordTriageDecision(tx,{ownerScopeId:tx.context.ownerScopeId,sourceItemId:row.id,
     sourceType:row.source_type,externalId:row.external_id,parentExternalId:row.parent_external_id,
     actorRef:input.actorRef,occurredAt:input.occurredAt,content:input.content,
-    deterministicMetadata:input.deterministicMetadata});
+    deterministicMetadata:input.deterministicMetadata}));
   await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'source_items',id:row.id,fields:metadataFields}]});
   return {evidenceId:row.id,ingestionStatus:'STORED',stored:inserted.rowCount===1};
 }
@@ -338,7 +342,7 @@ export async function importSource(tx:OwnerTransaction,objects:EvidenceObjects,r
     const connector=(await tx.query("SELECT id FROM connectors WHERE id=$1 AND owner_scope_id=$2 AND status='ACTIVE'",[request.connectorId,tx.context.ownerScopeId])).rows[0];
     if(!connector)throw new Refusal(403,'CONNECTOR_REFUSED');
   }
-  const parsed:ParsedSourceItem[]=parseSourcePayload(request.sourceType,request.payload);
+  const parsed:ParsedSourceItem[]=traceStageSync('evidence.parse',tx.context,()=>parseSourcePayload(request.sourceType,request.payload));
   const imported:ImportedSourceItem[]=[];
   for(const item of parsed){
     const hash=createHash('sha256').update(Buffer.from(canonical(item.content))).digest('hex');

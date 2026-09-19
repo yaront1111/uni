@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {mkdir,readFile,writeFile,unlink} from 'node:fs/promises';
+import {acceptanceResults} from './acceptance-gate.mjs';
 import {deliveredStorage,startStorageHarness} from './storage-harness.mjs';
 
 const {Pool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg');
@@ -92,7 +94,12 @@ try {
   console.log('Object storage: '+storage.description+'.');
   // vitest runs as an awaited child, never spawnSync: a harness that serves object
   // storage from this process must keep answering requests while the suite runs.
-  const test=spawn(process.execPath,['node_modules/vitest/vitest.mjs','run'],{
+  await mkdir('test-results/acceptance',{recursive:true});
+  const testReport='test-results/acceptance/vitest.json';
+  for(const path of [testReport,'test-results/acceptance/scenarios.json','test-results/performance/load.json','test-results/performance/trace.json']){
+    await unlink(path).catch(error=>{if(error.code!=='ENOENT')throw error;});
+  }
+  const test=spawn(process.execPath,['node_modules/vitest/vitest.mjs','run','--silent=passed-only','--reporter=default','--reporter=json','--outputFile.json='+testReport],{
     stdio:'inherit',
     env:{...process.env,...storage.env,UNAI_TEST_DATABASE_URL:databaseUrl},
   });
@@ -100,6 +107,11 @@ try {
     test.once('error',reject);
     test.once('close',code=>resolve(code ?? 1));
   });
+  const acceptance=acceptanceResults(JSON.parse(await readFile(testReport,'utf8')));
+  await writeFile('test-results/acceptance/scenarios.json',JSON.stringify({format:'unai-acceptance/1',scenarios:acceptance},null,2)+'\n');
+  const failed=acceptance.filter(scenario=>!scenario.passed);
+  if(failed.length){console.error('ACCEPTANCE_SCENARIOS_FAILED: '+failed.map(row=>row.scenario).join(', '));process.exitCode=1;}
+  else console.log('Acceptance scenarios: 20/20 passed.');
 } catch(error) {
   console.error(error.step?error.message:'TEST_HARNESS_FAILED: '+error.message); process.exitCode=1;
 } finally {

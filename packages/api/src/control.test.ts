@@ -673,7 +673,7 @@ it('CRT-SEC-06-A: retained assistant history cannot reconstruct erased memory', 
   } finally { await app.close(); }
 });
 
-it('CRT-NFR-04-A and CRT-SEC-06-A: export carries raw evidence and canonical memory, regeneration restores semantic search, and a deletion leaves nothing retrievable', async () => {
+it('[AC44.18] CRT-NFR-04-A and CRT-SEC-06-A: export carries raw evidence and canonical memory, regeneration restores semantic search, and a deletion leaves nothing retrievable', async () => {
   const app = api();
   const o = data;
   try {

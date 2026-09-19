@@ -88,8 +88,23 @@ export function Metrics({view,error}:MetricsProps){
         </section>)}
         <section className="card" aria-labelledby="metrics-performance">
           <h2 id="metrics-performance">Performance</h2>
-          <p>Ingestion acknowledgement, typed projection read and context packet assembly P95 values are reported by the
-            recorded load harness. Not measured: no load harness run is recorded for this deployment.</p>
+          <p>Recorded load measurements. LLM generation excluded. Targets use a strict upper bound.</p>
+          {!view.performance?.length?<p>Not measured: no load harness run is recorded in this window.</p>:null}
+          <table><caption className="sr-only">Performance measurements</caption>
+            <thead><tr><th scope="col">Operation</th><th scope="col">P95</th><th scope="col">Target</th><th scope="col">Load run</th></tr></thead>
+            <tbody>{([
+              ['EVIDENCE_INGESTION_ACK','Evidence ingestion acknowledgement',1000],
+              ['TYPED_PROJECTION_READ','Typed projection read',500],
+              ['CONTEXT_PACKET_ASSEMBLY','Context packet assembly',1500],
+            ] as const).map(([scenario,label,target])=>{
+              const result=view.performance?.find(row=>row.scenario===scenario);
+              return <tr key={scenario}><th scope="row">{label}</th>
+                <td>{result?result.p95Ms.toFixed(2)+' ms':'Not measured'}</td>
+                <td>Under {target} ms{result?': '+(result.p95Ms<target?'Target met':'Target missed'):''}</td>
+                <td>{result?<>{result.sampleCount} samples, concurrency {result.concurrency}; <time dateTime={result.recordedAt}>{result.recordedAt}</time></>:'No measurement in this window.'}</td>
+              </tr>;
+            })}</tbody>
+          </table>
         </section>
       </>}
     </main>

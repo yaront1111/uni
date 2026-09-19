@@ -1,3 +1,4 @@
+import {traceStage} from '@unai/observability';
 import { extractionOutputSchema, tier0ParseSchema, tier1RouteSchema, DEEP_EXTRACTION_ROUTES,
   type ExtractedClaim, type ExtractionOutput, type Tier0Parse, type Tier1Route } from '@unai/domain';
 import { CANONICAL_NORMALIZATION_VERSION, ENTITY_RESOLVER_VERSION, TEMPORAL_RESOLVER_VERSION,
@@ -58,6 +59,7 @@ export interface StoredAnchor {
 }
 
 export interface ExtractionRequest {
+  readonly attempt?:number;
   readonly ownerScopeId: string;
   readonly sourceItemId: string;
   readonly runKind: 'LAZY' | 'TARGETED' | 'SHADOW' | 'FULL';
@@ -239,7 +241,7 @@ async function failRun(runner: ExtractionTransactionRunner, request: ExtractionR
 /** One extraction attempt. Throws a stable code on refusal or failure; the job
  * queue turns that into a retry or a dead letter, and the evidence it read is
  * untouched either way (CRT-EVD-05-A). */
-export async function runExtraction(options: {
+async function runExtractionImpl(options: {
   runner: ExtractionTransactionRunner;
   gateway: ModelGateway;
   request: ExtractionRequest;
@@ -253,6 +255,7 @@ export async function runExtraction(options: {
     let costMicrounits = 0, modelId = gateway.modelId;
     try {
       const invocation = await gateway.invoke({
+        ...(request.attempt===undefined?{}:{attempt:request.attempt}),
         ownerScopeId: request.ownerScopeId,
         purpose: EXTRACTION_PURPOSES.canonicalize,
         correlationId: request.correlationId,
@@ -350,4 +353,8 @@ export async function readExtractionRun(tx: ExtractionTransaction, input: { owne
     completedAt: row.completed_at === null ? null : (row.completed_at as Date).toISOString(),
     errorCode: (row.error_code as string | null) ?? null,
   };
+}
+
+export function runExtraction(...args:Parameters<typeof runExtractionImpl>):ReturnType<typeof runExtractionImpl>{
+  return traceStage('extraction.run',args[0].request,()=>runExtractionImpl(...args),{registryReleaseId:args[0].request.registryReleaseId,attempt:args[0].request.attempt});
 }

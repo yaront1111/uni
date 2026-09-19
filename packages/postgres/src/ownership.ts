@@ -42,6 +42,7 @@ const classifiedTables=new Map([
   ['shadow_evaluation_runs','owner_scope_id'],['economic_and_quality_metrics','owner_scope_id'],
   ['goals','owner_scope_id'],['goal_priority_history','owner_scope_id'],['decision_projection','owner_scope_id'],
   ['mentor_cards','owner_scope_id'],
+  ['performance_measurements','owner_scope_id'],
 ]);
 /** CRT-SEC-01-A covers *every* owner-scoped table, so the cross-owner isolation
  * suite is driven from this classification instead of a second hand-kept list: a

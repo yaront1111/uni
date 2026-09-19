@@ -47,6 +47,7 @@ export function createExtractionJobHandler(options: {
     const payload = parsed.data;
     if (payload.ownerScopeId !== job.ownerScopeId) throw new ExtractionError('EXTRACTION_JOB_OWNER_MISMATCH');
     const request: ExtractionRequest = {
+      attempt:job.attemptCount,
       ownerScopeId: payload.ownerScopeId,
       sourceItemId: payload.sourceItemId,
       runKind: payload.runKind,

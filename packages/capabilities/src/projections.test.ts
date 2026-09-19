@@ -195,7 +195,7 @@ it('CRT-PRJ-01-A: stores amount, currency, due time and start/end as typed colum
     .toEqual(['source_manifest', 'source_manifest', 'source_manifest']);
 });
 
-it('CRT-PRJ-07-A: creates a commitment from commitment language, nothing from consideration language, and a target-less FULFILLED resolution from completion', async () => {
+it('[AC44.08] CRT-PRJ-07-A: creates a commitment from commitment language, nothing from consideration language, and a target-less FULFILLED resolution from completion', async () => {
   // Classification first, because the whole rule rests on it.
   expect(classifyCommitmentLanguage('I will send Daniel the report by Friday')).toMatchObject({
     language: 'COMMITMENT', actionDescription: 'send Daniel the report', dueTimeText: 'Friday',
@@ -260,7 +260,7 @@ it('CRT-PRJ-07-A: creates a commitment from commitment language, nothing from co
     .toEqual(slotsBefore);
 });
 
-it('CRT-OUT-07-A: the clock sets overdue and creates no FAILED or MISSED resolution', async () => {
+it('[AC44.08] CRT-OUT-07-A: the clock sets overdue and creates no FAILED or MISSED resolution', async () => {
   const committed = await write(tx => canonicalizeCommitmentStatement(tx, {
     ownerScopeId: owner, contextSpaceId: baseContextSpaceId,
     statement: 'I will send the quarterly summary by Friday', sourceAnchorId: anchor(),
@@ -352,7 +352,7 @@ it('CRT-OUT-06-A: recomputes the remaining amount from canonical allocation fram
   expect(calculation.allocationFrameInstanceIds).toHaveLength(1);
 });
 
-it('CRT-MEM-08-A: keeps both conflicting amounts retrievable and reports the conflict to a high-risk calculation', async () => {
+it('[AC44.11] CRT-MEM-08-A: keeps both conflicting amounts retrievable and reports the conflict to a high-risk calculation', async () => {
   const obligationId = await obligation('50.00');
   const userValue = (await admin.query(
     `SELECT p.id FROM propositions p JOIN belief_slots s ON s.id=p.belief_slot_id
@@ -465,7 +465,7 @@ it('CRT-PRJ-03-A: every row of every projection table carries the nine required 
   }
 });
 
-it('CRT-RYW-04-A: reflects a pending correction, answers is_complete=false with the pending assertion when it cannot be applied, and blocks a high-risk action', async () => {
+it('[AC44.17] CRT-RYW-04-A: reflects a pending correction, answers is_complete=false with the pending assertion when it cannot be applied, and blocks a high-risk action', async () => {
   const obligationId = await obligation('50.00');
   await reduce(tx => applyProjectionDelta(tx, { ownerScopeId: owner, projectionName: 'obligations_projection', asOf: NOW }));
 

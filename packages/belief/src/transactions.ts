@@ -1,3 +1,4 @@
+import {traceStage} from '@unai/observability';
 import {
   proposeBeliefTransactionSchema, validationReportSchema, commitReceiptSchema, admissionModeSchema,
   type AdmissionMode, type BeliefOperation, type CommitReceipt, type ObjectRef, type PolicyVerdict,
@@ -596,7 +597,7 @@ async function buildValidationReport(
  * reached, so a refusal is readable afterwards whether or not anyone asked for a
  * commit (CRT-WRT-03-A).
  */
-export async function validateBeliefTransaction(
+async function validateBeliefTransactionImpl(
   runner: BeliefTransactionRunner, request: GovernorRequest, transactionId: string,
   ports: PolicyPorts = createLocalPolicyAdapters(),
 ): Promise<ValidationReport> {
@@ -843,7 +844,7 @@ async function applyLineageOperation(
  * (CRT-WRT-02-A). A transaction that is already committed short-circuits in the
  * first and answers with the stored receipt (CRT-WRT-02-B).
  */
-export async function commitBeliefTransaction(
+async function commitBeliefTransactionImpl(
   runner: BeliefTransactionRunner, request: GovernorRequest,
   input: { transactionId: string; idempotencyKey: string },
   ports: PolicyPorts = createLocalPolicyAdapters(),
@@ -953,4 +954,12 @@ export async function readCommitReceipt(
     const receipt = row?.['commit_receipt'];
     return receipt ? commitReceiptSchema.parse(receipt) : null;
   });
+}
+
+export function validateBeliefTransaction(...args:Parameters<typeof validateBeliefTransactionImpl>):ReturnType<typeof validateBeliefTransactionImpl>{
+  return traceStage('belief.validate',args[1],()=>validateBeliefTransactionImpl(...args),{});
+}
+
+export function commitBeliefTransaction(...args:Parameters<typeof commitBeliefTransactionImpl>):ReturnType<typeof commitBeliefTransactionImpl>{
+  return traceStage('belief.commit',args[1],()=>commitBeliefTransactionImpl(...args),{});
 }

@@ -1,11 +1,18 @@
 import { Pool } from 'pg';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import {trace} from '@opentelemetry/api';
+import {canonicalizeClaim,resolveEntity,recordClaim,recordFrameInstanceRole,recordResolutionAssertion,setResolutionLifecycle} from '@unai/memory';
+import {proposeBeliefTransaction,validateBeliefTransaction,commitBeliefTransaction,type BeliefTransactionRunner} from '@unai/belief';
+import {applyProjectionDelta,readObligationsProjection} from '@unai/capabilities';
+import {runExtraction} from '@unai/extraction';
+import {ingestOwnerStatement} from './evidence.js';
+import {lintRegistryCheckout} from '../../registry/src/index.js';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 // The registry library stays out of the API's manifest (registry-boundary.test.ts);
@@ -247,7 +254,145 @@ const assistantItems = async () => (await admin.query(
   `SELECT id::text,external_id,actor_ref,source_type,raw_object_ref FROM source_items WHERE owner_scope_id=$1 AND source_type='ASSISTANT_CONVERSATION'`,
   [owner])).rows;
 
-it('CRT-RD-06-A, CRT-RD-07-A: an answer has a manifest equal to its persisted packet, described as context supplied', async () => {
+it('[AC44.01] CRT-PRJ-05-A and CRT-NFR-05-A: Daniel evolves from two statements through reminder and payment to confirmed allocation, with an inspectable traced answer',async()=>{
+  const correlationId=randomUUID();
+  const logs:string[]=[];
+  const spans:Record<string,unknown>[]=[];
+  const log=vi.spyOn(console,'info').mockImplementation(value=>logs.push(String(value)));
+  const spanFor=(name:string)=>{
+    const row:Record<string,unknown>={name};spans.push(row);
+    return {setAttributes:(attributes:object)=>Object.assign(row,attributes),setAttribute:(key:string,value:unknown)=>{row[key]=value;},
+      setStatus:()=>{},end:()=>{row.ended=true;}};
+  };
+  trace.setGlobalTracerProvider({getTracer:()=>({startSpan:spanFor,
+    startActiveSpan:(name:string,callback:(span:ReturnType<typeof spanFor>)=>unknown)=>callback(spanFor(name))})} as unknown as Parameters<typeof trace.setGlobalTracerProvider>[0]);
+  const runner:BeliefTransactionRunner=(purpose,run)=>withOwnerTransaction(appPool,{actorId:actor,ownerScopeId:owner,purpose,correlationId},run);
+  const scope={ownerScopeId:owner,actorId:actor,correlationId,dataPurpose:FINANCE,maximumSensitivity:'PRIVATE' as const};
+  const evidenceIds:string[]=[];
+  const statements:string[]=[];
+  async function say(text:string){
+    statements.push(text);
+    const result=await withOwnerTransaction(appPool,{actorId:actor,ownerScopeId:owner,purpose:'evidence.ingest',correlationId},async tx=>{
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)",[FINANCE]);
+      return ingestOwnerStatement(tx,evidenceObjects,{externalId:randomUUID(),idempotencyKey:randomUUID(),text,sensitivity:'PRIVATE',allowedPurposes:[FINANCE]});
+    });
+    evidenceIds.push(result.evidenceId);return result;
+  }
+  async function accept(proposition:string,claims:string[],sources:string[]){
+    const key=randomUUID();
+    const proposed=await proposeBeliefTransaction(runner,scope,{transactionKind:'CANONICALIZE',registryReleaseId,risk:'LOW',
+      idempotencyKey:key,sourceEvidenceIds:sources,operations:[
+        ...claims.map(claim=>({kind:'ADD_SUPPORT' as const,proposition,claim,supportKind:'DIRECT_ASSERTION' as const})),
+        {kind:'SET_BELIEF_ASSESSMENT',proposition,assessmentStatus:'ACCEPTED',decisionReason:{code:'OWNER_STATED'}},
+      ]});
+    await validateBeliefTransaction(runner,scope,proposed.transactionId);
+    await commitBeliefTransaction(runner,scope,{transactionId:proposed.transactionId,idempotencyKey:key});
+    return proposed.transactionId;
+  }
+  const run=<T,>(purpose:string,work:(tx:import('@unai/postgres').OwnerTransaction)=>Promise<T>)=>
+    withOwnerTransaction(appPool,{actorId:actor,ownerScopeId:owner,purpose,correlationId},work);
+  const app=api();
+  try{
+    const creditor=await run('memory.canonicalize',tx=>resolveEntity(tx,{ownerScopeId:owner,entityKind:'PERSON',canonicalLabel:'Daniel acceptance',
+      aliases:[{aliasType:'EMAIL',aliasValue:randomUUID()+'@example.test'}]}));
+    const debtor=await run('memory.canonicalize',tx=>resolveEntity(tx,{ownerScopeId:owner,entityKind:'PERSON',canonicalLabel:'Owner acceptance',
+      aliases:[{aliasType:'EMAIL',aliasValue:randomUUID()+'@example.test'}]}));
+    const first=await say('I owe Daniel ₪50.');
+    const gateway=createModelGateway({provider:{providerId:'fixture',defaultModelId:'pipeline-fixture',async complete(request){
+      const input=JSON.parse(request.input) as {anchors:Array<{anchorKind:string;parentAnchor:Record<string,unknown>;text:string}>};
+      const anchor=input.anchors.find(entry=>entry.text.length>0)!;
+      return {modelId:'pipeline-fixture',costMicrounits:1,outputText:JSON.stringify({claims:[{frameTypeId:'shared.obligation',statement:anchor.text,
+        span:{anchorKind:anchor.anchorKind,parentAnchor:anchor.parentAnchor,start:0,end:anchor.text.length,quote:anchor.text},
+        extractionConfidence:1,temporalExpression:null,participants:[]}],unknowns:[]})};
+    }},recordCall:work=>run(MODEL_PURPOSES.call,work)});
+    const extracted=await runExtraction({runner:(purpose,work)=>run(purpose,work),gateway,request:{ownerScopeId:owner,sourceItemId:first.evidenceId,
+      runKind:'TARGETED',dataPurpose:FINANCE,maximumSensitivity:'PRIVATE',registryReleaseId,correlationId,
+      referenceInstant:new Date(),timeZone:'Asia/Jerusalem'}});
+    const base={ownerScopeId:owner,frameTypeId:'shared.obligation',predicateId:'shared.obligation.principal_amount',modality:'ACTUAL' as const,
+      normalizedValue:{amount:'50.00',currency:'ILS'},roles:[{roleId:'creditor',entityId:creditor.entityId},{roleId:'debtor',entityId:debtor.entityId}],identityAnchorRoles:['creditor','debtor'],
+      claimOrigin:'USER_STATEMENT' as const,assertedByEntityId:debtor.entityId,registryReleaseId};
+    const one=await run('memory.canonicalize',tx=>canonicalizeClaim(tx,{...base,sourceAnchorId:first.sourceAnchorId,
+      statement:statements[0]!,extractionRunId:extracted.extractionRunId}));
+    const second=await say('I borrowed ₪50 from Daniel.');
+    const two=await run('memory.canonicalize',tx=>canonicalizeClaim(tx,{...base,sourceAnchorId:second.sourceAnchorId,
+      statement:statements[1]!,instanceSignals:{explicitReference:'SAME'}}));
+    expect(two.frameInstanceId).toBe(one.frameInstanceId);expect(two.propositionId).toBe(one.propositionId);
+    await accept(one.propositionId,[one.claimId,two.claimId],[first.evidenceId,second.evidenceId]);
+    expect((await admin.query('SELECT claim_id FROM belief_support WHERE proposition_id=$1',[one.propositionId])).rows.map(row=>row.claim_id).sort())
+      .toEqual([one.claimId,two.claimId].sort());
+    const read=async()=>{
+      await run('memory.project',tx=>applyProjectionDelta(tx,{ownerScopeId:owner,projectionName:'obligations_projection',asOf:new Date()}));
+      const view=await run('projection.read',tx=>readObligationsProjection(tx,{ownerScopeId:owner,asOf:new Date(),includeResolved:true}));
+      return view.rows.find(row=>row.obligationFrameInstanceId===one.frameInstanceId)!;
+    };
+    const initial=await read();expect(initial).toMatchObject({principalAmount:'50.00',outcomeState:'UNRESOLVED'});
+    const reminder=await say('Daniel reminds me about the first debt.');
+    await run('memory.canonicalize',tx=>recordClaim(tx,{ownerScopeId:owner,sourceAnchorId:reminder.sourceAnchorId,claimOrigin:'EXTERNAL_PERSON_ASSERTION',
+      assertedByEntityId:creditor.entityId,candidateFrameTypeId:'shared.obligation',lifecycle:'CANDIDATE'}));
+    expect(await read()).toMatchObject({principalAmount:initial.principalAmount,outcomeState:initial.outcomeState,totalCanonicalAllocation:initial.totalCanonicalAllocation});
+    const payment=await say('A ₪60 payment to a Daniel-like counterparty appears.');
+    const event=await run('memory.canonicalize',tx=>canonicalizeClaim(tx,{ownerScopeId:owner,frameTypeId:'shared.event_occurrence',
+      predicateId:'shared.event_occurrence.description',modality:'ACTUAL',normalizedValue:{text:'ILS 60 transfer'},sourceAnchorId:payment.sourceAnchorId,
+      claimOrigin:'STRUCTURED_CONNECTOR_OBSERVATION',statement:statements[3]!,registryReleaseId}));
+    expect(await read()).toMatchObject({outcomeState:'UNRESOLVED',totalCanonicalAllocation:'0',remainingAmountCapabilityDerived:'50'});
+    const confirmation=await say('Yes, that paid the first debt.');
+    const allocation=await run('memory.canonicalize',tx=>canonicalizeClaim(tx,{ownerScopeId:owner,frameTypeId:'finance.payment_allocation',
+      predicateId:'finance.payment_allocation.allocated_amount',modality:'ACTUAL',normalizedValue:{amount:'50.00',currency:'ILS'},
+      sourceAnchorId:confirmation.sourceAnchorId,claimOrigin:'USER_CONFIRMATION',assertedByEntityId:debtor.entityId,statement:statements[4]!,registryReleaseId}));
+    await run('memory.canonicalize',async tx=>{
+      await recordFrameInstanceRole(tx,{ownerScopeId:owner,frameInstanceId:allocation.frameInstanceId,roleId:'obligation',typedValue:{frameInstanceId:one.frameInstanceId},claimId:allocation.claimId});
+      await recordFrameInstanceRole(tx,{ownerScopeId:owner,frameInstanceId:allocation.frameInstanceId,roleId:'payment_transaction',
+        typedValue:{externalId:event.frameInstanceId,total:{amount:'60.00',currency:'ILS'}},claimId:allocation.claimId});
+    });
+    const acceptedTransaction=await accept(allocation.propositionId,[allocation.claimId],[confirmation.evidenceId]);
+    const contracts=(await lintRegistryCheckout({repository:resolve('.'),version:'0.1.0'})).transitions;
+    const resolution=await run('memory.canonicalize',tx=>recordResolutionAssertion(tx,{ownerScopeId:owner,sourceFrameInstanceId:one.frameInstanceId,
+      sourceFrameTypeId:'shared.obligation',targetFrameInstanceId:allocation.frameInstanceId,targetFrameTypeId:'finance.payment_allocation',outcomeCode:'FULFILLED',effectiveAt:new Date(),
+      claimId:allocation.claimId,assertedByEntityId:debtor.entityId,transitionContractId:'shared.obligation.resolution',transitionContracts:contracts}));
+    await run('memory.govern',tx=>setResolutionLifecycle(tx,{ownerScopeId:owner,resolutionAssertionId:resolution.resolutionAssertionId,
+      lifecycle:'ACCEPTED',transactionId:acceptedTransaction}));
+    expect(await read()).toMatchObject({principalAmount:'50.00',totalCanonicalAllocation:'50',remainingAmountCapabilityDerived:'0',
+      outcomeState:'RESOLVED',unclassifiedRemainder:'10'});
+    const history=(await admin.query('SELECT normalized_text FROM source_anchors WHERE source_item_id=ANY($1::uuid[])',[evidenceIds])).rows;
+    expect(history.map(row=>row.normalized_text)).toEqual(expect.arrayContaining(statements));
+    const predicates=(await admin.query('SELECT predicate_id FROM belief_slots WHERE frame_instance_id=ANY($1::uuid[])',
+      [[one.frameInstanceId,event.frameInstanceId,allocation.frameInstanceId]])).rows.map(row=>row.predicate_id);
+    expect(predicates).toEqual(expect.arrayContaining(['shared.obligation.principal_amount','finance.payment_allocation.allocated_amount']));
+    expect(predicates.join(' ')).not.toMatch(/status|gift|fee|tip|refund/);
+    const inspect=await app.inject({method:'GET',url:'/v1/memory/propositions/'+one.propositionId+'/explain',headers:headers('memory.inspect',{
+      'x-data-purpose':FINANCE,'x-maximum-sensitivity':'PRIVATE','x-correlation-id':correlationId})});
+    expect(inspect.statusCode,inspect.body).toBe(200);
+    expect(inspect.json().claims.map((claim:{claimId:string})=>claim.claimId).sort()).toEqual([one.claimId,two.claimId].sort());
+    expect(inspect.json().supportGraph).toHaveLength(2);
+    expect(inspect.json().resolutionLinks).toEqual(expect.arrayContaining([expect.objectContaining({
+      objectId:resolution.resolutionAssertionId,outcomeCode:'FULFILLED',lifecycle:'ACCEPTED'})]));
+    for(const evidenceId of evidenceIds){
+      const original=await app.inject({method:'GET',url:'/v1/evidence/'+evidenceId,headers:headers('evidence.read',{
+        'x-data-purpose':FINANCE,'x-maximum-sensitivity':'PRIVATE','x-correlation-id':correlationId})});
+      expect(original.statusCode,original.body).toBe(200);expect(original.json().evidenceId).toBe(evidenceId);
+    }
+    const answer=await app.inject({method:'POST',url:'/v1/ask',headers:{...headers('memory.read'),'x-correlation-id':correlationId,'idempotency-key':randomUUID()},
+      payload:{ownerScopeId:owner,question:'Do I still owe Daniel?',purpose:FINANCE,worldTime:'NOW',knowledgeTime:'LATEST',maximumSensitivity:'PRIVATE',entityHints:[creditor.entityId]}});
+    expect(answer.statusCode,answer.body).toBe(200);expect(answer.json().answerManifestId).toBeTruthy();
+    const pipeline=spans.filter(row=>row['unai.stage']);
+    for(const stage of ['evidence.persist','evidence.triage','extraction.run','model.generate','memory.canonicalize','belief.validate','belief.commit',
+      'projection.reduce','projection.read','context.assemble','answer.compose','answer.ground','answer.record']){
+      expect(pipeline.some(row=>row.name===stage),stage).toBe(true);
+    }
+    for(const span of pipeline){
+      expect(span).toMatchObject({'unai.correlation_id':correlationId,'unai.owner_scope_id':owner,'unai.result':'SUCCESS',
+        'unai.retry_state':'FIRST_ATTEMPT','unai.code_version':'0.1.0',ended:true});
+      expect(span['unai.duration_ms']).toBeGreaterThanOrEqual(0);
+      expect(span['unai.component_version']).toBeTruthy();expect(span['unai.registry_release_id']).toBeTruthy();
+    }
+    for(const text of [...statements,'ILS 60 transfer'])expect(JSON.stringify([spans,logs])).not.toContain(text);
+    expect(pipeline.find(row=>row.name==='model.generate')!['unai.cost_microunits']).toBe(1);
+    await mkdir('test-results/performance',{recursive:true});
+    await writeFile('test-results/performance/trace.json',JSON.stringify({format:'unai-pipeline-trace/1',correlationId,spans:pipeline},null,2)+'\n');
+  }finally{trace.disable();log.mockRestore();await app.close();}
+},30000);
+
+it('[AC44.20] CRT-RD-06-A, CRT-RD-07-A: an answer has a manifest equal to its persisted packet, described as context supplied', async () => {
   const app = api();
   try {
     const answer = await ask(app, 'Do I still owe Daniel?');
@@ -395,7 +540,7 @@ it('CRT-RD-08-A: content from a sensitivity scope absent from the packet is bloc
   }
 });
 
-it('CRT-AI-01-A: an invented personal fact is stored only as assistant conversation evidence, never believed, never cited', async () => {
+it('[AC44.15] CRT-AI-01-A: an invented personal fact is stored only as assistant conversation evidence, never believed, never cited', async () => {
   const invented = statement('You also owe Dana ILS 450 for the concert tickets.', 'CONFIRMED', []);
   let app = api(scripted([invented]));
   let packetId = '';
@@ -465,7 +610,7 @@ it('CRT-AI-01-A: an invented personal fact is stored only as assistant conversat
   } finally { await app.close(); }
 });
 
-it('CRT-RD-11-A, CRT-RYW-05-A: a material change marks exactly the answers that contained it; a contradicted delta is contested and kept', async () => {
+it('[AC44.06] CRT-RD-11-A, CRT-RYW-05-A: a material change marks exactly the answers that contained it; a contradicted delta is contested and kept', async () => {
   const app = api();
   try {
     const containing = await ask(app, 'Do I still owe Daniel?');

@@ -174,7 +174,7 @@ export function createGatewayAnswerPhraser(gateway: ModelGateway, options: { max
         promptVersion: ANSWER_PROMPT_VERSION, system: PHRASING_SYSTEM,
         input: JSON.stringify({ question: request.question, answerType: request.answerType, attempt: request.attempt,
           violations: request.violations, draft: request.draft, packet: request.packet }),
-        schema: answerCandidateSchema, maxCostMicrounits: options.maxCostMicrounits ?? 50_000,
+        schema: answerCandidateSchema, maxCostMicrounits: options.maxCostMicrounits ?? 50_000,attempt:request.attempt,
       });
       return invocation.value;
     },

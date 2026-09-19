@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@unai/observability": "workspace:*",
     "@opentelemetry/api": "^1.9.1",
     "@unai/auth": "workspace:*",
     "@unai/belief": "workspace:*",
