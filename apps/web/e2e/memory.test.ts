@@ -15,8 +15,10 @@ import {MemoryInspector} from '../components/MemoryInspector';
 import {MemoryThread} from '../components/MemoryThread';
 import {Obligations} from '../components/Obligations';
 import {Today} from '../components/Today';
+import {WeeklyReview} from '../components/WeeklyReview';
 import {commitmentFilters,loadCommitments,loadInspector,loadObligations,loadThread,NO_FILTERS,type ApiCall} from '../lib/memory';
 import {loadAsk,loadToday} from '../lib/screens';
+import {loadWeeklyReview} from '../lib/review';
 
 /**
  * The Commitments, Obligations, Memory inspector, Memory thread and Correction
@@ -592,5 +594,26 @@ it('CRT-UX-10-B: every belief surfaced in Today, Ask and Commitments can be insp
     expect(new Set(askLinks.map(link=>link.type+'/'+link.id))).toEqual(new Set(named));
     expect(named).toEqual(expect.arrayContaining(['proposition/'+beliefs.principal,'proposition/'+beliefs.danielAmount]));
     expect(askHtml).toContain('Memory 2: ');
+  }finally{await app.close();}
+},120000);
+
+it('CRT-UX-05-A: every belief the Weekly review states rests on can be inspected and corrected',async()=>{
+  const app=await api();
+  try{
+    // The fixture's first week: the report to Maya was due and sent, and the
+    // venue was booked and cancelled according to two sources.
+    const loaded=await loadWeeklyReview(transport(app),caller(),'2026-03-02');
+    if(loaded.kind!=='props')throw new Error('expired');
+    const review=loaded.props.review;
+    if(!review)throw new Error(loaded.props.error??'no review');
+    const sections=[review.priorityVersusCalendar,review.commitmentsVersusResolutions,review.decisionsVersusOutcomes,
+      review.plannedVersusObservedSpending,review.materialChanges,review.repeatedPostponement];
+    const grounds=[...sections.flatMap(section=>section.statements.flatMap(statement=>statement.grounds)),
+      ...review.behavioralObservations.flatMap(observation=>observation.grounds)];
+    const named=new Set(grounds.filter(ground=>beliefRefType(ground.objectType)!==null)
+      .map(ground=>beliefRefType(ground.objectType)+'/'+ground.objectId));
+    expect(named.size).toBeGreaterThan(0);
+    const links=await followEveryLink(app,'Weekly review',render(WeeklyReview,loaded.props));
+    expect(new Set(links.map(link=>link.type+'/'+link.id))).toEqual(named);
   }finally{await app.close();}
 },120000);

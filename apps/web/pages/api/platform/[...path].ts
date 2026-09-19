@@ -15,6 +15,8 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       /^connectors\/[0-9a-f-]{36}\/sync$/i.test(path)?'connector.sync':
       /^ops\/dead-letter\/[0-9a-f-]{36}\/retry$/i.test(path)?'ops.dead_letter.retry':
       /^memory\/(frame-instances|entities)\/(merge|[0-9a-f-]{36}\/split)$/i.test(path)?'memory.govern':
+      /^memory\/inbox\/cards\/[0-9a-f-]{36}\/decide$/i.test(path)?'memory.inbox':
+      /^approval-rules\/[0-9a-f-]{36}\/(approve|revoke)$/i.test(path)?'approval.rules':
       /^memory\/(corrections|state-changes|confirmations|rejections|keep-uncertain|suppressions|archives|deletions)$/.test(path)?'memory.correct':null;
     if(!purpose||req.headers['x-purpose']!==purpose)return res.status(403).json({code:'PURPOSE_REFUSED'});
     const correlation=req.headers['x-correlation-id'],key=req.headers['idempotency-key'];
@@ -27,8 +29,9 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     const evidencePath=path==='evidence'||path==='documents'||/^connectors\/[0-9a-f-]{36}\/sync$/i.test(path);
     const response=await apiRequest('/v1/'+path,'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
       // A merge or split (whose governed commit reads the evidence behind the
-      // claims it reassigns) passes the evidence gate with the same pinned context.
-      ...(evidencePath||purpose==='memory.govern'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{}),
+      // claims it reassigns) passes the evidence gate with the same pinned context,
+      // and so does an answer to an inbox card, which is stored as evidence.
+      ...(evidencePath||purpose==='memory.govern'||purpose==='memory.inbox'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'}:{}),
       // A correction control stores the owner's own words as evidence; they are
       // kept PRIVATE, and the browser can raise neither value (ADR 0028 §4).
       ...(purpose==='memory.correct'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'PRIVATE'}:{})},body);
