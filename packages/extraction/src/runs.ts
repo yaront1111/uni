@@ -75,10 +75,13 @@ export interface ExtractionRequest {
   readonly correlationId: string;
   /** The instant relative time phrases are read against; never the wall clock,
    * so a run is reproducible from what it recorded. */
-  readonly referenceInstant: Date;
-  readonly timeZone: string;
+  readonly referenceInstant: Date | null;
+  readonly timeZone: string | null;
   readonly promptVersion?: string;
   readonly modelId?: string;
+  /** Initial-processing intent identity. Re-extraction without this key remains
+   * append-only; retries of one durable intent reuse its successful run. */
+  readonly processingKey?: string;
 }
 
 export interface ExtractionResult {
@@ -221,10 +224,10 @@ async function openRun(runner: ExtractionTransactionRunner, request: ExtractionR
     const anchors = await loadAnchors(tx, request.ownerScopeId, request.sourceItemId);
     const runId = uuidV7();
     await tx.query(`INSERT INTO extraction_runs(id,owner_scope_id,source_item_id,triage_decision_id,run_kind,
-      registry_release_id,normalization_version,entity_resolver_version,temporal_resolver_version,status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RUNNING')`,
+      registry_release_id,normalization_version,entity_resolver_version,temporal_resolver_version,status,processing_key)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RUNNING',$10)`,
       [runId, request.ownerScopeId, request.sourceItemId, decision.id, request.runKind, request.registryReleaseId,
-        CANONICAL_NORMALIZATION_VERSION, ENTITY_RESOLVER_VERSION, TEMPORAL_RESOLVER_VERSION]);
+        CANONICAL_NORMALIZATION_VERSION, ENTITY_RESOLVER_VERSION, TEMPORAL_RESOLVER_VERSION, request.processingKey ?? null]);
     return { runId, tier0, route, budget, anchors };
   });
 }
@@ -247,6 +250,22 @@ async function runExtractionImpl(options: {
   request: ExtractionRequest;
 }): Promise<ExtractionResult> {
   const { runner, gateway, request } = options;
+  if (request.processingKey) {
+    const prior = await runner(EXTRACTION_PURPOSES.run, async tx => {
+      await declareEvidenceAccess(tx, request);
+      const run = (await tx.query(`SELECT id,cost_microunits,latency_ms,unknown_count FROM extraction_runs
+        WHERE owner_scope_id=$1 AND source_item_id=$2 AND processing_key=$3 AND registry_release_id=$4 AND status='SUCCEEDED'
+          AND EXISTS(SELECT 1 FROM source_items s WHERE s.owner_scope_id=$1 AND s.id=$2)`,
+      [request.ownerScopeId, request.sourceItemId, request.processingKey, request.registryReleaseId])).rows[0];
+      if (!run) return null;
+      const claims = (await tx.query('SELECT id FROM claims WHERE owner_scope_id=$1 AND extraction_run_id=$2 AND proposition_id IS NULL ORDER BY id',
+        [request.ownerScopeId,run.id])).rows;
+      return { extractionRunId: run.id as string, claimIds: claims.map(row => row.id as string),
+        costMicrounits: Number(run.cost_microunits), latencyMs: Number(run.latency_ms),
+        unknowns: Array.from({ length: Number(run.unknown_count) }, () => 'UNRESOLVED_EXTRACTION') };
+    });
+    if (prior) return prior;
+  }
   const promptVersion = request.promptVersion ?? EXTRACTION_PROMPT_VERSION;
   const opened = await openRun(runner, request);
   const startedAt = Date.now();
@@ -288,9 +307,15 @@ async function runExtractionImpl(options: {
         // The extractor hands over the phrase as written; the temporal resolver
         // decides what it means, and records the precision instead of inventing
         // an instant. An unrecognised phrase stays an unknown.
-        const temporal = claim.temporalExpression === null ? null : resolveTemporalExpression({
-          text: claim.temporalExpression, reference: request.referenceInstant, timeZone: request.timeZone,
-        });
+        let temporal: ReturnType<typeof resolveTemporalExpression> = null;
+        if(claim.temporalExpression !== null && request.referenceInstant !== null && request.timeZone !== null) {
+          try { temporal=resolveTemporalExpression({text:claim.temporalExpression,reference:request.referenceInstant,timeZone:request.timeZone}); }
+          catch(error) {
+            // Invalid source metadata makes its temporal interpretation unknown;
+            // it must not discard otherwise grounded source claims.
+            if(!(error instanceof Error)||error.message!=='TEMPORAL_TIMEZONE_INVALID')throw error;
+          }
+        }
         written.push(await recordClaim(tx, {
           ownerScopeId: request.ownerScopeId,
           sourceAnchorId,
@@ -302,7 +327,9 @@ async function runExtractionImpl(options: {
           extractionConfidence: claim.extractionConfidence,
           temporalResolutionConfidence: temporal === null ? null : temporal.confidence,
           temporalInterpretation: temporal,
-          metadata: { statement: claim.statement, participants: claim.participants, quote: resolved.quote },
+          metadata: { statement: claim.statement, participants: claim.participants, quote: resolved.quote,
+            temporalExpression: claim.temporalExpression, assertionReferenceInstant: request.referenceInstant?.toISOString() ?? null,
+            assertionTimeZone: request.timeZone },
         }));
       }
       const latencyMs = Date.now() - startedAt;
@@ -310,9 +337,9 @@ async function runExtractionImpl(options: {
       // has the claims it recorded, and never the other way round.
       const closed = await tx.query(
         `UPDATE extraction_runs SET status='SUCCEEDED',model_provider=$3,model_id=$4,prompt_version=$5,
-           cost_microunits=$6,latency_ms=$7,completed_at=now()
+           cost_microunits=$6,latency_ms=$7,completed_at=now(),unknown_count=$8
          WHERE owner_scope_id=$1 AND id=$2 AND status='RUNNING'`,
-        [request.ownerScopeId, opened.runId, gateway.providerId, modelId, promptVersion, costMicrounits, latencyMs]);
+        [request.ownerScopeId, opened.runId, gateway.providerId, modelId, promptVersion, costMicrounits, latencyMs,output.unknowns.length]);
       if (closed.rowCount !== 1) throw new ExtractionError('EXTRACTION_RUN_NOT_OPEN');
       return written;
     });

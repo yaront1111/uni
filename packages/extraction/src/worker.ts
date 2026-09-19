@@ -27,8 +27,8 @@ export const extractionJobPayloadSchema = z.strictObject({
   maximumSensitivity: z.enum(['NORMAL', 'PRIVATE', 'RESTRICTED']),
   /** The instant relative time phrases are read against, carried on the job so a
    * retry resolves them exactly as the first attempt would have. */
-  referenceInstant: z.iso.datetime({ offset: true }),
-  timeZone: z.string().min(1).max(64),
+  referenceInstant: z.iso.datetime({ offset: true }).nullable(),
+  timeZone: z.string().min(1).max(64).nullable(),
   promptVersion: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/).optional(),
   modelId: z.string().min(1).max(128).optional(),
 });
@@ -55,7 +55,7 @@ export function createExtractionJobHandler(options: {
       correlationId: payload.correlationId,
       dataPurpose: payload.dataPurpose,
       maximumSensitivity: payload.maximumSensitivity,
-      referenceInstant: new Date(payload.referenceInstant),
+      referenceInstant: payload.referenceInstant === null ? null : new Date(payload.referenceInstant),
       timeZone: payload.timeZone,
       ...(payload.promptVersion === undefined ? {} : { promptVersion: payload.promptVersion }),
       ...(payload.modelId === undefined ? {} : { modelId: payload.modelId }),

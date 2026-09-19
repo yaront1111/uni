@@ -4,6 +4,7 @@ import {createDefaultSecretsManager,requireSecret} from '@unai/secrets';
 import {createPlatformApi} from './platform.js';
 import {createEvidenceObjects} from './evidence.js';
 import {createConnectorRuntime} from './connectors.js';
+import {processingRelease} from './processing-config.js';
 function required(name:string){const value=process.env[name];if(!value)throw new Error('CONFIG_REQUIRED:'+name);return value;}
 // Credentials arrive as secrets-manager handles; configuration holding a literal
 // database URL is refused rather than started with.
@@ -20,6 +21,6 @@ const evidenceObjects=await createEvidenceObjects({endpoint:required('UNAI_S3_EN
 // can reach neither, so a sync would answer CONNECTOR_CLIENT_UNSUPPORTED and a
 // disconnect CONNECTOR_REVOCATION_UNAVAILABLE. The OAuth material stays a
 // secret:// handle on the connector row; this passes the manager, not a token.
-const app=createPlatformApi({appPool,authPool,evidenceObjects,connectors:createConnectorRuntime(secrets),tls:{key:readFileSync(required('UNAI_API_TLS_KEY_FILE')),cert:readFileSync(required('UNAI_API_TLS_CERT_FILE'))}});
+const app=createPlatformApi({appPool,authPool,evidenceObjects,...processingRelease(process.env),connectors:createConnectorRuntime(secrets),tls:{key:readFileSync(required('UNAI_API_TLS_KEY_FILE')),cert:readFileSync(required('UNAI_API_TLS_CERT_FILE'))}});
 await app.listen({port:Number(process.env.UNAI_API_PORT??3443),host:process.env.UNAI_API_BIND??'127.0.0.1'});
 process.on('SIGTERM',()=>{void app.close().then(()=>{evidenceObjects.close();return Promise.all([appPool.end(),authPool.end()]);});});

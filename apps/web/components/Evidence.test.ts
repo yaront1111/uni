@@ -20,3 +20,14 @@ it('renders a labeled upload form and truthful storage/processing state',()=>{
   expect(html).not.toContain('semantic memory');
   expect(html).toContain('role="alert"');expect(html).toContain('Upload failed');
 });
+
+import {publicEvidenceSchema} from '@unai/domain';
+it('shows recorded processing progress and unresolved review without echoing raw worker errors',()=>{
+  const id='00000000-0000-4000-8000-000000000001';
+  const evidence=publicEvidenceSchema.parse({evidenceId:id,ownerScopeId:id,connectorId:null,sourceType:'DOCUMENT',externalId:'doc',parentExternalId:null,
+    actorRef:{type:'USER',id},occurredAt:null,observedAt:'2026-09-19T10:00:00.000Z',rawObjectRef:id,contentHash:'a'.repeat(64),sensitivity:'PRIVATE',allowedPurposes:['PERSONAL_ASSISTANCE'],
+    ingestionVersion:'evidence-json-v1',deterministicMetadata:{},ingestionStatus:'STORED',processing:{status:'NEEDS_REVIEW',unresolvedClaims:2,lastError:'PROTECTED_ERROR_MARKER',completedAt:null}});
+  const html=renderToStaticMarkup(createElement(Evidence,{evidence,connector:null,error:null}));
+  expect(html).toContain('Processing needs review');expect(html).toContain('2 unresolved');expect(html).toContain('href="/memory/inbox"');expect(html).not.toContain('PROTECTED_ERROR_MARKER');
+  evidence.processing=null;expect(renderToStaticMarkup(createElement(Evidence,{evidence,connector:null,error:null}))).toContain('Processing status is not available');
+});

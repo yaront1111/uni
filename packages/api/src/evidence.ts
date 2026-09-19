@@ -108,6 +108,12 @@ export function registerEvidenceRoutes(app:FastifyInstance,work:Work,objects:Evi
     // Whether this call or an earlier one wrote the row is internal: the response is
     // identical for both, so a retry cannot be told apart from the first submission.
     const {evidenceId,ingestionStatus}=await ingest(tx,input,objects);
+    // First-party JSON ingestion carries normalized body text. Give extraction
+    // the same exact, reproducible anchor that parsed imports already receive.
+    if(typeof input.content.body==='string' && input.content.body.length>0){
+      await writeAnchors(tx,evidenceId,[{kind:'MESSAGE_SPAN',anchor:{field:'body',start:0,end:input.content.body.length},
+        normalizedText:input.content.body.slice(0,8192)}]);
+    }
     return {evidenceId,ingestionStatus};
   }));
   app.get<{Params:{id:string}}>('/v1/evidence/:id',async(request,reply)=>scoped(request,reply,async(tx,purpose,maximum)=>{
@@ -119,8 +125,13 @@ export function registerEvidenceRoutes(app:FastifyInstance,work:Work,objects:Evi
     // the evidence, so a failed or not-yet-run extraction never makes an
     // ingested item unreadable.
     const triage=publicTriage(await readTriageDecision(tx,{ownerScopeId:tx.context.ownerScopeId,sourceItemId:row.id}));
+    const processing=(await tx.query('SELECT status,unresolved_claims,last_error,completed_at FROM evidence_processing WHERE owner_scope_id=$1 AND source_item_id=$2',
+      [tx.context.ownerScopeId,row.id])).rows[0];
     await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'source_items',id:row.id,fields:metadataFields}]});
-    return publicRow(row,anchors,triage);
+    return publicEvidenceSchema.parse({...publicRow(row,anchors,triage),processing:processing?{
+      status:processing.status,unresolvedClaims:processing.unresolved_claims,lastError:processing.last_error,
+      completedAt:processing.completed_at?.toISOString()??null,
+    }:null});
   }));
   app.get<{Params:{id:string}}>('/v1/connectors/:id',async(request,reply)=>scoped(request,reply,async(tx,purpose,maximum)=>{
     if(!publicEvidenceSchema.shape.evidenceId.safeParse(request.params.id).success)throw new Refusal(400,'CONNECTOR_ID_INVALID');

@@ -25,9 +25,8 @@ import type {TransitionContract} from '@unai/domain';
 import {registerConnectorRoutes,CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   type ConnectorRouteOptions} from './connectors.js';
 import {ConnectorError} from '@unai/connectors';
-import {enqueueJob,JOB_PURPOSES} from '@unai/jobs';
-import {EXTRACTION_JOB_KIND} from '@unai/extraction';
-import {createHash} from 'node:crypto';
+import {enqueueEvidenceProcessing} from './processing-store.js';
+import {registerInitiativeRoutes} from './initiative-routes.js';
 import type {PolicyPorts} from '@unai/belief';
 import type {AnswerPhraser} from '@unai/context';
 
@@ -102,6 +101,10 @@ export function routePurpose(method:string,url:string|undefined):string|null{
     url==='/v1/memory/inbox'?INBOX_PURPOSE:
     url==='/v1/memory/inbox/cards/:id/decide'?INBOX_PURPOSE:
     url==='/v1/settings/attention-budgets'?ATTENTION_SETTINGS_PURPOSE:
+    url==='/v1/settings/initiative'?ATTENTION_SETTINGS_PURPOSE:
+    url==='/v1/initiative/watches'&&method==='POST'?CORRECTION_PURPOSE:
+    url==='/v1/initiative/watches/:id'?CORRECTION_PURPOSE:
+    url==='/v1/initiative/watches'||url==='/v1/initiative/notices'?CONTEXT_READ_PURPOSE:
     url==='/v1/approval-rules'?APPROVAL_RULES_PURPOSE:
     url==='/v1/approval-rules/:id/approve'?APPROVAL_RULES_PURPOSE:
     url==='/v1/approval-rules/:id/revoke'?APPROVAL_RULES_PURPOSE:
@@ -226,6 +229,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     return {revoked:true};
   });
   registerEvidenceRoutes(app,deviceWork,options.evidenceObjects);
+  registerInitiativeRoutes(app,deviceWork,{...(options.evidenceObjects?{evidenceObjects:options.evidenceObjects}:{}),
+    ...(options.clock?{clock:options.clock}:{}),...(options.registryReleaseId?{registryReleaseId:options.registryReleaseId}:{}),
+    ...(options.registryRelease?{registryRelease:options.registryRelease}:{})});
   registerConnectorRoutes(app,deviceWork,{
     ...(options.evidenceObjects?{evidenceObjects:options.evidenceObjects}:{}),
     ...(options.connectors ?? {}),
@@ -237,15 +243,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       // that has loaded none cannot queue a run it could not reproduce, and says
       // so rather than queueing a payload that would dead-letter.
       if(!options.registryReleaseId)throw new ConnectorError('DOCUMENT_EXTRACTION_UNAVAILABLE');
-      const job=await withOwnerTransaction(options.appPool,{...input.context,purpose:JOB_PURPOSES.enqueue},tx=>
-        enqueueJob(tx,{jobKind:EXTRACTION_JOB_KIND,
-          payload:{ownerScopeId:input.context.ownerScopeId,sourceItemId:input.evidenceId,runKind:'FULL',
-            registryReleaseId:options.registryReleaseId!,correlationId:input.context.correlationId,
-            dataPurpose:input.dataPurpose,maximumSensitivity:input.maximumSensitivity,
-            referenceInstant:new Date().toISOString(),timeZone:'UTC'},
-          idempotencyKey:createHash('sha256').update('document-extraction:'+input.evidenceId).digest('hex'),
-          maxAttempts:3}));
-      return {jobId:job.jobId};
+      return enqueueEvidenceProcessing({appPool:options.appPool,context:input.context,
+        evidenceId:input.evidenceId,registryReleaseId:options.registryReleaseId});
     }),
   });
   registerMemoryGovernorRoutes(app,deviceWork);

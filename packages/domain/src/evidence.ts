@@ -29,5 +29,11 @@ export const publicEvidenceSchema=z.strictObject({
   // than absent when the item has no triage row: evidence must stay readable
   // when later processing has not run or has failed (PRD §11.1, §35.1).
   triage:publicTriageSchema.nullable().optional(),
+  processing:z.strictObject({
+    status:z.enum(['PENDING','EXTRACTED','CANONICALIZED','GOVERNED','SUCCEEDED','NEEDS_REVIEW']),
+    unresolvedClaims:z.number().int().nonnegative(),
+    lastError:z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).nullable(),
+    completedAt:z.iso.datetime().nullable(),
+  }).nullable().optional(),
 });
 export type PublicEvidence=z.infer<typeof publicEvidenceSchema>;

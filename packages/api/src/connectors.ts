@@ -15,6 +15,7 @@ import type { SecretsManager } from '@unai/secrets';
 import { readTriageDecision } from '@unai/extraction';
 import { importSource, type EvidenceObjects } from './evidence.js';
 import { readSensitivityFloor } from '@unai/control';
+import { requestDocumentProcessing } from './processing-store.js';
 
 /**
  * Connected sources, capability grants, sync, disconnect and document upload
@@ -291,6 +292,7 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
           // reaches either branch, which is how "extraction did not run" is
           // observable as an empty queue.
           enqueueExtraction: async input => {
+            await requestDocumentProcessing(tx, input.evidenceId);
             queued.plan = { evidenceId: input.evidenceId, reason: input.reason };
             return { jobId: PLACEHOLDER_JOB_ID };
           },

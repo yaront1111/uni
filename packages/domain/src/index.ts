@@ -199,3 +199,5 @@ export {actionKindSchema,externalActionKindSchema,actionStageSchema,ACTION_STAGE
 export { agingKindSchema, freshnessStateSchema, freshnessPrecisionSchema, agingPolicySchema, agingPolicyBindingSchema,
   freshnessEvidenceSchema, freshnessAssessmentSchema, type AgingKind, type FreshnessState, type AgingPolicy,
   type AgingPolicyBinding, type FreshnessEvidence, type FreshnessAssessment } from './aging.js';
+export { initiativeSettingsInputSchema, initiativeSettingsSchema, initiativeWatchInputSchema, initiativeWatchPatchSchema,
+  initiativeWatchSchema, initiativeNoticeSchema, type InitiativeSettings, type InitiativeWatch } from './initiative.js';

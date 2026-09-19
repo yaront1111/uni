@@ -11,6 +11,7 @@
     "dev:web": "pnpm --filter @unai/web dev",
     "start:web": "pnpm --filter @unai/web start",
     "start:api": "tsx packages/api/src/server.ts",
+    "start:worker": "tsx packages/api/src/processing-worker.ts",
     "db:migrate": "tsx packages/postgres/src/migrate-cli.ts",
     "uai": "tsx packages/registry/src/cli.ts",
     "validate:registry": "tsx packages/registry/src/cli.ts registry lint",

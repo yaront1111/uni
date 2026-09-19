@@ -102,6 +102,9 @@ importers:
       '@unai/mentor':
         specifier: workspace:*
         version: link:../mentor
+      '@unai/model':
+        specifier: workspace:*
+        version: link:../model
       '@unai/observability':
         specifier: workspace:*
         version: link:../observability
@@ -124,9 +127,6 @@ importers:
       '@types/pg':
         specifier: ^8.15.0
         version: 8.23.1
-      '@unai/model':
-        specifier: workspace:*
-        version: link:../model
 
   packages/auth:
     dependencies:

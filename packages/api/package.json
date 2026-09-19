@@ -17,6 +17,7 @@
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/memory": "workspace:*",
+    "@unai/model": "workspace:*",
     "@unai/mentor": "workspace:*",
     "@unai/postgres": "workspace:*",
     "@unai/review": "workspace:*",
@@ -25,7 +26,6 @@
     "pg": "^8.16.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.15.0",
-    "@unai/model": "workspace:*"
+    "@types/pg": "^8.15.0"
   }
 }

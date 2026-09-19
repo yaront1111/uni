@@ -20,6 +20,20 @@ const PLAN_TEXT:Record<string,string>={
   UNSUPPORTED_FORMAT_STORED_AS_SOURCE_ONLY:'No text could be read from this format, so it is stored as source-only evidence. It stays retrievable.',
 };
 
+const PROCESSING_TEXT:Record<NonNullable<PublicEvidence['processing']>['status'],string>={
+  PENDING:'Processing is pending.',EXTRACTED:'Meaning extracted. Preparing memory.',
+  CANONICALIZED:'Memory prepared. Checking its support.',GOVERNED:'Memory checks recorded. Updating views.',
+  SUCCEEDED:'Processing completed.',NEEDS_REVIEW:'Processing needs review.',
+};
+function ProcessingStatus({processing}:{processing:PublicEvidence['processing']}){
+  return <section aria-label="Source processing"><h3>Processing</h3>
+    <p role="status">{processing?PROCESSING_TEXT[processing.status]:'Processing status is not available.'}</p>
+    {processing&&processing.unresolvedClaims>0&&<p>{processing.unresolvedClaims} unresolved statement{processing.unresolvedClaims===1?'':'s'}. <a href="/memory/inbox">Review what needs attention</a>.</p>}
+    {processing?.lastError&&<p>Processing needs attention. Your stored source is still available. <a href="/ops/jobs">View processing jobs</a>.</p>}
+    {processing?.completedAt&&<p>Completed <time dateTime={processing.completedAt}>{processing.completedAt}</time>. Processing does not make the original information more recent.</p>}
+  </section>;
+}
+
 export function Evidence(props:{
   evidence:PublicEvidence|null;
   connector:{connectorType:string;status:string;evidence:PublicEvidence[]}|null;
@@ -91,7 +105,7 @@ export function Evidence(props:{
             <p>Meaning extraction: {hit.extractionPlan==='FULL'?'requested':'deferred'}</p>
           </li>)}</ul>}
       </section>}
-      {props.evidence&&<section className="card"><h2>Source detail</h2><p role="status">Stored and searchable. Semantic extraction runs only when this upload asked for it or the document triggered it.</p>
+      {props.evidence&&<section className="card"><h2>Source detail</h2><p>Source stored.</p><ProcessingStatus processing={props.evidence.processing}/>
         <dl><dt>Source</dt><dd>{props.evidence.sourceType}</dd><dt>Observed</dt><dd>{props.evidence.observedAt}</dd><dt>Occurred</dt><dd>{props.evidence.occurredAt??'Not supplied'}</dd><dt>Sensitivity</dt><dd>{props.evidence.sensitivity}</dd><dt>Allowed purposes</dt><dd>{props.evidence.allowedPurposes.join(', ')}</dd></dl>
         {props.evidence.connectorId&&<a href={'/connectors?connector='+encodeURIComponent(props.evidence.connectorId)}>View connected source</a>}
       </section>}
