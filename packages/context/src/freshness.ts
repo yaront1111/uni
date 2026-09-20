@@ -71,19 +71,23 @@ export async function readContextFreshness(tx: MemoryTransaction, input: Context
   // The caller's exact authority set bounds this read. Joining source_items is
   // essential: claims themselves do not inherit source-purpose/ceiling RLS.
   const rows = claimIds.length === 0 || overLimit ? [] : (await tx.query(`
+    WITH claim_history AS MATERIALIZED (
+      SELECT c.id,c.owner_scope_id,c.source_anchor_id,c.claim_origin,c.recorded_at,c.metadata,c.temporal_interpretation,
+        unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3) AS state,
+        (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid AS historical_proposition_id
+      FROM claims c WHERE c.owner_scope_id=$1 AND c.id=ANY($2::uuid[]) AND c.recorded_at<=$3
+    )
     SELECT c.id,c.claim_origin,c.recorded_at,c.metadata,c.temporal_interpretation,
-      (history.state->>'proposition_id')::uuid AS proposition_id,history.state->>'lifecycle' AS lifecycle,
+      c.historical_proposition_id AS proposition_id,c.state->>'lifecycle' AS lifecycle,
       a.source_item_id AS evidence_id,s.occurred_at,s.actor_ref,ctx.context_kind
-    FROM claims c
+    FROM claim_history c
     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
     JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
-    CROSS JOIN LATERAL (SELECT unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3) AS state) history
-    LEFT JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=(history.state->>'proposition_id')::uuid
+    LEFT JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.historical_proposition_id
     LEFT JOIN belief_slots slot ON slot.owner_scope_id=p.owner_scope_id AND slot.id=p.belief_slot_id
     LEFT JOIN context_spaces ctx ON ctx.owner_scope_id=slot.owner_scope_id
       AND ctx.id=(unai_private.object_state_at(slot.owner_scope_id,'belief_slots',slot.id,$3)->>'context_space_id')::uuid
-    WHERE c.owner_scope_id=$1 AND c.id=ANY($2::uuid[]) AND c.recorded_at<=$3
-      AND history.state IS NOT NULL AND history.state->>'lifecycle' NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
+    WHERE c.state IS NOT NULL AND c.state->>'lifecycle' NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
     ORDER BY c.id LIMIT $4`, [input.ownerScopeId, claimIds, knowledgeTime, MAX_CLAIMS + 1])).rows;
   const truncated = rows.length > MAX_CLAIMS;
   const byId = new Map((truncated ? [] : rows).map(row => [row['id'] as string, row]));

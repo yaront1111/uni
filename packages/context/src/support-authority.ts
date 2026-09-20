@@ -67,12 +67,15 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
     if (visited.size + claims.size > MAX_GRAPH_NODES) return denied();
 
     const propositionRows = propIds.length === 0 ? [] : (await tx.query(
-      `SELECT p.id,p.belief_slot_id,s.frame_instance_id FROM propositions p
-       JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-       WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])
-         AND unai_private.object_state_at(p.owner_scope_id,'propositions',p.id,$3) IS NOT NULL
-         AND unai_private.object_state_at(s.owner_scope_id,'belief_slots',s.id,$3) IS NOT NULL
-         AND unai_private.object_state_at(s.owner_scope_id,'frame_instances',s.frame_instance_id,$3) IS NOT NULL
+      `WITH proposition_slots AS MATERIALIZED (
+         SELECT p.owner_scope_id,p.id,p.belief_slot_id,s.frame_instance_id FROM propositions p
+         JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
+         WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])
+       )
+       SELECT p.id,p.belief_slot_id,p.frame_instance_id FROM proposition_slots p
+       WHERE unai_private.object_state_at(p.owner_scope_id,'propositions',p.id,$3) IS NOT NULL
+         AND unai_private.object_state_at(p.owner_scope_id,'belief_slots',p.belief_slot_id,$3) IS NOT NULL
+         AND unai_private.object_state_at(p.owner_scope_id,'frame_instances',p.frame_instance_id,$3) IS NOT NULL
        ORDER BY p.id`, [input.ownerScopeId, propIds, input.knowledgeTime])).rows;
     for (const row of propositionRows) {
       const id = row['id'] as string;
@@ -80,16 +83,23 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
         nodes.set(id, { directClaimIds: [], paths: [] });
       }
     }
+    // Keep history evaluation per claim: an inlined expression in a join can
+    // repeat the authorized temporal read for every candidate proposition.
     const sourceRows = propIds.length === 0 && claimIds.length === 0 ? [] : (await tx.query(
-      `SELECT c.id,(history.state->>'proposition_id')::uuid AS proposition_id,p.belief_slot_id,b.frame_instance_id,s.id AS evidence_id
-       FROM claims c LEFT JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-       CROSS JOIN LATERAL (SELECT unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4) AS state) history
+      `WITH claim_history AS MATERIALIZED (
+         SELECT c.id,c.owner_scope_id,c.source_anchor_id,
+           unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4) AS state,
+           (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$4)->>'proposition_id')::uuid AS historical_proposition_id
+         FROM claims c WHERE c.owner_scope_id=$1
+           AND (c.proposition_id=ANY($2::uuid[]) OR c.id=ANY($3::uuid[])) AND c.recorded_at<=$4
+       )
+       SELECT c.id,c.historical_proposition_id AS proposition_id,p.belief_slot_id,b.frame_instance_id,s.id AS evidence_id
+       FROM claim_history c LEFT JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
        LEFT JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
-       LEFT JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=(history.state->>'proposition_id')::uuid
+       LEFT JOIN propositions p ON p.owner_scope_id=c.owner_scope_id AND p.id=c.historical_proposition_id
        LEFT JOIN belief_slots b ON b.owner_scope_id=p.owner_scope_id AND b.id=p.belief_slot_id
-       WHERE c.owner_scope_id=$1 AND (c.proposition_id=ANY($2::uuid[]) OR c.id=ANY($3::uuid[]))
-         AND ((history.state->>'proposition_id')::uuid=ANY($2::uuid[]) OR c.id=ANY($3::uuid[]))
-         AND c.recorded_at<=$4 AND history.state IS NOT NULL ORDER BY c.id LIMIT $5`,
+       WHERE (c.historical_proposition_id=ANY($2::uuid[]) OR c.id=ANY($3::uuid[]))
+         AND c.state IS NOT NULL ORDER BY c.id LIMIT $5`,
       [input.ownerScopeId, propIds, claimIds, input.knowledgeTime, remainingRows + 1])).rows;
     remainingRows -= sourceRows.length;
     if (remainingRows < 0) return denied();

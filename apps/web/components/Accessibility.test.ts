@@ -40,6 +40,12 @@ import {AUDIT_ACTOR,auditLog} from './testing/audit';
  */
 
 (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+// Each scenario scans several complete DOM states and walks every keyboard task.
+// Under the CI unit stage's four workers, the default 5s expires mid-walk and
+// cleanup clears the DOM while that scenario is still running, corrupting the
+// next screen's axe result. Keep a bounded integration budget without dropping
+// any audit, keyboard action, or assertion.
+const CORE_VIEW_TIMEOUT_MS=20_000;
 const ARTIFACT_DIRECTORY=resolve('test-results/accessibility');
 const report:{screens:Record<string,{states:Record<string,{violations:Array<{id:string;impact:string|null;nodes:number}>;passes:number}>;
   tasks:Array<{task:string;completed:boolean;steps:Step[];navigations:string[]}>}>}={screens:{}};
@@ -169,7 +175,7 @@ it('Today: automated checks pass and every core task completes from the keyboard
   await mount(createElement(Today,{state:'loading',briefing:null,why:{}}));
   await audit('Today','loading');
   expect(document.querySelector('[role=status]')?.textContent).toContain('Loading today');
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('Ask: automated checks pass and every core task completes from the keyboard alone',async()=>{
   await mount(createElement(Ask,askEmptyProps));
@@ -208,7 +214,7 @@ it('Ask: automated checks pass and every core task completes from the keyboard a
   await mount(createElement(Ask,{...askEmptyProps,state:'refused',refusal:'CONTEXT_READ_DENIED'}));
   await audit('Ask','refused');
   expect(document.querySelector('[role=alert]')?.textContent).toContain('refused');
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('Commitments: automated checks pass and every core task completes from the keyboard alone',async()=>{
   await mount(createElement(Commitments,commitmentsProps));
@@ -238,7 +244,7 @@ it('Commitments: automated checks pass and every core task completes from the ke
   });
   await mount(createElement(Commitments,{...commitmentsProps,state:'loading',view:null}));
   await audit('Commitments','loading');
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('Weekly Review: automated checks pass and every core task completes from the keyboard alone',async()=>{
   await mount(createElement(WeeklyReview,weeklyReviewProps));
@@ -260,7 +266,7 @@ it('Weekly Review: automated checks pass and every core task completes from the 
   });
   await mount(createElement(WeeklyReview,{weekStart:'2026-03-02',review:null,loading:true}));
   await audit('Weekly Review','loading');
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('Memory Inspector: automated checks pass and every core task completes from the keyboard alone',async()=>{
   await mount(createElement(MemoryInspector,memoryInspectorProps));
@@ -288,7 +294,7 @@ it('Memory Inspector: automated checks pass and every core task completes from t
   });
   await mount(createElement(MemoryInspector,{state:'not-found',inspector:null}));
   await audit('Memory Inspector','not found');
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('Memory Inbox: automated checks pass and every core task completes from the keyboard alone',async()=>{
   const requests:Array<{url:string;init:RequestInit}>=[];
@@ -329,7 +335,7 @@ it('Memory Inbox: automated checks pass and every core task completes from the k
   await audit('Memory Inbox','answer recorded');
   await mount(createElement(MemoryInbox,{view:{...memoryInboxProps.view,cards:[],deferredCount:0}}));
   await audit('Memory Inbox','empty');
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('Audit log: automated checks pass, and it is read and filtered from the keyboard alone',async()=>{
   await mount(createElement(AuditLog,{log:auditLog(),actorId:AUDIT_ACTOR}));
@@ -350,7 +356,7 @@ it('Audit log: automated checks pass, and it is read and filtered from the keybo
     await press(user,'Enter');
     expect(user.navigations.at(-1)).toMatch(/^\/ops\/audit\?objectType=audit_events&objectId=/);
   });
-});
+},CORE_VIEW_TIMEOUT_MS);
 
 it('no core view responds to a pointer alone: every handler sits on a native control', ()=>{
   for(const file of ['Today','Ask','Commitments','WeeklyReview','MemoryInspector','MemoryInbox','WhySources','BeliefLinks','Labels',
