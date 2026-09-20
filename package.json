@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm --filter @unai/web typecheck",
     "build": "pnpm --filter @unai/web build",
     "dev:web": "pnpm --filter @unai/web dev",
+    "dev:stack": "node scripts/dev-stack.mjs",
     "start:web": "pnpm --filter @unai/web start",
     "start:api": "tsx packages/api/src/server.ts",
     "start:worker": "tsx packages/api/src/processing-worker.ts",

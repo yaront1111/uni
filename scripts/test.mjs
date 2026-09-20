@@ -9,6 +9,7 @@ import {deliveredStorage,startStorageHarness} from './storage-harness.mjs';
 import {stageFilters} from './test-stages.mjs';
 import {workspaceEvidence} from './workspace-evidence.mjs';
 import {databaseRoundtrip} from './database-roundtrip.mjs';
+import {postgresRunArguments} from './postgres-harness.mjs';
 
 const args=process.argv.slice(2);
 if(args.length&&!(args.length===2&&args[0]==='--stage'))throw new Error('TEST_ARGUMENTS_INVALID');
@@ -87,9 +88,8 @@ try {
   } else {
     console.log('Starting disposable PostgreSQL/pgvector for the full suite...');
     try {
-      docker(['run','--detach','--rm','--name',name,'--publish','127.0.0.1::5432',
-        '--env','POSTGRES_PASSWORD=unai-test-only','--env','POSTGRES_DB=unai_test',
-        '--tmpfs','/var/lib/postgresql/data','pgvector/pgvector@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f']);
+      docker(postgresRunArguments({name,options:[
+        '--env','POSTGRES_PASSWORD=unai-test-only','--env','POSTGRES_DB=unai_test']}));
       created = true;
       const binding=JSON.parse(docker(['inspect','--format','{{json .NetworkSettings.Ports}}',name]))['5432/tcp'][0];
       databaseUrl='postgresql://postgres:unai-test-only@127.0.0.1:'+binding.HostPort+'/unai_test';

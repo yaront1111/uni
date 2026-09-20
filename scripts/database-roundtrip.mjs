@@ -8,6 +8,7 @@ import {snapshotObjects,restoreObjects} from './recovery-objects.mjs';
 import {compareAcceptanceReads} from './recovery-acceptance.mjs';
 import {verifyEvidenceObjects} from './recovery-evidence-objects.mjs';
 import {startStorageHarness} from './storage-harness.mjs';
+import {POSTGRES_IMAGE} from './postgres-harness.mjs';
 const {Pool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg');
 
 /** All writers have stopped before this coordinated logical test backup. Source
@@ -33,7 +34,7 @@ export async function databaseRoundtrip(container,sourceUrl,storageEnv,sourceEvi
       const network=process.platform==='win32'?[]:['--network','host'];
       run=spawnSync('docker',['run','--rm',...(input?['--interactive']:[]),...network,
         '--env','PGHOST','--env','PGPORT','--env','PGUSER','--env','PGPASSWORD',
-        'pgvector/pgvector@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f',program,...args],
+        POSTGRES_IMAGE,program,...args],
         {input,env,maxBuffer:256*1024*1024,timeout:120000});
     }
     if(run.error||run.status!==0)throw new Error('RECOVERY_COMMAND_FAILED: '+program+' '+(run.error?.message??run.stderr.toString()));

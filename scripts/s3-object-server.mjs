@@ -56,7 +56,7 @@ function readBody(request) {
   });
 }
 
-export async function startS3ObjectServer({bucket, kmsKeyId}) {
+export async function startS3ObjectServer({bucket, kmsKeyId, own}) {
   const {key, certificate} = createSelfSignedCertificate();
   const accessKeyId = 'unai-test-' + randomBytes(8).toString('hex');
   const secretAccessKey = randomBytes(32).toString('hex');
@@ -148,6 +148,12 @@ export async function startS3ObjectServer({bucket, kmsKeyId}) {
       .then(body => route(request, response, body))
       .catch(() => sendError(response, 500, 'InternalError'));
   });
+  const close=()=>new Promise((resolve,reject)=>{
+    server.close(error=>{objects.clear();rootKey.fill(0);error&&error.code!=='ERR_SERVER_NOT_RUNNING'?reject(error):resolve();});
+    server.closeAllConnections();
+  });
+  // Register before listen: a failed or interrupted partial start still has an owner.
+  own?.(close);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -156,6 +162,6 @@ export async function startS3ObjectServer({bucket, kmsKeyId}) {
     certificate,
     endpoint: 'https://127.0.0.1:' + server.address().port,
     credentials: {accessKeyId, secretAccessKey},
-    close() { server.close(); server.closeAllConnections(); objects.clear(); },
+    close,
   };
 }
