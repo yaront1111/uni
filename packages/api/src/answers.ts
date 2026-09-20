@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
 import { answerCandidateSchema, dataPurposeSchema, sensitivitySchema, type AnswerCandidate } from '@unai/domain';
@@ -7,7 +6,7 @@ import {
   type AnswerPhraser, type AnswerRecorder,
 } from '@unai/context';
 import type { ModelGateway } from '@unai/model';
-import { ingestAssistantMessage, type EvidenceObjects } from './evidence.js';
+import { GroundedTurnAdapter } from './grounded-turn.js';
 
 /**
  * Answer provenance at the HTTP boundary (design screen "Answer provenance";
@@ -15,8 +14,7 @@ import { ingestAssistantMessage, type EvidenceObjects } from './evidence.js';
  * ADR 0026).
  *
  *  - `createAnswerRecorder` is what the Ask route hands the pipeline: it stores
- *    the presented answer, and every model candidate, as assistant conversation
- *    evidence and records the manifest of the context supplied, in one
+ *    the validated presented turn as owner application conversation data and records the manifest of the context supplied, in one
  *    transaction under `answer.record` -- a purpose no request can declare.
  *  - `GET /v1/answers/{id}/manifest` and `GET /v1/answers/reconsideration-candidates`
  *    read them back under `memory.inspect`. Every field describes context
@@ -35,7 +33,7 @@ export type PurposeWork = (request: FastifyRequest, purpose: string,
 export const ANSWER_READ_PURPOSE = MEMORY_INSPECT_PURPOSE;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const key = (...parts: string[]) => createHash('sha256').update(parts.join('\u0000')).digest('hex');
+
 
 /**
  * The recorder for one Ask request. The data purpose and ceiling are the ones the
@@ -43,7 +41,8 @@ const key = (...parts: string[]) => createHash('sha256').update(parts.join('\u00
  * it was phrased from was: never under a wider purpose, never below its ceiling.
  */
 export function createAnswerRecorder(input: {
-  request: FastifyRequest; purposeWork: PurposeWork; objects: EvidenceObjects;
+  request: FastifyRequest; purposeWork: PurposeWork; conversationId?: string;
+  onRecorded?: (association: { conversationId: string; turnId: string }) => void;
   dataPurpose: string; maximumSensitivity: string;
 }): AnswerRecorder {
   const sensitivity = sensitivitySchema.parse(input.maximumSensitivity);
@@ -51,39 +50,10 @@ export function createAnswerRecorder(input: {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
       [input.dataPurpose, sensitivity]);
     const packetId = recording.packet.packetId;
-    const assistantId = recording.suppliedTo.modelProvider + ':' + recording.suppliedTo.modelId;
-    const answerExternalId = 'answer:' + packetId;
-    const presented = await ingestAssistantMessage(tx, input.objects, {
-      text: recording.answer.statements.map(statement => statement.text).join('\n'),
-      structure: {
-        role: 'PRESENTED_ANSWER', packetId, question: recording.answer.question,
-        groundingAction: recording.grounding.action,
-        statements: recording.answer.statements.map(statement => ({
-          statementId: statement.statementId, label: statement.label, text: statement.text })),
-      },
-      externalId: answerExternalId, parentExternalId: null, idempotencyKey: key(packetId, answerExternalId),
-      assistantId, sensitivity, allowedPurposes: [input.dataPurpose],
-    });
-    // A model's candidate is what the model said, whatever the validator then
-    // did with it; kept as its own assistant message, it can never be mistaken
-    // for a source (CRT-AI-01-A).
-    const candidates: string[] = [];
-    for (const candidate of recording.modelCandidates) {
-      const externalId = answerExternalId + ':candidate:' + candidate.attempt;
-      const stored = await ingestAssistantMessage(tx, input.objects, {
-        text: candidate.statements.map(statement => statement.text).join('\n'),
-        structure: {
-          role: 'MODEL_CANDIDATE', packetId, attempt: candidate.attempt, groundingOutcome: candidate.outcome,
-          statements: candidate.statements.map(statement => ({ label: statement.label, text: statement.text })),
-        },
-        externalId, parentExternalId: answerExternalId, idempotencyKey: key(packetId, externalId),
-        assistantId, sensitivity, allowedPurposes: [input.dataPurpose],
-      });
-      candidates.push(stored.evidenceId);
-    }
+    const association = await new GroundedTurnAdapter(input.conversationId).record(tx, recording, input);
     const { answerManifestId } = await recordAnswerManifest(tx, {
       ownerScopeId: tx.context.ownerScopeId, requestingActorId: tx.context.actorId, packetId,
-      conversationMessageId: presented.evidenceId, suppliedTo: recording.suppliedTo, grounding: recording.grounding,
+      conversationMessageId: null, ...association, suppliedTo: recording.suppliedTo, grounding: recording.grounding,
     });
     await tx.audit({
       policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
@@ -91,10 +61,11 @@ export function createAnswerRecorder(input: {
         { type: 'answer_manifests', id: answerManifestId, fields: ['belief_ids', 'claim_ids', 'evidence_ids',
           'overlay_delta_ids', 'packet_hash', 'grounding_validator_result'] },
         { type: 'context_packets', id: packetId, fields: ['packet', 'packet_hash'] },
-        ...[presented.evidenceId, ...candidates].slice(0, 98).map(id => ({ type: 'source_items', id,
-          fields: ['source_type', 'actor_ref', 'content_hash'] })),
+        { type: 'conversations', id: association.conversationId, fields: ['id'] },
+        { type: 'conversation_turns', id: association.turnId, fields: ['id', 'status'] },
       ],
     });
+    input.onRecorded?.(association);
     return { answerManifestId };
   }) as Promise<{ answerManifestId: string }>;
 }
@@ -117,7 +88,10 @@ export function registerAnswerRoutes(app: FastifyInstance, work: Work): void {
       if (found) {
         await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
           objects: [{ type: 'answer_manifests', id: found.answerManifestId, fields: ['belief_ids', 'claim_ids', 'evidence_ids',
-            'overlay_delta_ids', 'packet_hash', 'projection_versions', 'watermarks', 'grounding_validator_result'] }] });
+            'overlay_delta_ids', 'packet_hash', 'projection_versions', 'watermarks', 'grounding_validator_result'] },
+            ...(found.conversationId && found.turnId ? [
+              { type: 'conversations', id: found.conversationId, fields: ['id'] },
+              { type: 'conversation_turns', id: found.turnId, fields: ['id'] }] : [])] });
       }
       return found;
     }); } catch (error) {

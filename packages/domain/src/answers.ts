@@ -131,8 +131,10 @@ export const publicAnswerManifestSchema = z.strictObject({
     promptVersion: version,
     composerVersion: version,
   }),
-  /** The assistant conversation evidence the presented answer is stored as. */
-  conversationMessageId: z.uuid(),
+  /** Legacy evidence reference; null for conversation-backed provenance. */
+  conversationMessageId: z.uuid().nullable(),
+  conversationId: z.uuid().nullable().default(null),
+  turnId: z.uuid().nullable().default(null),
   groundingValidator: groundingResultSchema,
   reconsideration: z.strictObject({
     isCandidate: z.boolean(),
@@ -149,7 +151,9 @@ export const reconsiderationCandidatesViewSchema = z.strictObject({
   candidates: z.array(z.strictObject({
     answerManifestId: z.uuid(),
     contextPacketId: z.uuid(),
-    conversationMessageId: z.uuid(),
+    conversationMessageId: z.uuid().nullable(),
+    conversationId: z.uuid().nullable().default(null),
+    turnId: z.uuid().nullable().default(null),
     answeredAt: z.iso.datetime(),
     changes: z.array(reconsiderationChangeSchema).min(1).max(100),
   })).max(500),

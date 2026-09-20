@@ -15,11 +15,11 @@ export function conversationRow(row: Record<string, any>): Conversation {
 }
 export function conversationTurnRow(row: Record<string, any>): ConversationTurn {
   return conversationTurnSchema.parse({ id: row['id'], conversationId: row['conversation_id'], ownerScopeId: row['owner_scope_id'],
-    storedOrder: row['stored_order'], speaker: row['speaker'], text: row['text'], status: row['status'], createdAt: instant(row['created_at']) });
+    storedOrder: row['stored_order'], speaker: row['speaker'], text: row['text'], status: row['status'], ...(row['answer_manifest_id'] ? { answerManifestId: row['answer_manifest_id'] } : {}), createdAt: instant(row['created_at']) });
 }
 
 /** Caller supplies a live authenticated owner transaction. No pool, route, evidence
- * ingestion or memory writes. The future grounded-answer adapter owns acceptance
+ * ingestion or memory writes. The grounded-answer adapter owns acceptance
  * of assistant text; non-accepted candidates cannot be stored as transcript text. */
 export class ConversationService {
   constructor(private readonly tx: ControlTransaction) {}
@@ -43,8 +43,8 @@ export class ConversationService {
   async get(id: string): Promise<{ conversation: Conversation; turns: ConversationTurn[] }> {
     requirePurpose(this.tx, CONVERSATION_READ_PURPOSE);
     // One statement gives metadata and ordered children the same MVCC snapshot.
-    const row = (await this.tx.query(`SELECT c.*,coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.stored_order)
-      FROM conversation_turns t WHERE t.owner_scope_id=c.owner_scope_id AND t.conversation_id=c.id),'[]'::jsonb) AS turns
+    const row = (await this.tx.query(`SELECT c.*,coalesce((SELECT jsonb_agg(to_jsonb(t) || jsonb_build_object('answer_manifest_id',a.answer_manifest_id) ORDER BY t.stored_order)
+      FROM conversation_turns t LEFT JOIN answer_provenance a ON a.owner_scope_id=t.owner_scope_id AND a.turn_id=t.id WHERE t.owner_scope_id=c.owner_scope_id AND t.conversation_id=c.id),'[]'::jsonb) AS turns
       FROM conversations c WHERE c.owner_scope_id=$1 AND c.id=$2`, [this.owner, this.id(id)])).rows[0];
     if (!row) throw new ControlError('CONVERSATION_NOT_FOUND');
     return { conversation: conversationRow(row), turns: row['turns'].map(conversationTurnRow) };

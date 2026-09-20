@@ -20,7 +20,7 @@ import { ContextBrokerError } from './broker.js';
  * held, and no field of it says which item the model used.
  */
 
-export const MANIFEST_VERSION = 'answer-manifest-0.2.0';
+export const MANIFEST_VERSION = 'answer-manifest-0.3.0';
 /** The purpose an answer is recorded under. It is never a request purpose. */
 export const ANSWER_RECORD_PURPOSE = 'answer.record';
 
@@ -184,7 +184,9 @@ export interface RecordAnswerManifestInput {
   readonly requestingActorId: string;
   readonly packetId: string;
   /** The assistant conversation evidence the presented answer was stored as. */
-  readonly conversationMessageId: string;
+  readonly conversationMessageId: string | null;
+  readonly conversationId?: string;
+  readonly turnId?: string;
   readonly suppliedTo: { modelProvider: string; modelId: string; promptVersion: string; composerVersion: string };
   readonly grounding: GroundingResult;
 }
@@ -198,6 +200,9 @@ export interface RecordAnswerManifestInput {
 export async function recordAnswerManifest(tx: MemoryTransaction, input: RecordAnswerManifestInput): Promise<{
   answerManifestId: string; contextSupplied: SuppliedContext;
 }> {
+  if (input.conversationMessageId === null ? !input.conversationId || !input.turnId : input.conversationId || input.turnId) {
+    throw new ContextBrokerError('ANSWER_ASSOCIATION_INVALID');
+  }
   const persisted = await readPersistedPacket(tx, { ownerScopeId: input.ownerScopeId, packetId: input.packetId });
   const supplied = suppliedContextOf(persisted.packet, { registryReleaseId: persisted.registryReleaseId });
   const grounding = groundingResultSchema.parse(input.grounding);
@@ -212,6 +217,9 @@ export async function recordAnswerManifest(tx: MemoryTransaction, input: RecordA
       input.suppliedTo.composerVersion, supplied.beliefIds, supplied.claimIds, supplied.evidenceIds, supplied.overlayDeltaIds,
       JSON.stringify(supplied.projectionVersions), JSON.stringify(supplied.watermarks), supplied.registryRelease,
       supplied.registryReleaseId, JSON.stringify(grounding), MANIFEST_VERSION]);
+  if (input.conversationId && input.turnId) await tx.query(
+    'INSERT INTO answer_provenance(owner_scope_id,answer_manifest_id,conversation_id,turn_id) VALUES($1,$2,$3,$4)',
+    [input.ownerScopeId, answerManifestId, input.conversationId, input.turnId]);
   return { answerManifestId, contextSupplied: supplied };
 }
 
@@ -234,14 +242,18 @@ export async function readAnswerManifest(tx: MemoryTransaction, input: {
   ownerScopeId: string; answerManifestId: string;
 }): Promise<PublicAnswerManifest | null> {
   const row = (await tx.query(
-    `SELECT m.*,p.request FROM answer_manifests m
+    `SELECT m.*,p.request,a.conversation_id,a.turn_id FROM answer_manifests m
+     LEFT JOIN answer_provenance a ON a.owner_scope_id=m.owner_scope_id AND a.answer_manifest_id=m.id
      LEFT JOIN context_packets p ON p.owner_scope_id=m.owner_scope_id AND p.id=m.context_packet_id
      WHERE m.owner_scope_id=$1 AND m.id=$2`, [input.ownerScopeId, input.answerManifestId])).rows[0];
   if (!row) return null;
   try {
     await readPersistedPacket(tx, { ownerScopeId: input.ownerScopeId, packetId: row['context_packet_id'] as string });
-    const conversation = await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1 AND id=$2 AND deleted_at IS NULL',
-      [input.ownerScopeId, row['conversation_message_id']]);
+    const conversation = row['conversation_message_id']
+      ? await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1 AND id=$2 AND deleted_at IS NULL',
+        [input.ownerScopeId, row['conversation_message_id']])
+      : await tx.query('SELECT id FROM conversation_turns WHERE owner_scope_id=$1 AND conversation_id=$2 AND id=$3',
+        [input.ownerScopeId, row['conversation_id'], row['turn_id']]);
     if (conversation.rowCount !== 1) throw new ContextBrokerError('CONTEXT_PACKET_SOURCE_WITHHELD');
   } catch (error) {
     if (error instanceof ContextBrokerError && error.message === 'CONTEXT_PACKET_SOURCE_WITHHELD') {
@@ -271,6 +283,7 @@ export async function readAnswerManifest(tx: MemoryTransaction, input: {
       composerVersion: row['composer_version'],
     },
     conversationMessageId: row['conversation_message_id'],
+    conversationId: row['conversation_id'] ?? null, turnId: row['turn_id'] ?? null,
     groundingValidator: row['grounding_validator_result'],
     reconsideration: { isCandidate: changes.length > 0, changes },
     manifestVersion: row['manifest_version'],
@@ -293,9 +306,10 @@ export async function listReconsiderationCandidates(tx: MemoryTransaction, input
   const storedType = input.objectType === 'belief' ? 'proposition' : 'owner_overlay_delta';
   const rows = (await tx.query(
     `SELECT r.changed_object_type,r.changed_object_id,r.change_kind,r.detected_at,
-       m.id AS answer_manifest_id,m.context_packet_id,m.conversation_message_id,m.created_at AS answered_at
+       m.id AS answer_manifest_id,m.context_packet_id,m.conversation_message_id,a.conversation_id,a.turn_id,m.created_at AS answered_at
      FROM reconsideration_candidates r
      JOIN answer_manifests m ON m.owner_scope_id=r.owner_scope_id AND m.id=r.answer_manifest_id
+     LEFT JOIN answer_provenance a ON a.owner_scope_id=m.owner_scope_id AND a.answer_manifest_id=m.id
      WHERE r.owner_scope_id=$1 AND r.changed_object_type=$2 AND r.changed_object_id=$3
      ORDER BY m.created_at,m.id,r.detected_at,r.id`,
     [input.ownerScopeId, storedType, input.objectId])).rows;
@@ -311,7 +325,8 @@ export async function listReconsiderationCandidates(tx: MemoryTransaction, input
     }
     const entry = byManifest.get(manifestId) ?? {
       answerManifestId: manifestId, contextPacketId: row['context_packet_id'] as string,
-      conversationMessageId: row['conversation_message_id'] as string,
+      conversationMessageId: row['conversation_message_id'] as string | null,
+      conversationId: row['conversation_id'] as string | null ?? null, turnId: row['turn_id'] as string | null ?? null,
       answeredAt: (row['answered_at'] as Date).toISOString(), changes: [],
     };
     entry.changes.push(changeOf(row));

@@ -9,13 +9,14 @@ export const persistedConversationSchema = z.strictObject({
 export type Conversation = z.infer<typeof persistedConversationSchema>;
 export const conversationTurnStatusSchema = z.enum(['pending', 'accepted', 'unable', 'refused', 'failed']);
 export const conversationTurnContentSchema = z.strictObject({
-  text: z.string().min(1).max(20000).refine(text => text.trim().length > 0).nullable(), status: conversationTurnStatusSchema,
+  text: z.string().min(1).max(400199).refine(text => text.trim().length > 0).nullable(), status: conversationTurnStatusSchema,
 }).refine(t => t.status === 'accepted' ? t.text !== null : t.text === null, { message: 'CONVERSATION_TEXT_STATUS_INVALID' });
 export const appendConversationTurnSchema = conversationTurnContentSchema.safeExtend({ speaker: z.enum(['owner', 'assistant']) })
   .refine(t => t.speaker !== 'owner' || t.status === 'accepted', { message: 'OWNER_TURN_MUST_BE_ACCEPTED' });
 export const conversationTurnSchema = appendConversationTurnSchema.safeExtend({
   id: z.uuid(), conversationId: z.uuid(), ownerScopeId: z.uuid(), storedOrder: z.number().int().nonnegative(),
   createdAt: z.iso.datetime({ offset: true }),
+  answerManifestId: z.uuid().nullable().optional(),
 });
 export type ConversationTurn = z.infer<typeof conversationTurnSchema>;
 export type AppendConversationTurn = z.infer<typeof appendConversationTurnSchema>;

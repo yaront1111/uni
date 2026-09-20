@@ -1,5 +1,10 @@
 # Answer provenance: manifests, the grounding validator and reconsideration
 
+The conversation-backed recording path supersedes the historical evidence-ingestion
+design below; see [Conversation provenance](conversation-provenance.md) and migration
+`0037_conversation_answer_provenance.sql`. Existing evidence-backed manifests remain
+readable.
+
 Authority: goal-b2cc3b54-1876-401e-a6a2-527f99b679bc design v1, sealed graph
 3a910def2655f69aa3feb9855e481cbda6d643a7325e83e4844b56bd2351c494, node key
 `answer-manifests-grounding-validator-and-reconsideration`. This node owns

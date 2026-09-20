@@ -187,13 +187,9 @@ it.each(['sensitivity', 'purpose', 'knowledge-time'] as const)(
       expect(denied.json().composer.modelCalled).toBe(true);
       expect(captured.length).toBeGreaterThan(0);
       const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1', [denied.json().packetId])).rows[0].packet;
-      const answerObject = (await admin.query(`SELECT s.raw_object_ref FROM answer_manifests m
-        JOIN source_items s ON s.owner_scope_id=m.owner_scope_id AND s.id=m.conversation_message_id
-        WHERE m.id=$1`, [denied.json().answerManifestId])).rows[0].raw_object_ref;
-      const recorded = stored.get(answerObject);
+      const recorded = (await admin.query('SELECT text FROM conversation_turns WHERE id=$1', [denied.json().turnId])).rows[0].text;
       expect(recorded).toBeDefined();
-      const surfaces = [...captured.map(value => JSON.stringify(value)), JSON.stringify(packet), denied.body,
-        new TextDecoder().decode(recorded!)];
+      const surfaces = [...captured.map(value => JSON.stringify(value)), JSON.stringify(packet), denied.body, recorded];
       for (const surface of surfaces) {
         expect(surface).toContain('loan to repair the car');
         for (const marker of markers) expect(surface).not.toContain(marker);
