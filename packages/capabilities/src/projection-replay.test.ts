@@ -342,6 +342,9 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
       unai_private.capture_memory_object_state(),unai_private.memory_object_state(text,jsonb),
       unai_private.any_memory_object_removed(uuid,uuid[]),unai_private.stored_outcomes_readable(uuid,uuid[]),unai_private.aging_policy(uuid,text),
       unai_private.active_goal_priorities(uuid,uuid[],timestamptz,timestamptz),unai_private.proactive_attention_counts(uuid,date)`);
+  // Migration 0036's application transcripts are independent of canonical tables.
+  await admin!.query('DROP TABLE conversation_turns,conversations CASCADE');
+  await admin!.query('DROP FUNCTION unai_private.erase_conversation(uuid,uuid,uuid)');
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
@@ -352,7 +355,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0025_evaluation_and_metrics.sql', '0026_goals_decisions_and_mentor.sql', '0027_audit_trail.sql', '0028_performance_measurements.sql',
     '0029_derived_evidence_erasure.sql', '0030_memory_object_state_history.sql', '0031_durable_evidence_processing.sql',
     '0032_contextual_aging_policy_reader.sql', '0033_durable_owner_initiative.sql', '0034_goal_context_read_authority.sql',
-    '0035_shared_attention_counts.sql']);
+    '0035_shared_attention_counts.sql', '0036_conversations.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

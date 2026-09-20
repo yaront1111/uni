@@ -3,6 +3,7 @@ import { dataPurposeSchema, sensitivitySchema } from './evidence.js';
 import { actionRiskSchema } from './context.js';
 import { capabilityIdSchema, connectorStatusSchema, connectorTypeSchema } from './connectors.js';
 import { attentionBudgetSchema } from './review.js';
+import { persistedConversationSchema, conversationTurnSchema } from './conversations.js';
 
 /**
  * Governed action and the data-control surface (PRD §7.8, §8.4, §27, §29.3,
@@ -294,6 +295,8 @@ export const exportBundleSchema = z.strictObject({
   ownerScopeId: uuid,
   generatedAt: instant,
   evidence: z.array(exportEvidenceSchema),
+  conversations: z.array(persistedConversationSchema).default([]),
+  conversationTurns: z.array(conversationTurnSchema).default([]),
   canonicalMemory: z.strictObject({
     entities: z.array(row), entityAliases: z.array(row), frameInstances: z.array(row), frameInstanceRoles: z.array(row),
     beliefSlots: z.array(row), propositions: z.array(row), claims: z.array(row), beliefAssessments: z.array(row),
@@ -307,13 +310,18 @@ export const exportBundleSchema = z.strictObject({
 export type ExportBundle = z.infer<typeof exportBundleSchema>;
 
 export const deletionRequestSchema = z.strictObject({
-  evidenceIds: z.array(uuid).min(1).max(50),
+  evidenceIds: z.array(uuid).max(50).default([]),
+  conversationIds: z.array(uuid).max(50).default([]),
   /** The owner types the word: a deletion is never one accidental click. */
   confirmation: z.literal('DELETE'),
-});
-export const deletionPreviewRequestSchema = z.strictObject({ evidenceIds: z.array(uuid).min(1).max(50) });
+}).refine(input => input.evidenceIds.length + input.conversationIds.length > 0, { message: 'DELETION_SCOPE_REQUIRED' });
+export const deletionPreviewRequestSchema = z.strictObject({ evidenceIds: z.array(uuid).max(50).default([]),
+  conversationIds: z.array(uuid).max(50).default([]) })
+  .refine(input => input.evidenceIds.length + input.conversationIds.length > 0, { message: 'DELETION_SCOPE_REQUIRED' });
 /** What a deletion removed, as counts: never a value, an excerpt or a key. */
 export const cascadeCountsSchema = z.strictObject({
+  conversations: z.number().int().min(0).default(0),
+  conversationTurns: z.number().int().min(0).default(0),
   rawObjects: z.number().int().min(0),
   parsedContent: z.number().int().min(0),
   anchors: z.number().int().min(0),
@@ -343,6 +351,7 @@ export const deletionReceiptSchema = z.strictObject({
   status: z.enum(['PREVIEW', 'COMPLETED']),
   trigger: z.enum(['OWNER_REQUEST', 'RETENTION_POLICY']),
   evidenceIds: z.array(uuid),
+  conversationIds: z.array(uuid).default([]),
   cascade: cascadeCountsSchema,
   /** Every typed projection replayed from canonical memory afterwards. */
   projectionsRebuilt: z.array(z.string()),

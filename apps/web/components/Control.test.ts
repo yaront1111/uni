@@ -58,12 +58,12 @@ it('Permissions and integrations: sources with read and write scopes, sensitivit
   expect(permissions({view: null, error: 'Permissions could not be loaded. Please retry.'})).toContain('role="alert"');
 });
 
-const counts = {rawObjects: 1, parsedContent: 1, anchors: 2, claims: 1, unsupportedBeliefs: 2, beliefAssessments: 2,
+const counts = {conversations: 0, conversationTurns: 0, rawObjects: 1, parsedContent: 1, anchors: 2, claims: 1, unsupportedBeliefs: 2, beliefAssessments: 2,
   supportRows: 2, resolutionAssertions: 0, links: 0, embeddings: 1, summaries: 1, searchIndexEntries: 3, projectionRows: 1,
   threadMemberships: 1, aliases: 1, extractionRuns: 0, overlayTextsErased: 1, transactionPayloadsErased: 0, contextPacketsErased: 1,
   derivedRecords: 1};
 const receipt = (status: 'PREVIEW' | 'COMPLETED'): DeletionReceipt => ({requestId: status === 'PREVIEW' ? null : ID(7), status,
-  trigger: 'OWNER_REQUEST', evidenceIds: [ID(5)], cascade: counts,
+  trigger: 'OWNER_REQUEST', evidenceIds: [ID(5)], conversationIds: [], cascade: counts,
   projectionsRebuilt: status === 'PREVIEW' ? [] : ['obligations_projection'], auditRetainsPayload: false});
 const data = (props: Partial<DataControlProps>) => renderToStaticMarkup(createElement(DataControl,
   {state: 'IDLE', exportSummary: null, reindex: null, preview: null, receipt: null, error: null, ...props}));
