@@ -9,6 +9,7 @@ import {Navigation} from './Navigation';
  * revoked token, a failed sync and a disconnected source each say what happened
  * in text, never in colour alone. */
 export interface ConnectorsProps {
+  embedded?:boolean;
   connectors: PublicConnector[];
   /** The source whose capability grants are being edited, if any. */
   selected: PublicConnector | null;
@@ -37,6 +38,8 @@ const REFUSAL_TEXT: Record<string, string> = {
 };
 
 export function Connectors(props: ConnectorsProps) {
+  const Frame=props.embedded?'section':'main';
+  const Heading=props.embedded?'h2':'h1';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(props.error ?? '');
   async function post(path: string, body: Record<string, unknown>, purpose: string) {
@@ -59,11 +62,11 @@ export function Connectors(props: ConnectorsProps) {
     } finally {setBusy(false);}
   }
   const disabled = busy || props.state !== 'IDLE';
-  return <div className="shell"><a className="skip" href="#content">Skip to content</a>
+  return <div className={props.embedded?undefined:'shell'}>{!props.embedded&&<><a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    <Navigation current="connectors"/>
-    <main id="content" tabIndex={-1}>
-      <h1>Connected sources</h1>
+    <Navigation current="connectors"/></>}
+    <Frame id={props.embedded?'configuration-connectors':'content'} tabIndex={-1}>
+      <Heading>Connected sources</Heading>
       {error && <p role="alert">{error}</p>}
       {props.refusal && <p role="alert">
         {REFUSAL_TEXT[props.refusal.code] ?? 'The request was refused.'}
@@ -71,6 +74,24 @@ export function Connectors(props: ConnectorsProps) {
       </p>}
       {props.state === 'SYNCING' && <p role="status" aria-live="polite">Initial sync running. Reading only what you granted.</p>}
       {props.state === 'DISCONNECTING' && <p role="status" aria-live="polite">Disconnecting and revoking tokens.</p>}
+
+      <form className="card" onSubmit={event=>{event.preventDefault();const data=new FormData(event.currentTarget);
+        const secretRef=String(data.get('secretRef')??'').trim();
+        if(secretRef&&!/^secret:\/\/[^\s]+$/.test(secretRef)){setError('Enter a secrets-manager handle, never a token or password.');return;}
+        void post('connectors',{connectorType:data.get('connectorType'),externalAccountRef:data.get('externalAccountRef'),requestedCapabilities:[],secretRef:secretRef||null},'connector.manage');}}>
+        <h3>Connect a source</h3>
+        <label htmlFor="connect-type">Source type</label><select id="connect-type" name="connectorType" defaultValue="GMAIL">
+          <option value="GMAIL">Gmail</option><option value="GOOGLE_CALENDAR">Google Calendar</option><option value="GITHUB">GitHub</option>
+          <option value="DOCUMENT">Documents</option><option value="CONVERSATION">Conversation source</option>
+        </select>
+        <label htmlFor="connect-account">Account reference</label><input id="connect-account" name="externalAccountRef" required maxLength={512}/>
+        <details><summary>Existing credential reference</summary>
+          <p>If your deployment has provisioned this connection, enter its secrets-manager handle. Never enter a token or password.</p>
+          <label htmlFor="connect-secret">Secrets-manager handle (optional)</label><input id="connect-secret" name="secretRef" maxLength={512} autoComplete="off"/>
+        </details>
+        <p>After connecting, grant each capability separately. No access is granted by this form.</p>
+        <button type="submit" disabled={disabled}>Connect source</button>
+      </form>
 
       {props.connectors.length === 0
         ? <section className="card"><h2>No sources connected</h2>
@@ -91,7 +112,7 @@ export function Connectors(props: ConnectorsProps) {
               <dd>{connector.credentialHeld ? 'Held by the secrets manager' : 'None held'}</dd>
               <dt>Prompt-injection risk of this source</dt><dd>{connector.promptInjectionRisk}</dd>
             </dl>
-            <a href={'/connectors?connector=' + encodeURIComponent(connector.connectorId)}>Grant connector capabilities</a>
+            <a href={(props.embedded?'/admin/configuration':'/connectors')+'?connector=' + encodeURIComponent(connector.connectorId)}>Grant connector capabilities</a>
             {connector.status !== 'DISCONNECTED' && <>
               <button disabled={disabled} onClick={() => post('connectors/' + connector.connectorId + '/sync',
                 {mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE']}, 'connector.sync')}>Sync now</button>
@@ -123,7 +144,7 @@ export function Connectors(props: ConnectorsProps) {
       {props.selected && <CapabilityGrants connector={props.selected} disabled={disabled}
         onToggle={(capability, granted) => post('connectors/' + props.selected!.connectorId + '/capabilities',
           {capabilities: [{capabilityId: capability.capabilityId, granted}]}, 'connector.manage')}/>}
-    </main></div>;
+    </Frame></div>;
 }
 
 /** The "Grant connector capabilities" screen: one independent control per

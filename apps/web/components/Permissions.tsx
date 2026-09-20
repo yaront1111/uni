@@ -11,6 +11,7 @@ import {platformWrite, RefusedWrite} from './controlWrite';
  * taking effect on subsequent operations" confirmation. Status is words, never
  * colour alone. */
 export interface PermissionsProps {
+  embedded?:boolean;
   view: PermissionsView | null;
   /** Which setting the last save changed, for the confirmation state. */
   saved: 'SOURCES' | 'SENSITIVITY' | 'PLUGIN_CAPABILITIES' | 'ATTENTION_BUDGET' | 'RETENTION' | null;
@@ -32,6 +33,8 @@ const REFUSAL_TEXT: Record<string, string> = {
 const SENSITIVITIES = ['NORMAL', 'PRIVATE', 'RESTRICTED'] as const;
 
 export function Permissions(props: PermissionsProps) {
+  const Frame=props.embedded?'section':'main';
+  const Heading=props.embedded?'h2':'h1';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(props.error ?? '');
   async function save(saved: NonNullable<PermissionsProps['saved']>, path: string, purpose: string, body: unknown,
@@ -39,7 +42,7 @@ export function Permissions(props: PermissionsProps) {
     setBusy(true); setError('');
     try {
       const answer = await platformWrite(path, purpose, body, method);
-      if (answer) window.location.assign('/permissions?saved=' + saved);
+      if (answer) window.location.assign((props.embedded?'/admin/configuration':'/permissions')+'?saved=' + saved);
     } catch (caught) {
       setError(caught instanceof RefusedWrite
         ? REFUSAL_TEXT[caught.code] ?? 'The change was refused. Nothing was changed.'
@@ -47,11 +50,11 @@ export function Permissions(props: PermissionsProps) {
     } finally {setBusy(false);}
   }
   const view = props.view;
-  return <div className="shell"><a className="skip" href="#content">Skip to content</a>
+  return <div className={props.embedded?undefined:'shell'}>{!props.embedded&&<><a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    <Navigation current="permissions"/>
-    <main id="content" tabIndex={-1}>
-      <h1>Permissions and integrations</h1>
+    <Navigation current="permissions"/></>}
+    <Frame id={props.embedded?'configuration-permissions':'content'} tabIndex={-1}>
+      <Heading>Permissions and integrations</Heading>
       {error && <p role="alert">{error}</p>}
       {props.saved && <p role="status" aria-live="polite">
         {SAVED_TEXT[props.saved]} saved. The change takes effect on the next operation that uses it; nothing already
@@ -118,7 +121,7 @@ export function Permissions(props: PermissionsProps) {
                 {' on '}{request.requestedAt}</li>)}</ul>}
         </section>
       </>}
-    </main></div>;
+    </Frame></div>;
 }
 
 function AttentionBudgetEditor(props: {view: PermissionsView; busy: boolean; onSave(body: Record<string, number>): void}) {

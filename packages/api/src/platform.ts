@@ -29,6 +29,7 @@ import {enqueueEvidenceProcessing} from './processing-store.js';
 import {registerInitiativeRoutes} from './initiative-routes.js';
 import type {PolicyPorts} from '@unai/belief';
 import type {AnswerPhraser} from '@unai/context';
+import {registerVoiceSettingsRoutes} from './voice-settings.js';
 
 /** The owner's correction controls and their overlay read. One purpose covers
  * both directions of the same surface: the write records the delta and the read
@@ -55,7 +56,7 @@ function withRequestEventKind(tx:OwnerTransaction,method:string):OwnerTransactio
 
 /** Every purpose a request may declare. A purpose missing here is refused at the
  * boundary (`ACCESS_DENIED`) before any route runs. */
-export const PLATFORM_PURPOSES:ReadonlySet<string>=new Set(['device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
+export const PLATFORM_PURPOSES:ReadonlySet<string>=new Set(['settings.voice','device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
   CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
   'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
   CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
@@ -100,6 +101,7 @@ export function routePurpose(method:string,url:string|undefined):string|null{
     url==='/v1/answers/reconsideration-candidates'?ANSWER_READ_PURPOSE:
     url==='/v1/memory/inbox'?INBOX_PURPOSE:
     url==='/v1/memory/inbox/cards/:id/decide'?INBOX_PURPOSE:
+    url==='/v1/settings/voice'?'settings.voice':
     url==='/v1/settings/attention-budgets'?ATTENTION_SETTINGS_PURPOSE:
     url==='/v1/settings/initiative'?ATTENTION_SETTINGS_PURPOSE:
     url==='/v1/initiative/watches'&&method==='POST'?CORRECTION_PURPOSE:
@@ -190,6 +192,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       return run(withRequestEventKind(tx,request.method),session.id);
     });
   }
+  registerVoiceSettingsRoutes(app,deviceWork);
   app.get('/v1/devices',async request=>deviceWork(request,async(tx)=>{
     const rows=(await tx.query('SELECT id,display_name,device_kind,last_seen_at FROM devices WHERE owner_scope_id=$1 AND user_id=$2 AND removed_at IS NULL ORDER BY last_seen_at DESC',[tx.context.ownerScopeId,tx.context.actorId])).rows;
     const devices=rows.map(row=>publicDeviceSchema.parse({id:row.id,displayName:row.display_name,kind:row.device_kind,lastSeenAt:row.last_seen_at.toISOString()}));
@@ -251,7 +254,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId,evidenceObjects:options.evidenceObjects});
   registerOpsRoutes(app,deviceWork);
-  registerMetricsRoutes(app,deviceWork);
+  registerMetricsRoutes(app,deviceWork,options.answerPhraser);
   registerProjectionRoutes(app,deviceWork);
   registerContextRoutes(app,deviceWork,{
     ...(options.policyPorts?{policyPorts:options.policyPorts}:{}),

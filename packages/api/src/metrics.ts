@@ -4,6 +4,7 @@ import {metricsViewSchema,publicShadowRunSchema,shadowRunsViewSchema,
   type MetricKey,type MetricValue,type MetricsView} from '@unai/domain';
 import {uuidV7} from '../../../src/kernel/identities.js';
 import {readPerformance} from './performance.js';
+import {ASK_COMPOSER_VERSION,DETERMINISTIC_COMPOSER_PROVIDER,type AnswerPhraser} from '@unai/context';
 
 type Work=(request:FastifyRequest,run:(tx:OwnerTransaction,sessionId:string)=>Promise<unknown>)=>Promise<unknown>;
 
@@ -108,7 +109,7 @@ function instant(value:unknown):Date|null{
   return Number.isNaN(parsed.getTime())?null:parsed;
 }
 
-export function registerMetricsRoutes(app:FastifyInstance,work:Work){
+export function registerMetricsRoutes(app:FastifyInstance,work:Work,phraser?:AnswerPhraser){
   /** Design screen "Metrics and cost". The window defaults to the last 30 days. */
   app.get<{Querystring:{windowStart?:string;windowEnd?:string}}>('/v1/ops/metrics',async(request,reply)=>{
     const now=new Date();
@@ -117,7 +118,9 @@ export function registerMetricsRoutes(app:FastifyInstance,work:Work){
     if(!windowStart||!windowEnd||windowStart>=windowEnd||windowEnd.getTime()-windowStart.getTime()>MAX_WINDOW_MS){
       return reply.code(400).send({code:'METRICS_WINDOW_INVALID'});
     }
-    return work(request,tx=>readEconomicAndQualityMetrics(tx,{windowStart,windowEnd}));
+    return work(request,async tx=>metricsViewSchema.parse({...await readEconomicAndQualityMetrics(tx,{windowStart,windowEnd}),
+      answeringModel:phraser?{provider:phraser.modelProvider,model:phraser.modelId,mode:'model'}:
+        {provider:DETERMINISTIC_COMPOSER_PROVIDER,model:ASK_COMPOSER_VERSION,mode:'deterministic'}}));
   });
   /** The recorded shadow evaluation runs (design screen "Registry release and
    * migration"): counts of what changed and whether production stayed

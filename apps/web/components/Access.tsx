@@ -3,7 +3,9 @@ import {signIn,signOut} from 'next-auth/react';
 import type {PublicDevice} from '@unai/domain';
 import {Navigation} from './Navigation';
 export type AccessState='signed-out'|'signing-in'|'expired'|'refused'|'desktop'|'phone';
-export function Access(props:{state:AccessState;devices:PublicDevice[];registered:boolean;currentDeviceId?:string|null;ownerScopeId?:string|null;error?:string}){
+export function Access(props:{embedded?:boolean;state:AccessState;devices:PublicDevice[];registered:boolean;currentDeviceId?:string|null;ownerScopeId?:string|null;error?:string}){
+  const Frame=props.embedded?'section':'main';
+  const Heading=props.embedded?'h2':'h1';
   const [state,setState]=useState(props.state),[busy,setBusy]=useState(false),[error,setError]=useState(props.error??'');
   const signedIn=state==='desktop'||state==='phone';
   async function login(){setState('signing-in');try{await signIn('google',{callbackUrl:'/'});}catch{setState('refused');}}
@@ -16,13 +18,13 @@ export function Access(props:{state:AccessState;devices:PublicDevice[];registere
       window.location.reload();
     }catch{setError('The request could not be completed. Please retry.');}finally{setBusy(false);}
   }
-  return <div className="shell">
+  return <div className={props.embedded?undefined:'shell'}>{!props.embedded&&<>
     <a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    {signedIn&&<Navigation current="devices"/>}
-    <main id="content" tabIndex={-1}>
+    {signedIn&&<Navigation current="devices"/>}</>}
+    <Frame id={props.embedded?'configuration-devices':'content'} tabIndex={-1}>
       <p className="eyebrow">YOUR SPACE, ACROSS DEVICES</p>
-      <h1>{signedIn?'Your devices':'Welcome to Uai'}</h1>
+      <Heading>{signedIn?'Your devices':'Welcome to Uai'}</Heading>
       {!signedIn&&<section className="card">
         <p>Sign in to your private workspace on desktop or phone.</p>
         <div role="status" aria-live="polite">
@@ -53,6 +55,6 @@ export function Access(props:{state:AccessState;devices:PublicDevice[];registere
         <div className="actions"><button disabled={busy} onClick={()=>void signOut({callbackUrl:'/signin'})}>Sign out</button><button disabled={busy} onClick={()=>{if(window.confirm('Sign out on every device?'))void action('sessions/revoke-all','auth.sign_out_all',{});}}>Sign out all devices</button></div>
       </>}
       {error&&<p role="alert">{error}</p>}
-    </main><footer>Your session lasts up to seven days. Removing a device signs out its sessions.</footer>
+    </Frame>{!props.embedded&&<footer>Your session lasts up to seven days. Removing a device signs out its sessions.</footer>}
   </div>;
 }
