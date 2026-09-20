@@ -36,7 +36,7 @@ it('refuses mappings whose query omitted deletion state',async()=>{
   expect(()=>verify([{object_store_key:live.object_store_key,encryption_key_ref:live.encryption_key_ref,content_hash:live.content_hash}],
     [object],'kms:real-test')).toThrow('BACKUP_EVIDENCE_DELETION_STATE_MISMATCH');
 });
-it.each([live,deleted])('never bypasses provider validation for an unknown live or deleted mapping',async(mapping)=>{
+it.each([{state:'live',mapping:live},{state:'deleted',mapping:deleted}])('never bypasses provider validation for an unknown $state mapping',async({mapping})=>{
   const verify=await verifier();
   expect(()=>verify([live,{...mapping,encryption_key_ref:'kms:unknown'}],[object],'kms:real-test')).toThrow('BACKUP_UNKNOWN_OBJECT_PROVIDER');
 });
