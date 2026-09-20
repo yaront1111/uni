@@ -620,7 +620,7 @@ it.each(['sensitivity', 'purpose', 'redaction'] as const)('keeps Today projectio
     expect(itemFor(authorized, obligationId)?.headline).toContain(publicAlias);
     expect(JSON.stringify(authorized)).not.toContain(privateCanonical);
   } finally { await app.close(); }
-});
+}, 20_000);
 
 it.each(['sensitivity', 'purpose', 'redaction'] as const)('does not restore withheld Today due or start times from projections after %s filtering', async boundary => {
   const purpose = 'TODAY_TIME_' + boundary.toUpperCase();

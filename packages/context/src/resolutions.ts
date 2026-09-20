@@ -7,17 +7,22 @@ export async function readableResolutions(tx: MemoryTransaction, input: {
   readableEvidenceIds: readonly string[]; withheldObjectIds: ReadonlySet<string>; removedObjectIds: ReadonlySet<string>;
 }) {
   if (input.frameIds.length === 0) return [];
-  const rows = (await tx.query(`SELECT r.id,r.claim_id,a.source_item_id,r.source_frame_instance_id,
+  const rows = (await tx.query(`WITH resolution_sources AS MATERIALIZED (
+      SELECT r.owner_scope_id,r.id,r.claim_id,a.source_item_id,r.source_frame_instance_id,
+        r.target_frame_instance_id,r.outcome_code,r.effective_at,r.transition_contract_id
+      FROM resolution_assertions r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
+      JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+      WHERE r.owner_scope_id=$1
+        AND (r.source_frame_instance_id=ANY($2::uuid[]) OR r.target_frame_instance_id=ANY($2::uuid[]))
+        AND r.recorded_at<=$3 AND c.recorded_at<=$3 AND r.effective_at<=$4
+        AND a.source_item_id=ANY($5::uuid[])
+    )
+    SELECT r.id,r.claim_id,r.source_item_id,r.source_frame_instance_id,
       r.target_frame_instance_id,r.outcome_code,r.effective_at,r.transition_contract_id,
       unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3)->>'lifecycle' AS lifecycle
-    FROM resolution_assertions r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
-    JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-    WHERE r.owner_scope_id=$1
-      AND (r.source_frame_instance_id=ANY($2::uuid[]) OR r.target_frame_instance_id=ANY($2::uuid[]))
-      AND r.recorded_at<=$3 AND c.recorded_at<=$3 AND r.effective_at<=$4
-      AND unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3) IS NOT NULL
-      AND unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3) IS NOT NULL
-      AND a.source_item_id=ANY($5::uuid[])
+    FROM resolution_sources r
+    WHERE unai_private.object_state_at(r.owner_scope_id,'resolution_assertions',r.id,$3) IS NOT NULL
+      AND unai_private.object_state_at(r.owner_scope_id,'claims',r.claim_id,$3) IS NOT NULL
     ORDER BY r.effective_at,r.id`, [input.ownerScopeId, [...input.frameIds], input.knowledgeTime,
     input.worldTime, [...input.readableEvidenceIds]])).rows;
   return rows.filter(row => [row['id'], row['claim_id'], row['source_frame_instance_id'], row['target_frame_instance_id']]
