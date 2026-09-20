@@ -11,7 +11,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     if(!session)return res.status(401).json({code:'SESSION_EXPIRED'});
     const path=Array.isArray(req.query.path)?req.query.path.join('/'):'';
     // Settings and existing initiative watches are PATCH routes; a new watch is POST.
-    const settings=/^settings\/(attention-budgets|retention|domain-sensitivity|initiative)$/.test(path);
+    const settings=/^settings\/(attention-budgets|retention|domain-sensitivity|initiative|voice)$/.test(path);
     const initiativeWatch=/^initiative\/watches\/[0-9a-f-]{36}$/i.test(path);
     if(req.method!==((settings||initiativeWatch)?'PATCH':'POST'))return res.status(405).json({code:'METHOD_REFUSED'});
     if(req.headers.origin!==new URL(required('NEXTAUTH_URL')).origin)return res.status(403).json({code:'ORIGIN_REFUSED'});
@@ -28,6 +28,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       path==='decisions'||/^decisions\/[0-9a-f-]{36}\/review$/i.test(path)?'decisions.record':
       // Governed action and the data-control surface (ADR 0030).
       // The attention budget is the memory inbox's setting (ADR 0029), changed here too.
+      path==='settings/voice'?'settings.voice':
       path==='settings/attention-budgets'||path==='settings/initiative'?'settings.attention':
       path==='initiative/watches'||initiativeWatch?'memory.correct':
       settings||path==='plugin-capabilities'?'permissions.manage':

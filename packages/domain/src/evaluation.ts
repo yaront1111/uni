@@ -381,6 +381,7 @@ export const performanceMeasurementSchema = z.strictObject({
 export type PerformanceMeasurement = z.infer<typeof performanceMeasurementSchema>;
 
 export const metricsViewSchema = z.strictObject({
+  answeringModel:z.strictObject({provider:z.string().min(1).max(256),model:z.string().min(1).max(256),mode:z.enum(['model','deterministic'])}).optional(),
   windowStart: z.iso.datetime(),
   windowEnd: z.iso.datetime(),
   metricsVersion: versionLabel,

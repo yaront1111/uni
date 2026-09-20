@@ -18,3 +18,4 @@ export { DATA_DELETE_PURPOSE, DATA_EXPORT_PURPOSE, liveEvidenceExists, eraseEvid
 export { buildExportBundle } from './export.js';
 export { ConversationService, CONVERSATION_READ_PURPOSE, CONVERSATION_WRITE_PURPOSE } from './conversations.js';
 export { MEMORY_REINDEX_PURPOSE, MEMORY_GOVERN_PURPOSE, dropSemanticIndex, regenerateSemanticIndex } from './reindex.js';
+export {readVoiceSettings,updateVoiceSettings} from './voice.js';

@@ -326,7 +326,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     DROP INDEX audit_events_objects;
     DROP FUNCTION unai_private.audit_event_defaults(), unai_private.audit_event_immutable(), unai_private.audit_event_kind(text)`);
 
-  await admin!.query('DROP TABLE initiative_receipts,initiative_watches,initiative_settings CASCADE');
+  await admin!.query('DROP TABLE voice_settings,initiative_receipts,initiative_watches,initiative_settings CASCADE');
   await admin!.query('DROP TABLE performance_measurements CASCADE');
   await admin!.query(`DROP TRIGGER triage_processing_intent ON triage_decisions;
     DROP FUNCTION unai_private.record_processing_intent(),unai_private.processing_release_version(uuid);
@@ -355,7 +355,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0025_evaluation_and_metrics.sql', '0026_goals_decisions_and_mentor.sql', '0027_audit_trail.sql', '0028_performance_measurements.sql',
     '0029_derived_evidence_erasure.sql', '0030_memory_object_state_history.sql', '0031_durable_evidence_processing.sql',
     '0032_contextual_aging_policy_reader.sql', '0033_durable_owner_initiative.sql', '0034_goal_context_read_authority.sql',
-    '0035_shared_attention_counts.sql', '0036_conversations.sql', '0037_conversation_answer_provenance.sql']);
+    '0035_shared_attention_counts.sql', '0036_conversations.sql', '0037_conversation_answer_provenance.sql', '0038_owner_voice_settings.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry
