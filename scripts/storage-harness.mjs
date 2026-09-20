@@ -46,7 +46,10 @@ function temporaryDirectory(){
 /** The suite always runs against real TLS and real KMS-encrypted object storage.
  * MinIO serves that whenever a container daemon is reachable; the in-process
  * S3-compatible server serves it when one is not. Neither is a production store. */
-export async function startStorageHarness(){
+export async function startStorageHarness(options={}){
+  // The dev runtime deliberately uses the existing in-process encrypted store:
+  // no MinIO credential values in Docker environment/inspect or a second image.
+  if(options.privateRuntime)return startPrivateObjectServer(options.privateRuntime);
   if(!containerDaemonReachable())return startLocalObjectServer();
   // A container daemon that is reachable can still refuse this particular
   // container -- it is busy starting another one, the port it picked was taken,
@@ -59,6 +62,15 @@ export async function startStorageHarness(){
     console.log('Container object storage was refused ('+error.message+'); using the in-process server.');
     return startLocalObjectServer();
   }
+}
+
+async function startPrivateObjectServer({resources,directory,writeProtected}){
+  const kmsKeyId='arn:aws:kms:unai-disposable-'+randomUUID();
+  const server=await startS3ObjectServer({bucket:BUCKET,kmsKeyId,
+    own:close=>resources.own('object-store','local-s3',close)});
+  const authority=join(directory,'storage.crt');
+  writeProtected(authority,server.certificate);
+  return {...server,bucket:BUCKET,kmsKeyId,authority,description:'disposable in-memory TLS/AES-256-GCM object storage'};
 }
 
 async function startLocalObjectServer(){
