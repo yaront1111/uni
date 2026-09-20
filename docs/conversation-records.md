@@ -82,3 +82,8 @@ unfiltered foreign-owner and missing-context reads for both new tables.
 The required gate for this node is **`pnpm test`**. Product-wide UI, speech,
 accessibility, launch, provenance, and other nodes' acceptance remain assigned to
 their sealed-plan owners; this report does not claim those checks.
+
+Grounded answer integration is now described in [Conversation provenance](conversation-provenance.md).
+It adds an optional `answerManifestId` to answered turns and purpose/sensitivity
+scopes to newly grounded transcript rows. Set `unai.data_purpose` and
+`unai.maximum_sensitivity` in the transaction before reading those turns.

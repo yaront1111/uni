@@ -21,6 +21,7 @@ import { loadRegistryRelease, publishRegistryRelease } from '../../registry/src/
 import { createModelGateway, MODEL_PURPOSES, type ModelProvider } from '@unai/model';
 import { SUPPLIED_CONTEXT_STATEMENT, type AnswerCandidate, type AnswerCandidateStatement } from '@unai/domain';
 import type { AnswerPhraser } from '@unai/context';
+import { ConversationService } from '@unai/control';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { createPlatformApi } from './platform.js';
 import { createGatewayAnswerPhraser } from './answers.js';
@@ -39,7 +40,7 @@ import type { EvidenceObjects } from './evidence.js';
  *  - CRT-RD-08-A: the grounding validator blocks, downgrades or regenerates each of
  *    the five failures.
  *  - CRT-AI-01-A: a fact the model invents is stored only as assistant
- *    conversation evidence, becomes no belief, and is never cited later.
+ *    absent from evidence and transcripts, becomes no belief, and is never cited later.
  *  - CRT-RD-11-A: after a belief changes materially, the reconsideration query
  *    returns exactly the answers whose manifests contained it.
  *  - CRT-RYW-05-A: evidence that contradicts a pending delta leaves it CONTESTED,
@@ -105,7 +106,7 @@ async function item(externalId: string, sourceType: string, sensitivity: string,
   await admin.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,
     raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key,occurred_at)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'evidence-json-v1',$12,$13)`,
-    [evidenceId, owner, connectorId, sourceType, externalId, JSON.stringify({ type: 'USER', id: actor }), actor, randomUUID(),
+    [evidenceId, owner, connectorId, sourceType, externalId, JSON.stringify({ type: sourceType === 'ASSISTANT_CONVERSATION' ? 'ASSISTANT' : 'USER', id: actor }), actor, randomUUID(),
       randomBytes(32).toString('hex'), sensitivity, purposes, randomUUID(), T('2026-01-20')]);
   await admin.query(`INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor)
     VALUES($1,$2,$3,'MESSAGE_SPAN','{"start":0,"end":40}')`, [anchorId, owner, evidenceId]);
@@ -441,11 +442,9 @@ it('[AC44.20] CRT-RD-06-A, CRT-RD-07-A: an answer has a manifest equal to its pe
     expect((await app.inject({ method: 'GET', url: '/v1/answers/' + answer.answerManifestId + '/manifest', headers: headers('memory.read') })).statusCode).toBe(403);
     expect((await app.inject({ method: 'GET', url: '/v1/answers/' + randomUUID() + '/manifest', headers: headers('memory.inspect') })).statusCode).toBe(404);
 
-    // The presented answer is assistant conversation evidence, routed SOURCE_ONLY.
-    const message = (await admin.query('SELECT s.actor_ref,s.source_type,t.tier1_route,t.routing_reason FROM source_items s JOIN triage_decisions t ON t.owner_scope_id=s.owner_scope_id AND t.source_item_id=s.id WHERE s.id=$1',
-      [row.conversation_message_id])).rows[0];
-    expect(message).toMatchObject({ source_type: 'ASSISTANT_CONVERSATION', actor_ref: { type: 'ASSISTANT' }, tier1_route: 'SOURCE_ONLY',
-      routing_reason: { code: 'ASSISTANT_AUTHORED' } });
+    const message = (await admin.query('SELECT * FROM conversation_turns WHERE id=$1', [answer.turnId])).rows[0];
+    expect(message).toMatchObject({ speaker: 'assistant', status: 'accepted', text: said(answer) });
+    expect(row.conversation_message_id).toBeNull();
   } finally { await app.close(); }
 });
 
@@ -542,36 +541,22 @@ it('CRT-RD-08-A: content from a sensitivity scope absent from the packet is bloc
   }
 });
 
-it('[AC44.15] CRT-AI-01-A: an invented personal fact is stored only as assistant conversation evidence, never believed, never cited', async () => {
+it('[AC44.15] CRT-AI-01-A: candidate text creates no evidence or memory; legacy assistant evidence remains barred from belief', async () => {
   const invented = statement('You also owe Dana ILS 450 for the concert tickets.', 'CONFIRMED', []);
   let app = api(scripted([invented]));
-  let packetId = '';
+  const before = await assistantItems();
   try {
     const answer = await ask(app, 'Do I still owe Daniel?');
-    packetId = answer.packetId;
     expect(said(answer)).not.toMatch(/Dana|450/);
+    expect(await assistantItems()).toEqual(before);
+    const transcript = (await admin.query('SELECT text FROM conversation_turns WHERE conversation_id=$1', [answer.conversationId])).rows;
+    expect(JSON.stringify(transcript)).not.toMatch(/Dana|450/);
   } finally { await app.close(); }
 
-  // What the model said is kept, as what it is: an assistant message.
-  const items = await assistantItems();
-  const candidates = items.filter(row => row.external_id.startsWith('answer:' + packetId + ':candidate:'));
-  expect(candidates).toHaveLength(2);
-  for (const row of candidates) {
-    expect(row).toMatchObject({ source_type: 'ASSISTANT_CONVERSATION', actor_ref: { type: 'ASSISTANT', id: 'fixture-model:fixture-model-1' } });
-    expect(Buffer.from(stored.get(row.raw_object_ref)!).toString('utf8')).toContain('Dana ILS 450');
-  }
-  const ids = items.map(row => row.id);
-  // Routed SOURCE_ONLY: no extraction is ever scheduled over it.
-  expect((await admin.query('SELECT DISTINCT tier1_route FROM triage_decisions WHERE owner_scope_id=$1 AND source_item_id=ANY($2::uuid[])',
-    [owner, ids])).rows).toEqual([{ tier1_route: 'SOURCE_ONLY' }]);
-  // No claim rests on it, so no belief and no support row can.
-  expect((await admin.query(`SELECT count(*)::int AS n FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-    WHERE c.owner_scope_id=$1 AND a.source_item_id=ANY($2::uuid[])`, [owner, ids])).rows[0].n).toBe(0);
-
-  // Nor can a governed write make one out of it: a claim anchored in the
-  // assistant's message is never support, whatever origin it declares.
-  const anchor = (await admin.query(`SELECT id FROM source_anchors WHERE owner_scope_id=$1 AND source_item_id=$2`,
-    [owner, candidates[0]!.id])).rows[0].id as string;
+  // Explicit historical fixture, independent of the current Ask recording path.
+  const legacy = await item('legacy-assistant', 'ASSISTANT_CONVERSATION', 'PRIVATE', [FINANCE]);
+  const candidates = [{ id: legacy.evidenceId }];
+  const anchor = legacy.anchorId;
   const governed = (key: string) => headers('memory.govern', { 'idempotency-key': key, 'x-data-purpose': FINANCE, 'x-maximum-sensitivity': 'PRIVATE' });
   app = api();
   try {
@@ -726,15 +711,12 @@ it('CRT-RD-06-A: a gateway-phrased answer records the model and prompt it was su
   } finally { await app.close(); }
 });
 
-it('refuses to answer where no answer could be recorded', async () => {
+it('records answers without evidence object storage', async () => {
   const app = api(undefined, null);
   try {
-    const before = (await admin.query('SELECT count(*)::int AS n FROM context_packets WHERE owner_scope_id=$1', [owner])).rows[0].n;
-    const response = await app.inject({ method: 'POST', url: '/v1/ask', headers: headers('memory.read'), payload: {
-      ownerScopeId: owner, question: 'Do I still owe Daniel?', purpose: FINANCE, worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE' } });
-    expect(response.statusCode).toBe(503);
-    expect(response.json()).toMatchObject({ code: 'ANSWER_RECORDING_UNAVAILABLE' });
-    expect((await admin.query('SELECT count(*)::int AS n FROM context_packets WHERE owner_scope_id=$1', [owner])).rows[0].n).toBe(before);
+    const answer = await ask(app, 'Do I still owe Daniel?');
+    expect(answer.turnId).toMatch(UUID);
+    expect((await manifestRow(answer.answerManifestId)).conversation_message_id).toBeNull();
   } finally { await app.close(); }
 });
 
@@ -792,4 +774,144 @@ it('CRT-RD-06-A: every answer generated in this suite has a manifest equal to it
   expect((await admin.query(`SELECT count(*)::int AS n FROM context_packets p WHERE p.owner_scope_id=$1
     AND NOT EXISTS(SELECT 1 FROM answer_manifests m WHERE m.owner_scope_id=p.owner_scope_id AND m.context_packet_id=p.id)`,
     [owner])).rows[0].n).toBe(0);
+});
+
+it('verify-a3-provenance: For every answered turn, its manifest and grounding result are retrievable and belong to that turn.', async () => {
+  const app = api();
+  try {
+    const answer = await ask(app, 'Do I still owe Daniel?');
+    expect(answer.conversationId).toMatch(UUID);
+    expect(answer.turnId).toMatch(UUID);
+    const read = await app.inject({ method: 'GET', url: '/v1/answers/' + answer.answerManifestId + '/manifest', headers: headers('memory.inspect') });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json()).toMatchObject({ conversationId: answer.conversationId, turnId: answer.turnId,
+      conversationMessageId: null, groundingValidator: answer.grounding });
+    const turns = (await admin.query('SELECT * FROM conversation_turns WHERE conversation_id=$1 ORDER BY stored_order', [answer.conversationId])).rows;
+    expect(turns.map(t => t.speaker)).toEqual(['owner', 'assistant']);
+    expect(turns[1]).toMatchObject({ id: answer.turnId, status: 'accepted', text: said(answer) });
+    const next = await ask(app, 'Do I still owe Daniel?', { conversationId: answer.conversationId });
+    expect(next.conversationId).toBe(answer.conversationId);
+    expect(next.turnId).not.toBe(answer.turnId);
+  } finally { await app.close(); }
+});
+
+it('verify-a3-audit: Audit records for each answered turn contain matching conversation id and turn id.', async () => {
+  const app = api();
+  try {
+    const answer = await ask(app, 'Do I still owe Daniel?');
+    const audits = (await admin.query(`SELECT purpose,objects_and_fields_accessed AS objects FROM audit_events
+      WHERE owner_scope_id=$1 AND objects_and_fields_accessed @> $2::jsonb`,
+      [owner, JSON.stringify([{ type: 'answer_manifests', id: answer.answerManifestId }])])).rows;
+    expect(audits.map(a => a.purpose)).toEqual(expect.arrayContaining(['answer.record', 'memory.read']));
+    for (const audit of audits) expect(audit.objects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'conversations', id: answer.conversationId }),
+      expect.objectContaining({ type: 'conversation_turns', id: answer.turnId }),
+    ]));
+  } finally { await app.close(); }
+});
+
+async function conversationIsolationSnapshot() {
+  const result: Record<string, unknown[]> = {};
+  for (const table of ['source_items', 'source_anchors', 'evidence_ingestion_receipts', 'evidence_object_keys',
+    'triage_decisions', 'extraction_runs', 'claims', 'propositions', 'belief_assessments', 'belief_support',
+    'belief_transactions', 'belief_transaction_operations', 'owner_overlay_deltas', 'memory_embeddings',
+    'frame_instances', 'entities', 'recommendation_artifacts', 'drafts']) {
+    result[table] = (await admin.query(`SELECT to_jsonb(t) AS row FROM ${table} t WHERE owner_scope_id=$1 ORDER BY to_jsonb(t)::text`, [owner])).rows;
+  }
+  return result;
+}
+
+it.each(['accepted', 'refused', 'regenerated'] as const)('conversation %s with model candidates creates zero evidence, memory or proposal rows', async outcome => {
+  const candidate = outcome === 'accepted'
+    ? statement('Last recorded: obligation principal amount is ILS 60.00.', 'CONFIRMED', [ref(p.principal)])
+    : outcome === 'refused' ? statement('rejected-candidate-secret 999', 'CONFIRMED', [ref(p.restricted)])
+      : statement('rejected-candidate-secret 450', 'CONFIRMED', []);
+  const phraser = scripted([candidate]);
+  const app = api(phraser);
+  try {
+    const before = await conversationIsolationSnapshot();
+    const answer = await ask(app, 'Do I still owe Daniel?');
+    expect(phraser.calls).toBeGreaterThan(0);
+    expect(await conversationIsolationSnapshot()).toEqual(before);
+    expect(answer.grounding.action).toBe(outcome === 'accepted' ? 'DOWNGRADED' : outcome === 'refused' ? 'BLOCKED' : 'REGENERATED');
+    const read = await app.inject({ method: 'GET', url: '/v1/answers/' + answer.answerManifestId + '/manifest', headers: headers('memory.inspect') });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json()).toMatchObject({ conversationId: answer.conversationId, turnId: answer.turnId, groundingValidator: answer.grounding });
+    const transcript = (await admin.query('SELECT * FROM conversation_turns WHERE conversation_id=$1 ORDER BY stored_order', [answer.conversationId])).rows;
+    expect(JSON.stringify(transcript)).not.toContain('rejected-candidate-secret');
+    expect(transcript[1]).toMatchObject({ id: answer.turnId, status: outcome === 'refused' ? 'refused' : 'accepted',
+      text: outcome === 'refused' ? null : said(answer) });
+    const audits = (await admin.query(`SELECT objects_and_fields_accessed AS objects FROM audit_events
+      WHERE owner_scope_id=$1 AND objects_and_fields_accessed @> $2::jsonb`,
+      [owner, JSON.stringify([{ type: 'answer_manifests', id: answer.answerManifestId }])])).rows;
+    for (const audit of audits) expect(audit.objects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'conversations', id: answer.conversationId }),
+      expect.objectContaining({ type: 'conversation_turns', id: answer.turnId }),
+    ]));
+    expect(JSON.stringify(audits)).not.toContain('rejected-candidate-secret');
+  } finally { await app.close(); }
+});
+
+it('legacy evidence manifests and their grounding explanations remain readable', async () => {
+  const app = api();
+  try {
+    const answer = await ask(app, 'Do I still owe Daniel?');
+    const legacy = await item('legacy-manifest-message', 'ASSISTANT_CONVERSATION', 'PRIVATE', [FINANCE]);
+    const original = await manifestRow(answer.answerManifestId);
+    const row = { ...original, id: randomUUID(), conversation_message_id: legacy.evidenceId };
+    await admin.query('INSERT INTO answer_manifests SELECT * FROM json_populate_record(NULL::answer_manifests,$1::json)', [JSON.stringify(row)]);
+    const read = await app.inject({ method: 'GET', url: '/v1/answers/' + row.id + '/manifest', headers: headers('memory.inspect') });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json()).toMatchObject({ conversationMessageId: legacy.evidenceId, conversationId: null, turnId: null,
+      groundingValidator: answer.grounding, contextSupplied: { packetId: answer.packetId } });
+  } finally { await app.close(); }
+});
+
+it('conversation projection scopes its grounded turns and removes provenance on transcript erasure', async () => {
+  const app = api();
+  const read = (conversationId: string, purpose: string, sensitivity: string) => withOwnerTransaction(appPool,
+    { ownerScopeId: owner, actorId: actor, purpose: 'conversation.read', correlationId: randomUUID() }, async tx => {
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)", [purpose, sensitivity]);
+      return new ConversationService(tx).get(conversationId);
+    });
+  try {
+    const answer = await ask(app, 'Do I still owe Daniel?');
+    const loaded = await read(answer.conversationId, FINANCE, 'PRIVATE');
+    expect(loaded.turns[1]).toMatchObject({ id: answer.turnId, answerManifestId: answer.answerManifestId, text: said(answer) });
+    expect((await read(answer.conversationId, FINANCE, 'NORMAL')).turns).toEqual([]);
+    expect((await read(answer.conversationId, 'FAMILY_COORDINATION', 'RESTRICTED')).turns).toEqual([]);
+    await withOwnerTransaction(appPool, { ownerScopeId: owner, actorId: actor, purpose: 'conversation.write', correlationId: randomUUID() }, async tx => {
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [FINANCE]);
+      expect((await tx.query("UPDATE conversation_turns SET text='Forged answer' WHERE id=$1", [answer.turnId])).rowCount).toBe(0);
+    });
+    await withOwnerTransaction(appPool, { ownerScopeId: owner, actorId: actor, purpose: 'data.delete', correlationId: randomUUID() },
+      tx => new ConversationService(tx).delete(answer.conversationId));
+    expect((await admin.query('SELECT * FROM answer_provenance WHERE answer_manifest_id=$1', [answer.answerManifestId])).rows).toEqual([]);
+    expect(await manifestRow(answer.answerManifestId)).toBeDefined(); // Immutable historical record remains.
+    const erased = await app.inject({ method: 'GET', url: '/v1/answers/' + answer.answerManifestId + '/manifest', headers: headers('memory.inspect') });
+    expect(erased.statusCode, erased.body).toBe(403);
+    expect(erased.json().code).toBe('ANSWER_MANIFEST_SOURCE_WITHHELD');
+  } finally { await app.close(); }
+});
+
+it('refuses a foreign or malformed conversation before model invocation or packet creation', async () => {
+  const foreignUser = await postgresAdapter(admin).createUser!({ name: 'Foreign', email: 'foreign-provenance@example.test', emailVerified: null });
+  const foreignOwner = (foreignUser as unknown as { ownerScopeId: string }).ownerScopeId;
+  const foreignConversation = randomUUID();
+  await admin.query("INSERT INTO conversations(id,owner_scope_id,title) VALUES($1,$2,'Foreign private title')", [foreignConversation, foreignOwner]);
+  const phraser = scripted([statement('No assertion', 'UNKNOWN', [])]);
+  const app = api(phraser);
+  try {
+    const before = await conversationIsolationSnapshot();
+    const packetsBefore = (await admin.query('SELECT count(*)::int AS n FROM context_packets WHERE owner_scope_id=$1', [owner])).rows[0].n;
+    for (const conversationId of [foreignConversation, randomUUID(), 'invalid']) {
+      const response = await app.inject({ method: 'POST', url: '/v1/ask', headers: headers('memory.read'), payload: {
+        ownerScopeId: owner, question: 'Do I still owe Daniel?', purpose: FINANCE, worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE', conversationId } });
+      expect(response.statusCode, response.body).toBe(conversationId === 'invalid' ? 400 : 404);
+      expect(response.body).not.toContain('Foreign private title');
+    }
+    expect(phraser.calls).toBe(0);
+    expect((await admin.query('SELECT count(*)::int AS n FROM context_packets WHERE owner_scope_id=$1', [owner])).rows[0].n).toBe(packetsBefore);
+    expect(await conversationIsolationSnapshot()).toEqual(before);
+  } finally { await app.close(); }
 });

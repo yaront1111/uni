@@ -23,10 +23,9 @@ import type { EvidenceObjects } from './evidence.js';
  *    rather than obeyed; no body field can name the actor.
  *
  * Every answer the route returns has passed the grounding validator and has
- * been recorded -- as assistant conversation evidence, with the manifest of the
- * context supplied -- before it is returned (ADR 0026). A deployment with no
- * evidence storage cannot record an answer, so it gives none: the refusal comes
- * before any retrieval.
+ * been recorded as a conversation turn with its supplied-context manifest before
+ * it is returned. The purpose-bound recorder is required; evidence object
+ * storage is not part of conversation recording.
  */
 
 type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>) => Promise<unknown>;
@@ -41,13 +40,14 @@ const REFUSAL_STATUS = new Map<string, number>([
   ['CONTEXT_READ_DENIED', 403],
   ['CONTEXT_ACTION_DENIED', 403],
   ['ANSWER_RECORDING_UNAVAILABLE', 503],
+  ['CONVERSATION_NOT_FOUND', 404],
 ]);
 
 export interface AskRouteOptions {
   readonly policyPorts?: PolicyPorts;
   readonly registryReleaseId?: string | null;
   readonly registryRelease?: string | null;
-  /** Where the recorder stores the answer as conversation evidence. */
+  /** Legacy composition option; conversation recording does not use object storage. */
   readonly evidenceObjects?: EvidenceObjects | undefined;
   /** Opens the recording transaction under its own purpose. */
   readonly purposeWork?: PurposeWork;
@@ -72,26 +72,38 @@ export function registerAskRoutes(app: FastifyInstance, work: Work, options: Ask
     if (body['ownerScopeId'] !== context.ownerScopeId || 'requestingActorId' in body) {
       return refuse(request, reply, 'ASK_REQUEST_INVALID');
     }
-    if (!options.evidenceObjects || !options.purposeWork) return refuse(request, reply, 'ANSWER_RECORDING_UNAVAILABLE');
+    if (!options.purposeWork) return refuse(request, reply, 'ANSWER_RECORDING_UNAVAILABLE');
+    const { conversationId, ...askBody } = body;
+    if (conversationId !== undefined && (typeof conversationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conversationId))) return refuse(request, reply, 'ASK_REQUEST_INVALID');
+    let association: { conversationId: string; turnId: string } | undefined;
     try {
+      if (typeof conversationId === 'string') await options.purposeWork(request, 'answer.record', async tx => {
+        const found = await tx.query('SELECT id FROM conversations WHERE owner_scope_id=$1 AND id=$2', [context.ownerScopeId, conversationId]);
+        if (found.rowCount !== 1) throw new ContextBrokerError('CONVERSATION_NOT_FOUND');
+      });
       const answer = await answerQuestion(
         <T,>(run: (tx: OwnerTransaction) => Promise<T>) => work(request, tx => run(tx)) as Promise<T>,
-        body,
+        askBody,
         {
           ...(options.policyPorts ? { ports: options.policyPorts } : {}),
           correlationId: context.correlationId, requestingActorId: context.actorId,
           registryReleaseId: options.registryReleaseId ?? null, registryRelease: options.registryRelease ?? null,
           ...(options.phraser ? { phraser: options.phraser } : {}),
-          recorder: createAnswerRecorder({ request, purposeWork: options.purposeWork, objects: options.evidenceObjects,
+          recorder: createAnswerRecorder({ request, purposeWork: options.purposeWork,
+            ...(typeof conversationId === 'string' ? { conversationId } : {}), onRecorded: value => { association = value; },
             dataPurpose: String(body['purpose']), maximumSensitivity: String(body['maximumSensitivity']) }),
         });
+      if (!association) throw new Error('ANSWER_ASSOCIATION_MISSING');
+      const { conversationId: recordedConversationId, turnId } = association;
       await work(request, tx => tx.audit({
         policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
         objects: [{ type: 'context_packets', id: answer.packetId, fields: ['packet', 'packet_hash', 'purpose'] },
           { type: 'answer_manifests', id: answer.answerManifestId!, fields: ['grounding_validator_result'] },
-          ...answer.sourceLinks.slice(0, 98).map(link => ({ type: 'source_items', id: link.evidenceId, fields: ['sensitivity', 'allowed_purposes'] }))],
+          { type: 'conversations', id: recordedConversationId, fields: ['id'] },
+          { type: 'conversation_turns', id: turnId, fields: ['id'] },
+          ...answer.sourceLinks.slice(0, 96).map(link => ({ type: 'source_items', id: link.evidenceId, fields: ['sensitivity', 'allowed_purposes'] }))],
       }));
-      return reply.code(200).send(answer);
+      return reply.code(200).send({ ...answer, conversationId: recordedConversationId, turnId });
     } catch (error) {
       if (error instanceof ContextBrokerError) return refuse(request, reply, error.message, error.detail);
       throw error;

@@ -193,6 +193,14 @@ describe('real PostgreSQL owner isolation', () => {
         VALUES($1,$2,$3,$4,$5,$6,'unai-deterministic','ask-composer-0.1.0','composer-templates-0.1.0','ask-composer-0.1.0',
         ARRAY[$7::uuid],ARRAY[$8::uuid],ARRAY[$5::uuid],'{}','{}','{}',NULL,NULL,'{"action":"PASSED"}','answer-manifest-0.1.0')`,
         [manifest,owner,packet,'e'.repeat(64),source,actor,proposition,claim]);
+      const groundedManifest=randomUUID(), groundedTurn=randomUUID();
+      await pool.query(`INSERT INTO answer_manifests SELECT * FROM jsonb_populate_record(NULL::answer_manifests,
+        (SELECT to_jsonb(m) || jsonb_build_object('id',$1::text,'conversation_message_id',NULL) FROM answer_manifests m WHERE id=$2))`,
+        [groundedManifest,manifest]);
+      await pool.query("INSERT INTO conversation_turns(id,owner_scope_id,conversation_id,stored_order,speaker,text,status) VALUES($1,$2,$3,1,'assistant','Grounded fixture','accepted')",
+        [groundedTurn,owner,conversation]);
+      await pool.query('INSERT INTO answer_provenance(owner_scope_id,answer_manifest_id,conversation_id,turn_id) VALUES($1,$2,$3,$4)',
+        [owner,groundedManifest,conversation,groundedTurn]);
       await pool.query(`INSERT INTO reconsideration_candidates(id,owner_scope_id,changed_object_type,changed_object_id,
         answer_manifest_id,change_kind,change_ref) VALUES($1,$2,'proposition',$3,$4,'BELIEF_ASSESSMENT_CHANGED',$5)`,
         [randomUUID(),owner,proposition,manifest,randomUUID()]);
@@ -815,7 +823,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(86);
+    expect(rows.length).toBe(87);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -970,7 +978,7 @@ describe('real PostgreSQL owner isolation', () => {
     },'memory.govern');
   });
   it('CRT-SEC-01-A: hides B from unfiltered owner A answer-provenance queries and keeps both records immutable',async()=>{
-    const provenance=['answer_manifests','reconsideration_candidates'];
+    const provenance=['answer_manifests','answer_provenance','reconsideration_candidates'];
     for(const purpose of ['memory.inspect','memory.read']){
       await asOwner(a,alice,async c=>{
         for(const table of provenance){

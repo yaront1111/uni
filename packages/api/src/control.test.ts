@@ -654,8 +654,7 @@ it('CRT-SEC-06-A: retained assistant history cannot reconstruct erased memory', 
     const beforeWhy = await why(doomed.propositionId);
     expect(beforeWhy.statusCode, beforeWhy.body).toBe(200);
     expect(beforeWhy.json().statement).toContain(erasedValue);
-    const assistantEvidenceId = (await admin.query('SELECT conversation_message_id FROM answer_manifests WHERE id=$1',
-      [before.answerManifestId])).rows[0].conversation_message_id as string;
+    const assistantEvidenceId = before.turnId;
     const historicalAt = new Date().toISOString();
 
     const deletion = await app.inject({ method: 'POST', url: '/v1/data/deletions', headers: headers(o, 'data.delete'),
@@ -673,15 +672,13 @@ it('CRT-SEC-06-A: retained assistant history cannot reconstruct erased memory', 
     expect(controlWhy.statusCode, controlWhy.body).toBe(200);
     expect(controlWhy.json().statement).toContain(controlValue);
 
-    // A previous assistant conversation remains separate history. Its quote is
-    // deliberately still present, making the non-reconstruction check meaningful.
-    const retainedAnswer = (await admin.query(`SELECT a.normalized_text FROM source_anchors a
-      JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
-      WHERE s.owner_scope_id=$1 AND s.id=$2 AND s.deleted_at IS NULL`, [o.owner, assistantEvidenceId])).rows;
-    expect(retainedAnswer.map(row => row.normalized_text).join('\n')).toContain(erasedValue);
+    // Retained transcript text must never be retrieved by the memory pipeline.
+    const retainedAnswer = (await admin.query('SELECT text FROM conversation_turns WHERE owner_scope_id=$1 AND id=$2',
+      [o.owner, assistantEvidenceId])).rows;
+    expect(retainedAnswer.map(row => row.text).join('\n')).toContain(erasedValue);
     const rawAnswer = await app.inject({ method: 'GET', url: '/v1/evidence/' + assistantEvidenceId,
       headers: evidenceHeaders(o, 'evidence.read') });
-    expect(rawAnswer.statusCode, rawAnswer.body).toBe(200);
+    expect(rawAnswer.statusCode, rawAnswer.body).toBe(404);
 
     for (const overrides of [{}, { question: 'What did Uai believe at that time about what I owe?',
       worldTime: historicalAt, knowledgeTime: historicalAt }]) {

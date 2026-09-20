@@ -35,7 +35,7 @@ const classifiedTables=new Map([
   ['context_packets','owner_scope_id'],
   ['frame_instance_lineage','owner_scope_id'],['proposition_lineage','owner_scope_id'],
   ['memory_embeddings','owner_scope_id'],
-  ['answer_manifests','owner_scope_id'],['reconsideration_candidates','owner_scope_id'],
+  ['answer_provenance','owner_scope_id'],['answer_manifests','owner_scope_id'],['reconsideration_candidates','owner_scope_id'],
   ['briefing_editions','owner_scope_id'],['briefing_items','owner_scope_id'],
   ['attention_budgets','owner_scope_id'],['learned_approval_rules','owner_scope_id'],['clarification_cards','owner_scope_id'],
   ['interruption_decisions','owner_scope_id'],['weekly_reviews','owner_scope_id'],['behavioral_observations','owner_scope_id'],

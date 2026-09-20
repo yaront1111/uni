@@ -91,7 +91,7 @@ export interface AnswerRecording {
   readonly modelCandidates: readonly ModelCandidateRecord[];
 }
 
-/** Stores the presented answer as assistant conversation evidence and records its
+/** Records the validated conversation turn and its supplied-context
  * manifest; answers the manifest id. The API opens its own `answer.record`
  * transaction for this (ADR 0026 §4). */
 export type AnswerRecorder = (recording: AnswerRecording) => Promise<{ answerManifestId: string }>;
@@ -430,8 +430,7 @@ const BLOCKED_STATEMENT: AskStatement = Object.freeze({
  *  - a candidate that leaks is blocked: the answer says it was withheld and
  *    states nothing.
  *
- * With a recorder, the presented answer (and every model candidate) is stored as
- * assistant conversation evidence and the manifest of the context supplied is
+ * With a recorder, the validated turn and manifest of the supplied context are
  * recorded before the answer is returned (CRT-RD-06-A, CRT-AI-01-A).
  */
 async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: AskOptions): Promise<AskAnswer> {

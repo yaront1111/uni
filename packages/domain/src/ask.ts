@@ -131,5 +131,7 @@ export const askAnswerSchema = z.strictObject({
    * answer was composed without being recorded (a library caller); the route
    * always records one (FR-065). */
   answerManifestId: z.uuid().nullable(),
+  conversationId: z.uuid().optional(),
+  turnId: z.uuid().optional(),
 });
 export type AskAnswer = z.infer<typeof askAnswerSchema>;
