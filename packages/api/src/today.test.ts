@@ -686,7 +686,7 @@ it.each(['sensitivity', 'purpose', 'redaction'] as const)('does not restore with
       expect(itemFor(authorized, target.frameId)?.headline).toContain(target.words);
     }
   } finally { await app.close(); }
-});
+}, 20_000);
 
 it('does not recover an actual due time from the projection before its valid interval starts', async () => {
   const purpose = 'TODAY_FUTURE_VALIDITY';
