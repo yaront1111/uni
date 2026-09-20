@@ -42,6 +42,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export function createAnswerRecorder(input: {
   request: FastifyRequest; purposeWork: PurposeWork; conversationId?: string;
+  originalQuestion?: string;
   onRecorded?: (association: { conversationId: string; turnId: string }) => void;
   dataPurpose: string; maximumSensitivity: string;
 }): AnswerRecorder {
@@ -50,7 +51,9 @@ export function createAnswerRecorder(input: {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
       [input.dataPurpose, sensitivity]);
     const packetId = recording.packet.packetId;
-    const association = await new GroundedTurnAdapter(input.conversationId).record(tx, recording, input);
+    const transcriptRecording = input.originalQuestion === undefined ? recording
+      : { ...recording, answer: { ...recording.answer, question: input.originalQuestion } };
+    const association = await new GroundedTurnAdapter(input.conversationId).record(tx, transcriptRecording, input);
     const { answerManifestId } = await recordAnswerManifest(tx, {
       ownerScopeId: tx.context.ownerScopeId, requestingActorId: tx.context.actorId, packetId,
       conversationMessageId: null, ...association, suppliedTo: recording.suppliedTo, grounding: recording.grounding,

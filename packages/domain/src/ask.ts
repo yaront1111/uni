@@ -3,6 +3,7 @@ import { dataPurposeSchema, sensitivitySchema } from './evidence.js';
 import { answerTypeSchema, knowledgeTimeSchema, lifeCategorySchema, worldTimeSchema } from './context.js';
 import { certaintyLabelSchema } from './labels.js';
 import { groundingResultSchema } from './answers.js';
+import { referenceQuerySchema } from './reference-query.js';
 
 export { certaintyLabelSchema, type CertaintyLabel } from './labels.js';
 
@@ -36,6 +37,7 @@ export const REQUIRED_ASK_FIELDS = Object.freeze([
 export type RequiredAskField = (typeof REQUIRED_ASK_FIELDS)[number];
 
 export const askRequestSchema = z.strictObject({
+  referenceQuery: referenceQuerySchema.optional(),
   ownerScopeId: z.uuid(),
   question: z.string().trim().min(1).max(2000),
   /** The data purpose the answer is for. The evidence's allowed purposes decide
