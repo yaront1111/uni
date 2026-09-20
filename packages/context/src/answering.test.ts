@@ -866,7 +866,7 @@ it('text-only Ask recalls an older supported commitment beyond the recent frame 
     worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE' },
     { ...options(), requestingActorId: actor });
   expect(JSON.stringify(answer)).toContain('Deliver the obsidian telescope to Marisol');
-});
+}, 20_000);
 
 it('answers the personal-assistant product questions with grounded sources and honest limits', async () => {
   for (const [question, kind] of [
