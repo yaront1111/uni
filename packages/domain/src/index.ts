@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { auditEventKindSchema } from './audit.js';
+export { persistedConversationSchema, conversationTitleSchema, conversationTurnSchema, conversationTurnStatusSchema,
+  conversationTurnContentSchema, appendConversationTurnSchema, conversationDeletionSchema,
+  type Conversation, type ConversationTurn, type AppendConversationTurn, type ConversationTurnContent,
+  type ConversationDeletion } from './conversations.js';
 
 export {AUDIT_EVENT_KINDS,AUDIT_READ_PURPOSES,AUDIT_LOG_MAX_LIMIT,auditEventKindSchema,auditEventKindFor,auditObjectSchema,
   publicAuditEventSchema,auditLogQuerySchema,auditLogSchema,

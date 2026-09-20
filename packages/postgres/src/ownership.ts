@@ -12,6 +12,7 @@ const classifiedTables=new Map([
   ['evidence_object_keys','owner_scope_id'],
   ['evidence_ingestion_receipts','owner_scope_id'],['jobs','owner_scope_id'],
   ['context_spaces','owner_scope_id'],
+  ['conversations','owner_scope_id'],['conversation_turns','owner_scope_id'],
   ['memory_object_state_history','owner_scope_id'],
   ['evidence_processing','owner_scope_id'],
   ['initiative_settings','owner_scope_id'],['initiative_watches','owner_scope_id'],['initiative_receipts','owner_scope_id'],

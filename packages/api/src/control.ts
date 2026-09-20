@@ -5,7 +5,7 @@ import {
   deletionPreviewRequestSchema, deletionReceiptSchema, deletionRequestSchema, domainSensitivityUpdateSchema,
   draftDecisionSchema, executeActionSchema, exportRequestSchema, observedActionSchema, regenerateEmbeddingsSchema,
   regenerationReceiptSchema, respondRecommendationSchema, retentionCleanupSchema, retentionUpdateSchema,
-  sensitivitySchema, setPluginCapabilitiesSchema, toolReceiptSchema, type DeletionReceipt,
+  sensitivitySchema, setPluginCapabilitiesSchema, toolReceiptSchema, type DeletionReceipt, type ConversationDeletion,
 } from '@unai/domain';
 import type { PolicyPorts } from '@unai/belief';
 import { CONTEXT_READ_PURPOSE } from '@unai/context';
@@ -21,7 +21,7 @@ import {
   listDrafts, listExpiredEvidence, listPluginCapabilities, listRecommendations, permissionsView,
   pluginCapabilityGranted, readDomainSensitivity, readRecommendation, readRetention,
   recordDataRequest, recordObservedAction, recordReceiptEntry, regenerateSemanticIndex, respondToRecommendation,
-  setPluginCapabilities, updateDomainSensitivity, updateRetention,
+  setPluginCapabilities, updateDomainSensitivity, updateRetention, ConversationService,
   type ErasedEvidence,
 } from '@unai/control';
 import { ATTENTION_SETTINGS_PURPOSE, readAttentionBudget } from '@unai/review';
@@ -79,6 +79,7 @@ export const CONTROL_PURPOSES: readonly string[] = Object.freeze([PERMISSIONS_RE
   DATA_EXPORT_PURPOSE, DATA_DELETE_PURPOSE, MEMORY_REINDEX_PURPOSE]);
 
 const REFUSAL_STATUS = new Map<string, number>([
+  ['CONVERSATION_NOT_FOUND', 404], ['CONVERSATION_TURN_NOT_FOUND', 404],
   ['CONTROL_REQUEST_INVALID', 400], ['PLUGIN_CAPABILITY_UNKNOWN', 400], ['PLUGIN_CAPABILITY_WRITE_REFUSED', 403],
 ['DRAFT_CAPABILITY_INVALID', 400], ['DRAFT_CAPABILITY_NOT_GRANTED', 403],
   ['DRAFT_POLICY_DENIED', 403], ['DRAFT_CONFIRMATION_REQUIRED', 409], ['DRAFT_NOT_FOUND', 404],
@@ -98,7 +99,7 @@ export interface ControlRouteOptions {
 /** Thrown inside a deletion preview so its transaction rolls back after the
  * cascade has counted what it would remove. */
 class PreviewRollback extends Error {
-  constructor(readonly erased: ErasedEvidence[]) { super('DELETION_PREVIEW'); }
+  constructor(readonly erased: ErasedEvidence[], readonly conversations: ConversationDeletion[]) { super('DELETION_PREVIEW'); }
 }
 
 export function registerControlRoutes(app: FastifyInstance, work: Work, options: ControlRouteOptions = {}): void {
@@ -447,19 +448,23 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
   /** Erase each item, delete its raw object, record the request, then replay
    * every typed projection from what canonical memory still supports. */
   async function deleteEvidence(request: FastifyRequest, evidenceIds: readonly string[],
-    trigger: 'OWNER_REQUEST' | 'RETENTION_POLICY'): Promise<DeletionReceipt> {
+    trigger: 'OWNER_REQUEST' | 'RETENTION_POLICY', conversationIds: readonly string[] = []): Promise<DeletionReceipt> {
     const objects = options.evidenceObjects;
-    if (!objects?.delete) throw new ControlError('DELETION_STORAGE_UNAVAILABLE');
+    if (evidenceIds.length && !objects?.delete) throw new ControlError('DELETION_STORAGE_UNAVAILABLE');
     const requestedAt = new Date();
     const committed = await work(request, async tx => {
       const erased: ErasedEvidence[] = [];
+      const conversations: ConversationDeletion[] = [];
+      for (const id of [...new Set(conversationIds)].sort()) conversations.push(await new ConversationService(tx).delete(id));
       for (const evidenceId of [...new Set(evidenceIds)]) erased.push(await eraseEvidence(tx, evidenceId));
       // After the database erasure and inside its transaction: a storage failure
       // rolls the erasure back instead of leaving a row that promises gone bytes.
-      for (const item of erased) await objects.delete!(tx, item.rawObjectRef);
+      for (const item of erased) await objects!.delete!(tx, item.rawObjectRef);
       const cascade = cascadeCounts(erased, erased.length);
+      cascade.conversations = conversations.reduce((n, receipt) => n + receipt.conversations, 0);
+      cascade.conversationTurns = conversations.reduce((n, receipt) => n + receipt.conversationTurns, 0);
       const requestId = await recordDataRequest(tx, {
-        requestKind: 'DELETE', trigger, requestedAt, scope: { evidenceIds: erased.map(item => item.evidenceId) },
+        requestKind: 'DELETE', trigger, requestedAt, scope: { evidenceIds: erased.map(item => item.evidenceId), conversationIds: conversations.map(item => item.conversationId) },
         receipt: { cascade, propositionIds: erased.flatMap(item => item.propositionIds).slice(0, 500) },
       });
       // Identifiers and field names only: the audit keeps no payload content.
@@ -471,7 +476,7 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
     const rebuilt: string[] = [];
     await work(request, async tx => {
       const receipts: string[] = [];
-      for (const projectionName of PROJECTION_NAMES) {
+      for (const projectionName of committed.erased.length ? PROJECTION_NAMES : []) {
         const receipt = await replayProjection(tx, { ownerScopeId: tx.context.ownerScopeId, projectionName, asOf: new Date(),
           trigger: 'MANUAL_REPLAY', compareWithStored: false,
           detail: { cause: 'DELETION', retentionAndDeletionRequestId: committed.requestId } });
@@ -486,6 +491,7 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
     return deletionReceiptSchema.parse({
       requestId: committed.requestId, status: 'COMPLETED', trigger,
       evidenceIds: committed.erased.map(item => item.evidenceId), cascade: committed.cascade,
+      conversationIds: [...new Set(conversationIds)],
       projectionsRebuilt: rebuilt, auditRetainsPayload: false,
     });
   }
@@ -497,17 +503,23 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
       try {
         await work(request, async tx => {
           const erased: ErasedEvidence[] = [];
+          const conversations: ConversationDeletion[] = [];
+          for (const id of [...new Set(parsed.data.conversationIds)].sort()) conversations.push(await new ConversationService(tx).delete(id));
           for (const evidenceId of [...new Set(parsed.data.evidenceIds)]) erased.push(await eraseEvidence(tx, evidenceId));
-          throw new PreviewRollback(erased);
+          throw new PreviewRollback(erased, conversations);
         });
       } catch (error) {
         if (!(error instanceof PreviewRollback)) throw error;
         // A preview reads what a deletion would remove and removes nothing.
         await work(request, tx => tx.audit({ eventKind: 'READ', policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
-          objects: error.erased.slice(0, 100).map(item => ({ type: 'source_items', id: item.evidenceId, fields: ['deleted_at'] })) }));
+          objects: [...error.erased.map(item => ({ type: 'source_items', id: item.evidenceId, fields: ['deleted_at'] })),
+            ...error.conversations.map(item => ({ type: 'conversations', id: item.conversationId, fields: ['id'] }))].slice(0,100) }));
         return deletionReceiptSchema.parse({
           requestId: null, status: 'PREVIEW', trigger: 'OWNER_REQUEST', evidenceIds: error.erased.map(item => item.evidenceId),
-          cascade: cascadeCounts(error.erased, error.erased.length), projectionsRebuilt: [], auditRetainsPayload: false,
+          conversationIds: error.conversations.map(item => item.conversationId),
+          cascade: { ...cascadeCounts(error.erased, error.erased.length),
+            conversations: error.conversations.reduce((n, item) => n + item.conversations, 0),
+            conversationTurns: error.conversations.reduce((n, item) => n + item.conversationTurns, 0) }, projectionsRebuilt: [], auditRetainsPayload: false,
         });
       }
       throw new ControlError('DELETION_PREVIEW_NOT_ROLLED_BACK');
@@ -517,7 +529,7 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
   app.post('/v1/data/deletions', async (request, reply) => {
     const parsed = deletionRequestSchema.safeParse(request.body);
     if (!parsed.success) return refuse(request, reply, 'CONTROL_REQUEST_INVALID');
-    return guarded(request, reply, () => deleteEvidence(request, parsed.data.evidenceIds, 'OWNER_REQUEST'));
+    return guarded(request, reply, () => deleteEvidence(request, parsed.data.evidenceIds, 'OWNER_REQUEST', parsed.data.conversationIds));
   });
 
   /** Apply the saved retention rules now: raw evidence past its source type's
@@ -530,13 +542,14 @@ export function registerControlRoutes(app: FastifyInstance, work: Work, options:
     return guarded(request, reply, async () => {
       const expired = await work(request, tx => listExpiredEvidence(tx, asOf)) as string[];
       const deletion = expired.length === 0 ? null : await deleteEvidence(request, expired, 'RETENTION_POLICY');
+      const conversationsDeleted = await work(request, tx => new ConversationService(tx).applyRetention(asOf));
       const derived = await work(request, async tx => {
         const result = await expireDerivedData(tx, asOf);
         await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
           objects: [{ type: 'retention_settings', id: tx.context.ownerScopeId, fields: ['raw_retention_days', 'derived_retention_days'] }] });
         return result;
       });
-      return { asOf: asOf.toISOString(), deletion, derivedExpired: derived };
+      return { asOf: asOf.toISOString(), deletion, conversationsDeleted, derivedExpired: derived };
     });
   });
 

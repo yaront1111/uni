@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { exportBundleSchema, type ExportBundle } from '@unai/domain';
 import { requirePurpose, type ControlTransaction } from './transaction.js';
 import { DATA_EXPORT_PURPOSE } from './erasure.js';
+import { conversationRow, conversationTurnRow } from './conversations.js';
 
 /**
  * Export (PRD §7.8, NFR portability; design `POST /v1/export`; CRT-NFR-04-A).
@@ -79,10 +80,13 @@ export async function buildExportBundle(tx: ControlTransaction, input: {
   for (const [key, table, order] of CANONICAL_TABLES) canonicalMemory[key] = await read(table, order);
   const actions: Record<string, Record<string, unknown>[]> = {};
   for (const [key, table, order] of ACTION_TABLES) actions[key] = await read(table, order);
-  const counts: Record<string, number> = { evidence: evidence.length };
+  const conversations = (await tx.query('SELECT * FROM conversations WHERE owner_scope_id=$1 ORDER BY created_at,id', [owner])).rows.map(conversationRow);
+  const conversationTurns = (await tx.query(`SELECT t.* FROM conversation_turns t JOIN conversations c ON c.owner_scope_id=t.owner_scope_id AND c.id=t.conversation_id
+    WHERE t.owner_scope_id=$1 ORDER BY c.created_at,c.id,t.stored_order`, [owner])).rows.map(conversationTurnRow);
+  const counts: Record<string, number> = { evidence: evidence.length, conversations: conversations.length, conversationTurns: conversationTurns.length };
   for (const [key, rows] of [...Object.entries(canonicalMemory), ...Object.entries(actions)]) counts[key] = rows.length;
   return exportBundleSchema.parse({
     exportId: input.exportId ?? randomUUID(), formatVersion: 'unai-export-0.1.0', ownerScopeId: owner,
-    generatedAt: new Date().toISOString(), evidence, canonicalMemory, actions, counts,
+    generatedAt: new Date().toISOString(), evidence, canonicalMemory, actions, conversations, conversationTurns, counts,
   });
 }

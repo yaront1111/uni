@@ -16,4 +16,5 @@ export { ACTION_READ_PURPOSE, ACTION_DRAFT_PURPOSE, ACTION_EXECUTE_PURPOSE, ACTI
 export { DATA_DELETE_PURPOSE, DATA_EXPORT_PURPOSE, liveEvidenceExists, eraseEvidence, cascadeCounts,
   recordDataRequest, listExpiredEvidence, expireDerivedData, type ErasedEvidence } from './erasure.js';
 export { buildExportBundle } from './export.js';
+export { ConversationService, CONVERSATION_READ_PURPOSE, CONVERSATION_WRITE_PURPOSE } from './conversations.js';
 export { MEMORY_REINDEX_PURPOSE, MEMORY_GOVERN_PURPOSE, dropSemanticIndex, regenerateSemanticIndex } from './reindex.js';

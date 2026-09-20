@@ -29,6 +29,9 @@ describe('real PostgreSQL owner isolation', () => {
     await pool.query('INSERT INTO owner_scope_members (owner_scope_id,user_id,role) VALUES ($1,$2,$3),($4,$5,$3)', [a,alice,'OWNER',b,bob]);
     await pool.query('INSERT INTO devices (id,owner_scope_id,user_id,display_name) VALUES ($1,$2,$3,$4),($5,$6,$7,$8)', [randomUUID(),a,alice,'Desktop',randomUUID(),b,bob,'Phone']);
     for (const [owner,actor] of [[a,alice],[b,bob]]) {
+      const conversation = randomUUID();
+      await pool.query("INSERT INTO conversations(id,owner_scope_id,title) VALUES($1,$2,'Isolation fixture')", [conversation,owner]);
+      await pool.query("INSERT INTO conversation_turns(id,owner_scope_id,conversation_id,stored_order,speaker,text,status) VALUES($1,$2,$3,0,'owner','Private fixture','accepted')", [randomUUID(),owner,conversation]);
       const connector=randomUUID(),source=randomUUID();
       const retry=randomUUID();
       await pool.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'DOCUMENT',$3,'{}','ACTIVE')",[connector,owner,owner]);
@@ -812,7 +815,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(84);
+    expect(rows.length).toBe(86);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -1408,6 +1411,24 @@ describe('real PostgreSQL owner isolation', () => {
         for(const table of ['initiative_watches','initiative_receipts']) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
       },'memory.inspect');
     }
+  });
+
+  it('CRT-SEC-01-A: conversation tables refuse unfiltered foreign and context-free reads',async()=>{
+    for(const [owner,actor] of [[a,alice],[b,bob]]) await asOwner(owner!,actor!,async c=>{
+      for(const table of ['conversations','conversation_turns']) {
+        const rows=(await readUnfiltered(c,table)).rows;
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.every(row=>row.owner_scope_id===owner)).toBe(true);
+      }
+    },'conversation.read');
+    await asOwner(b,alice,async c=>{
+      for(const table of ['conversations','conversation_turns']) expect((await c.query('SELECT * FROM '+table)).rows).toEqual([]);
+    },'conversation.read');
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN'); await client.query('SET LOCAL ROLE unai_app');
+      for(const table of ['conversations','conversation_turns']) expect((await client.query('SELECT * FROM '+table)).rows).toEqual([]);
+    } finally { await client.query('ROLLBACK'); client.release(); }
   });
 
   it('CRT-SEC-01-A: covers every classified owner-scoped table with an unfiltered cross-owner query',async()=>{
