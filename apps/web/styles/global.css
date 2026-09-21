@@ -13,5 +13,13 @@ details>summary{cursor:pointer;min-height:44px;display:flex;align-items:center}d
 .why-panel blockquote{margin:8px 0;padding:8px 12px;border-left:4px double #555555;background:#f4f4f4}
 .advanced{margin-top:12px;font-size:13px}.advanced code{word-break:break-all}
 .notice{padding:14px 18px;border:2px dashed #111111;background:#ffffff}
+.chat-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:1.5rem;overflow-wrap:anywhere}
+.chat-workspace>*{min-width:0}.chat-workspace ol,.chat-workspace ul{padding-left:1.25rem}
+.conversation-list li{margin-bottom:1rem}.conversation-list .actions{gap:.5rem;margin:.5rem 0}
+.conversation-turns{list-style:none;padding:0!important}.conversation-turns>li{border-bottom:1px solid #81918b;padding:.75rem 0}
+.turn-text{white-space:pre-wrap}.composer textarea{font:inherit;display:block;width:100%;max-width:100%;min-width:0;resize:vertical;padding:.75rem;border:1px solid #81918b;border-radius:6px}
+.composer label{display:block;margin:.5rem 0}.composer button{max-width:100%}.chat-workspace button{white-space:normal;overflow-wrap:anywhere;max-width:100%}
+.chat-workspace figure{margin:1rem 0}.chat-workspace dd{margin-left:1rem}.chat-workspace summary{overflow-wrap:anywhere}
+@media(max-width:40rem){.chat-workspace{grid-template-columns:minmax(0,1fr)}.chat-workspace .composer{position:static}.chat-workspace .actions{flex-direction:column}}
 .label-key dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}
 .table-scroll{overflow-x:auto}.table-scroll:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex="0"]:focus-visible{outline:3px solid #b06b12;outline-offset:4px}.audit-objects,.audit-notes{margin:0;padding-left:18px}.audit-objects code{word-break:break-all}

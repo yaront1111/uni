@@ -12,6 +12,8 @@ import {runMigrations} from '@unai/postgres';
 import {postgresAdapter,SESSION_COOKIE} from '@unai/auth';
 import {Ask} from '../components/Ask';
 import {loadAsk,type ApiCall} from '../lib/screens';
+import {loadChat} from '../lib/chat';
+import {Chat} from '../components/Chat';
 
 /**
  * CRT-UX-03-A and the Ask half of CRT-UX-11-A, end to end.
@@ -215,6 +217,19 @@ it('CRT-UX-03-A: asks "What did I promise Daniel?" in the Ask UI and answers wit
     expect(inferred.derivation.steps[0]!.inputs[0]).toMatchObject({objectType:'claims',objectId:keys.claimId});
     expect(html).toContain('Derived by the commitment inference rule (fixture-model-1) from:');
     expect(html).toContain('Daniel: can you also bring the spare keys when you come?');
+    // Legacy Ask already created this thread; loading Chat must never re-answer.
+    const chat=await loadChat(call,{cookie:SESSION_COOKIE+'='+token,ownerScopeId:owner},answer.conversationId);
+    expect(chat.kind).toBe('props');if(chat.kind!=='props')throw new Error('CHAT_NOT_LOADED');
+    expect(chat.props.answers[answer.turnId!]).toEqual(answer);
+    for(const [statementId,panel] of Object.entries(props.why)){
+      const reopened=chat.props.why[answer.turnId!]![statementId];
+      if(!panel){expect(reopened).toBeNull();continue;}
+      const {readAt,...explanation}=panel;
+      expect(reopened).toMatchObject(explanation);
+      expect(Date.parse(reopened!.readAt)).toBeGreaterThanOrEqual(Date.parse(readAt));
+    }
+    const chatHtml=renderToStaticMarkup(createElement(Chat,chat.props));expect(chatHtml).toContain('I promised Daniel I would send him the signed lease by Friday.');
+    expect(calls.filter(c=>c==='POST /v1/ask')).toHaveLength(1);
   }finally{await app.close();}
 });
 

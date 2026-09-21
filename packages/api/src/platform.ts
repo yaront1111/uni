@@ -30,6 +30,7 @@ import {registerInitiativeRoutes} from './initiative-routes.js';
 import type {PolicyPorts} from '@unai/belief';
 import type {AnswerPhraser} from '@unai/context';
 import {registerVoiceSettingsRoutes} from './voice-settings.js';
+import {registerConversationRoutes} from './conversation-routes.js';
 
 /** The owner's correction controls and their overlay read. One purpose covers
  * both directions of the same surface: the write records the delta and the read
@@ -64,7 +65,7 @@ export const PLATFORM_PURPOSES:ReadonlySet<string>=new Set(['settings.voice','de
   GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,MENTOR_PURPOSE,
   'ops.jobs.read','ops.dead_letter.read','ops.dead_letter.retry','ops.registry.read',METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE,
   // Governed action and the data-control surface (ADR 0030).
-  ...CONTROL_PURPOSES,
+  ...CONTROL_PURPOSES,'conversation.read','conversation.write',
   // The Audit log (ADR 0032). `audit.modify` is admitted only so an attempt to
   // change an event reaches its route, which refuses it and records the refusal.
   AUDIT_READ_PURPOSE,AUDIT_MODIFY_PURPOSE]);
@@ -73,6 +74,7 @@ export const PLATFORM_PURPOSES:ReadonlySet<string>=new Set(['settings.voice','de
  * method, or null for none. The platform's preHandler refuses any other declared
  * purpose with `PURPOSE_REFUSED`. */
 export function routePurpose(method:string,url:string|undefined):string|null{
+  if(url==='/v1/conversations'||url==='/v1/conversations/:id')return method==='GET'?'conversation.read':'conversation.write';
   return method==='GET'&&url==='/v1/devices'?'device.list':
     url==='/v1/devices'?'device.register':
     url==='/v1/devices/:id/revoke'?'device.remove':
@@ -193,6 +195,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     });
   }
   registerVoiceSettingsRoutes(app,deviceWork);
+  registerConversationRoutes(app,deviceWork);
   app.get('/v1/devices',async request=>deviceWork(request,async(tx)=>{
     const rows=(await tx.query('SELECT id,display_name,device_kind,last_seen_at FROM devices WHERE owner_scope_id=$1 AND user_id=$2 AND removed_at IS NULL ORDER BY last_seen_at DESC',[tx.context.ownerScopeId,tx.context.actorId])).rows;
     const devices=rows.map(row=>publicDeviceSchema.parse({id:row.id,displayName:row.display_name,kind:row.device_kind,lastSeenAt:row.last_seen_at.toISOString()}));

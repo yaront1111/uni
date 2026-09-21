@@ -29,6 +29,40 @@ beforeAll(async () => {
 });
 afterAll(async () => { await pool.end(); await admin.end(); });
 
+it.each([
+ 'verify-a6-create: Starting a conversation creates a new owner-scoped thread that accepts a first turn.',
+ 'verify-a6-rename: A changed title persists after reloading the conversation list.',
+ 'verify-a6-list: A conversation receiving the latest activity precedes older conversations in the list.',
+ 'verify-a6-delete: After deletion neither the conversation nor its turns remain, an audit record exists, and a following export omits it.',
+])('%s', async()=>{
+ const token=randomUUID();await postgresAdapter(admin).createSession!({userId:a.actorId,sessionToken:token,expires:new Date(Date.now()+3600000)});
+ const app=createPlatformApi({authPool:admin,appPool:pool});app.addHook('onRequest',async request=>{Object.defineProperty(request.raw.socket,'encrypted',{value:true});});
+ const headers=(purpose:string)=>({cookie:SESSION_COOKIE+'='+token,'x-owner-scope-id':a.ownerScopeId,'x-purpose':purpose,'x-correlation-id':randomUUID(),'idempotency-key':randomUUID(),'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'});
+ try{
+  const created=await app.inject({method:'POST',url:'/v1/conversations',headers:headers('conversation.write'),payload:{title:'Chat route'}});
+  expect(created.statusCode,created.body).toBe(200);const c=created.json();expect(c.ownerScopeId).toBe(a.ownerScopeId);
+  const newer=await app.inject({method:'POST',url:'/v1/conversations',headers:headers('conversation.write'),payload:{title:'Newer inactive'}});expect(newer.statusCode).toBe(200);
+  const before=await app.inject({method:'GET',url:'/v1/conversations',headers:headers('conversation.read')});expect(before.json().conversations[0].id).toBe(newer.json().id);
+  const asked=await app.inject({method:'POST',url:'/v1/ask',headers:headers('memory.read'),payload:{conversationId:c.id,ownerScopeId:a.ownerScopeId,question:'What did I promise Daniel?',purpose:'PERSONAL_ASSISTANCE',worldTime:'NOW',knowledgeTime:'LATEST',maximumSensitivity:'RESTRICTED'}});
+  expect(asked.statusCode,asked.body).toBe(200);
+  const loaded=await app.inject({method:'GET',url:'/v1/conversations/'+c.id,headers:headers('conversation.read')});expect(loaded.statusCode).toBe(200);
+  expect(loaded.json().turns.map((t:{speaker:string})=>t.speaker)).toEqual(['owner','assistant']);
+  expect(loaded.json().answers[asked.json().turnId]).toEqual(asked.json());
+  const narrowed=await app.inject({method:'GET',url:'/v1/conversations/'+c.id,headers:{...headers('conversation.read'),'x-data-purpose':'ADVERTISING'}});expect(narrowed.statusCode).toBe(200);expect(narrowed.json().turns).toEqual([]);expect(narrowed.json().answers).toEqual({});
+  const foreignToken=randomUUID();await postgresAdapter(admin).createSession!({userId:b.actorId,sessionToken:foreignToken,expires:new Date(Date.now()+3600000)});
+  const foreignHeaders={...headers('conversation.read'),cookie:SESSION_COOKIE+'='+foreignToken,'x-owner-scope-id':b.ownerScopeId};
+  expect((await app.inject({method:'GET',url:'/v1/conversations/'+c.id,headers:foreignHeaders})).statusCode).toBe(404);
+  const after=await app.inject({method:'GET',url:'/v1/conversations',headers:headers('conversation.read')});expect(after.json().conversations[0].id).toBe(c.id);
+  const renamed=await app.inject({method:'PATCH',url:'/v1/conversations/'+c.id,headers:headers('conversation.write'),payload:{title:'Persisted title'}});expect(renamed.statusCode).toBe(200);
+  const list=await app.inject({method:'GET',url:'/v1/conversations',headers:headers('conversation.read')});expect(list.json().conversations[0]).toMatchObject({id:c.id,title:'Persisted title'});
+  const deleted=await app.inject({method:'POST',url:'/v1/data/deletions',headers:headers('data.delete'),payload:{conversationIds:[c.id],confirmation:'DELETE'}});expect(deleted.statusCode,deleted.body).toBe(200);
+  expect((await app.inject({method:'GET',url:'/v1/conversations/'+c.id,headers:headers('conversation.read')})).statusCode).toBe(404);
+  expect((await admin.query('SELECT id FROM conversation_turns WHERE conversation_id=$1',[c.id])).rows).toEqual([]);
+  expect((await admin.query("SELECT id FROM audit_events WHERE owner_scope_id=$1 AND event_kind='DELETION' AND objects_and_fields_accessed @> $2::jsonb",[a.ownerScopeId,JSON.stringify([{type:'conversations',id:c.id}])])).rowCount).toBeGreaterThan(0);
+  const exported=await app.inject({method:'POST',url:'/v1/export',headers:{...headers('data.export'),'x-maximum-sensitivity':'RESTRICTED'},payload:{includeRawEvidence:false}});expect(exported.statusCode).toBe(201);expect(JSON.stringify(exported.json())).not.toContain(c.id);
+ }finally{await app.close();}
+});
+
 it('verify-a1-metadata: Persisted conversations expose each required field and reload turns in their stored order.', async () => {
   const c = await run(a, 'conversation.write', tx => service(tx).create({ title: 'First title' }));
   expect(c).toEqual({ id: expect.any(String), ownerScopeId: a.ownerScopeId, title: 'First title', createdAt: expect.any(String), lastActivityAt: expect.any(String) });
