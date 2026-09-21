@@ -603,8 +603,9 @@ async function validateBeliefTransactionImpl(
 ): Promise<ValidationReport> {
   return runner(BELIEF_PURPOSES.govern, async tx => {
     await enterEvidenceGate(tx, request);
-    const transaction = await readTransaction(tx, request.ownerScopeId, transactionId, false);
+    const transaction = await readTransaction(tx, request.ownerScopeId, transactionId, true);
     if (transaction.status === 'COMMITTED') throw new BeliefTransactionError('BELIEF_TRANSACTION_ALREADY_COMMITTED');
+    if (transaction.status === 'REJECTED') throw new BeliefTransactionError('BELIEF_TRANSACTION_REJECTED');
     const operations = (await readOperations(tx, request.ownerScopeId, transactionId)).map(op => op.payload as unknown as BeliefOperation);
     const { report, policy, policyRequest } = await buildValidationReport(tx, request, transaction, operations, ports);
     const decisionId = await recordPolicyDecision(tx, {
@@ -890,6 +891,7 @@ async function commitBeliefTransactionImpl(
     await enterEvidenceGate(tx, request);
     const transaction = await readTransaction(tx, request.ownerScopeId, input.transactionId, true);
     if (transaction.status === 'COMMITTED') return commitReceiptSchema.parse(transaction.commitReceipt);
+    if (transaction.status === 'REJECTED') throw new BeliefTransactionError('BELIEF_TRANSACTION_REJECTED');
     // The governing-transaction marker the belief_slots trigger reads. It is
     // transaction-local and rolls back with everything else, so no context move
     // can outlive the commit that authorised it.
@@ -953,6 +955,44 @@ export async function readCommitReceipt(
       [request.ownerScopeId, transactionId])).rows[0];
     const receipt = row?.['commit_receipt'];
     return receipt ? commitReceiptSchema.parse(receipt) : null;
+  });
+}
+
+/** Existing transaction projection, bounded and owner-scoped; no replacement inbox state. */
+export async function readPendingTransactions(runner: BeliefTransactionRunner, request: GovernorRequest) {
+  return runner(BELIEF_PURPOSES.govern, async tx => {
+    await enterEvidenceGate(tx, request);
+    const rows = (await tx.query(`SELECT id,transaction_kind,status,risk,registry_release_id,idempotency_key,proposed_at
+      FROM belief_transactions WHERE owner_scope_id=$1 AND status IN ('PROPOSED','VALIDATED')
+      ORDER BY proposed_at,id LIMIT 100`, [request.ownerScopeId])).rows;
+    const proposals = [];
+    for (const row of rows) {
+      const operations = (await readOperations(tx, request.ownerScopeId, row['id'] as string)).map(op => op.payload);
+      const anchors = operations.filter(op=>op['kind']==='ADD_CLAIM').map(op=>op['sourceAnchorId']);
+      const sources = anchors.length ? (await tx.query(`SELECT a.id,a.source_item_id,a.normalized_text FROM source_anchors a
+        JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
+        WHERE a.owner_scope_id=$1 AND a.id=ANY($2::uuid[])`,[request.ownerScopeId,anchors])).rows : [];
+      if (new Set(anchors).size !== sources.length) continue;
+      proposals.push({transactionId: row['id'], transactionKind: row['transaction_kind'], status: row['status'],
+        risk: row['risk'], registryReleaseId: row['registry_release_id'], idempotencyKey: row['idempotency_key'],
+        proposedAt: (row['proposed_at'] as Date).toISOString(), operations,
+        sources:sources.map(source=>({sourceAnchorId:source['id'],evidenceId:source['source_item_id'],text:source['normalized_text']}))});
+    }
+    return {proposals, atLimit: rows.length === 100};
+  });
+}
+
+/** Settle workflow only. The lock serializes this decision against validation/commit. */
+export async function rejectBeliefTransaction(runner: BeliefTransactionRunner, request: GovernorRequest,
+  input: {transactionId: string; idempotencyKey: string}) {
+  return runner(BELIEF_PURPOSES.govern, async tx => {
+    const transaction = await readTransaction(tx, request.ownerScopeId, input.transactionId, true);
+    if (transaction.idempotencyKey !== input.idempotencyKey) throw new BeliefTransactionError('BELIEF_TRANSACTION_IDEMPOTENCY_KEY_MISMATCH');
+    if (transaction.status === 'COMMITTED' || transaction.status === 'COMMITTING') throw new BeliefTransactionError('BELIEF_TRANSACTION_ALREADY_COMMITTED');
+    if (transaction.status !== 'REJECTED') await tx.query(`UPDATE belief_transactions SET status='REJECTED',rejected_at=now(),
+      rejection_reason=$3 WHERE owner_scope_id=$1 AND id=$2`, [request.ownerScopeId, transaction.id,
+      JSON.stringify({code:'OWNER_REJECTED',actorId:request.actorId,correlationId:request.correlationId})]);
+    return {transactionId: transaction.id, status: 'REJECTED' as const};
   });
 }
 

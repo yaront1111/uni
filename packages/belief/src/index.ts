@@ -16,6 +16,7 @@
 export {
   BELIEF_PURPOSES, VALIDATION_VERSION, RECEIPT_VERSION, BeliefTransactionError,
   proposeBeliefTransaction, validateBeliefTransaction, commitBeliefTransaction, readCommitReceipt,
+  readPendingTransactions, rejectBeliefTransaction,
   type BeliefTransactionStore, type BeliefTransactionRunner, type GovernorRequest,
 } from './transactions.js';
 export {

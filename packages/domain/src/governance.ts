@@ -185,3 +185,12 @@ export const commitReceiptSchema = z.strictObject({
   receiptVersion: version,
 });
 export type CommitReceipt = z.infer<typeof commitReceiptSchema>;
+
+/** Owner read projection of existing transactions and exact readable source anchors. */
+export const pendingProposalSchema = z.object({transactionId:z.uuid(),transactionKind:beliefTransactionKindSchema,
+  status:z.enum(['PROPOSED','VALIDATED']),risk:writeRiskSchema,registryReleaseId:z.uuid(),idempotencyKey:z.string().min(1),
+  proposedAt:z.iso.datetime(),operations:z.array(beliefOperationSchema),
+  sources:z.array(z.object({sourceAnchorId:z.uuid(),evidenceId:z.uuid(),text:z.string().nullable()})).default([])});
+export const pendingProposalsSchema=z.object({proposals:z.array(pendingProposalSchema).max(100),atLimit:z.boolean()});
+export type PendingProposal=z.infer<typeof pendingProposalSchema>;
+export const selectedTurnProposalSchema=z.strictObject({selectedTurn:z.strictObject({conversationId:z.uuid(),turnId:z.uuid()})});

@@ -9,6 +9,7 @@ import {MemoryPage,Status,assessmentStatus,dateText,outcomeStatus,predicateText,
  * inferences, conflicts, resolution assertions, connected threads, access
  * history, registry and extractor versions, and the advanced identifier panel. */
 export interface MemoryInspectorProps{
+  embedded?:boolean;
   state:'ready'|'not-found'|'error';
   inspector:Inspection|null;
   error?:string|null;
@@ -140,7 +141,7 @@ function Inspector({inspector}:{inspector:Inspection}){
 }
 
 export function MemoryInspector(props:MemoryInspectorProps){
-  return <MemoryPage current={null} eyebrow="MEMORY" title="Memory inspector"
+  return <MemoryPage embedded={props.embedded} current={null} eyebrow="MEMORY" title="Memory inspector"
     intro={<p>Everything Uai holds about one belief: what it believes now, why, from where, and what has happened to it.</p>}
     footer="The inspector reads memory and changes nothing. Opening it is recorded in the access history.">
     {props.state==='ready'&&props.inspector&&<Inspector inspector={props.inspector}/>}

@@ -78,6 +78,7 @@ export {mergeTargetTypeSchema,objectRefSchema,beliefTransactionKindSchema,belief
   autoAcceptConditionSchema,assessmentStatusSchema,supportKindSchema,independenceGroupSchema,beliefOperationKindSchema,
   beliefOperationSchema,proposeBeliefTransactionSchema,policyPortSchema,writePolicyOutcomeSchema,readPolicyOutcomeSchema,
   actionPolicyOutcomeSchema,policyVerdictSchema,validationDecisionSchema,validationReportSchema,commitReceiptSchema,
+  pendingProposalSchema,pendingProposalsSchema,selectedTurnProposalSchema,type PendingProposal,
   unregisteredPredicateUseSchema,type UnregisteredPredicateUse,
   type ObjectRef,type AdmissionMode,type AutoAcceptCondition,type AssessmentStatus,type BeliefOperation,
   type ProposeBeliefTransaction,type PolicyVerdict,type ValidationReport,type CommitReceipt} from './governance.js';

@@ -19,6 +19,8 @@ import {WeeklyReview} from '../components/WeeklyReview';
 import {commitmentFilters,loadCommitments,loadInspector,loadObligations,loadThread,NO_FILTERS,type ApiCall} from '../lib/memory';
 import {loadAsk,loadToday} from '../lib/screens';
 import {loadWeeklyReview} from '../lib/review';
+import {loadAdminMemory} from '../lib/admin-memory';
+import {filterMemoryFrames} from '../lib/admin-memory-filter';
 
 /**
  * The Commitments, Obligations, Memory inspector, Memory thread and Correction
@@ -250,6 +252,24 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{await appPool.end();await admin.end();});
 
+it('verify-d1-find: Admin Memory locates exact fixtures by search, person, topic, time and kind through authorized broker retrieval',async()=>{
+  const app=await api();
+  try{
+    for(const [filters,expected] of [
+      [{q:'Bank transfer'},frames.allocation],
+      [{person:people.daniel},frames.obligation],
+      [{topic:threads.payment},frames.allocation],
+      [{from:'2026-03-10',to:'2026-03-10'},frames.allocation],
+      [{kind:'finance.payment_allocation'},frames.allocation],
+    ] as const){
+      const loaded=await loadAdminMemory(transport(app),{...caller(),actorId:actor},filters);
+      expect(loaded.kind).toBe('props');if(loaded.kind!=='props')continue;
+      expect(loaded.props.errors).toEqual([]);
+      expect(filterMemoryFrames(loaded.props.frames,filters).map(frame=>frame.frameInstanceId)).toContain(expected);
+    }
+  }finally{await app.close();}
+});
+
 /** `todayClock` pins Today's "now" to the fixture's week; nothing else reads it. */
 async function api(todayClock?:()=>Date):Promise<InjectApp>{
   const {createPlatformApi}=await import(/* @vite-ignore */ API_MODULE) as {createPlatformApi:(options:unknown)=>InjectApp};
@@ -345,7 +365,7 @@ it('CRT-UX-04-A: the Commitments view shows open commitments with due dates, an 
   }finally{await app.close();}
 });
 
-it('CRT-UX-07-A: the Memory inspector shows current belief, timeline, original evidence, claims with asserting actors, inferences, conflicts, resolutions, threads, access history and versions',async()=>{
+it('verify-d1-belief CRT-UX-07-A: the Memory inspector shows current belief, timeline, original evidence, claims with asserting actors, inferences, conflicts, resolutions, threads, access history and versions',async()=>{
   const app=await api();
   try{
     // Opened once so the second opening has an access to show.
@@ -444,7 +464,7 @@ it('CRT-UX-15-A: the memory thread view for the Daniel payment shows projection,
   }finally{await app.close();}
 });
 
-it('CRT-UX-10-A: ten separately labelled controls each persist a different operation kind, with suppress, archive and delete on separate endpoints',async()=>{
+it('verify-d1-actions verify-d3-delete CRT-UX-10-A: ten separately labelled controls each persist a different operation kind, with suppress, archive and delete on separate endpoints',async()=>{
   // Distinct by construction: ten labels, ten endpoints, ten operation kinds.
   expect(new Set(CONTROLS.map(control=>control.label)).size).toBe(10);
   expect(new Set(CONTROLS.map(control=>control.operationKind)).size).toBe(10);
@@ -489,6 +509,15 @@ it('CRT-UX-10-A: ten separately labelled controls each persist a different opera
         expect(response.body.ownerSequence,control.key).toBeGreaterThan(0);
       }
       recorded[control.key]=response.body.memoryOperationId;
+      if(control.key==='delete'){
+        const deletion=(await admin.query('SELECT detail FROM memory_operations WHERE owner_scope_id=$1 AND id=$2',[owner,response.body.memoryOperationId])).rows[0];
+        expect(JSON.stringify(deletion)).toContain('PENDING_DELETION_WORKFLOW');
+        const receiptHtml=render(CorrectionControls,{state:'ready',inspector,receipt:{control:'delete',operationKind:'DELETE',
+          memoryOperationId:response.body.memoryOperationId,ownerSequence:response.body.ownerSequence,proposedTransactionId:null,transactionId:null}});
+        expect(receiptHtml).toContain(response.body.memoryOperationId);expect(receiptHtml).toContain('Deletion workflow pending');
+        expect((await admin.query(`SELECT count(*)::int n FROM audit_events WHERE owner_scope_id=$1 AND objects_and_fields_accessed @> $2::jsonb`,
+          [owner,JSON.stringify([{type:'memory_operations',id:response.body.memoryOperationId}])])).rows[0].n).toBeGreaterThan(0);
+      }
     }
     expect(paths.size).toBe(10);
     const rows=(await admin.query('SELECT id,operation_kind FROM memory_operations WHERE owner_scope_id=$1 AND id=ANY($2::uuid[])',
