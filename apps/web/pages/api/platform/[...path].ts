@@ -13,9 +13,12 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     // Settings and existing initiative watches are PATCH routes; a new watch is POST.
     const settings=/^settings\/(attention-budgets|retention|domain-sensitivity|initiative|voice)$/.test(path);
     const initiativeWatch=/^initiative\/watches\/[0-9a-f-]{36}$/i.test(path);
-    if(req.method!==((settings||initiativeWatch)?'PATCH':'POST'))return res.status(405).json({code:'METHOD_REFUSED'});
+    const conversation=/^conversations\/[0-9a-f-]{36}$/i.test(path);
+    if(req.method!==((settings||initiativeWatch||conversation)?'PATCH':'POST'))return res.status(405).json({code:'METHOD_REFUSED'});
     if(req.headers.origin!==new URL(required('NEXTAUTH_URL')).origin)return res.status(403).json({code:'ORIGIN_REFUSED'});
     const purpose=path==='devices'?'device.register':/^devices\/[0-9a-f-]{36}\/revoke$/i.test(path)?'device.remove':path==='sessions/revoke-all'?'auth.sign_out_all':path==='evidence'?'evidence.ingest':
+      path==='ask'?'memory.read':
+      path==='conversations'||conversation?'conversation.write':
       path==='documents'?'evidence.ingest':
       path==='connectors'?'connector.manage':
       /^connectors\/[0-9a-f-]{36}\/(capabilities|disconnect)$/i.test(path)?'connector.manage':
@@ -50,7 +53,9 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     const evidencePath=path==='evidence'||path==='documents'||/^connectors\/[0-9a-f-]{36}\/sync$/i.test(path);
     // The browser POSTs a priority change; it is the PATCH the API expects for
     // it, so the upstream method is chosen by the path, never by the browser.
-    const patch=settings||initiativeWatch||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path);
+    const patch=settings||initiativeWatch||conversation||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path);
+    const scopedBody=path==='ask'?{question:req.body?.question,...(req.body?.conversationId?{conversationId:req.body.conversationId}:{}),ownerScopeId:session.ownerScopeId,
+      purpose:'PERSONAL_ASSISTANCE',maximumSensitivity:'RESTRICTED',worldTime:'NOW',knowledgeTime:'LATEST'}:body;
     const response=await apiRequest('/v1/'+path,patch?'PATCH':'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
       // A merge or split (whose governed commit reads the evidence behind the
       // claims it reassigns) passes the evidence gate with the same pinned context,
@@ -61,7 +66,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       // kept PRIVATE, and the browser can raise neither value (ADR 0028 §4).
       ...(purpose==='memory.correct'||path==='settings/initiative'?{'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'PRIVATE'}:{}),
       // An export is the owner's own, bounded by the owner's widest ceiling.
-      ...(purpose==='data.export'?{'x-maximum-sensitivity':'RESTRICTED'}:{})},body,
+      ...(purpose==='data.export'?{'x-maximum-sensitivity':'RESTRICTED'}:{})},scopedBody,
       purpose==='data.export'?EXPORT_RESPONSE_BYTES:undefined);
     return res.status(response.status).json(response.body);
   }catch{return res.status(503).json({code:'SERVICE_UNAVAILABLE'});}

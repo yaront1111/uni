@@ -22,10 +22,10 @@ export class GroundedTurnAdapter {
     // conflicting labels remain exactly as the grounding pipeline returned them.
     const status = recording.grounding.action === 'BLOCKED' ? 'refused' : 'accepted';
     const text = status === 'accepted' ? recording.answer.statements.map(s => s.text).join('\n') : null;
-    await tx.query(`INSERT INTO conversation_turns(id,owner_scope_id,conversation_id,stored_order,speaker,text,status,data_purpose,sensitivity)
-      VALUES($1,$2,$3,$4,'owner',$5,'accepted',$9,$10),($6,$2,$3,$4+1,'assistant',$7,$8,$9,$10)`,
+    await tx.query(`INSERT INTO conversation_turns(id,owner_scope_id,conversation_id,stored_order,speaker,text,status,data_purpose,sensitivity,presented_answer)
+      VALUES($1,$2,$3,$4,'owner',$5,'accepted',$9,$10,NULL),($6,$2,$3,$4+1,'assistant',$7,$8,$9,$10,$11)`,
       [randomUUID(), owner, conversationId, counter['position'], recording.answer.question, turnId, text, status,
-        scope.dataPurpose, scope.maximumSensitivity]);
+        scope.dataPurpose, scope.maximumSensitivity,status==='accepted'?JSON.stringify(recording.answer):null]);
     return { conversationId, turnId };
   }
 }

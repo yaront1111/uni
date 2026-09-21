@@ -14,5 +14,6 @@ export const getServerSideProps:GetServerSideProps=async({req,res,query})=>{
   const loaded=await loadAsk((path,method,headers,body)=>apiRequest(path,method,headers,body),
     {cookie:req.headers.cookie??'',ownerScopeId:session.ownerScopeId},question);
   if(loaded.kind==='expired')return {redirect:{destination:'/signin?reason=expired',permanent:false}};
+  if(loaded.props.answer?.conversationId)return {redirect:{destination:'/chat?conversation='+loaded.props.answer.conversationId,permanent:false}};
   return {props:loaded.props};
 };
