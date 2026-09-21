@@ -2,8 +2,9 @@ import React,{type ReactNode} from 'react';
 import {Navigation,type NavigationCurrent} from './Navigation';
 
 /** The page frame the memory screens share: skip link, landmarks, navigation. */
-export function MemoryPage({current,eyebrow,title,intro,footer,children}:{current:NavigationCurrent;eyebrow:string;title:string;
+export function MemoryPage({current,eyebrow,title,intro,footer,children,embedded}:{current:NavigationCurrent;eyebrow:string;title:string;embedded?:boolean|undefined;
   intro?:ReactNode;footer:string;children:ReactNode}){
+  if(embedded)return <section aria-label={title}><h2>{title}</h2>{intro}{children}</section>;
   return <div className="shell">
     <a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>

@@ -253,7 +253,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
         evidenceId:input.evidenceId,registryReleaseId:options.registryReleaseId});
     }),
   });
-  registerMemoryGovernorRoutes(app,deviceWork);
+  registerMemoryGovernorRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId,evidenceObjects:options.evidenceObjects});
   registerOpsRoutes(app,deviceWork);

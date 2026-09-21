@@ -34,8 +34,8 @@ export const CONTROLS:readonly Control[]=Object.freeze([
     preview:'Stops Uai using this in normal answers and briefings on all your devices. Its history is kept and you can still inspect it.'},
   {key:'archive',label:'Archive',operationKind:'ARCHIVE',endpoint:'memory/archives',purpose:'memory.correct',button:'Archive it',
     preview:'Keeps this for explicit historical lookups only, with reduced prominence. Nothing is removed, and it is not hidden the way a suppression is.'},
-  {key:'delete',label:'Delete',operationKind:'DELETE',endpoint:'memory/deletions',purpose:'memory.correct',button:'Delete it',
-    preview:'Starts the deletion workflow: it disappears from every device\'s next read at once, and it and what was derived from it are then deleted. This cannot be undone.'},
+  {key:'delete',label:'Delete',operationKind:'DELETE',endpoint:'memory/deletions',purpose:'memory.correct',button:'Review deletion',
+    preview:'Reviews a deletion request for the selected scope. Confirmation removes the target from normal reads and records a pending deletion workflow; it does not certify completed erasure.'},
   {key:'merge',label:'Merge',operationKind:'MERGE',endpoint:'memory/frame-instances/merge',purpose:'memory.govern',button:'Merge them',
     preview:'Says this and another situation, or two people, are one. This one survives with both histories; the other identifier keeps resolving to it and is never reused. Every projection is rebuilt.'},
   {key:'split',label:'Split',operationKind:'SPLIT',endpoint:'memory/frame-instances/{id}/split',purpose:'memory.govern',button:'Split it',
@@ -45,6 +45,7 @@ export const CONTROLS:readonly Control[]=Object.freeze([
 export interface CorrectionReceipt{control:ControlKey;operationKind:MemoryOperationKind;memoryOperationId:string|null;
   ownerSequence:number|null;proposedTransactionId:string|null;transactionId:string|null}
 export interface CorrectionControlsProps{
+  embedded?:boolean;
   state:'ready'|'not-found'|'error';
   inspector:MemoryInspector|null;
   receipt?:CorrectionReceipt|null;
@@ -85,6 +86,11 @@ function Earlier({deltas}:{deltas:PublicOverlayDelta[]}){
 
 function Receipt({receipt}:{receipt:CorrectionReceipt}){
   const control=CONTROLS.find(entry=>entry.key===receipt.control)!;
+  if(receipt.control==='delete')return <section className="card" aria-labelledby="receipt">
+    <h2 id="receipt">Delete: request recorded</h2>
+    <p>Audited operation receipt: <code>{receipt.memoryOperationId??'Unavailable'}</code>. Owner sequence {receipt.ownerSequence}.</p>
+    <p>Deletion workflow pending. This receipt acknowledges the deletion request; it does not establish that the storage cascade has completed.</p>
+  </section>;
   return <section className="card" aria-labelledby="receipt">
     <h2 id="receipt">{control.label}: recorded</h2>
     <p>Recorded as a {control.label} operation ({receipt.operationKind.toLowerCase().replaceAll('_',' ')}).
@@ -199,26 +205,32 @@ function Controls({inspector,initialReceipt,initialError}:{inspector:MemoryInspe
   const [receipt,setReceipt]=useState<CorrectionReceipt|null>(initialReceipt);
   const [error,setError]=useState(initialError);
   const [busy,setBusy]=useState(false);
-  // One idempotency key per control until it succeeds, so a retry after a lost
+  const [deletion,setDeletion]=useState<Map<string,string>|null>(null);
+  const active=useRef(false);
+  // One idempotency key per request payload until it succeeds, so a retry after a lost
   // answer is the same write rather than a second one.
-  const keys=useRef(new Map<ControlKey,string>());
+  const keys=useRef(new Map<string,string>());
   const x=inspector.explanation;
   async function submit(control:Control,data:Map<string,string>){
+    if(active.current)return;
+    active.current=true;
     setBusy(true);setError('');
     try{
-      const key=keys.current.get(control.key)??crypto.randomUUID().replaceAll('-','');
-      keys.current.set(control.key,key);
       const request=requestFor(control,inspector,data);
+      const fingerprint=JSON.stringify(request);
+      const key=keys.current.get(fingerprint)??crypto.randomUUID().replaceAll('-','');
+      keys.current.set(fingerprint,key);
       const answer=await send(control,request.path,request.body,key);
       if(!answer)return;
-      keys.current.delete(control.key);
+      keys.current.delete(fingerprint);
+      setDeletion(null);
       setReceipt({control:control.key,operationKind:control.operationKind,
         memoryOperationId:typeof answer.memoryOperationId==='string'?answer.memoryOperationId:null,
         ownerSequence:typeof answer.ownerSequence==='number'?answer.ownerSequence:null,
         proposedTransactionId:typeof answer.proposedTransactionId==='string'?answer.proposedTransactionId:null,
         transactionId:typeof answer.transactionId==='string'?answer.transactionId:null});
-    }catch{setError('That could not be recorded, and nothing was changed. Please retry.');}
-    finally{setBusy(false);}
+    }catch{setError('The result could not be confirmed. Retry the same request or reload to check its recorded outcome.');}
+    finally{active.current=false;setBusy(false);}
   }
   return <>
     <section className="card" aria-labelledby="subject">
@@ -228,11 +240,25 @@ function Controls({inspector,initialReceipt,initialError}:{inspector:MemoryInspe
     </section>
     <div role="status" aria-live="polite">{receipt&&<Receipt receipt={receipt}/>}</div>
     {error&&<p role="alert">{error}</p>}
+    {deletion&&<section className="card" aria-labelledby="delete-review">
+      <h2 id="delete-review">Review deletion</h2>
+      <p>Target: {inspector.subject.correctionTarget.objectType} <code>{inspector.subject.correctionTarget.objectId}</code>.</p>
+      <p>{deletion.get('scope')==='OBJECT_AND_DERIVATIVES'?'This object and what was derived from it.':'Only this object.'}</p>
+      <p>This records a deletion request and removes the object from normal reads. Permanent removal is handled by the existing deletion workflow. A request is sent only when you confirm this preview.</p>
+      <button disabled={busy} onClick={()=>void submit(CONTROLS.find(control=>control.key==='delete')!,deletion)}>Confirm deletion request</button>
+      <button disabled={busy} onClick={()=>setDeletion(null)}>Cancel deletion</button>
+    </section>}
     <section aria-labelledby="controls">
       <h2 id="controls">Ten separate controls</h2>
       <p>Each control records a different kind of change. Pick the one that says what actually happened.</p>
-      {CONTROLS.map(control=><ControlSection key={control.key} control={control} inspector={inspector} busy={busy}
-        onSubmit={(chosen,data)=>void submit(chosen,data)}/>)}
+      {CONTROLS.map(control=><ControlSection key={control.key} control={control} inspector={inspector} busy={busy||deletion!==null}
+        onSubmit={(chosen,data)=>{
+          if(active.current||deletion)return;
+          if(chosen.key==='delete'){
+            if(data.get('confirmation')!=='DELETE')return;
+            setDeletion(new Map(data));
+          }else void submit(chosen,data);
+        }}/>)}
     </section>
     <section className="card" aria-labelledby="earlier">
       <h2 id="earlier">What you already said about it</h2>
@@ -242,7 +268,7 @@ function Controls({inspector,initialReceipt,initialError}:{inspector:MemoryInspe
 }
 
 export function CorrectionControls(props:CorrectionControlsProps){
-  return <MemoryPage current={null} eyebrow="MEMORY" title="Correct this memory"
+  return <MemoryPage embedded={props.embedded} current={null} eyebrow="MEMORY" title="Correct this memory"
     intro={<p>Say exactly what is wrong. Every control writes forward: what Uai believed stays in its history, and your change is visible on all your devices at once.</p>}
     footer="There is no single “edit memory”. Each control is recorded as its own kind of change.">
     {props.state==='ready'&&props.inspector&&<Controls inspector={props.inspector} initialReceipt={props.receipt??null} initialError={props.error??''}/>}

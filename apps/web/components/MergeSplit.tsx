@@ -15,6 +15,7 @@ export type MergeSplitResult=
   |{kind:'entity-split';result:EntitySplitResult};
 
 export interface MergeSplitProps {
+  embedded?:boolean;
   review:MergeSplitReview;
   preview?:MergeSplitPreview|null;
   result?:MergeSplitResult|null;
@@ -125,6 +126,8 @@ async function post(path:string,body:unknown){
 }
 
 export function MergeSplit(props:MergeSplitProps){
+  const Frame=props.embedded?'section':'main';
+  const Heading=props.embedded?'h2':'h1';
   const [preview,setPreview]=useState<MergeSplitPreview|null>(props.preview??null);
   const [result,setResult]=useState<MergeSplitResult|null>(props.result??null);
   const [error,setError]=useState(props.error??'');
@@ -150,13 +153,13 @@ export function MergeSplit(props:MergeSplitProps){
     }catch{setError('The change could not be recorded. Nothing was merged or split. Please retry.');}
     finally{setBusy(false);}
   }
-  return <div className="shell">
-    <a className="skip" href="#content">Skip to content</a>
+  return <div className={props.embedded?undefined:'shell'}>
+    {!props.embedded&&<><a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    <Navigation current="merge-split"/>
-    <main id="content" tabIndex={-1}>
+    <Navigation current="merge-split"/></>}
+    <Frame id={props.embedded?'memory-merge-split':'content'} tabIndex={-1}>
       <p className="eyebrow">MEMORY</p>
-      <h1>Merge and split review</h1>
+      <Heading>Merge and split review</Heading>
       <p>Uai keeps two situations or two people apart until the evidence, or you, say they are one. Nothing here changes until you confirm a preview.</p>
       <section className="card" aria-labelledby="frame-candidates">
         <h2 id="frame-candidates">Situations the matcher compared</h2>
@@ -227,7 +230,7 @@ export function MergeSplit(props:MergeSplitProps){
           <LineageList records={props.review.recentLineage} label="Old identifiers and where they went"/>}
       </section>
       {error&&<p role="alert">{error}</p>}
-    </main>
-    <footer>Merge and split are recorded as governed changes. Old identifiers stay resolvable and are never reused.</footer>
+    </Frame>
+    {!props.embedded&&<footer>Merge and split are recorded as governed changes. Old identifiers stay resolvable and are never reused.</footer>}
   </div>;
 }

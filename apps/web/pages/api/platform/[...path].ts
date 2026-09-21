@@ -18,6 +18,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     if(req.headers.origin!==new URL(required('NEXTAUTH_URL')).origin)return res.status(403).json({code:'ORIGIN_REFUSED'});
     const purpose=path==='devices'?'device.register':/^devices\/[0-9a-f-]{36}\/revoke$/i.test(path)?'device.remove':path==='sessions/revoke-all'?'auth.sign_out_all':path==='evidence'?'evidence.ingest':
       path==='ask'?'memory.read':
+      /^memory\/transactions\/(propose|[0-9a-f-]{36}\/(commit|validate|reject))$/i.test(path)?'memory.govern':
       path==='conversations'||conversation?'conversation.write':
       path==='documents'?'evidence.ingest':
       path==='connectors'?'connector.manage':
