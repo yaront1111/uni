@@ -5,6 +5,7 @@ import { persistedConversationSchema, conversationTitleSchema, conversationTurnS
   type AppendConversationTurn, type ConversationTurnContent, type ConversationDeletion } from '@unai/domain';
 import { ControlError, requirePurpose, type ControlTransaction } from './transaction.js';
 import { recordDataRequest } from './erasure.js';
+import { resolveConversationReference, type ConversationReference } from './conversation-references.js';
 
 export const CONVERSATION_READ_PURPOSE = 'conversation.read';
 export const CONVERSATION_WRITE_PURPOSE = 'conversation.write';
@@ -48,6 +49,14 @@ export class ConversationService {
       FROM conversations c WHERE c.owner_scope_id=$1 AND c.id=$2`, [this.owner, this.id(id)])).rows[0];
     if (!row) throw new ControlError('CONVERSATION_NOT_FOUND');
     return { conversation: conversationRow(row), turns: row['turns'].map(conversationTurnRow) };
+  }
+  /** Reference-only projection. get() enforces owner/thread identity and the
+   * transaction's RLS data-purpose/sensitivity ceiling before text is inspected. */
+  async resolveReference(id: string, question: string): Promise<ConversationReference> {
+    requirePurpose(this.tx, CONVERSATION_READ_PURPOSE);
+    const text = z.string().trim().min(1).max(2000).parse(question);
+    const { turns } = await this.get(id);
+    return resolveConversationReference(text, turns);
   }
   async rename(id: string, title: string): Promise<Conversation> {
     requirePurpose(this.tx, CONVERSATION_WRITE_PURPOSE);

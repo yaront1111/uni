@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { referenceQuerySchema } from './reference-query.js';
 import { dataPurposeSchema, sensitivitySchema } from './evidence.js';
 import { assessmentStatusSchema, supportKindSchema, independenceGroupSchema } from './governance.js';
 import { claimOriginSchema, claimLifecycleSchema, modalitySchema, polaritySchema } from './memory.js';
@@ -84,6 +85,7 @@ export const REQUIRED_CONTEXT_FIELDS = Object.freeze([
 export type RequiredContextField = (typeof REQUIRED_CONTEXT_FIELDS)[number];
 
 export const contextRequestSchema = z.strictObject({
+  referenceQuery: referenceQuerySchema.optional(),
   ownerScopeId: z.uuid(),
   requestingActorId: z.uuid(),
   purpose: dataPurposeSchema,

@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
 import type { PolicyPorts } from '@unai/belief';
+import { askRequestSchema } from '@unai/domain';
+import { ConversationService, ControlError, resolveConversationReference, conversationReferenceQuery } from '@unai/control';
 import { CONTEXT_READ_PURPOSE, ContextBrokerError, answerQuestion, missingAskFields, type AnswerPhraser } from '@unai/context';
 import { createAnswerRecorder, type PurposeWork } from './answers.js';
 import type { EvidenceObjects } from './evidence.js';
@@ -75,21 +77,37 @@ export function registerAskRoutes(app: FastifyInstance, work: Work, options: Ask
     if (!options.purposeWork) return refuse(request, reply, 'ANSWER_RECORDING_UNAVAILABLE');
     const { conversationId, ...askBody } = body;
     if (conversationId !== undefined && (typeof conversationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conversationId))) return refuse(request, reply, 'ASK_REQUEST_INVALID');
+    const parsed = askRequestSchema.safeParse(askBody);
+    if (!parsed.success) return refuse(request, reply, 'ASK_REQUEST_INVALID');
+    const engineRequest = parsed.data;
+    const originalQuestion = engineRequest.question;
+    let reference = resolveConversationReference(originalQuestion, []);
     let association: { conversationId: string; turnId: string } | undefined;
     try {
-      if (typeof conversationId === 'string') await options.purposeWork(request, 'answer.record', async tx => {
-        const found = await tx.query('SELECT id FROM conversations WHERE owner_scope_id=$1 AND id=$2', [context.ownerScopeId, conversationId]);
-        if (found.rowCount !== 1) throw new ContextBrokerError('CONVERSATION_NOT_FOUND');
+      if (typeof conversationId === 'string') await options.purposeWork(request, 'conversation.read', async tx => {
+        await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+          [engineRequest.purpose, engineRequest.maximumSensitivity]);
+        reference = await new ConversationService(tx).resolveReference(conversationId, originalQuestion);
+        engineRequest.question = reference.question;
+        await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
+          objects: [{ type: 'conversations', id: conversationId, fields: ['id'] }] });
       });
+      const queryNow = new Date();
+      const referenceQuery = conversationReferenceQuery(reference,
+        engineRequest.worldTime === 'NOW' ? queryNow : new Date(engineRequest.worldTime));
+      if (referenceQuery?.kind === 'UNRESOLVED' || !engineRequest.referenceQuery) {
+        if (referenceQuery) engineRequest.referenceQuery = referenceQuery;
+      }
       const answer = await answerQuestion(
         <T,>(run: (tx: OwnerTransaction) => Promise<T>) => work(request, tx => run(tx)) as Promise<T>,
-        askBody,
+        engineRequest,
         {
           ...(options.policyPorts ? { ports: options.policyPorts } : {}),
           correlationId: context.correlationId, requestingActorId: context.actorId,
           registryReleaseId: options.registryReleaseId ?? null, registryRelease: options.registryRelease ?? null,
           ...(options.phraser ? { phraser: options.phraser } : {}),
-          recorder: createAnswerRecorder({ request, purposeWork: options.purposeWork,
+          ...(referenceQuery ? { now: queryNow } : {}),
+          recorder: createAnswerRecorder({ request, purposeWork: options.purposeWork, originalQuestion,
             ...(typeof conversationId === 'string' ? { conversationId } : {}), onRecorded: value => { association = value; },
             dataPurpose: String(body['purpose']), maximumSensitivity: String(body['maximumSensitivity']) }),
         });
@@ -103,9 +121,9 @@ export function registerAskRoutes(app: FastifyInstance, work: Work, options: Ask
           { type: 'conversation_turns', id: turnId, fields: ['id'] },
           ...answer.sourceLinks.slice(0, 96).map(link => ({ type: 'source_items', id: link.evidenceId, fields: ['sensitivity', 'allowed_purposes'] }))],
       }));
-      return reply.code(200).send({ ...answer, conversationId: recordedConversationId, turnId });
+      return reply.code(200).send({ ...answer, question: originalQuestion, conversationId: recordedConversationId, turnId });
     } catch (error) {
-      if (error instanceof ContextBrokerError) return refuse(request, reply, error.message, error.detail);
+      if (error instanceof ContextBrokerError || error instanceof ControlError) return refuse(request, reply, error.message, error.detail);
       throw error;
     }
   });

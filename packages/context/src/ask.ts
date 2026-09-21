@@ -439,7 +439,10 @@ async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: 
   const parsed = askRequestSchema.safeParse(raw);
   if (!parsed.success) throw new ContextBrokerError('ASK_REQUEST_INVALID');
   const ask = parsed.data;
-  const classification = classifyQuestion(ask.question);
+  const classified = classifyQuestion(ask.question);
+  const classification: QuestionClassification = ask.referenceQuery?.kind === 'OBLIGATION'
+    ? { ...classified, answerType: 'CURRENT_STATE', queryMode: 'CURRENT_VALUE', historicalMode: null,
+      matchedRule: 'EXPLICIT_OBLIGATION_QUERY' } : classified;
 
   // PRD §12.3: "what did Uai believe then" is asked with the knowledge time at
   // the world time. A caller that left the knowledge time at LATEST gets that
@@ -452,6 +455,7 @@ async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: 
     ownerScopeId: ask.ownerScopeId, requestingActorId: options.requestingActorId, purpose: ask.purpose,
     query: ask.question, entityHints: ask.entityHints, worldlineHints: ask.worldlineHints,
     discourseAnchors: ask.discourseAnchors,
+    ...(ask.referenceQuery ? { referenceQuery: ask.referenceQuery } : {}),
     frameTypeHints: ask.frameTypeHints.length>0?ask.frameTypeHints:classification.queryMode==='DECISION_RECONSTRUCTION'?['shared.decision']:[], lifeCategory: ask.lifeCategory,
     worldTime: ask.worldTime, knowledgeTime, maximumSensitivity: ask.maximumSensitivity, actionRisk: 'LOW',
     requiredCertainty: ['ACCEPTED', 'PROVISIONAL', 'CONTESTED', 'OWNER_OVERLAY'], includeEvidence: 'WHEN_NEEDED',
@@ -466,8 +470,12 @@ async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: 
   const linkable = (evidenceIds: readonly string[]) =>
     [...new Set(evidenceIds.filter(id => refs.has(id) && !index.assistantEvidence.has(id)))].sort();
 
-  const drafts = composeStatements(packet, classification, { historicalInstantMissing,
-    changes: changeWindow(ask.question,packet.worldTime,ask.timeWindow) });
+  const drafts: Draft[] = ask.referenceQuery?.kind === 'UNRESOLVED'
+    ? [{ kind: 'NOTHING_FOUND', label: 'UNKNOWN',
+      text: 'Nothing in the memory this request could read answers this question.',
+      objectRefs: [], evidenceIds: [], explain: null }]
+    : composeStatements(packet, classification, { historicalInstantMissing,
+      changes: changeWindow(ask.question,packet.worldTime,ask.timeWindow) });
   const composed: AskStatement[] = drafts.map((draft, position) => ({
     statementId: 'S' + (position + 1), kind: draft.kind, label: draft.label, text: draft.text,
     objectRefs: draft.objectRefs, sourceEvidenceIds: linkable(draft.evidenceIds), explainPath: draft.explain,
@@ -488,7 +496,7 @@ async function answerQuestionImpl(runner: ContextRunner, raw: unknown, options: 
       ()=>validateGrounding(packet, statements, { maximumSensitivity: ask.maximumSensitivity, index }),
       {componentVersion:GROUNDING_VALIDATOR_VERSION,registryReleaseId:options.registryReleaseId});
 
-  const phraser = options.phraser;
+  const phraser = ask.referenceQuery?.kind === 'UNRESOLVED' ? undefined : options.phraser;
   if (phraser) {
     let lastViolations: GroundingViolation[] = [];
     for (let attempt = 1; attempt <= MAX_PHRASING_ATTEMPTS && presented === null; attempt++) {

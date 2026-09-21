@@ -151,3 +151,23 @@ it('refuses rejected candidate text, wrong purposes and immutable order changes,
   expect((await run(b, 'conversation.read', tx => service(tx).get(c.id))).turns).toEqual([turn]);
   expect((await admin.query("SELECT 1 FROM audit_events WHERE objects_and_fields_accessed @> $1::jsonb", [JSON.stringify([{ type: 'conversations', id: c.id }])])).rowCount).toBe(0);
 });
+
+it('reference resolution reads only the named owner thread and eligible purpose/sensitivity turns', async () => {
+  const c = await run(a, 'conversation.write', tx => service(tx).create({ title: 'Dana' }));
+  const other = await run(a, 'conversation.write', tx => service(tx).create({ title: 'Other thread' }));
+  await run(a, 'conversation.write', tx => service(tx).appendTurn(c.id, {
+    speaker: 'owner', text: 'What do I owe Dana this week?', status: 'accepted',
+  }));
+  const resolve = (o: typeof a, id: string) => run(o, 'conversation.read', tx => service(tx).resolveReference(id, 'And next week?'));
+  expect(await resolve(a, c.id)).toEqual({ question: 'What do I owe Dana next week?', status: 'resolved' });
+  expect(await resolve(a, other.id)).toEqual({ question: 'And next week?', status: 'unresolved' });
+  await expect(resolve(b, c.id)).rejects.toThrow('CONVERSATION_NOT_FOUND');
+  await admin.query("UPDATE conversation_turns SET data_purpose='PERSONAL_FINANCE',sensitivity='PRIVATE' WHERE conversation_id=$1", [c.id]);
+  const scoped = (purpose: string, sensitivity: string) => run(a, 'conversation.read', async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)", [purpose, sensitivity]);
+    return service(tx).resolveReference(c.id, 'And next week?');
+  });
+  expect((await scoped('PERSONAL_FINANCE', 'PRIVATE')).status).toBe('resolved');
+  expect((await scoped('PERSONAL_FINANCE', 'NORMAL')).status).toBe('unresolved');
+  expect((await scoped('FAMILY_COORDINATION', 'RESTRICTED')).status).toBe('unresolved');
+});

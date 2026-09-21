@@ -19,6 +19,7 @@ import { listThreadsForObject } from './threads.js';
 import { readContextFreshness } from './freshness.js';
 import { deriveUnderstanding } from './understanding.js';
 import { readableFrameCandidates } from './candidates.js';
+import { obligationQueryFrames } from './obligation-query.js';
 import { classifyQuestion } from './question.js';
 import { readableResolutions, closedFrameIds } from './resolutions.js';
 
@@ -334,7 +335,8 @@ async function assemble(
   const knowledgeTime = request.knowledgeTime === 'LATEST' ? now : new Date(request.knowledgeTime);
   // A caller that already classified the question (the Ask pipeline) declares the
   // mode; otherwise the broker reads it from the query text.
-  const answerType = answerTypeSchema.parse(request.answerType ?? classifyAnswerType(request.query));
+  const answerType = answerTypeSchema.parse(request.referenceQuery?.kind === 'OBLIGATION'
+    ? 'CURRENT_VALUE' : request.answerType ?? classifyAnswerType(request.query));
   const category: LifeCategory | null = request.lifeCategory ?? categoryOfPurpose(request.purpose);
   const frameLimit = Math.min(Math.max(options.frameLimit ?? 100, 1), 500);
   const frameScanLimit = 2000;
@@ -411,7 +413,7 @@ async function assemble(
 
   // Similarity supplies frame candidates before value selection. Otherwise an
   // older match contributes only a citation while its actual value is omitted.
-  const semanticSearch = await searchMemoryEmbeddings(tx, {
+  const semanticSearch = request.referenceQuery ? null : await searchMemoryEmbeddings(tx, {
     ownerScopeId: request.ownerScopeId, query: request.query, dataPurpose: request.purpose,
     maximumSensitivity: request.maximumSensitivity, knowledgeTime,
     timeWindow: request.timeWindow ? {
@@ -439,10 +441,11 @@ async function assemble(
        AND object_type='frame_instance' AND created_at<=$3`, [request.ownerScopeId, [...request.worldlineHints], knowledgeTime])).rows
     .map(row => row['object_id'] as string);
   const hinted = entityIds.length > 0 || threadFrames.length > 0 || request.frameTypeHints.length > 0;
-  const frameRows = (await tx.query(
+  let frameRows = request.referenceQuery?.kind === 'UNRESOLVED' ? [] : (await tx.query(
     `SELECT f.id,f.frame_type_id,f.created_at,count(*) OVER() AS candidate_count,
        unai_private.object_state_at(f.owner_scope_id,'frame_instances',f.id,$9) AS temporal_state FROM frame_instances f
      WHERE f.owner_scope_id=$1 AND f.created_at<=$9 AND coalesce(unai_private.object_state_at(f.owner_scope_id,'frame_instances',f.id,$9)->>'lifecycle','UNKNOWN')<>'RETIRED'
+       AND ($11::boolean=false OR f.frame_type_id='shared.obligation')
        AND NOT f.id=ANY($8::uuid[])
        AND ($2=false OR f.id=ANY($3::uuid[]) OR f.frame_type_id=ANY($4::text[])
          OR EXISTS(SELECT 1 FROM frame_instance_roles r JOIN claims c ON c.owner_scope_id=r.owner_scope_id AND c.id=r.claim_id
@@ -455,7 +458,8 @@ async function assemble(
        CASE WHEN f.frame_type_id IN ('shared.commitment','shared.obligation') THEN 0 ELSE 1 END,
        f.created_at DESC,f.id DESC LIMIT $6`,
     [request.ownerScopeId, hinted, threadFrames, [...request.frameTypeHints], entityIds, frameScanLimit,
-      relevantFrameIds, [...removedFromRetrieval, ...redactions.objects], knowledgeTime, readableEvidenceIds])).rows;
+      relevantFrameIds, [...removedFromRetrieval, ...redactions.objects], knowledgeTime, readableEvidenceIds,
+      request.referenceQuery?.kind === 'OBLIGATION'])).rows;
   if (Number(frameRows[0]?.['candidate_count'] ?? 0) > frameRows.length) {
     unknowns.push(contextUnknownSchema.parse({ kind: 'RETRIEVAL_INCOMPLETE', objectType: 'frame_instances',
       objectId: null, detail: 'FRAME_CANDIDATE_BUDGET_REACHED' }));
@@ -481,10 +485,23 @@ async function assemble(
     candidateFrameIds.sort((a, b) => Number(closedFrames.has(a)) - Number(closedFrames.has(b)));
   }
   const candidateRead = await readableFrameCandidates(tx, { ownerScopeId: request.ownerScopeId, knowledgeTime,
-    frameIds: candidateFrameIds, limit: frameLimit,
+    frameIds: candidateFrameIds, limit: request.referenceQuery ? frameScanLimit : frameLimit,
     readableEvidenceIds, withheldObjectIds: redactions.objects,
     withheldValueIds: new Set([...redactions.fields].filter(([, fields]) => fields.has('normalizedValue')).map(([id]) => id)),
     removedObjectIds: removedFromRetrieval });
+  if (request.referenceQuery) {
+    const restricted = await obligationQueryFrames(tx, { request, frameIds: candidateRead.frameIds,
+      authority: candidateRead.authority, worldTime, knowledgeTime, registryReleaseId: options.registryReleaseId ?? null,
+      withheldObjects: redactions.objects, withheldFields: redactions.fields, removedObjects: removedFromRetrieval });
+    candidateRead.incomplete ||= restricted.length > frameLimit;
+    candidateRead.frameIds = restricted.slice(0, frameLimit);
+    candidateRead.withheldFrameIds = [];
+    const matching = new Set(candidateRead.frameIds);
+    frameRows = frameRows.filter(row => matching.has(row['id'] as string));
+    if (request.referenceQuery.kind === 'UNRESOLVED') unknowns.push(contextUnknownSchema.parse({
+      kind: 'ENTITY_UNRESOLVED', objectType: 'entities', objectId: null, detail: 'CONVERSATION_REFERENCE_UNRESOLVED',
+    }));
+  }
   if (candidateRead.incomplete && !unknowns.some(value => value.kind === 'RETRIEVAL_INCOMPLETE')) {
     unknowns.push(contextUnknownSchema.parse({ kind: 'RETRIEVAL_INCOMPLETE', objectType: 'frame_instances',
       objectId: null, detail: 'MEMORY_RETRIEVAL_BUDGET_REACHED' }));
@@ -722,7 +739,7 @@ async function assemble(
   // candidate entity, candidate memory thread, discourse anchor or candidate frame
   // type. Each arm stands alone, so "I paid him back" does not disappear because
   // synchronous canonicalization could not name the obligation.
-  const unattachedRows = (await tx.query(
+  const unattachedRows = request.referenceQuery ? [] : (await tx.query(
     `SELECT id FROM owner_overlay_deltas
      WHERE owner_scope_id=$1
        AND unai_private.object_state_at(owner_scope_id,'owner_overlay_deltas',id,$6)->>'lifecycle'='AWAITING_INSTANCE_RESOLUTION'
@@ -805,7 +822,7 @@ async function assemble(
   // the redactions and the unknowns in place: what was withheld is still said.
   const evidenceRefs = [];
   if (request.includeEvidence !== 'NEVER') {
-    const wanted = request.includeEvidence === 'ALWAYS'
+    const wanted = request.includeEvidence === 'ALWAYS' && !request.referenceQuery
       ? admitted.filter(label => !withheldEvidence.has(label.evidenceId)).map(label => label.evidenceId)
       : [...new Set([...evidenceInPacket, ...semanticEvidence])];
     if (wanted.length > 0) {
@@ -1031,6 +1048,7 @@ async function assemble(
         discourseAnchors: request.discourseAnchors, frameTypeHints: request.frameTypeHints,
         intendedAction: request.intendedAction, answerType: request.answerType, timeWindow: request.timeWindow,
         sourceTypes: request.sourceTypes,
+        ...(request.referenceQuery ? { referenceQuery: request.referenceQuery } : {}),
       }),
       JSON.stringify(packet), packetHash, options.registryReleaseId ?? null,
       JSON.stringify(packet.selectionReason)]);

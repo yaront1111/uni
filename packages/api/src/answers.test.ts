@@ -20,7 +20,7 @@ import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
 import { createModelGateway, MODEL_PURPOSES, type ModelProvider } from '@unai/model';
 import { SUPPLIED_CONTEXT_STATEMENT, type AnswerCandidate, type AnswerCandidateStatement } from '@unai/domain';
-import type { AnswerPhraser } from '@unai/context';
+import { readContextPacket, type AnswerPhraser } from '@unai/context';
 import { ConversationService } from '@unai/control';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { createPlatformApi } from './platform.js';
@@ -124,15 +124,15 @@ async function slot(frameInstanceId: string, predicateId: string, modality = 'AC
     VALUES($1,$2,$3,$4,$5,$6)`, [id, owner, frameInstanceId, predicateId, baseContext, modality]);
   return id;
 }
-async function value(slotId: string, normalized: unknown, source: keyof typeof evidence, status: string, origin = 'USER_STATEMENT') {
+async function value(slotId: string, normalized: unknown, source: keyof typeof evidence | { anchorId: string }, status: string, origin = 'USER_STATEMENT', entityId = daniel) {
   const propositionId = uuidV7(), claimId = uuidV7();
   await admin.query('INSERT INTO propositions(id,owner_scope_id,belief_slot_id,normalized_value) VALUES($1,$2,$3,$4)',
     [propositionId, owner, slotId, JSON.stringify(normalized)]);
   await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,valid_from,recorded_at)
-    VALUES($1,$2,$3,$4,$5,'PROVISIONAL',$6,$7)`, [claimId, owner, evidence[source].anchorId, propositionId, origin, T('2026-01-01'), T('2026-02-01')]);
+    VALUES($1,$2,$3,$4,$5,'PROVISIONAL',$6,$7)`, [claimId, owner, typeof source === 'string' ? evidence[source].anchorId : source.anchorId, propositionId, origin, T('2026-01-01'), T('2026-02-01')]);
   await admin.query(`INSERT INTO frame_instance_roles(id,owner_scope_id,frame_instance_id,role_id,entity_id,claim_id)
     SELECT $1,$2,frame_instance_id,'creditor',$3,$4 FROM belief_slots WHERE owner_scope_id=$2 AND id=$5`,
-    [randomUUID(), owner, daniel, claimId, slotId]);
+    [randomUUID(), owner, entityId, claimId, slotId]);
   await admin.query(`INSERT INTO belief_assessments(id,owner_scope_id,proposition_id,assessment_status,valid_from,recorded_at,
     policy_version,decision_reason,transaction_id) VALUES($1,$2,$3,$4,$5,$6,'local-policy-0.1.0','{"code":"FIXTURE"}',$7)`,
     [uuidV7(), owner, propositionId, status, T('2026-01-01'), T('2026-02-01'), transactionId]);
@@ -913,5 +913,219 @@ it('refuses a foreign or malformed conversation before model invocation or packe
     expect(phraser.calls).toBe(0);
     expect((await admin.query('SELECT count(*)::int AS n FROM context_packets WHERE owner_scope_id=$1', [owner])).rows[0].n).toBe(packetsBefore);
     expect(await conversationIsolationSnapshot()).toEqual(before);
+  } finally { await app.close(); }
+});
+
+async function referenceThread(text: string, speaker: 'owner' | 'assistant' = 'assistant') {
+  return withOwnerTransaction(appPool, { ownerScopeId: owner, actorId: actor, purpose: 'conversation.write', correlationId: randomUUID() }, async tx => {
+    const service = new ConversationService(tx);
+    const conversation = await service.create({ title: 'Reference isolation' });
+    const turn = await service.appendTurn(conversation.id, { speaker, text, status: 'accepted' });
+    return { conversation, turn };
+  });
+}
+async function referenceSupport(answer: { packetId: string; answerManifestId: string }) {
+  const packet = (await admin.query('SELECT packet FROM context_packets WHERE id=$1 AND owner_scope_id=$2', [answer.packetId, owner])).rows[0].packet;
+  const manifest = await manifestRow(answer.answerManifestId);
+  return { selections: packet.selections, beliefs: packet.currentBeliefs, futures: packet.futureClaims,
+    evidence: packet.evidenceRefs, beliefIds: manifest.belief_ids, claimIds: manifest.claim_ids,
+    evidenceIds: manifest.evidence_ids, overlayIds: manifest.overlay_delta_ids };
+}
+
+it('verify-a2-assistant: A follow-up cannot ground a factual answer solely in a prior assistant statement.', async () => {
+  const { conversation, turn } = await referenceThread('You owe Dana 900000 ILS for concert tickets.');
+  const phraser = scripted([statement('You owe Dana 900000 ILS for concert tickets.', 'CONFIRMED', [ref(turn.id, 'conversation_turns')])]);
+  const app = api(phraser);
+  try {
+    const answer = await ask(app, 'What do I owe her?', { conversationId: conversation.id });
+    expect(said(answer)).not.toMatch(/900000|concert tickets/);
+    expect(answer.grounding.action).not.toBe('PASSED');
+    const support = await referenceSupport(answer);
+    expect(JSON.stringify(support)).not.toContain(turn.id);
+    expect(JSON.stringify(support)).not.toContain(conversation.id);
+    expect(JSON.stringify(support)).not.toContain('900000');
+    expect(answer.sourceLinks.every((link: { sourceType: string }) => link.sourceType !== 'ASSISTANT_CONVERSATION')).toBe(true);
+  } finally { await app.close(); }
+});
+
+it('assistant text plus independent evidence adds no support, corroboration or certainty, even for an unsupported extra claim', async () => {
+  const { conversation, turn } = await referenceThread('You definitely owe Daniel 60 ILS. You also owe Dana 900000 ILS for concert tickets.');
+  const app = api();
+  try {
+    const baseline = await ask(app, 'Do I still owe Daniel?');
+    const followup = await ask(app, 'Do I still owe Daniel?', { conversationId: conversation.id });
+    expect(followup.statements).toEqual(baseline.statements);
+    expect(followup.sourceLinks).toEqual(baseline.sourceLinks);
+    expect(await referenceSupport(followup)).toEqual(await referenceSupport(baseline));
+    expect(JSON.stringify(await referenceSupport(followup))).not.toContain(turn.id);
+    expect(said(followup)).not.toMatch(/900000|concert tickets/);
+  } finally { await app.close(); }
+  const hostile = api(scripted([statement('You owe Dana 900000 ILS for concert tickets.', 'CONFIRMED',
+    [ref(p.principal)], { sourceEvidenceIds: [evidence.document.evidenceId] })]));
+  try {
+    const answer = await ask(hostile, 'Do I still owe Daniel?', { conversationId: conversation.id });
+    expect(answer.grounding.action).not.toBe('PASSED');
+    expect(answer.grounding.violations).toContainEqual(expect.objectContaining({
+      rule: 'UNGROUNDED_PERSONAL_FACT', detail: 'STATES_VALUE_NOT_IN_NAMED_OBJECTS',
+    }));
+    expect(said(answer)).not.toMatch(/900000|concert tickets/);
+    expect(JSON.stringify(await referenceSupport(answer))).not.toContain(turn.id);
+  } finally { await hostile.close(); }
+});
+
+it('a prior assistant certainty claim cannot upgrade independently inferred support', async () => {
+  const { conversation, turn } = await referenceThread('It is confirmed that you owe Daniel the money by 2026-04-01.');
+  const candidate = statement('The obligation due time is 2026-04-01T00:00:00.000Z.', 'CONFIRMED', [ref(p.due)]);
+  const app = api(scripted([candidate]));
+  try {
+    const baseline = await ask(app, 'What is the obligation due time?');
+    const followup = await ask(app, 'What is the obligation due time?', { conversationId: conversation.id });
+    expect(followup.statements).toEqual(baseline.statements);
+    expect(followup.statements[0].label).toBe('INFERRED');
+    expect(followup.grounding.action).toBe('DOWNGRADED');
+    expect(await referenceSupport(followup)).toEqual(await referenceSupport(baseline));
+    expect(JSON.stringify(await referenceSupport(followup))).not.toContain(turn.id);
+  } finally { await app.close(); }
+});
+
+it('Conversation and AnswerProvenance identities cannot serve as factual support', async () => {
+  const original = api();
+  let prior;
+  try { prior = await ask(original, 'Do I still owe Daniel?'); }
+  finally { await original.close(); }
+  for (const object of [ref(prior.conversationId, 'conversations'), ref(prior.answerManifestId, 'answer_provenance')]) {
+    const app = api(scripted([statement('You owe Dana 900000 ILS.', 'CONFIRMED', [object])]));
+    try {
+      const answer = await ask(app, 'Do I owe Dana?', { conversationId: prior.conversationId });
+      expect(answer.grounding.action).not.toBe('PASSED');
+      expect(said(answer)).not.toContain('900000');
+      expect(JSON.stringify(await referenceSupport(answer))).not.toContain(object.objectId);
+    } finally { await app.close(); }
+  }
+});
+
+it('resolves an assistant-mentioned referent only to independent evidence and retains the original owner wording', async () => {
+  const independent = await value(await slot(await frame('shared.obligation'), 'shared.obligation.principal_amount'),
+    { amount: '71.00', currency: 'ILS' }, 'document', 'ACCEPTED', 'DOCUMENT_ASSERTION');
+  const { conversation, turn } = await referenceThread('You definitely owe Daniel 900000 ILS for concert tickets.');
+  const questions: string[] = [];
+  const phraser: AnswerPhraser = { modelProvider: 'fixture-model', modelId: 'reference-fixture', promptVersion: 'reference-fixture-1',
+    async phrase(request) { questions.push(request.question); return { statements: [...request.draft] }; } };
+  const app = api(phraser);
+  try {
+    const answer = await ask(app, 'What do I owe him?', { conversationId: conversation.id });
+    expect(questions).toEqual(['What do I owe Daniel?']);
+    expect(answer.question).toBe('What do I owe him?');
+    expect(said(answer)).toContain('71.00');
+    expect(answer.statements.find((entry: { text: string }) => entry.text.includes('71.00')).label).toBe('REPORTED');
+    expect(said(answer)).not.toMatch(/900000|concert tickets/);
+    const support = await referenceSupport(answer);
+    expect(support.evidenceIds).toContain(evidence.document.evidenceId);
+    expect(support.beliefIds).toContain(independent);
+    expect(JSON.stringify(support)).not.toContain(turn.id);
+    const rows = (await admin.query("SELECT text FROM conversation_turns WHERE conversation_id=$1 AND speaker='owner' ORDER BY stored_order", [conversation.id])).rows;
+    expect(rows.at(-1).text).toBe('What do I owe him?');
+    const fresh = await ask(app, 'What do I owe him?');
+    expect(fresh.declinesToAssert).toBe(true);
+    expect((await referenceSupport(fresh)).selections).toEqual([]);
+    expect(questions).toEqual(['What do I owe Daniel?']);
+  } finally { await app.close(); }
+});
+
+it("verify-a2-context: After 'What do I owe Dana this week?', 'And next week?' returns Dana's next-week obligations; in a new conversation the latter question returns the engine's cannot-resolve result.", async () => {
+  const dana = uuidV7();
+  await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,canonical_label) VALUES($1,$2,'PERSON','Dana')", [dana, owner]);
+  const due = async (amount: string, date: string, creditor = dana) => {
+    const obligation = await frame('shared.obligation');
+    const principal = await value(await slot(obligation, 'shared.obligation.principal_amount'),
+      { amount, currency: 'ILS' }, 'document', 'ACCEPTED', 'DOCUMENT_ASSERTION', creditor);
+    await value(await slot(obligation, 'shared.obligation.due_time'), { time: date }, 'document', 'ACCEPTED', 'DOCUMENT_ASSERTION', creditor);
+    return principal;
+  };
+  const thisWeek = await due('83.00', '2026-09-20T12:00:00.000Z');
+  const nextWeek = await due('172.00', '2026-09-23T12:00:00.000Z');
+  const otherCreditor = await due('291.00', '2026-09-23T12:00:00.000Z', daniel);
+  const lowerBoundary = await due('173.00', '2026-09-21T00:00:00.000Z');
+  const upperBoundary = await due('174.00', '2026-09-28T00:00:00.000Z');
+  const app = api();
+  try {
+    const first = await ask(app, 'What do I owe Dana this week?', { worldTime: '2026-09-20T09:00:00.000Z' });
+    const next = await ask(app, 'And next week?', { conversationId: first.conversationId, worldTime: '2026-09-20T09:00:00.000Z' });
+    const fresh = await ask(app, 'And next week?', { worldTime: '2026-09-20T09:00:00.000Z' });
+    expect.soft(said(first)).toContain('83.00');
+    expect.soft((await referenceSupport(first)).beliefIds).toContain(thisWeek);
+    expect.soft((await referenceSupport(first)).beliefIds).not.toContain(nextWeek);
+    expect.soft(said(next)).toContain('172.00');
+    expect.soft(said(next)).not.toContain('83.00');
+    const nextSupport = await referenceSupport(next);
+    expect.soft(nextSupport.beliefIds).toContain(lowerBoundary);
+    for (const excluded of [thisWeek, otherCreditor, upperBoundary]) {
+      expect.soft(nextSupport.beliefIds).not.toContain(excluded);
+      expect.soft(JSON.stringify(nextSupport.selections)).not.toContain(excluded);
+    }
+    expect.soft(nextSupport.selections.filter((s: { outcome: string }) => s.outcome === 'SELECTED')
+      .map((s: { selectedPropositionId: string }) => s.selectedPropositionId)).toContain(nextWeek);
+    expect.soft(nextSupport.selections.filter((s: { outcome: string }) => s.outcome === 'SELECTED')
+      .map((s: { selectedPropositionId: string }) => s.selectedPropositionId)).not.toContain(thisWeek);
+    expect.soft(fresh.declinesToAssert).toBe(true);
+    expect.soft(fresh.statements.some((s: { kind: string }) => s.kind === 'NOTHING_FOUND' || s.kind === 'GROUNDING_BLOCKED')).toBe(true);
+    expect.soft((await referenceSupport(fresh)).selections.filter((s: { outcome: string }) => s.outcome === 'SELECTED')).toEqual([]);
+    expect.soft(await referenceSupport(fresh)).toEqual({ selections: [], beliefs: [], futures: [], evidence: [],
+      beliefIds: [], claimIds: [], evidenceIds: [], overlayIds: [] });
+  } finally { await app.close(); }
+});
+
+it('explicit unresolved queries have no support; omitted query fields preserve the legacy future-plan classification', async () => {
+  const app = api();
+  try {
+    const legacy = await ask(app, 'What is scheduled next week?');
+    expect(legacy.queryMode).toBe('FUTURE_PLANS');
+    expect((await referenceSupport(legacy)).selections.some((s: { selectedPropositionId: string }) => s.selectedPropositionId === p.meeting)).toBe(true);
+    const unresolved = await ask(app, 'What is scheduled next week?', { referenceQuery: { kind: 'UNRESOLVED' } });
+    expect(unresolved.declinesToAssert).toBe(true);
+    expect(await referenceSupport(unresolved)).toEqual({ selections: [], beliefs: [], futures: [], evidence: [],
+      beliefIds: [], claimIds: [], evidenceIds: [], overlayIds: [] });
+    const packet = await readContextPacket(run => withOwnerTransaction(appPool,
+      { ownerScopeId: owner, actorId: actor, purpose: 'memory.read', correlationId: randomUUID() }, run), {
+      ownerScopeId: owner, requestingActorId: actor, purpose: FINANCE, query: 'And next week?',
+      worldTime: 'NOW', knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE', actionRisk: 'LOW',
+      includeEvidence: 'ALWAYS', entityHints: [daniel], referenceQuery: { kind: 'UNRESOLVED' },
+    }, { correlationId: randomUUID(), registryReleaseId, registryRelease: '0.1.0' });
+    expect(packet.selections).toEqual([]);
+    expect(packet.evidenceRefs).toEqual([]);
+    expect(packet.ownerOverlayDeltas).toEqual([]);
+    expect(packet.semanticSearch).toBeNull();
+  } finally { await app.close(); }
+});
+
+it('creditor and due restrictions cannot use assistant-only dates, hidden dates, contested dates or foreign identities', async () => {
+  const creditor = uuidV7();
+  await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,canonical_label) VALUES($1,$2,'PERSON','Query isolation')", [creditor, owner]);
+  const assistant = await item('assistant-date-reference', 'ASSISTANT_CONVERSATION', 'PRIVATE', [FINANCE]);
+  const principals: string[] = [];
+  for (const source of [assistant, evidence.medical, evidence.document]) {
+    const obligation = await frame('shared.obligation');
+    principals.push(await value(await slot(obligation, 'shared.obligation.principal_amount'),
+      { amount: '812.00', currency: 'ILS' }, 'document', 'ACCEPTED', 'DOCUMENT_ASSERTION', creditor));
+    const dueSlot = await slot(obligation, 'shared.obligation.due_time');
+    await value(dueSlot, { time: '2026-09-23T12:00:00.000Z' }, source, 'ACCEPTED', 'DOCUMENT_ASSERTION', creditor);
+    if (source === evidence.document) await value(dueSlot, { time: '2026-10-01T12:00:00.000Z' }, source, 'ACCEPTED', 'DOCUMENT_ASSERTION', creditor);
+  }
+  const app = api();
+  try {
+    const answer = await ask(app, 'Show the due obligations', { worldTime: '2026-09-20T09:00:00.000Z',
+      referenceQuery: { kind: 'OBLIGATION', creditor: { entityId: creditor },
+        due: { from: '2026-09-21T00:00:00Z', to: '2026-09-28T00:00:00Z' } } });
+    const support = await referenceSupport(answer);
+    expect(said(answer)).not.toContain('812.00');
+    expect(support.selections).toEqual([]);
+    for (const principal of principals) expect(support.beliefIds).not.toContain(principal);
+    const other = await postgresAdapter(admin).createUser!({ name: 'Query other', email: 'query-other@example.test', emailVerified: null });
+    const otherOwner = (other as unknown as { ownerScopeId: string }).ownerScopeId;
+    const otherEntity = uuidV7();
+    await admin.query("INSERT INTO entities(id,owner_scope_id,entity_kind,canonical_label) VALUES($1,$2,'PERSON','Query isolation')", [otherEntity, otherOwner]);
+    const foreign = await ask(app, 'Show obligations', { referenceQuery: { kind: 'OBLIGATION', creditor: { entityId: otherEntity } } });
+    expect((await referenceSupport(foreign)).selections).toEqual([]);
+    expect((await referenceSupport(foreign)).beliefIds).toEqual([]);
   } finally { await app.close(); }
 });
