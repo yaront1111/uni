@@ -823,7 +823,7 @@ describe('real PostgreSQL owner isolation', () => {
   });
   it('forces RLS on all application tables',async()=>{
     const rows=(await pool.query("SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='public' AND c.relkind='r'")).rows;
-    expect(rows.length).toBe(87);
+    expect(rows.length).toBe(88);
     expect(rows.every(r=>r.relrowsecurity&&r.relforcerowsecurity)).toBe(true);
     const role=(await pool.query("SELECT rolbypassrls,rolsuper FROM pg_roles WHERE rolname='unai_app'")).rows[0];
     expect(role).toEqual({rolbypassrls:false,rolsuper:false});
@@ -1419,6 +1419,20 @@ describe('real PostgreSQL owner isolation', () => {
         for(const table of ['initiative_watches','initiative_receipts']) expect((await c.query('SELECT * FROM '+table)).rows,table).toEqual([]);
       },'memory.inspect');
     }
+  });
+
+  it('CRT-SEC-01-A: voice settings refuse unfiltered foreign and context-free reads',async()=>{
+    for(const [owner,actor] of [[a,alice],[b,bob]]) {
+      await pool.query('INSERT INTO voice_settings(owner_scope_id) VALUES($1)',[owner]);
+      await asOwner(owner!,actor!,async c=>{
+        const rows=(await readUnfiltered(c,'voice_settings')).rows;
+        expect(rows.map(row=>row.owner_scope_id)).toEqual([owner]);
+      },'settings.voice');
+    }
+    await asOwner(b,alice,async c=>expect((await c.query('SELECT * FROM voice_settings')).rows).toEqual([]),'settings.voice');
+    await asOwner(a,alice,async c=>expect((await c.query('SELECT * FROM voice_settings')).rows).toEqual([]),'memory.read');
+    const c=await appPool.connect();
+    try{expect((await c.query('SELECT * FROM voice_settings')).rows).toEqual([]);}finally{c.release();}
   });
 
   it('CRT-SEC-01-A: conversation tables refuse unfiltered foreign and context-free reads',async()=>{

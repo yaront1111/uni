@@ -14,6 +14,7 @@ import {platformWrite, RefusedWrite} from './controlWrite';
 export type DataControlState = 'IDLE' | 'EXPORT_REQUESTED' | 'EXPORT_READY' | 'REINDEXED' | 'CONFIRM_DELETION'
   | 'DELETING' | 'DELETED';
 export interface DataControlProps {
+  embedded?:boolean;
   state: DataControlState;
   exportSummary: {requestId: string; counts: Record<string, number>} | null;
   reindex: {dropped: number; indexed: number} | null;
@@ -24,6 +25,7 @@ export interface DataControlProps {
 }
 
 const CASCADE_LABELS: [keyof CascadeCounts, string][] = [
+  ['conversations', 'Conversations'], ['conversationTurns', 'Conversation turns'],
   ['rawObjects', 'Raw objects'], ['parsedContent', 'Parsed content'], ['anchors', 'Source anchors'],
   ['claims', 'Claims'], ['unsupportedBeliefs', 'Beliefs left with no support'], ['embeddings', 'Embeddings'],
   ['summaries', 'Summaries'], ['searchIndexEntries', 'Search index entries'], ['projectionRows', 'Projection rows'],
@@ -42,6 +44,8 @@ function Cascade({counts}: {counts: CascadeCounts}) {
 }
 
 export function DataControl(props: DataControlProps) {
+  const Frame=props.embedded?'section':'main';
+  const Heading=props.embedded?'h2':'h1';
   const [state, setState] = useState<DataControlState>(props.state);
   const [error, setError] = useState(props.error ?? '');
   const [exportSummary, setExportSummary] = useState(props.exportSummary);
@@ -49,8 +53,11 @@ export function DataControl(props: DataControlProps) {
   const [preview, setPreview] = useState(props.preview);
   const [receipt, setReceipt] = useState(props.receipt);
   const [ids, setIds] = useState('');
+  const [conversationIdsText,setConversationIdsText]=useState('');
+  const [cleanup,setCleanup]=useState<'idle'|'busy'|'done'>('idle');
   const [confirmation, setConfirmation] = useState('');
   const evidenceIds = () => ids.split(/[\s,]+/).map(value => value.trim()).filter(Boolean);
+  const conversationIds=()=>conversationIdsText.split(/[\s,]+/).map(value=>value.trim()).filter(Boolean);
   async function run(next: DataControlState, action: () => Promise<void>) {
     setError(''); setState(next);
     try {await action();}
@@ -80,22 +87,22 @@ export function DataControl(props: DataControlProps) {
     setState('REINDEXED');
   });
   const review = () => run('IDLE', async () => {
-    const answer = await platformWrite('data/deletions/preview', 'data.delete', {evidenceIds: evidenceIds()});
+    const answer = await platformWrite('data/deletions/preview', 'data.delete', {evidenceIds: evidenceIds(),conversationIds:conversationIds()});
     if (!answer) return;
     setPreview(answer as unknown as DeletionReceipt);
     setState('CONFIRM_DELETION');
   });
   const erase = () => run('DELETING', async () => {
-    const answer = await platformWrite('data/deletions', 'data.delete', {evidenceIds: preview?.evidenceIds ?? evidenceIds(), confirmation});
+    const answer = await platformWrite('data/deletions', 'data.delete', {evidenceIds: preview?.evidenceIds ?? evidenceIds(),conversationIds:preview?.conversationIds??conversationIds(), confirmation});
     if (!answer) return;
     setReceipt(answer as unknown as DeletionReceipt);
     setState('DELETED');
   });
-  return <div className="shell"><a className="skip" href="#content">Skip to content</a>
+  return <div className={props.embedded?undefined:'shell'}>{!props.embedded&&<><a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    <Navigation current="data"/>
-    <main id="content" tabIndex={-1}>
-      <h1>Export and delete my data</h1>
+    <Navigation current="data"/></>}
+    <Frame id={props.embedded?'configuration-data-controls':'content'} tabIndex={-1}>
+      <Heading>Export and delete my data</Heading>
       {error && <p role="alert">{error}</p>}
 
       <section className="card" aria-labelledby="export-heading"><h2 id="export-heading">Export</h2>
@@ -123,11 +130,13 @@ export function DataControl(props: DataControlProps) {
         {state !== 'CONFIRM_DELETION' && state !== 'DELETING' && state !== 'DELETED' && <>
           <label htmlFor="delete-ids">Evidence items to delete (identifiers from Documents or the Memory inspector)</label>
           <input id="delete-ids" value={ids} onChange={event => setIds(event.target.value)}/>
-          <button type="button" disabled={evidenceIds().length === 0} onClick={review}>Review what will be removed</button>
+          <label htmlFor="delete-conversations">Conversations to delete (conversation identifiers)</label>
+          <input id="delete-conversations" value={conversationIdsText} onChange={event=>setConversationIdsText(event.target.value)}/>
+          <button type="button" disabled={evidenceIds().length+conversationIds().length === 0} onClick={review}>Review what will be removed</button>
         </>}
         {state === 'CONFIRM_DELETION' && preview && <div>
           <h3>Deletion scope</h3>
-          <p>Deleting {preview.evidenceIds.length} item(s) will permanently remove:</p>
+          <p>Deleting {preview.evidenceIds.length} evidence item(s) and {preview.conversationIds.length} conversation(s) will permanently remove:</p>
           <Cascade counts={preview.cascade}/>
           <p>Nothing has been deleted yet.</p>
           <label htmlFor="delete-confirm">Type DELETE to confirm</label>
@@ -143,5 +152,16 @@ export function DataControl(props: DataControlProps) {
             identifiers and field names, with no payload content.</p>
         </div>}
       </section>
-    </main></div>;
+      <section className="card" aria-labelledby="cleanup-heading"><h2 id="cleanup-heading">Apply retention</h2>
+        <p>Apply your saved retention rules to expired evidence, conversations and derived data. This permanently removes expired data.</p>
+        <button type="button" disabled={cleanup==='busy'} onClick={async()=>{
+          if(!window.confirm('Apply saved retention rules and permanently delete expired data?'))return;
+          setCleanup('busy');setError('');
+          try{const result=await platformWrite('data/retention/cleanup','data.delete',{});setCleanup(result?'done':'idle');}
+          catch{setCleanup('idle');setError('Retention cleanup could not be completed. Please retry.');}
+        }}>Apply saved retention now</button>
+        {cleanup==='busy'&&<p role="status">Applying retention rules…</p>}
+        {cleanup==='done'&&<p role="status">Retention cleanup completed. The data requests history records the deletions.</p>}
+      </section>
+    </Frame></div>;
 }

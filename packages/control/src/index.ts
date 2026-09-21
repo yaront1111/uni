@@ -19,3 +19,4 @@ export { buildExportBundle } from './export.js';
 export { ConversationService, CONVERSATION_READ_PURPOSE, CONVERSATION_WRITE_PURPOSE } from './conversations.js';
 export { MEMORY_REINDEX_PURPOSE, MEMORY_GOVERN_PURPOSE, dropSemanticIndex, regenerateSemanticIndex } from './reindex.js';
 export { resolveConversationReference, conversationReferenceQuery } from './conversation-references.js';
+export {readVoiceSettings,updateVoiceSettings} from './voice.js';

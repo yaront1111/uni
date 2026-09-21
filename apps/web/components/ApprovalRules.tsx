@@ -6,6 +6,7 @@ import {Navigation} from './Navigation';
  * proposed with no effect, becomes active only on explicit approval, and stops
  * applying once revoked. */
 export interface ApprovalRulesProps {
+  embedded?:boolean;
   view:LearnedApprovalRulesView;
   error?:string;
 }
@@ -39,6 +40,8 @@ function Rule({rule,busy,onDecide}:{rule:LearnedApprovalRule;busy:boolean;onDeci
 }
 
 export function ApprovalRules(props:ApprovalRulesProps){
+  const Frame=props.embedded?'section':'main';
+  const Heading=props.embedded?'h2':'h1';
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState(props.error??'');
   async function decide(rule:LearnedApprovalRule,action:'approve'|'revoke'){
@@ -53,18 +56,18 @@ export function ApprovalRules(props:ApprovalRulesProps){
     }catch{setError('The rule could not be changed. Nothing changed. Please retry.');}
     finally{setBusy(false);}
   }
-  return <div className="shell">
+  return <div className={props.embedded?undefined:'shell'}>{!props.embedded&&<>
     <a className="skip" href="#content">Skip to content</a>
     <header><a href="/" className="brand">Uai</a><span>Your personal memory</span></header>
-    <Navigation current="approval-rules"/>
-    <main id="content" tabIndex={-1}>
+    <Navigation current="approval-rules"/></>}
+    <Frame id={props.embedded?'configuration-approval-rules':'content'} tabIndex={-1}>
       <p className="eyebrow">MEMORY</p>
-      <h1>Learned approval rules</h1>
+      <Heading>Learned approval rules</Heading>
       <p>When you give the same answer to the same kind of question more than once, Uai may propose a rule. A rule does nothing until you approve it, and you can revoke it at any time.</p>
       {props.view.rules.length===0&&<section className="card"><p>No rule has been proposed yet.</p></section>}
       {props.view.rules.map(rule=><Rule key={rule.learnedApprovalRuleId} rule={rule} busy={busy} onDecide={action=>void decide(rule,action)}/>)}
       {error&&<p role="alert">{error}</p>}
-    </main>
-    <footer>An approved rule answers matching questions for you through the same recorded path as your own answers.</footer>
+    </Frame>
+    {!props.embedded&&<footer>An approved rule answers matching questions for you through the same recorded path as your own answers.</footer>}
   </div>;
 }

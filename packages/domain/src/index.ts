@@ -207,3 +207,4 @@ export { initiativeSettingsInputSchema, initiativeSettingsSchema, initiativeWatc
   initiativeWatchSchema, initiativeNoticeSchema, type InitiativeSettings, type InitiativeWatch } from './initiative.js';
 export {RUNBOOK_IDS,V0_CI_STAGES,operationsReportSchema,evaluateV0Release,type OperationsReport} from './operations.js';
 export { referenceQuerySchema, type ReferenceQuery } from './reference-query.js';
+export {voiceSettingsSchema,voiceSettingsPatchSchema,DEFAULT_VOICE_SETTINGS,type VoiceSettings} from './voice.js';
