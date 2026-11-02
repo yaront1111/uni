@@ -54,7 +54,7 @@ jobs:
           path: test-results/accessibility/
           if-no-files-found: error
       - run: pnpm build
-      # apps/web/server.test.ts needs the production build: real Next HTML under the enforced CSP.
+      # apps/web/server.test.ts checks the production build: real Next HTML with CSP nonces.
       - name: Web security headers against the production build
         run: pnpm exec vitest run apps/web/server.test.ts
         env:
