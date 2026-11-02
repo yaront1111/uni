@@ -296,6 +296,7 @@ pgvector; storage uses delivered S3, else MinIO, else the in-process encrypted s
 | --- | --- | --- | --- | --- | --- |
 | `UNAI_TEST_DATABASE_URL` | optional; takes precedence over DATABASE_URL; else disposable container | URL | startup | `scripts/test.mjs:33` | none; provisions database; provisioning failure `DATABASE_PROVISIONING_FAILED` |
 | `DATABASE_URL` | optional; fallback delivered disposable-server URL | URL | startup | `scripts/test.mjs:33` | none; provisions database |
+| `UNAI_TEST_MAX_WORKERS` | optional; 4; decimal 1 to 64 | literal | startup | `scripts/test-stages.mjs:19` | none; default 4. Any other value: `TEST_MAX_WORKERS_INVALID` before provisioning |
 | `UNAI_TEST_S3_ENDPOINT` | optional all-or-none trio; HTTPS endpoint | URL | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:8` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
 | `UNAI_TEST_S3_BUCKET` | optional all-or-none trio | literal | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:26` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
 | `UNAI_TEST_S3_KMS_KEY_ID` | optional all-or-none trio; exact key ID | literal | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:31`, `scripts/database-roundtrip.mjs:65` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
