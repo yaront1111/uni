@@ -47,5 +47,7 @@ See [historical inventory](0035-historical-deviation-inventory.md) for the revie
 | [0038-durable-processing-runtime.md](0038-durable-processing-runtime.md) | 2026-09-19 |
 | [0039-owner-authorized-durable-initiative.md](0039-owner-authorized-durable-initiative.md) | 2026-09-19 |
 | [0040-authorized-personal-understanding.md](0040-authorized-personal-understanding.md) | 2026-09-19 |
+| [0041-omi-recorded-conversations-as-evidence.md](0041-omi-recorded-conversations-as-evidence.md) | 2026-11-02 |
+| [0043-production-deployment-target.md](0043-production-deployment-target.md) | 2026-11-02 |
 
 The two existing 0033 records retain their qualified filenames so historical references remain valid. New work uses 0036 onward.

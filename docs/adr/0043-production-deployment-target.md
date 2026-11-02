@@ -115,7 +115,7 @@ Text of the option the owner selected:
   pointing at the active one. Root-owned, mode 0755, no secrets in the tree.
 - Toolchain: Node 24 and pnpm 11.0.8. `pnpm install --frozen-lockfile` keeps
   devDependencies, because the entry points run through `tsx`, a root
-  devDependency (package.json:32). The web needs `pnpm build`.
+  devDependency (`devDependencies.tsx` in package.json). The web needs `pnpm build`.
 - `ExecStart` runs `node --import tsx <entry>` directly, with no pnpm wrapper,
   so SIGTERM reaches the handlers at packages/api/src/server.ts:26,
   apps/web/server.ts:16 and packages/api/src/processing-worker.ts:19.
