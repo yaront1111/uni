@@ -2,12 +2,31 @@ import {createHash} from 'node:crypto';
 import {readFile,readdir,mkdir,writeFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {RUNBOOK_IDS,operationsReportSchema,evaluateV0Release} from '../../packages/domain/src/index.js';
-import {procedureExecution,localEndToEndPassed,recoveryEvidence,type TestReport} from './evidence.js';
+import {procedureExecution,localEndToEndPassed,recoveryEvidence,readLiveConnectorRecord,recordCommitEvidence,type TestReport} from './evidence.js';
 // The test harness is plain JavaScript and shares this exact source fingerprint.
 // @ts-expect-error JavaScript harness module has no declaration file.
 import {workspaceEvidence} from '../../scripts/workspace-evidence.mjs';
 
 const json=async(path:string)=>JSON.parse(await readFile(path,'utf8'));
+/** A registry refusal keeps its own stable code; anything else becomes the fallback. Never error text. */
+const codeOf=(error:unknown,fallback:string)=>error instanceof Error&&error.name==='RegistryError'
+  &&/^[A-Z][A-Z0-9_]{0,63}$/.test(error.message)?error.message:fallback;
+/** Owner-run gates (ADR 0044). The registry modules load inside try, so even a load failure is only a code. */
+async function ownerGates(inputs:{liveConnectorRecords?:unknown;ci?:{commit?:unknown}|null},head:string){
+  let realCorpus:{result:'PASS'|'FAIL'|'UNVERIFIED';failures:string[]};
+  try{
+    const {verifyRealCorpusResults}=await import('../../packages/registry/src/corpus.js');
+    const verified=await verifyRealCorpusResults('.');realCorpus={result:verified.result,failures:verified.failures};
+  }catch(error){realCorpus={result:'UNVERIFIED',failures:[codeOf(error,'REAL_CORPUS_UNAVAILABLE')]};}
+  let registryTags:{failure:string|null;tags:Array<{version:string;tag:string;status:string}>};
+  try{
+    const {inspectReleaseTags}=await import('../../packages/registry/src/tags.js');
+    registryTags={failure:null,tags:(await inspectReleaseTags('.')).map(({version,tag,status})=>({version,tag,status}))};
+  }catch(error){registryTags={failure:codeOf(error,'REGISTRY_TAGS_UNAVAILABLE'),tags:[]};}
+  const liveConnectors=await readLiveConnectorRecord('.',inputs.liveConnectorRecords);
+  const recordedCommits=recordCommitEvidence('.',head,[inputs.ci?.commit,liveConnectors.record?.sourceCommit]);
+  return {realCorpus,liveConnectors,registryTags,recordedCommits};
+}
 async function main(){
   if(process.argv.slice(2).some(arg=>arg!=='--check')||process.argv.slice(2).length>1)throw new Error('ARGUMENTS_INVALID');
   const current=await workspaceEvidence() as {sourceCommit:string;workspaceDigest:string};
@@ -53,6 +72,7 @@ async function main(){
     defects:inputs.defects,ci:inputs.ci,
     localPolicy:{result:policyVerified?'PASS':'UNVERIFIED',dependencyAuditRef:policyVerified?'test-results/operations/dependencies.json':null,
       e2eRef:policyVerified?'test-results/acceptance/vitest.json':null},
+    ...await ownerGates(inputs,current.sourceCommit),
   });
   await mkdir('test-results/operations',{recursive:true});
   await writeFile('test-results/operations/status.json',JSON.stringify(report,null,2)+'\n');

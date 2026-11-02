@@ -13,7 +13,9 @@ const report:OperationsReport={format:'unai-operations/1',checkedAt:'2026-09-19T
     {id:'deletion',title:'Deletion',body:'Use the owner deletion workflow.',execution:{executedAt:'2026-09-19T14:00:00.000Z',environment:'TEST',evidenceRef:'test-results/rehearsal.json',testNames:['deletion cascade']}}],
   restore:{result:'UNVERIFIED',emptyEnvironment:false,objectsRestored:false,keyRecoveryVerified:false,backupRef:null,fixtures:[]},
   adr:{inventoryReviewedAt:null,initialPaths:['docs/adr/0001-reference-stack.md'],entries:[{path:'docs/adr/0001-reference-stack.md',title:'Reference stack',date:'2026-09-14'}],deviations:[]},
-  defects:{reviewedAt:null,items:[]},ci:null,localPolicy:{result:'UNVERIFIED',dependencyAuditRef:null,e2eRef:null}};
+  defects:{reviewedAt:null,items:[]},ci:null,localPolicy:{result:'UNVERIFIED',dependencyAuditRef:null,e2eRef:null},
+  realCorpus:{result:'FAIL',failures:['REAL_RESULTS_MISSING']},liveConnectors:{recordRef:null,record:null,failure:'LIVE_RECORD_MISSING'},
+  registryTags:{failure:null,tags:[{version:'0.1.0',tag:'registry-v0.1.0',status:'MISSING'}]},recordedCommits:[]};
 it('never labels an absent report as completed or a zero-defect gate as verified',()=>{
   const html=render(null);expect(html).toContain('Operations runbooks');expect(html).toContain('No operations evidence');
   expect(html).toContain('href="#content"');expect(html).not.toContain('Release ready');
@@ -23,6 +25,9 @@ it('shows published procedures, execution evidence, restore and the ADR index se
   expect(html).toContain('Not yet executed');expect(html).toContain('Executed in TEST');expect(html).toContain('deletion cascade');
   expect(html).toContain('0 of 20');expect(html).toContain('Reference stack');expect(html).toContain('2026-09-14');
   expect(html).toContain('Defect inventory has not been reviewed');expect(html).toContain('V0 release blocked');
+  // renderToStaticMarkup separates adjacent text expressions with <!-- -->.
+  for(const id of ['PRD-54\\.4-REAL-CORPUS','PRD-54\\.1-LIVE-CONNECTORS','PRD-54\\.3-REGISTRY-TAGS'])
+    expect(html).toMatch(new RegExp(id+'(<!-- -->)?: (<!-- -->)?Blocked or unverified'));
 });
 it('renders procedure content as text and visibly lists open blocking defects',()=>{
   const r=structuredClone(report);r.procedures[0]!.body='<script>alert(1)</script>';
