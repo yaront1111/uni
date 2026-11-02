@@ -1,0 +1,430 @@
+{
+  "id": "thread-api-5d2e9c",
+  "historyId": "991206",
+  "messages": [
+    {
+      "id": "msg-api-0001",
+      "threadId": "thread-api-5d2e9c",
+      "labelIds": [
+        "INBOX",
+        "CATEGORY_PERSONAL"
+      ],
+      "snippet": "Hi, The plumber can come on Thursday at 09:30 — does that work? -- Maya",
+      "payload": {
+        "partId": "",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "MIME-Version",
+            "value": "1.0"
+          },
+          {
+            "name": "Date",
+            "value": "Mon, 5 Oct 2026 07:12:00 +0000"
+          },
+          {
+            "name": "Message-ID",
+            "value": "<api-1@mail.example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "House jobs this week"
+          },
+          {
+            "name": "From",
+            "value": "Maya Cohen <maya@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Owner Example <owner@example.test>"
+          },
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          }
+        ],
+        "body": {
+          "size": 75,
+          "data": "SGksDQpUaGUgcGx1bWJlciBjYW4gY29tZSBvbiBUaHVyc2RheSBhdCAwOTozMCDigJQgZG9lcyB0aGF0IHdvcms_DQotLSBNYXlh"
+        }
+      },
+      "sizeEstimate": 1511,
+      "historyId": "991201",
+      "internalDate": "1791184320000"
+    },
+    {
+      "id": "msg-api-0002",
+      "threadId": "thread-api-5d2e9c",
+      "labelIds": [
+        "SENT"
+      ],
+      "snippet": "Thursday 09:30 works. I will leave the side gate open.",
+      "payload": {
+        "partId": "",
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "MIME-Version",
+            "value": "1.0"
+          },
+          {
+            "name": "Date",
+            "value": "Mon, 5 Oct 2026 08:40:00 +0000"
+          },
+          {
+            "name": "References",
+            "value": "<api-1@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<api-1@mail.example.test>"
+          },
+          {
+            "name": "Message-ID",
+            "value": "<api-2@mail.example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: House jobs this week"
+          },
+          {
+            "name": "From",
+            "value": "Owner Example <owner@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Maya Cohen <maya@example.test>"
+          },
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"000000000000a1b2c3d4e5f60718\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0",
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "7bit"
+              }
+            ],
+            "body": {
+              "size": 56,
+              "data": "VGh1cnNkYXkgMDk6MzAgd29ya3MuIEkgd2lsbCBsZWF2ZSB0aGUgc2lkZSBnYXRlIG9wZW4uDQo="
+            }
+          },
+          {
+            "partId": "1",
+            "mimeType": "text/html",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=\"UTF-8\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "quoted-printable"
+              }
+            ],
+            "body": {
+              "size": 82,
+              "data": "PGRpdiBkaXI9Imx0ciI-VGh1cnNkYXkgMDk6MzAgd29ya3MuIEkgd2lsbCBsZWF2ZSB0aGUgPGI-c2lkZSBnYXRlPC9iPiBvcGVuLjwvZGl2Pg"
+            }
+          }
+        ]
+      },
+      "sizeEstimate": 1822,
+      "historyId": "991202",
+      "internalDate": "1791189600000"
+    },
+    {
+      "id": "msg-api-0003",
+      "threadId": "thread-api-5d2e9c",
+      "labelIds": [
+        "INBOX",
+        "CATEGORY_PERSONAL"
+      ],
+      "snippet": "The invoice for the boiler repair is attached: 1,240 due by 15 November.",
+      "payload": {
+        "partId": "",
+        "mimeType": "multipart/mixed",
+        "filename": "",
+        "headers": [
+          {
+            "name": "MIME-Version",
+            "value": "1.0"
+          },
+          {
+            "name": "Date",
+            "value": "Tue, 6 Oct 2026 10:05:00 +0000"
+          },
+          {
+            "name": "References",
+            "value": "<api-1@mail.example.test> <api-2@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<api-2@mail.example.test>"
+          },
+          {
+            "name": "Message-ID",
+            "value": "<api-3@mail.example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: House jobs this week"
+          },
+          {
+            "name": "From",
+            "value": "Maya Cohen <maya@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Owner Example <owner@example.test>"
+          },
+          {
+            "name": "Content-Type",
+            "value": "multipart/mixed; boundary=\"000000000000f1e2d3c4b5a69788\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0",
+            "mimeType": "text/plain",
+            "filename": "invoice-notes.txt",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"US-ASCII\"; name=\"invoice-notes.txt\""
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "attachment; filename=\"invoice-notes.txt\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "base64"
+              }
+            ],
+            "body": {
+              "size": 38,
+              "data": "QVRUQUNITUVOVCBURVhUIC0gbm90IHRoZSBtZXNzYWdlIGJvZHk"
+            }
+          },
+          {
+            "partId": "1",
+            "mimeType": "multipart/alternative",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "multipart/alternative; boundary=\"000000000000c0ffee0042\""
+              }
+            ],
+            "body": {
+              "size": 0
+            },
+            "parts": [
+              {
+                "partId": "1.0",
+                "mimeType": "text/plain",
+                "filename": "",
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain; charset=\"UTF-8\""
+                  },
+                  {
+                    "name": "Content-Transfer-Encoding",
+                    "value": "7bit"
+                  }
+                ],
+                "body": {
+                  "size": 74,
+                  "data": "VGhlIGludm9pY2UgZm9yIHRoZSBib2lsZXIgcmVwYWlyIGlzIGF0dGFjaGVkOiAxLDI0MCBkdWUgYnkgMTUgTm92ZW1iZXIuDQo"
+                }
+              },
+              {
+                "partId": "1.1",
+                "mimeType": "text/html",
+                "filename": "",
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/html; charset=\"UTF-8\""
+                  },
+                  {
+                    "name": "Content-Transfer-Encoding",
+                    "value": "quoted-printable"
+                  }
+                ],
+                "body": {
+                  "size": 93,
+                  "data": "PGRpdiBkaXI9Imx0ciI-VGhlIGludm9pY2UgZm9yIHRoZSBib2lsZXIgcmVwYWlyIGlzIGF0dGFjaGVkOiAxLDI0MCBkdWUgYnkgMTUgTm92ZW1iZXIuPC9kaXY-"
+                }
+              }
+            ]
+          },
+          {
+            "partId": "2",
+            "mimeType": "application/pdf",
+            "filename": "invoice-1142.pdf",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "application/pdf; name=\"invoice-1142.pdf\""
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "attachment; filename=\"invoice-1142.pdf\""
+              },
+              {
+                "name": "Content-Transfer-Encoding",
+                "value": "base64"
+              }
+            ],
+            "body": {
+              "size": 48213,
+              "attachmentId": "ANGjdJ8x-invoice-1142_attachment-id-example"
+            }
+          }
+        ]
+      },
+      "sizeEstimate": 2133,
+      "historyId": "991203",
+      "internalDate": "1791281100000"
+    },
+    {
+      "id": "msg-api-0004",
+      "threadId": "thread-api-5d2e9c",
+      "labelIds": [
+        "INBOX"
+      ],
+      "snippet": "Dinner at 8 &amp; bring dessert &lt;RSVP&gt; by — Friday ☺",
+      "payload": {
+        "partId": "",
+        "mimeType": "text/html",
+        "filename": "",
+        "headers": [
+          {
+            "name": "MIME-Version",
+            "value": "1.0"
+          },
+          {
+            "name": "Date",
+            "value": "Wed, 7 Oct 2026 16:30:00 +0000"
+          },
+          {
+            "name": "References",
+            "value": "<api-1@mail.example.test> <api-2@mail.example.test> <api-3@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<api-3@mail.example.test>"
+          },
+          {
+            "name": "Message-ID",
+            "value": "<api-4@mail.example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: House jobs this week"
+          },
+          {
+            "name": "From",
+            "value": "Maya Cohen <maya@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Owner Example <owner@example.test>"
+          },
+          {
+            "name": "Content-Type",
+            "value": "text/html; charset=\"UTF-8\""
+          }
+        ],
+        "body": {
+          "size": 210,
+          "data": "PGh0bWw-PGhlYWQ-PHN0eWxlPnB7Y29sb3I6cmVkfTwvc3R5bGU-PHNjcmlwdD5hbGVydCgneCcpPC9zY3JpcHQ-PC9oZWFkPjxib2R5PjxwPkRpbm5lciZuYnNwO2F0Jm5ic3A7OCAmYW1wOyBicmluZyZuYnNwO2Rlc3NlcnQ8L3A-CjxwPiZsdDtSU1ZQJmd0OyBieSAmIzgyMTI7IEZyaWRheSAmI3gyNjNBOzwvcD48IS0tIHRyYWNraW5nIC0tPjwvYm9keT48L2h0bWw-"
+        }
+      },
+      "sizeEstimate": 2444,
+      "historyId": "991204",
+      "internalDate": "1791390600000"
+    },
+    {
+      "id": "msg-api-0005",
+      "threadId": "thread-api-5d2e9c",
+      "labelIds": [
+        "INBOX"
+      ],
+      "snippet": "Réunion confirmée à 10h, café offert.",
+      "payload": {
+        "partId": "",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "MIME-Version",
+            "value": "1.0"
+          },
+          {
+            "name": "Date",
+            "value": "Thu, 8 Oct 2026 09:15:00 +0000"
+          },
+          {
+            "name": "References",
+            "value": "<api-1@mail.example.test> <api-2@mail.example.test> <api-3@mail.example.test> <api-4@mail.example.test>"
+          },
+          {
+            "name": "In-Reply-To",
+            "value": "<api-4@mail.example.test>"
+          },
+          {
+            "name": "Message-ID",
+            "value": "<api-5@mail.example.test>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: House jobs this week"
+          },
+          {
+            "name": "From",
+            "value": "Maya Cohen <maya@example.test>"
+          },
+          {
+            "name": "To",
+            "value": "Owner Example <owner@example.test>"
+          },
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"ISO-8859-1\""
+          }
+        ],
+        "body": {
+          "size": 37,
+          "data": "Uul1bmlvbiBjb25maXJt6WUg4CAxMGgsIGNhZukgb2ZmZXJ0Lg"
+        }
+      },
+      "sizeEstimate": 2755,
+      "historyId": "991205",
+      "internalDate": "1791450900000"
+    }
+  ]
+}

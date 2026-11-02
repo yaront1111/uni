@@ -55,7 +55,16 @@ const gmailMessageSchema = z.object({
   labelIds: z.array(z.string().max(128)).max(64).optional(),
   payload: z.object({
     headers: z.array(gmailHeaderSchema).max(256),
-    body: z.object({text}),
+    /** `text` is the decoded body that fixtures, the synthetic corpus and the
+     * metadata-only narrowing carry. The Gmail API never sends it: its
+     * users.threads.get format=full resource carries base64url `data` here or in
+     * nested `parts` instead. */
+    body: z.object({text: text.optional(), data: z.unknown().optional(), attachmentId: z.unknown().optional()}).optional(),
+    mimeType: z.unknown().optional(),
+    filename: z.unknown().optional(),
+    // Read by a bounded walk, never by a recursive schema, so no sender-controlled
+    // part field (filename, mimeType, part headers, nesting) can refuse a thread.
+    parts: z.unknown().optional(),
   }),
 });
 export const gmailThreadSchema = z.object({
@@ -183,6 +192,122 @@ function span(kind: SourceAnchorKind, anchor: Record<string, unknown>, body: str
   return parsedSourceAnchorSchema.parse({kind, anchor, normalizedText: body === null ? null : body.slice(0, 8192)});
 }
 
+// --- Gmail message bodies ----------------------------------------------------
+/** One Gmail API message part, read leniently: nothing in it can refuse a thread. */
+type GmailPart = Record<string, unknown>;
+const MAX_PART_DEPTH = 16;
+const MAX_PARTS = 256;
+const MAX_PART_HEADERS = 256;
+/** Base64url characters decoded per part: a multiple of 4, so 786,432 bytes. */
+const MAX_PART_DATA = 1_048_576;
+/** The `text` bound, in UTF-16 code units, that a decoded body is cut to. */
+const MAX_BODY = 200_000;
+const BASE64URL = /^[A-Za-z0-9_-]*={0,2}$/;
+
+function partRecord(value: unknown): GmailPart | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as GmailPart : null;
+}
+function filled(value: unknown): value is string {
+  return typeof value === 'string' && value !== '';
+}
+
+/** The first non-attachment text/plain and text/html parts that carry data, found
+ * depth-first in pre-order from the payload (depth 0, the first visited part).
+ * An attachment (a non-empty filename or attachmentId) is skipped with its whole
+ * subtree. At most MAX_PARTS parts are visited, attachments included, and none
+ * deeper than MAX_PART_DEPTH: parts beyond either bound are not read, never refused. */
+function gmailBodyParts(root: GmailPart): {plain: GmailPart | null; html: GmailPart | null} {
+  let plain: GmailPart | null = null, html: GmailPart | null = null, visited = 0;
+  const pending: [GmailPart, number][] = [[root, 0]];
+  while (pending.length > 0 && visited < MAX_PARTS && plain === null) {
+    const [part, depth] = pending.pop()!;
+    visited += 1;
+    const body = partRecord(part.body);
+    if (filled(part.filename) || filled(body?.attachmentId)) continue;
+    const mimeType = typeof part.mimeType === 'string' ? part.mimeType.toLowerCase() : '';
+    if (filled(body?.data) && mimeType === 'text/plain') plain = part;
+    else if (filled(body?.data) && mimeType === 'text/html' && html === null) html = part;
+    const children = depth < MAX_PART_DEPTH && Array.isArray(part.parts) ? part.parts.slice(0, MAX_PARTS) : [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = partRecord(children[index]);
+      if (child) pending.push([child, depth + 1]);
+    }
+  }
+  return {plain, html};
+}
+
+/** A decoder for the charset of the part's own Content-Type header, else UTF-8
+ * (`new TextDecoder` throws RangeError for a label it does not support). */
+function partDecoder(part: GmailPart): TextDecoder {
+  const headers = Array.isArray(part.headers) ? part.headers.slice(0, MAX_PART_HEADERS) : [];
+  const contentType = headers.map(partRecord)
+    .find(entry => typeof entry?.name === 'string' && entry.name.toLowerCase() === 'content-type');
+  const value = contentType?.value;
+  const label = typeof value === 'string' ? /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(value)?.[1] : undefined;
+  try { return new TextDecoder(label ?? 'utf-8'); }
+  catch { return new TextDecoder('utf-8'); }
+}
+
+/** The part's base64url `data` decoded to text. Only the url-safe alphabet with
+ * optional trailing padding is accepted (`atob` alone would also accept
+ * whitespace and the standard alphabet); anything else refuses the payload.
+ * Data beyond MAX_PART_DATA is not decoded, and a multibyte sequence the cut
+ * splits is dropped (`stream: true` withholds it) rather than turned into U+FFFD. */
+function decodeGmailPart(part: GmailPart): {text: string; truncated: boolean} {
+  const data = partRecord(part.body)?.data;
+  if (typeof data !== 'string' || !BASE64URL.test(data)) throw new SourcePayloadInvalid('GMAIL');
+  const length = data.length - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+  if (length % 4 === 1) throw new SourcePayloadInvalid('GMAIL');
+  const truncated = length > MAX_PART_DATA;
+  const binary = atob(data.slice(0, truncated ? MAX_PART_DATA : length).replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  return {text: partDecoder(part).decode(bytes, {stream: truncated}), truncated};
+}
+
+const HTML_ENTITIES: Readonly<Record<string, string>> = {amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0'};
+function htmlCodePoint(value: number): string {
+  return value === 0 || (value >= 0xD800 && value <= 0xDFFF) || value > 0x10FFFF ? '\uFFFD' : String.fromCodePoint(value);
+}
+
+/** HTML reduced to text by a fixed rule: drop script, style, head, title, noscript
+ * and template elements (an unclosed one runs to the end) and comments, strip
+ * tags, decode the basic entities in one pass, collapse whitespace. Every pattern
+ * is linear on sender-controlled input: `[^<>]` keeps a run of '<' from backtracking. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style|head|title|noscript|template)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+    .replace(/<[^<>]*>/g, ' ')
+    .replace(/&(?:(amp|lt|gt|quot|apos|nbsp)|#(\d{1,7})|#x([\da-f]{1,6}));/gi,
+      (entity: string, name: string | undefined, decimal: string | undefined, hex: string | undefined) =>
+        name !== undefined ? HTML_ENTITIES[name.toLowerCase()] ?? entity
+          : htmlCodePoint(decimal !== undefined ? Number(decimal) : parseInt(hex ?? '', 16)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** A decoded body made storable: U+0000 (which a PostgreSQL text column refuses)
+ * becomes U+FFFD, and a body over MAX_BODY is cut, one unit earlier when the cut
+ * would split a surrogate pair. Size never refuses a thread. */
+function boundedBody(text: string, truncated: boolean): {body: string; truncated: boolean} {
+  const body = text.replace(/\u0000/g, '\uFFFD');
+  if (body.length <= MAX_BODY) return {body, truncated};
+  const last = body.charCodeAt(MAX_BODY - 1);
+  return {body: body.slice(0, last >= 0xD800 && last <= 0xDBFF ? MAX_BODY - 1 : MAX_BODY), truncated: true};
+}
+
+/** A message's body: a present `payload.body.text` unchanged (the decoded shape,
+ * whose stored content hashes must not move), else the decoded first text/plain
+ * part, else the first text/html part reduced to text, else ''. */
+function gmailBody(payload: GmailPart & {body?: {text?: string | undefined} | undefined}): {body: string; truncated: boolean} {
+  if (typeof payload.body?.text === 'string') return {body: payload.body.text, truncated: false};
+  const {plain, html} = gmailBodyParts(payload);
+  const selected = plain ?? html;
+  if (!selected) return {body: '', truncated: false};
+  const decoded = decodeGmailPart(selected);
+  return boundedBody(plain ? decoded.text : htmlToText(decoded.text), decoded.truncated);
+}
+
 function parseGmailThread(payload: unknown): ParsedSourceItem[] {
   const thread = gmailThreadSchema.parse(payload);
   // RFC 5322 Message-Id to Gmail message id, so a reply anchors to the message it
@@ -198,7 +323,7 @@ function parseGmailThread(payload: unknown): ParsedSourceItem[] {
     const parent = inReplyTo ? byMessageId.get(inReplyTo.toLowerCase()) : undefined;
     const subject = header(headers, 'Subject');
     const from = header(headers, 'From');
-    const body = message.payload.body.text;
+    const {body, truncated} = gmailBody(message.payload);
     return parsedSourceItemSchema.parse({
       sourceType: 'GMAIL',
       externalId: message.id,
@@ -212,6 +337,7 @@ function parseGmailThread(payload: unknown): ParsedSourceItem[] {
       deterministicMetadata: {
         threadExternalId: thread.id, threadPosition: index,
         inReplyTo: inReplyTo ?? null, labelIds: message.labelIds ?? [],
+        ...(truncated ? {bodyTruncated: true} : {}),
       },
       anchors: [
         span('MESSAGE_SPAN', {messageExternalId: message.id, field: 'body', start: 0, end: body.length}, body),

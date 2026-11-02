@@ -9,7 +9,7 @@ import {
   CANONICAL_NORMALIZATION_VERSION, ENTITY_RESOLVER_VERSION, INSTANCE_MATCHER_VERSION,
 } from '@unai/memory';
 import { LABEL_CATEGORIES, PRODUCTION_KEYING_RULES, corpusAnnotationSchema, corpusResultsSchema, corpusStatusSchema,
-  identityThresholdsSchema, registryLintReportSchema, shadowReportSchema } from '@unai/domain';
+  identityThresholdsSchema, parseSourcePayload, registryLintReportSchema, shadowReportSchema } from '@unai/domain';
 import { releaseContentHash, lintRegistryCheckout } from './release.js';
 import { classifyRegistryChange } from './migration.js';
 import { runShadowEvaluation } from './shadow.js';
@@ -360,6 +360,42 @@ describe('CRT-QA-02-A and CRT-QA-03-A: the gold corpus, its thresholds and its r
     expect(report.labelCoverage.synthetic).toMatchObject({ threads: 12,
       threadsMissing: Object.fromEntries(LABEL_CATEGORIES.map(category => [category, expect.any(Number)])) });
     expect(statusText).not.toMatch(/example\.test|taxi|kitchen|Daniel|gmail-|thr-syn/i);
+  }, 120000);
+
+  it('imports a thread saved straight from users.threads.get (format=full) and refuses .eml, .mbox and undecodable data', async () => {
+    const repo = await repository();
+    const fixturePath = resolve('fixtures/sources/gmail-api-thread.json');
+    const fixture = JSON.parse(await readFile(fixturePath, 'utf8'));
+    const source = join(repo, 'thread.json');
+    await cp(fixturePath, source);
+    const imported = await importGmailThread(repo, source);
+    expect(imported).toMatchObject({ outcome: 'IMPORTED', messages: 5 });
+    expect(imported.threadRef).toBe(gmailThreadRef('thread-api-5d2e9c'));
+    expect(git(repo, 'status', '--porcelain', '--', 'corpus/private-local').stdout.trim()).toBe('');
+    // The skeleton's spans quote the decoded bodies, so the owner labels text, not base64url.
+    const skeleton = await annotateThread(repo, 'REAL', imported.threadRef);
+    const spans = corpusAnnotationSchema.parse(JSON.parse(await readFile(skeleton.path, 'utf8'))).labelledSourceSpans;
+    expect(spans).toHaveLength(5);
+    expect(spans.map(span => span.quote)).toEqual(parseSourcePayload('GMAIL', fixture).map(item => item.content.body));
+    expect(spans.map(span => [span.quote === '', span.start, span.end === span.quote.length])).toEqual(Array(5).fill([false, 0, true]));
+    expect(spans.map(span => span.messageExternalId))
+      .toEqual(['msg-api-0001', 'msg-api-0002', 'msg-api-0003', 'msg-api-0004', 'msg-api-0005']);
+    // An .eml, a Takeout .mbox and a thread whose body does not decode are each
+    // refused under one code, before anything is written.
+    const undecodable = structuredClone(fixture);
+    undecodable.id = 'thread-api-undecodable';
+    undecodable.messages[0].payload.body.data = 'do-not-echo!';
+    const refused: Array<[string, string]> = [
+      ['message.eml', 'From: a@example.test\r\nTo: b@example.test\r\nSubject: x\r\n\r\nbody\r\n'],
+      ['takeout.mbox', 'From a@example.test Mon Aug 31 09:00:00 2026\nFrom: a@example.test\nSubject: x\n\nbody\n'],
+      ['undecodable.json', JSON.stringify(undecodable)],
+    ];
+    for (const [name, text] of refused) {
+      await writeFile(join(repo, name), text);
+      const error = await importGmailThread(repo, join(repo, name)).then(() => null, (failure: unknown) => failure as Error);
+      expect(error?.message).toBe('CORPUS_SOURCE_INVALID');
+    }
+    expect(await readdir(join(repo, 'corpus/private-local/threads'))).toEqual([imported.threadRef + '.json']);
   }, 120000);
 
   it('records real-corpus results as counts only, and verify requires ten threads and every rule at its version', async () => {

@@ -3,7 +3,7 @@
 PRD §43.4 and §46; decisions in `docs/adr/0031-boundaries-corpus-shadow-evaluation-and-metrics.md` §3.
 
 ```
-corpus/synthetic/threads/       committed synthetic Gmail threads (raw export shape)
+corpus/synthetic/threads/       committed synthetic Gmail threads (decoded `payload.body.text` shape)
 corpus/synthetic/annotations/   their labels, one file per thread
 corpus/private-local/           the REAL corpus: gitignored, never committed
 corpus/expected/identity-thresholds.json   the thresholds CI scores against
@@ -35,6 +35,14 @@ pnpm uai corpus verify                                       # the PRD §46 exit
 pnpm uai corpus status --report <path>                       # what the Corpus and evaluation screen shows
 pnpm uai corpus run --corpus synthetic --report <path>       # what CI runs
 ```
+
+`--source` is one Gmail thread as JSON: either the thread resource that
+`users.threads.get` returns with `format=full`, saved byte for byte, or the
+decoded `payload.body.text` shape the synthetic threads use. `.eml` files and
+Google Takeout `.mbox` files are refused with `CORPUS_SOURCE_INVALID`, and there
+is no converter. A JSON file that does not parse as a Gmail thread, including one
+whose message body is not valid base64url, is refused the same way, and nothing
+is written.
 
 A thread's annotation labels source spans (with their exact quotes), expected
 entities and their alias-bearing mentions, frame instances with role fillers,

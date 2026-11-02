@@ -152,6 +152,68 @@ only for items stored after the change — it never rewrites a stored row (§42)
 request header or body field lowers the floor. That consent path belongs to
 `drafts-actions-permissions-export-and-deletion-workflow`, not to this node.
 
+## Gmail message bodies
+
+**What is fetched.** The Gmail client lists threads and then calls
+`users.threads.get` on each one: with `format=full` when `gmail.read_content` is
+granted, and with `format=metadata` otherwise. A metadata-only grant is narrowed
+to `payload.body.text: ''` before parsing (`prepareForCapabilities` in
+`packages/connectors/src/sync.ts`), so no body reaches the parser.
+
+**Accepted input.** `parseSourcePayload('GMAIL', …)` accepts the Gmail API thread
+resource that `users.threads.get` returns with `format=full`. In that resource
+each message part's body is `{size, data}` with `data` base64url-encoded, or
+`{size: 0}` with the content in nested `parts`. A message's body is:
+
+- `payload.body.text`, when present, unchanged. This is the decoded shape of the
+  fixtures and the synthetic corpus, and keeping it untouched keeps every stored
+  content hash;
+- otherwise, the decoded `data` of the first non-attachment `text/plain` part
+  found depth-first (an attachment is a part with a non-empty `filename` or an
+  `attachmentId`, and it is skipped with its whole subtree);
+- else the first `text/html` part reduced to text: script, style, head, title,
+  noscript and template elements and comments are dropped, tags are stripped,
+  the basic entities are decoded and whitespace is collapsed;
+- else empty.
+
+The bytes are decoded with the charset of the selected part's own
+`Content-Type` header when the runtime's `TextDecoder` supports that label
+(`ISO-8859-1` decodes as windows-1252, as WHATWG specifies), and as UTF-8
+otherwise. The reduction is a fixed text rule, not a renderer: text hidden by CSS
+(`display:none` preheaders, white-on-white) survives it. That text is untrusted
+evidence like any other; the defence is extraction's untrusted-data framing and
+the claims-not-beliefs path, not this reducer.
+
+**Bounds.** Size never refuses a thread. At most 256 parts are visited per
+message (the root and attachments count), nothing deeper than depth 16 is read,
+at most 1 MiB (1,048,576 characters) of base64url is decoded per part, and a body
+longer than 200,000 characters is cut there without splitting a surrogate pair. A
+body cut by any of these bounds carries `deterministicMetadata.bodyTruncated:
+true`; the key is absent otherwise. U+0000 becomes U+FFFD, because a PostgreSQL
+`text` column refuses it. Only `data` that is not valid base64url in the selected
+part refuses the thread, with `SOURCE_PAYLOAD_INVALID`, echoing nothing.
+
+**Corpus import.** `pnpm uai corpus import --source <file>` takes the same JSON:
+the `users.threads.get` `format=full` response saved byte for byte. `.eml` files
+and Google Takeout `.mbox` files are refused with `CORPUS_SOURCE_INVALID`, and
+there is no converter.
+
+**Scopes and format=full.** Google's reference for the `Format` enum says `full`
+and `raw` cannot be used when accessing the API with the `gmail.metadata` scope,
+and says nothing about a token that carries both scopes. A 2020 field report
+shows a token carrying `gmail.metadata` beside `gmail.readonly` refused with 403
+"Metadata scope doesn't allow format FULL". `requestedScopes` for
+`gmail.read_metadata` plus `gmail.read_content` lists both scopes, and `getJson`
+reports every 403 as `CONNECTOR_TOKEN_REVOKED`. Whoever mints the token should
+therefore request `gmail.readonly` without `gmail.metadata` when content is
+granted. The manifests are unchanged, and no live account has confirmed the
+behaviour.
+
+**Still open.** A header over its bound (a value over 8,192 characters, or more
+than 256 headers) still refuses the whole thread. A parse failure during a sync
+answers 500 without advancing the cursor, so such a thread is retried on every
+sync.
+
 ## What this node does not claim
 
 - **No live provider account was exercised.** `packages/connectors/src/providers.ts`

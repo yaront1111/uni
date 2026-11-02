@@ -151,10 +151,15 @@ export async function importGmailThread(repository: string, sourcePath: string, 
   let raw: Buffer;
   try { raw = await readFile(resolve(sourcePath)); }
   catch { throw new RegistryError('CORPUS_SOURCE_UNREADABLE'); }
-  let thread;
-  try { thread = gmailThreadSchema.parse(JSON.parse(raw.toString('utf8'))); }
+  let thread, items;
+  // The schema check and the parse share one refusal: a thread whose body does not
+  // decode is as invalid an import as an .eml or an .mbox, and nothing is written.
+  try {
+    const payload: unknown = JSON.parse(raw.toString('utf8'));
+    thread = gmailThreadSchema.parse(payload);
+    items = parseSourcePayload('GMAIL', payload);
+  }
   catch { throw new RegistryError('CORPUS_SOURCE_INVALID'); }
-  const items = parseSourcePayload('GMAIL', JSON.parse(raw.toString('utf8')));
   const threadRef = gmailThreadRef(thread.id);
   const target = resolve(directory, 'threads', threadRef + '.json');
   let existing: Buffer | null = null;
