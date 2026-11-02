@@ -1,0 +1,164 @@
+import { randomUUID } from 'node:crypto';
+import type { Pool } from 'pg';
+import {
+  connectorSyncJobPayloadSchema, syncRequestSchema,
+  type ClaimedJob, type ConnectorSyncJobPayload, type PublicJob, type RequestContext,
+} from '@unai/domain';
+import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
+import { enqueueJob, runJobAttempt, type JobAttempt } from '@unai/jobs';
+import {
+  CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError, ceilingAdmits, manifestFor,
+  markTokenRevoked, recordSyncFailure, runConnectorSync, storedSensitivity,
+  type ConnectorClient, type SourceIngest,
+} from '@unai/connectors';
+import { readSensitivityFloor } from '@unai/control';
+import { importSource, type EvidenceObjects } from './evidence.js';
+
+/**
+ * Connector sync as a durable job (PRD §41 Reliability): the same import path as
+ * `POST /v1/connectors/:id/sync`, run by the processing worker so a provider
+ * outage is retried within the job's bounded attempts and then lands in the
+ * dead-letter view, instead of depending on the owner pressing "Sync".
+ *
+ * One owner scope per process, like the other worker runtimes: the queue is
+ * claimed under the configured owner scope, and a connector of another owner is
+ * invisible under row-level security, so it fails as CONNECTOR_NOT_FOUND.
+ *
+ * Only a 401 marks the token revoked. The provider adapters map 401 and 403 to
+ * CONNECTOR_TOKEN_REVOKED, but Google and GitHub also answer 403 for rate limits
+ * and insufficient scope; revoking on a 403 would destroy a working credential
+ * handle, so a 403 is recorded as a sync failure and retried.
+ *
+ * Only stable codes leave this file: a ConnectorError's detail, provider text and
+ * database text never reach jobs.last_error, an audit row or a log line.
+ */
+
+export const CONNECTOR_SYNC_JOB_KIND = 'connector.sync';
+const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+type Sensitivity = 'NORMAL' | 'PRIVATE' | 'RESTRICTED';
+
+/** Enqueue one sync under `jobs.enqueue` (enqueueJob enforces the purpose). The
+ * key is derived from connector, mode and window, so a scheduler tick that fires
+ * twice in one window enqueues one job; the same window with a different
+ * maxPages is JOB_IDEMPOTENCY_CONFLICT. */
+export async function enqueueConnectorSync(tx: OwnerTransaction, input: {
+  readonly connectorId: string; readonly mode: ConnectorSyncJobPayload['mode']; readonly window: string;
+  readonly maxPages?: number; readonly maxAttempts?: number;
+}): Promise<PublicJob> {
+  const parsed = connectorSyncJobPayloadSchema.safeParse({
+    connectorId: input.connectorId, mode: input.mode, maxPages: input.maxPages ?? 1, window: input.window,
+  });
+  if (!parsed.success) throw new Error('CONNECTOR_SYNC_JOB_INVALID');
+  const payload = parsed.data;
+  return enqueueJob(tx, {
+    jobKind: CONNECTOR_SYNC_JOB_KIND, payload, maxAttempts: input.maxAttempts ?? 3,
+    idempotencyKey: 'connector_sync_' + payload.connectorId + '_' + payload.mode + '_' + payload.window,
+  });
+}
+
+export interface ConnectorSyncRuntimeOptions {
+  readonly appPool: Pool;
+  readonly ownerScopeId: string;
+  readonly actorId: string;
+  readonly dataPurpose: string;
+  readonly maximumSensitivity: Sensitivity;
+  readonly workerId: string;
+  readonly evidenceObjects: EvidenceObjects;
+  readonly connectorClient: (input: { readonly connectorType: string; readonly secretRef: string | null })
+    => ConnectorClient | Promise<ConnectorClient>;
+  readonly leaseSeconds?: number;
+}
+
+const context = (options: ConnectorSyncRuntimeOptions, purpose: string, correlationId: string): RequestContext => ({
+  ownerScopeId: options.ownerScopeId, actorId: options.actorId, purpose, correlationId,
+});
+
+/** The sync transaction. Answers false, with a refusal audited, for a connector
+ * that may not ingest: its status is checked before a client is built, because a
+ * revoked or disconnected connector holds no credential handle. */
+async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, payload: ConnectorSyncJobPayload,
+  correlationId: string): Promise<boolean> {
+  return withOwnerTransaction(options.appPool, context(options, CONNECTOR_SYNC_PURPOSE, correlationId), async tx => {
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+      [options.dataPurpose, options.maximumSensitivity]);
+    const connector = (await tx.query('SELECT connector_type,secret_ref,status FROM connectors WHERE id=$1 AND owner_scope_id=$2',
+      [payload.connectorId, options.ownerScopeId])).rows[0];
+    if (!connector) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId: payload.connectorId });
+    if (connector.status !== 'ACTIVE' && connector.status !== 'SYNC_FAILED') {
+      await tx.audit({ policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED',
+        objects: [{ type: 'connectors', id: payload.connectorId, fields: ['status'] }] });
+      return false;
+    }
+    const connectorType = connector.connector_type as string;
+    const request = syncRequestSchema.parse({ mode: payload.mode, maxPages: payload.maxPages, allowedPurposes: [options.dataPurpose] });
+    const sensitivityFloor = await readSensitivityFloor(tx, connectorType);
+    // The route's ceiling check (connectors.ts assertCeilingAdmitsFloor), by name.
+    if (!ceilingAdmits(options.maximumSensitivity, storedSensitivity(manifestFor(connectorType), request.sensitivity, sensitivityFloor))) {
+      throw new ConnectorError('CONNECTOR_SENSITIVITY_CEILING_TOO_LOW');
+    }
+    const client = await options.connectorClient({ connectorType, secretRef: (connector.secret_ref as string | null) ?? null });
+    const result = await runConnectorSync(tx, { connectorId: payload.connectorId, request, client, ingest, sensitivityFloor });
+    await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
+      objects: [{ type: 'connectors', id: payload.connectorId, fields: ['last_cursor', 'cursor_updated_at'] },
+        ...result.evidenceIds.slice(0, 99).map(id => ({
+          type: 'source_items', id, fields: ['source_type', 'external_id', 'content_hash'] }))] });
+    return true;
+  });
+}
+
+/** Bookkeeping after a failed sync, each in its own transaction because the
+ * sync's own work has rolled back. Answers the code when the job is done;
+ * throws it when the attempt must fail and be retried. */
+async function settle(options: ConnectorSyncRuntimeOptions, connectorId: string, correlationId: string,
+  error: unknown): Promise<string> {
+  const code = error instanceof Error && CODE.test(error.message) ? error.message : 'CONNECTOR_SYNC_FAILED';
+  if (!(error instanceof ConnectorError) || code === 'CONNECTOR_NOT_FOUND') throw new Error(code);
+  if (code === 'CONNECTOR_INGESTION_STOPPED') return code;
+  if (code === 'CONNECTOR_TOKEN_REVOKED' && error.detail['status'] === 401) {
+    await withOwnerTransaction(options.appPool, context(options, CONNECTOR_MANAGE_PURPOSE, correlationId), async tx => {
+      await markTokenRevoked(tx, connectorId);
+      await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
+        objects: [{ type: 'connectors', id: connectorId, fields: ['status', 'secret_ref', 'last_sync_error'] }] });
+    }).catch(() => undefined);
+    return code;
+  }
+  await withOwnerTransaction(options.appPool, context(options, CONNECTOR_SYNC_PURPOSE, correlationId), async tx => {
+    await recordSyncFailure(tx, connectorId, code);
+    await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'FAILURE',
+      objects: [{ type: 'connectors', id: connectorId, fields: ['status', 'last_sync_error'] }] });
+  }).catch(() => undefined);
+  throw new Error(code);
+}
+
+/** No dispatch and no timer: something else enqueues, and the worker loop calls runOnce. */
+export function createConnectorSyncRuntime(options: ConnectorSyncRuntimeOptions) {
+  const ingest: SourceIngest = (tx, request) => importSource(tx as unknown as OwnerTransaction, options.evidenceObjects, {
+    sourceType: request.sourceType, connectorId: request.connectorId, payload: request.payload,
+    sensitivity: request.sensitivity, allowedPurposes: request.allowedPurposes,
+  });
+  const log = (correlationId: string, status: string) => console.info(JSON.stringify({
+    event: 'connector.sync', correlationId, ownerScopeId: options.ownerScopeId, purpose: CONNECTOR_SYNC_PURPOSE, status,
+  }));
+  async function handle(job: ClaimedJob): Promise<void> {
+    if (job.ownerScopeId !== options.ownerScopeId) throw new Error('PROCESSING_OWNER_MISMATCH');
+    const parsed = connectorSyncJobPayloadSchema.safeParse(job.payload);
+    if (!parsed.success) throw new Error('CONNECTOR_SYNC_JOB_INVALID');
+    // The job id is the correlation id of every transaction of the attempt, so
+    // its audit rows can be found from the jobs console.
+    const correlationId = job.jobId;
+    try {
+      if (!await sync(options, ingest, parsed.data, correlationId)) log(correlationId, 'CONNECTOR_INGESTION_STOPPED');
+    } catch (error) {
+      // settle only ever throws an Error carrying a stable code.
+      try { log(correlationId, await settle(options, parsed.data.connectorId, correlationId, error)); }
+      catch (failure) { log(correlationId, (failure as Error).message); throw failure; }
+    }
+  }
+  return {
+    handle,
+    runOnce: (): Promise<JobAttempt> => runJobAttempt(options.appPool, context(options, 'jobs.work', randomUUID()), {
+      worker: options.workerId, leaseSeconds: options.leaseSeconds ?? 600,
+      jobKinds: [CONNECTOR_SYNC_JOB_KIND], handler: handle,
+    }),
+  };
+}

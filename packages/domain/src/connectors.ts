@@ -155,6 +155,18 @@ export const syncRequestSchema = z.strictObject({
 });
 export type SyncRequest = z.infer<typeof syncRequestSchema>;
 
+/** The payload of a durable `connector.sync` job. `window` is the enqueuer's
+ * de-duplication window label, for example an hour such as `2026-11-02T10`; it
+ * becomes part of the job idempotency key (`^[a-zA-Z0-9_-]{16,128}$`), so it
+ * may hold neither ':' nor '.'. */
+export const connectorSyncJobPayloadSchema = z.strictObject({
+  connectorId: z.uuid(),
+  mode: syncModeSchema,
+  maxPages: z.number().int().min(1).max(20),
+  window: z.string().regex(/^[A-Za-z0-9-]{1,40}$/),
+});
+export type ConnectorSyncJobPayload = z.infer<typeof connectorSyncJobPayloadSchema>;
+
 /** One item a run refused, with the reason. A refusal is reported rather than
  * silently skipped: an ungranted capability must be visible as a decision. */
 export const syncRefusalSchema = z.strictObject({
