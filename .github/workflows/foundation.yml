@@ -49,6 +49,11 @@ jobs:
           path: test-results/accessibility/
           if-no-files-found: error
       - run: pnpm build
+      # apps/web/server.test.ts needs the production build: real Next HTML under the enforced CSP.
+      - name: Web security headers against the production build
+        run: pnpm exec vitest run apps/web/server.test.ts
+        env:
+          UNAI_WEB_REQUIRE_BUILD: '1'
       # Lint runs here and in the CLI, never in the deployment (ADR 0014). The
       # report is the artifact the operations registry screen displays.
       # Lint also refuses an identity-, transition-affecting or breaking release
