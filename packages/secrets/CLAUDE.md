@@ -25,7 +25,7 @@ A provider is any `{read(name): Promise<string|null>}` passed by name to `create
 
 1. Read it in the entrypoint with `requireSecret(secrets,'NAME')`, never with `required('NAME')`.
 2. Add `NAME` to the `credentials` array of the entrypoint test in `src/index.test.ts`, otherwise nothing guards it.
-3. Add it to the variable list in `docs/foundation.md`, which describes each credential as a handle.
+3. Add it to each consuming process table in `docs/operations/environment.md` with Kind `secret handle`. `pnpm check:env-contract` and `src/env-contract.test.ts` fail until the row exists.
 
 ## Traps
 

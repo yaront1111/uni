@@ -136,29 +136,16 @@ provider with createSecretsManager and changes no caller. A runtime service
 refuses to start when a credential variable holds anything but a handle, so a
 password cannot reach a process listing or a crash report through configuration.
 
-Set these application environment variables before starting services:
+The [environment contract](operations/environment.md) lists every variable per
+process with its kind, default, consumer and failure code. `pnpm check:env-contract`
+keeps that document in step with the code.
 
-- UNAI_SECRETS_MOUNT: directory where the deployment's secrets manager exposes
-  secrets to the `mounted` provider.
-- UNAI_APP_DATABASE_URL and UNAI_AUTH_DATABASE_URL: handles for the respective
-  low-privilege URLs, for example
-  `secret://mounted/runtime/app-database#url`. The resolved URL carries no query
-  option that downgrades certificate verification.
-- UNAI_DATABASE_CA_FILE: trusted PostgreSQL CA file for runtime services.
-- The database must declare the encryption at rest its storage was provisioned
-  with, or the API refuses to start (`DATABASE_ENCRYPTION_AT_REST_REQUIRED`):
-  `ALTER DATABASE <name> SET unai.encryption_at_rest = 'volume-kms:<key reference>'`
-  (or `tde:…`, `managed:…`). Keep the provider's evidence as well (ADR 0002, ADR 0032 §4).
-- NEXTAUTH_URL: canonical HTTPS web origin, including the port when nonstandard.
-- NEXTAUTH_SECRET: handle for a session secret of at least 32 characters.
-- GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET: configured Google OAuth application;
-  the client identifier is plain configuration and the client secret is a handle.
-  Register NEXTAUTH_URL + /api/auth/callback/google as its callback URL.
-- UNAI_WEB_TLS_KEY_FILE and UNAI_WEB_TLS_CERT_FILE: web listener TLS files.
-- UNAI_API_TLS_KEY_FILE and UNAI_API_TLS_CERT_FILE: API listener TLS files.
-- UNAI_API_ORIGIN: HTTPS API origin (default listener port is 3443).
-- UNAI_API_CA_FILE: CA used to verify the API certificate.
-- Optional UNAI_API_PORT, UNAI_API_BIND and UNAI_WEB_BIND; binds default to loopback.
+The database must declare the encryption at rest its storage was provisioned
+with, or the API refuses to start (`DATABASE_ENCRYPTION_AT_REST_REQUIRED`):
+`ALTER DATABASE <name> SET unai.encryption_at_rest = 'volume-kms:<key reference>'`
+(or `tde:…`, `managed:…`). Keep the provider's evidence as well (ADR 0002, ADR 0032 §4).
+
+Register NEXTAUTH_URL + /api/auth/callback/google as the Google OAuth callback URL.
 
 Run pnpm start:api and pnpm dev:web in separate terminals for local development;
 use pnpm build followed by pnpm start:web for production. Web and API use actual
