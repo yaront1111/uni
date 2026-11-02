@@ -1,17 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { assertDatabaseEncryptionAtRest, createDatabasePool } from '@unai/postgres';
-import { createDefaultSecretsManager, requireSecret } from '@unai/secrets';
-import { resolveConfiguredModelProvider } from '@unai/model';
-import { createProcessingRuntime } from './processing-runtime.js';
-import { processingConfiguration, processingRequired } from './processing-config.js';
-import { createInitiativeRuntime } from './initiative-runtime.js';
-import { createEvidenceObjects } from './evidence.js';
-import { createConnectorRuntime } from './connectors.js';
-import { createConnectorSyncRuntime } from './connector-sync-job.js';
+import {startTelemetry,type Telemetry} from '@unai/observability/telemetry';
+// Workspace modules create instruments at evaluation time; metrics has no proxy.
+// ESM evaluates static imports before this body, even beside a top-level await.
+// Start the SDK first, then load application modules so meters are not permanent no-ops.
+let telemetry:Telemetry|undefined;
+try { telemetry=await startTelemetry({serviceName:'unai-worker',version:'0.1.0'});await main(); }
+catch (error) {
+  const code = error instanceof Error && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.message) ? error.message : 'PROCESSING_STARTUP_FAILED';
+  process.stderr.write(code + '\n'); process.exitCode = 1;
+}
+finally { await telemetry?.shutdown(); }
 
 async function main() {
+  const { assertDatabaseEncryptionAtRest, createDatabasePool }=await import('@unai/postgres');
+  const { createDefaultSecretsManager, requireSecret }=await import('@unai/secrets');
+  const { resolveConfiguredModelProvider }=await import('@unai/model');
+  const { createProcessingRuntime }=await import('./processing-runtime.js');
+  const { processingConfiguration, processingRequired }=await import('./processing-config.js');
+  const { createInitiativeRuntime }=await import('./initiative-runtime.js');
+  const { createEvidenceObjects }=await import('./evidence.js');
+  const { createConnectorRuntime }=await import('./connectors.js');
+  const { createConnectorSyncRuntime }=await import('./connector-sync-job.js');
   const configuration = processingConfiguration(process.env);
   const secrets = createDefaultSecretsManager();
   const provider = await resolveConfiguredModelProvider({ secrets, env: process.env });
@@ -45,9 +56,4 @@ async function main() {
     evidenceObjects?.close();
     await appPool.end();
   }
-}
-try { await main(); }
-catch (error) {
-  const code = error instanceof Error && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.message) ? error.message : 'PROCESSING_STARTUP_FAILED';
-  process.stderr.write(code + '\n'); process.exitCode = 1;
 }
