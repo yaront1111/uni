@@ -2,7 +2,8 @@ import {expect,it} from 'vitest';
 import {existsSync} from 'node:fs';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-async function components(){expect(existsSync('apps/web/components/Configuration.tsx')).toBe(true);return import('./Configuration');}
+import * as configuration from './Configuration';
+async function components(){expect(existsSync('apps/web/components/Configuration.tsx')).toBe(true);return configuration;}
 it('verify-d4-policy: The owner can reach and operate each existing permissions, approval-rule and attention-budget setting from Configuration.',async()=>{
  const {Configuration}=await components();const html=renderToStaticMarkup(createElement(Configuration,{voice:null,metrics:null,connectors:[],devices:[],currentDeviceId:null,errors:[]}));
  for(const path of ['/permissions','/memory/approval-rules'])expect(html).toContain('href="'+path+'"');
