@@ -7,7 +7,7 @@ import {runMigrations, withOwnerTransaction, type OwnerTransaction} from '@unai/
 import {postgresAdapter, SESSION_COOKIE} from '@unai/auth';
 import {parseSourcePayload, type ParsedSourceItem, type RequestContext} from '@unai/domain';
 import {runJobAttempt, enqueueJob, listDeadLetterJobs, claimJob, JOB_PURPOSES} from '@unai/jobs';
-import {createModelGateway, MODEL_PURPOSES, type ModelProvider} from '@unai/model';
+import {createModelGateway, MODEL_PURPOSES, type ModelProvider, type ModelProviderRequest} from '@unai/model';
 import {EXTRACTION_JOB_KIND, EXTRACTION_PURPOSES, createExtractionJobHandler, runExtraction,
   readExtractionRun, readTriageDecision, type ExtractionTransactionRunner} from '@unai/extraction';
 import {createPlatformApi} from './platform.js';
@@ -133,6 +133,74 @@ function extractionRequest(o: Awaited<ReturnType<typeof owner>>, sourceItemId: s
     referenceInstant: new Date('2026-09-01T09:00:00Z'), timeZone: 'Asia/Jerusalem',
     dataPurpose: 'PERSONAL_ASSISTANCE', maximumSensitivity: 'PRIVATE' as const};
 }
+
+function recordingProvider(requests: ModelProviderRequest[]): ModelProvider {
+  const provider = citingProvider();
+  return { ...provider, async complete(request) {
+    requests.push(request);
+    return provider.complete(request);
+  } };
+}
+
+it.each([
+  ['GMAIL', 'gmail-thread', 'FULL_EXTRACTION', 'FULL', 4096],
+  ['GOOGLE_CALENDAR', 'google-calendar-recurring-event', 'ENTITY_EXTRACTION', 'FULL', 1024],
+  ['DOCUMENT', 'uploaded-document', 'DEFER_UNTIL_RELEVANT', 'TARGETED', 4096],
+] as const)('caps %s extraction output using its route limits', async (sourceType, name, route, runKind, cap) => {
+  const o = await owner(sourceType);
+  const [item] = await o.importFixture(sourceType, await fixture(name));
+  expect((await readRoute(o, item!.evidenceId))!.tier1Route).toBe(route);
+  const requests: ModelProviderRequest[] = [];
+  await runExtraction({runner: o.runner, gateway: gatewayFor(o, recordingProvider(requests)),
+    request: extractionRequest(o, item!.evidenceId, runKind)});
+  expect(requests.map(request => request.maxOutputTokens)).toEqual([cap]);
+});
+
+it.each([
+  ['ASCII', 'x'.repeat(32769)], ['emoji', '🙂'.repeat(5000)], ['Hebrew', 'ש'.repeat(9000)],
+])('refuses oversized %s input before a run or model call while preserving evidence', async (_label, padding) => {
+  const o = await owner('GMAIL');
+  const payload = await fixture('gmail-thread');
+  payload.messages[0].payload.body.text += padding;
+  const [item] = await o.importFixture('GMAIL', payload);
+  expect((await readRoute(o, item!.evidenceId))!.tier1Route).toBe('FULL_EXTRACTION');
+  const before = await o.items();
+  const requests: ModelProviderRequest[] = [];
+  await expect(runExtraction({runner: o.runner, gateway: gatewayFor(o, recordingProvider(requests)),
+    request: extractionRequest(o, item!.evidenceId)})).rejects.toThrow('EXTRACTION_INPUT_TOO_LARGE');
+  expect(requests).toEqual([]);
+  expect(await o.runs()).toEqual([]);
+  expect((await admin.query('SELECT count(*)::int AS calls FROM model_call_records WHERE owner_scope_id=$1',
+    [o.ownerScopeId])).rows[0].calls).toBe(0);
+  expect(await o.items()).toEqual(before);
+});
+
+it('includes the system prompt in the input bound without truncating the source', async () => {
+  const o = await owner('GMAIL');
+  const payload = await fixture('gmail-thread');
+  // Stored anchor previews cap at 8,192 characters; fill that first so further
+  // padding grows only newText (the anchor's five-digit end offset stays fixed).
+  payload.messages[0].payload.body.text += 'x'.repeat(10000);
+  const [item] = await o.importFixture('GMAIL', payload);
+  const requests: ModelProviderRequest[] = [];
+  const gateway = gatewayFor(o, recordingProvider(requests));
+  await runExtraction({runner: o.runner, gateway, request: extractionRequest(o, item!.evidenceId)});
+  const baseline = requests[0]!;
+  const totalBytes = Buffer.byteLength(baseline.input, 'utf8') + Buffer.byteLength(baseline.system, 'utf8');
+  // Exceed the combined bound by one byte while input alone stays below 32 KiB.
+  const paddingBytes = 32768 - totalBytes + 1;
+  expect(paddingBytes).toBeGreaterThan(0);
+  expect(Buffer.byteLength(baseline.input, 'utf8') + paddingBytes).toBeLessThan(32768);
+  payload.messages[0].payload.body.text += 'x'.repeat(paddingBytes);
+  const [oversized] = await o.importFixture('GMAIL', payload);
+  expect((await readRoute(o, oversized!.evidenceId))!.tier1Route).toBe('FULL_EXTRACTION');
+  await expect(runExtraction({runner: o.runner, gateway, request: extractionRequest(o, oversized!.evidenceId)}))
+    .rejects.toThrow('EXTRACTION_INPUT_TOO_LARGE');
+  expect(requests).toHaveLength(1);
+  expect((await o.runs()).map(run => run.source_item_id)).toEqual([item!.evidenceId]);
+  expect((await admin.query('SELECT count(*)::int AS calls FROM model_call_records WHERE owner_scope_id=$1',
+    [o.ownerScopeId])).rows[0].calls).toBe(1);
+});
 
 it('CRT-WRT-07-A: every ingested item carries a Tier-1 route and reason, decided before any extraction', async () => {
   const o = await owner('GMAIL');

@@ -4,7 +4,7 @@ import { extractionOutputSchema, tier0ParseSchema, tier1RouteSchema, DEEP_EXTRAC
 import { CANONICAL_NORMALIZATION_VERSION, ENTITY_RESOLVER_VERSION, TEMPORAL_RESOLVER_VERSION,
   MEMORY_PURPOSES, recordClaim, resolveTemporalExpression } from '@unai/memory';
 import { ModelGatewayError, MODEL_PURPOSES, type ModelGateway } from '@unai/model';
-import { ROUTE_COST_BUDGET_MICROUNITS } from './triage.js';
+import { ROUTE_COST_BUDGET_MICROUNITS, ROUTE_EXTRACTION_LIMITS, type ExtractionLimits } from './triage.js';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 
 /** The extraction service (PRD §20.3, §36.3).
@@ -198,6 +198,8 @@ interface OpenedRun {
   route: Tier1Route;
   budget: number;
   anchors: StoredAnchor[];
+  input: string;
+  limits: ExtractionLimits;
 }
 
 async function openRun(runner: ExtractionTransactionRunner, request: ExtractionRequest): Promise<OpenedRun> {
@@ -222,13 +224,19 @@ async function openRun(runner: ExtractionTransactionRunner, request: ExtractionR
       ? Number(decision.cost_budget_microunits) : ROUTE_COST_BUDGET_MICROUNITS.FULL_EXTRACTION;
     if (!(budget > 0)) throw new ExtractionError('EXTRACTION_COST_BUDGET_REQUIRED');
     const anchors = await loadAnchors(tx, request.ownerScopeId, request.sourceItemId);
+    const limits = route === 'ENTITY_EXTRACTION'
+      ? ROUTE_EXTRACTION_LIMITS.ENTITY_EXTRACTION : ROUTE_EXTRACTION_LIMITS.FULL_EXTRACTION;
+    const input = buildExtractionInput(tier0, anchors);
+    if (Buffer.byteLength(SYSTEM_PROMPT, 'utf8') + Buffer.byteLength(input, 'utf8') > limits.maxInputBytes) {
+      throw new ExtractionError('EXTRACTION_INPUT_TOO_LARGE');
+    }
     const runId = uuidV7();
     await tx.query(`INSERT INTO extraction_runs(id,owner_scope_id,source_item_id,triage_decision_id,run_kind,
       registry_release_id,normalization_version,entity_resolver_version,temporal_resolver_version,status,processing_key)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RUNNING',$10)`,
       [runId, request.ownerScopeId, request.sourceItemId, decision.id, request.runKind, request.registryReleaseId,
         CANONICAL_NORMALIZATION_VERSION, ENTITY_RESOLVER_VERSION, TEMPORAL_RESOLVER_VERSION, request.processingKey ?? null]);
-    return { runId, tier0, route, budget, anchors };
+    return { runId, tier0, route, budget, anchors, input, limits };
   });
 }
 
@@ -280,7 +288,8 @@ async function runExtractionImpl(options: {
         correlationId: request.correlationId,
         promptVersion,
         system: SYSTEM_PROMPT,
-        input: buildExtractionInput(opened.tier0, opened.anchors),
+        input: opened.input,
+        maxOutputTokens: opened.limits.maxOutputTokens,
         schema: extractionOutputSchema,
         maxCostMicrounits: opened.budget,
         extractionRunId: opened.runId,

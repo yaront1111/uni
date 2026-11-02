@@ -3,7 +3,35 @@ import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { parseSourcePayload, tier1RouteSchema, routingReasonSchema } from '@unai/domain';
 import { parseTier0, routeTier1, splitQuotedHistory, triage, ROUTE_COST_BUDGET_MICROUNITS,
+  ROUTE_EXTRACTION_LIMITS, EXTRACTION_FRAMING_TOKENS, worstCaseCostMicrounits,
   TIER1_ROUTER_VERSION, type TriageInput } from './triage.js';
+
+it('keeps the route budgets consistent with the database constraint', () => {
+  expect(ROUTE_COST_BUDGET_MICROUNITS).toEqual({
+    SOURCE_ONLY: 0, INDEX_ONLY: 0, DEFER_UNTIL_RELEVANT: 0,
+    ENTITY_EXTRACTION: 30000, FULL_EXTRACTION: 110000,
+  });
+});
+
+it('bounds both deep routes within their ceilings at the pinned prices', () => {
+  const pricing = { inputMicrounitsPer1k: 2000, outputMicrounitsPer1k: 10000 };
+  expect(ROUTE_EXTRACTION_LIMITS).toEqual({
+    ENTITY_EXTRACTION: { maxInputBytes: 8192, maxOutputTokens: 1024 },
+    FULL_EXTRACTION: { maxInputBytes: 32768, maxOutputTokens: 4096 },
+  });
+  expect(EXTRACTION_FRAMING_TOKENS).toBe(128);
+  const entity = worstCaseCostMicrounits(ROUTE_EXTRACTION_LIMITS.ENTITY_EXTRACTION, pricing);
+  const full = worstCaseCostMicrounits(ROUTE_EXTRACTION_LIMITS.FULL_EXTRACTION, pricing);
+  expect(entity).toBe(26880);
+  expect(entity).toBeLessThanOrEqual(ROUTE_COST_BUDGET_MICROUNITS.ENTITY_EXTRACTION);
+  expect(full).toBe(106752);
+  expect(full).toBeLessThanOrEqual(ROUTE_COST_BUDGET_MICROUNITS.FULL_EXTRACTION);
+});
+
+it('rounds each half of the worst-case cost upwards', () => {
+  expect(worstCaseCostMicrounits({ maxInputBytes: 1, maxOutputTokens: 1 },
+    { inputMicrounitsPer1k: 1, outputMicrounitsPer1k: 1 })).toBe(2);
+});
 
 /** Tier 0 and Tier 1 over the committed corpus fixtures, with no database, no
  * model and no clock anywhere in the path: triage is a pure function of bytes,

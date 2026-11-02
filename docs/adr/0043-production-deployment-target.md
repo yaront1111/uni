@@ -513,6 +513,8 @@ comment-37a6626aa433431ba856336df852a5ea, and it depends on this ADR. It must
 land before real evidence is extracted, but it does not block the deployment
 itself.
 
+- Resolved by task-9436f4840ca04fc0afbe2bdc2be6fd42: ceilings and thinking/effort settings are recorded in [Cost ceilings and request settings](../model-path-and-extraction.md#cost-ceilings-and-request-settings).
+
 - Ceilings: raise them to cover a worst-case call at the output cap.
   ENTITY_EXTRACTION 30,000 and FULL_EXTRACTION 60,000 are a starting
   recommendation that task-9436f4840ca04fc0afbe2bdc2be6fd42 finalizes, not

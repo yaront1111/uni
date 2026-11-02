@@ -68,6 +68,21 @@ const anthropicResponseSchema = z.object({
   usage: z.object({ input_tokens: z.number().int().min(0), output_tokens: z.number().int().min(0) }),
 });
 
+/** No tools are sent, so between_tools turns thinking off: all billed output is
+ * the JSON answer. Sonnet 5.5 rejects disabled, budget_tokens and non-default
+ * sampling. between_tools takes no other field and needs high effort or below.
+ * Unlisted models get neither field (between_tools is Sonnet 5.5-only); their
+ * defaults still obey max_tokens. No fallbacks: they change the pin and price. */
+const anthropicRequestSettings: Readonly<Record<string, {
+  readonly thinking: { readonly type: 'between_tools' };
+  readonly output_config: { readonly effort: 'high' };
+}>> = Object.freeze({
+  'claude-sonnet-5-5': Object.freeze({
+    thinking: Object.freeze({ type: 'between_tools' as const }),
+    output_config: Object.freeze({ effort: 'high' as const }),
+  }),
+});
+
 /** Anthropic Messages API. JSON is requested through the system instruction and
  * verified by the gateway's schema; the adapter asserts nothing about content. */
 export function createAnthropicMessagesProvider(config: HttpModelProviderConfiguration): ModelProvider {
@@ -81,6 +96,7 @@ export function createAnthropicMessagesProvider(config: HttpModelProviderConfigu
       }, {
         model: request.modelId, max_tokens: request.maxOutputTokens, system: request.system,
         messages: [{ role: 'user', content: request.input }],
+        ...(anthropicRequestSettings[request.modelId] ?? {}),
       });
       const parsed = anthropicResponseSchema.safeParse(body);
       if (!parsed.success) throw new ModelGatewayError('MODEL_PROVIDER_RESPONSE_INVALID');

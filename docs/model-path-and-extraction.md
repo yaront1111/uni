@@ -130,7 +130,73 @@ within the item's allowed purposes and a sensitivity ceiling at or above the
 item's own (ADR 0016 §7). A run over an item whose allowed purposes exclude it
 reads nothing and extracts nothing.
 
+## Cost ceilings and request settings
+
+At [ADR 0043 D7's pinned prices](adr/0043-production-deployment-target.md#d7-model-provider-pin),
+input costs 2,000 and output 10,000 microunits per 1,000 tokens. The pure
+`worstCaseCostMicrounits` helper in `packages/extraction/src/triage.ts` uses:
+
+```text
+ceil((maxInputBytes + 128) * inputMicrounitsPer1k / 1000)
+  + ceil(maxOutputTokens * outputMicrounitsPer1k / 1000)
+```
+
+`maxInputBytes` counts the UTF-8 bytes of **both the system instruction and the
+complete serialized input**. Conservatively, every byte counts as a token
+(byte-level tokenization), plus 128 tokens for message framing. The whole output
+cap counts, including any thinking tokens. Rounding each half up cannot
+undercut the adapter's rounded combined usage cost.
+
+| Route | Max input bytes | Max output tokens | Worst case at D7's 2,000/10,000 | Ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| ENTITY_EXTRACTION | 8,192 | 1,024 | 26,880 | 30,000 |
+| FULL_EXTRACTION | 32,768 | 4,096 | 106,752 | 110,000 |
+
+Costs and ceilings are microunits (millionths of the billing unit). Every other
+route carries a zero budget and schedules no deep extraction. A `TARGETED` run
+of a deferred item uses FULL's limits and ceiling. Ordinary text often takes
+about 3–4 bytes per token, so a typical run costs a fraction of its ceiling;
+that ratio is not a guarantee for every language or input.
+
+An input over its bound is refused with `EXTRACTION_INPUT_TOO_LARGE` before any
+run row or model call: nothing is spent and stored evidence is unchanged.
+Nothing in the extraction input is truncated to make it fit; spans still refer
+to stored anchor text. The queue currently retries that refusal and then
+dead-letters it; terminal refusal handling belongs to task-2c05639a7dc14766a22f3bc09108c371.
+The gateway still records an overspend and then refuses it with
+`MODEL_COST_BUDGET_EXCEEDED`.
+
+These ceilings assume D7's prices and the framing allowance above. At any other
+price, recompute them with the formula and change `ROUTE_COST_BUDGET_MICROUNITS`
+and the triage test together. Budgets already stored on `triage_decisions` rows
+keep their old values: a run honours its recorded budget. Parser and router
+versions stay unchanged because no route or reason output changes, only the
+budget table. No environment variable was added for this change, so
+`docs/operations/environment.md` is untouched.
+
+For the requested model `claude-sonnet-5-5`, the Anthropic adapter sends
+`thinking: {type: 'between_tools'}` and `output_config: {effort: 'high'}`. With
+no tools in these requests, that turns thinking off, leaving output tokens for
+the JSON answer. Sonnet 5.5 rejects `disabled`, manual `budget_tokens` and
+non-default sampling parameters. `between_tools` takes no additional fields and
+requires effort `high` or below. See the
+[Anthropic migration notes](https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5).
+Unlisted models get neither setting and use their defaults, still bounded by
+`max_tokens`. Server-side `fallbacks` are deliberately not enabled: a fallback
+would change the pinned model and could bill at a price the single configured
+price cannot account for. The OpenAI adapter and the gateway's default output
+cap of 2,048 for other callers are unchanged.
+
 ## What this node does not claim
+
+- **No new stop-reason outcome.** `stop_reason: max_tokens` can still leave
+  truncated JSON, which surfaces as `OUTPUT_REJECTED` after billing, bounded by
+  the ceiling under the assumptions above. A refusal with empty content surfaces
+  as `MODEL_PROVIDER_RESPONSE_INVALID` and is recorded as `PROVIDER_FAILED` at
+  cost 0. No distinct code is added: a new `model_call_records` outcome requires
+  a migration.
+- **No measured thinking/effort optimum.** Those settings should be re-tuned by
+  an owner-run measurement on the synthetic corpus; no test makes a real call.
 
 - **Nothing enqueues an extraction job yet.** The job kind `evidence.extract`,
   its payload schema and its handler are delivered and exercised against the real

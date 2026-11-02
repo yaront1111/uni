@@ -24,8 +24,30 @@ export const TIER1_ROUTER_VERSION = 'tier1-rules-0.1.0';
  * budget is the gateway's ceiling for the run, not an estimate. */
 export const ROUTE_COST_BUDGET_MICROUNITS: Readonly<Record<Tier1Route, number>> = Object.freeze({
   SOURCE_ONLY: 0, INDEX_ONLY: 0, DEFER_UNTIL_RELEVANT: 0,
-  ENTITY_EXTRACTION: 4000, FULL_EXTRACTION: 20000,
+  ENTITY_EXTRACTION: 30000, FULL_EXTRACTION: 110000,
 });
+
+export interface ExtractionLimits {
+  /** UTF-8 bytes of the system instruction plus the complete serialized input. */
+  readonly maxInputBytes: number;
+  readonly maxOutputTokens: number;
+}
+export const ROUTE_EXTRACTION_LIMITS = Object.freeze({
+  ENTITY_EXTRACTION: Object.freeze({ maxInputBytes: 8192, maxOutputTokens: 1024 }),
+  FULL_EXTRACTION: Object.freeze({ maxInputBytes: 32768, maxOutputTokens: 4096 }),
+});
+export const EXTRACTION_FRAMING_TOKENS = 128;
+
+/** Budget every UTF-8 byte as a token (byte-level tokenization), plus framing.
+ * Count the entire output cap, including any thinking tokens. Round each half
+ * up so this never undercuts the adapter's rounded combined usage cost. */
+export function worstCaseCostMicrounits(limits: ExtractionLimits, pricing: {
+  readonly inputMicrounitsPer1k: number;
+  readonly outputMicrounitsPer1k: number;
+}): number {
+  return Math.ceil((limits.maxInputBytes + EXTRACTION_FRAMING_TOKENS) * pricing.inputMicrounitsPer1k / 1000)
+    + Math.ceil(limits.maxOutputTokens * pricing.outputMicrounitsPer1k / 1000);
+}
 
 export interface TriageInput {
   readonly sourceType: string;
