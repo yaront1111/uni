@@ -305,16 +305,19 @@ function htmlCodePoint(value: number): string {
   return value === 0 || (value >= 0xD800 && value <= 0xDFFF) || value > 0x10FFFF ? '\uFFFD' : String.fromCodePoint(value);
 }
 
-/** HTML reduced to text by a fixed rule: drop script, style, title, noscript and
- * template elements (an unclosed one runs to the end) and comments, strip tags,
- * decode the basic entities in one pass, collapse whitespace. `head` is not in the
+/** HTML reduced to text by a fixed rule: drop comments and script, style, title,
+ * noscript and template elements in one left-to-right pass, then strip tags,
+ * decode the basic entities in one pass and collapse whitespace. Element names
+ * end at HTML whitespace (TAB, LF, FF, CR, SPACE), '/' or '>', so title-bar is
+ * kept. End tags close even with attributes or a slash. `<!-->` and `<!--->` are
+ * empty comments; `--!>` also ends a comment. An unclosed comment or dropped
+ * element runs to the end. `head` is not in the
  * list: its end tag is optional, so an unclosed head would swallow the body, and
  * its title, style and script children are dropped by their own entries. Every
  * pattern is linear on sender-controlled input: `[^<>]` keeps a run of '<' from backtracking. */
 function htmlToText(html: string): string {
   return html
-    .replace(/<(script|style|title|noscript|template)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
-    .replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+    .replace(/<!--(?:-?>|[\s\S]*?(?:--!?>|$))|<(script|style|title|noscript|template)(?=[\t\n\f\r />])[^<>]*>[\s\S]*?(?:<\/\1(?=[\t\n\f\r />])[^<>]*>|$)/gi, ' ')
     .replace(/<[^<>]*>/g, ' ')
     .replace(/&(?:(amp|lt|gt|quot|apos|nbsp)|#(\d{1,7})|#x([\da-f]{1,6}));/gi,
       (entity: string, name: string | undefined, decimal: string | undefined, hex: string | undefined) =>

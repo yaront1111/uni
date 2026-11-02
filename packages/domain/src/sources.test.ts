@@ -180,6 +180,25 @@ it('reduces HTML to text deterministically', () => {
   expect(parsedBody(leaf('text/html', 'kept<!-- never closed'))).toBe('kept');
 });
 
+it('keeps visible text after rare HTML element and comment constructs', () => {
+  for (const [html, expected] of [
+    ['<title-bar>x</title-bar><p>Body</p>', 'x Body'],
+    ['<script>a()</script x><p>Body</p>', 'Body'],
+    ['<style>p{}</style/><p>Body</p>', 'Body'],
+    ['<!--><p>Body</p>', 'Body'],
+    ['<!---><p>Body</p>', 'Body'],
+    ['<!-- <script> -->Body', 'Body'],
+    ['<!-- <style> --><p>Body</p>', 'Body'],
+    ['<script>var a = "<!--";</script><p>Body</p>', 'Body'],
+    ['<!-- x --!> visible', 'visible'],
+    ['<script>x</script\t/>after', 'after'],
+    ['<!--[if !mso]><!--><p>Dinner</p><!--<![endif]-->', 'Dinner'],
+    ['<!--[if mso]><p>mso only</p><![endif]-->Shown', 'Shown'],
+  ] as const) {
+    expect(parsedBody(leaf('text/html', html))).toBe(expected);
+  }
+});
+
 function nested(depth: number): Part {
   let part = leaf('text/plain', 'deep body');
   for (let level = 0; level < depth; level += 1) part = multipart([part]);
@@ -269,6 +288,15 @@ it('reduces pathological HTML in linear time', () => {
   const comments = parsedItem(leaf('text/html', '<!--'.repeat(150_000)));
   expect(comments.content.body).toBe('');
   expect('bodyTruncated' in comments.deterministicMetadata).toBe(false);
+});
+
+it('reduces the new closer and comment shapes in linear time', () => {
+  expect(parsedBody(leaf('text/html', '<script>' + '</script x'.repeat(100_000)))).toBe('');
+  expect(parsedBody(leaf('text/html', '<!--->'.repeat(100_000) + 'tail'))).toBe('tail');
+  const custom = '<title-bar'.repeat(100_000);
+  const item = parsedItem(leaf('text/html', custom));
+  expect(item.content.body).toBe(custom.slice(0, 200_000));
+  expect(item.deterministicMetadata.bodyTruncated).toBe(true);
 });
 
 function headerItems(headers: readonly unknown[]) {

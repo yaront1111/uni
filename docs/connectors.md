@@ -171,9 +171,13 @@ each message part's body is `{size, data}` with `data` base64url-encoded, or
 - otherwise, the decoded `data` of the first non-attachment `text/plain` part
   found depth-first (an attachment is a part with a non-empty `filename` or an
   `attachmentId`, and it is skipped with its whole subtree);
-- else the first `text/html` part reduced to text: script, style, title,
-  noscript and template elements and comments are dropped, tags are stripped,
-  the basic entities are decoded and whitespace is collapsed;
+- else the first `text/html` part reduced to text: comments and the script, style,
+  title, noscript and template elements are dropped in one left-to-right pass,
+  tags are stripped, the basic entities are decoded and whitespace is collapsed.
+  An element name ends at HTML whitespace (TAB, LF, FF, CR or SPACE), `/` or `>`,
+  so a custom element such as `title-bar` is kept. End tags close even with
+  attributes or a slash. `<!-->` and `<!--->` are empty comments, and `--!>` also
+  ends a comment. A `<script>` inside a comment does not drop the rest of the body;
 - else empty.
 
 The bytes are decoded with the charset of the selected part's own
