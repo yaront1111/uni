@@ -138,11 +138,23 @@ beforeAll(async()=>{
 
 afterAll(async()=>{
   proxy?.close();
-  await scratch.end().catch(()=>undefined);
-  await admin.query('DROP DATABASE IF EXISTS '+database+' WITH (FORCE)').catch(()=>undefined);
-  await admin.end();
-  key.fill(0);
-  if(root)await rm(root,{recursive:true,force:true});
+  try{
+    await scratch.end();
+    // Pool.end() resolves before idle backends exit; FORCE must not kill a closing client.
+    for(let attempt=0;attempt<200;attempt++){
+      const {rowCount}=await admin.query('SELECT 1 FROM pg_stat_activity WHERE datname=$1',[database]);
+      if(rowCount===0){
+        await admin.query('DROP DATABASE IF EXISTS '+database+' WITH (FORCE)');
+        return;
+      }
+      await delay(25);
+    }
+    throw new Error('BACKUP_TEST_BACKENDS_STILL_ACTIVE');
+  }finally{
+    await admin.end();
+    key.fill(0);
+    if(root)await rm(root,{recursive:true,force:true});
+  }
 });
 
 interface Run{status:number|null;stdout:string;stderr:string}
