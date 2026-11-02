@@ -171,10 +171,43 @@ export async function importGmailThread(repository: string, sourcePath: string, 
   return { threadRef, outcome: existing ? 'UPDATED' : 'IMPORTED', messages: items.length };
 }
 
+/** corpusAnnotationSchema caps a quote at 4,000 characters. `uai corpus run` passes
+ * labelled quotes to classifyCommitmentLanguage, whose action text is capped at
+ * 4,096, so the schema bound is not raised: a longer quote would only move the
+ * crash from annotate to run. */
+const SKELETON_QUOTE_MAX = 4000;
+/** The schema's cap on labelledSourceSpans. */
+const SKELETON_SPANS_MAX = 500;
+
+/** Consecutive [start, end) windows covering `body`, each at most SKELETON_QUOTE_MAX
+ * UTF-16 units. A window ends just after the last line break it holds; with none,
+ * at its limit, one unit earlier if that would split a surrogate pair. */
+function skeletonRanges(body: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (let start = 0; start < body.length;) {
+    let end = Math.min(body.length, start + SKELETON_QUOTE_MAX);
+    if (end < body.length) {
+      const lineEnd = body.lastIndexOf('\n', end - 1);
+      if (lineEnd > start) end = lineEnd + 1;
+      else {
+        const unit = body.charCodeAt(end - 1);
+        if (unit >= 0xD800 && unit <= 0xDBFF) end -= 1;
+      }
+    }
+    ranges.push([start, end]);
+    start = end;
+  }
+  return ranges;
+}
+
 /** Writes the annotation skeleton for an imported thread -- one span per message
- * body, every expectation empty -- or, when it exists, reports which PRD §43.4
- * categories it still lacks. Editing is done in the file itself: the private
- * corpus never passes through a server. */
+ * body (`m<n>`); a body over 4,000 characters is split at line ends into `m<n>.1`,
+ * `m<n>.2`, ... -- every expectation empty, or, when it exists, reports which PRD
+ * §43.4 categories it still lacks. A thread with no body text is refused with
+ * CORPUS_THREAD_EMPTY, one needing more than 500 spans with CORPUS_THREAD_TOO_LARGE
+ * and an unparseable thread file with CORPUS_SOURCE_INVALID; nothing is written on
+ * a refusal. Editing is done in the file itself: the private corpus never passes
+ * through a server. */
 export async function annotateThread(repository: string, kind: CorpusKind, threadRef: string, env: NodeJS.ProcessEnv = process.env)
   : Promise<{ path: string; created: boolean; missing: string[] }> {
   if (!/^[a-z0-9][a-z0-9_.:-]{0,127}$/.test(threadRef)) throw new RegistryError('CORPUS_THREAD_REF_INVALID');
@@ -189,15 +222,24 @@ export async function annotateThread(repository: string, kind: CorpusKind, threa
     let raw: Buffer;
     try { raw = await readFile(resolve(directory, 'threads', threadRef + '.json')); }
     catch { throw new RegistryError('CORPUS_THREAD_MISSING'); }
-    const items = parseSourcePayload('GMAIL', JSON.parse(raw.toString('utf8')));
+    let items: ReturnType<typeof parseSourcePayload>;
+    try { items = parseSourcePayload('GMAIL', JSON.parse(raw.toString('utf8'))); }
+    catch { throw new RegistryError('CORPUS_SOURCE_INVALID'); }
+    const spans = items.flatMap((item, index) => {
+      const body = String(item.content['body'] ?? '');
+      const ranges = skeletonRanges(body);
+      return ranges.map(([start, end], part) => ({
+        spanRef: 'm' + (index + 1) + (ranges.length > 1 ? '.' + (part + 1) : ''),
+        messageExternalId: item.externalId, start, end, quote: body.slice(start, end),
+      }));
+    });
+    if (spans.length === 0) throw new RegistryError('CORPUS_THREAD_EMPTY');
+    if (spans.length > SKELETON_SPANS_MAX) throw new RegistryError('CORPUS_THREAD_TOO_LARGE');
     const thresholds = await loadThresholds(repository);
     annotation = corpusAnnotationSchema.parse({
       format: 'unai-corpus-annotation/1', threadRef, corpusKind: kind,
       source: { connector: 'gmail', threadFile: threadRef + '.json', contentHash: sha256(raw) },
-      labelledSourceSpans: items.flatMap((item, index) => {
-        const body = String(item.content['body'] ?? '');
-        return body === '' ? [] : [{ spanRef: 'm' + (index + 1), messageExternalId: item.externalId, start: 0, end: body.length, quote: body }];
-      }),
+      labelledSourceSpans: spans,
       expectedEntities: [], expectedFrameInstances: [], instanceMatchCases: [], expectedSlotsAndPropositions: [],
       expectedCommitmentsAndResolutions: { commitments: [], resolutions: [] }, expectedUnknownsAndNonMemoryItems: [],
       identityAcceptanceThresholds: { version: thresholds.version },

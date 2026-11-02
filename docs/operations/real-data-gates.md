@@ -10,9 +10,25 @@ CRT-QA-01-A, the `hosted-main-pipeline-deferred` deferral listed in
 agent selects, labels or sanitizes real threads, supplies live credentials,
 pushes tags or certifies hosted CI. Each gate section below has the same six
 labelled lines. After running a gate, update its Status row (UTC date, result,
-artifact) and commit the artifact together with the row. Today `pnpm
-check:v0-release` reads only gate 4's record, so a passing release check does
-not by itself show gates 1-3; this page is their record.
+artifact) and commit the artifact together with the row.
+
+`pnpm check:v0-release` reads each gate's record through one release criterion:
+PRD-54.4-REAL-CORPUS (gate 1), PRD-54.1-LIVE-CONNECTORS (gate 2),
+PRD-54.3-REGISTRY-TAGS (gate 3) and CRT-QA-01-A (gate 4). A missing, invalid,
+failed, skipped or stale record fails its criterion. A record committed after
+the run it certifies is accepted only through the records-only rule of
+[ADR 0044](../adr/0044-release-records-after-certified-run.md): the recorded
+commit must be HEAD, or an ancestor of HEAD whose later changes touch only
+`docs/operations/release-input.json`, `docs/operations/real-data-gates.md`,
+`docs/operations/live-connectors-<name>.json` and
+`corpus/expected/real-corpus-results.json`. Run the gates in this order:
+
+1. Finish every code change.
+2. Run gates 1 and 3, which bind no commit, and gate 2, whose record binds its
+   `sourceCommit`. Commit their records with their Status rows.
+3. Push, and let the hosted run certify gate 4 at that commit.
+4. Commit the `ci` block together with its Status row, and nothing else.
+5. Run the release sequence from [README.md](README.md) at that commit.
 
 ## Status
 
@@ -93,8 +109,12 @@ They come from the owner's own mailbox and are labelled by a person.
    it, and is safe only before labelling.
 3. Per thread: `pnpm uai corpus annotate --thread <threadRef>`. It writes the
    skeleton `annotations/<threadRef>.json` in the private corpus directory (one
-   span per message body) and prints `missing`. Label by editing that file, and
-   re-run the command to see what is still missing.
+   span per message body; a body longer than 4,000 characters is split at line
+   ends into spans `m<n>.1`, `m<n>.2`, ... of at most 4,000 characters each) and
+   prints `missing`. Label by editing that file, and re-run the command to see what
+   is still missing. A thread with no message text is refused with
+   `CORPUS_THREAD_EMPTY`, and one that would need more than 500 spans with
+   `CORPUS_THREAD_TOO_LARGE`; nothing is written, so choose another thread.
 4. `pnpm uai corpus annotate` with no `--thread` lists every thread with
    `labelled` and `missing`. Continue until at least 10 threads are labelled and,
    taken together, no category is missing.
@@ -117,10 +137,10 @@ annotation digest, thresholds version, registry release, per-rule observations
 and rates, coverage, pipeline checks, result and failure codes. It contains no
 quote, address or thread reference.
 
-**How `pnpm check:v0-release` reads it:** it does not, today.
-`pnpm check:phase-exit` ends with `pnpm uai corpus verify`
-(`verifyRealCorpusResults`, `packages/registry/src/corpus.ts`), which fails
-unless the recorded file:
+**How `pnpm check:v0-release` reads it:** criterion PRD-54.4-REAL-CORPUS calls
+`verifyRealCorpusResults` (`packages/registry/src/corpus.ts`), the same check as
+`pnpm uai corpus verify` (with which `pnpm check:phase-exit` also ends), and
+passes only when it answers PASS. It fails unless the recorded file:
 
 - exists and parses (`REAL_RESULTS_MISSING`, `REAL_RESULTS_INVALID`);
 - is a real run (`REAL_RESULTS_NOT_REAL`);
@@ -132,7 +152,11 @@ unless the recorded file:
 - covers every category (`CORPUS_CATEGORY_MISSING`);
 - passed (`REAL_RESULTS_FAILED`).
 
-A thresholds or keying-rule version change makes the recorded file stale; repeat
+When the verifier cannot run, the criterion records UNVERIFIED with the
+verifier's refusal code (`CORPUS_THRESHOLDS_INVALID` when the thresholds file is
+missing or invalid) or, for any other failure, `REAL_CORPUS_UNAVAILABLE`. Every
+code appears under `realCorpus` in `test-results/operations/status.json`. A
+thresholds or keying-rule version change makes the recorded file stale; repeat
 steps 5-8.
 
 ## Gate 2: Live connectors
@@ -264,16 +288,36 @@ Rules for the record:
 - An Omi case uses connector `OMI`.
 - The record holds no account address, calendar id, repository name, token,
   handle or path.
+- `recordedBy` is the literal `owner`, and `command` is the literal `pnpm test`.
+- Timestamps (`recordedAt`, `completedAt`) are UTC and end in `Z`.
+- Unknown keys, another `format` and an unknown `connector` are refused.
+- The file is named `live-connectors-<name>.json`, where `<name>` is 1-100
+  letters, digits, `.`, `_` or `-` (by convention the UTC date of the run).
 - Gate result: PASS only when `exitCode` is 0 and the Gmail, Calendar and GitHub
   cases (and Omi's, once it exists) are `passed`; FAIL when any of them failed;
   otherwise UNVERIFIED.
 - Adding `liveConnectorRecords` is the only change to `release-input.json`.
 
-**How `pnpm check:v0-release` reads it:** it does not, today. The checker
-(`src/operations/report.ts`) reads only named fields of `release-input.json` and
-ignores `liveConnectorRecords`. And `pnpm test` without credentials reports the
-live cases as skipped, never as passed. The record and the Status row are the
-evidence.
+**How `pnpm check:v0-release` reads it:** criterion PRD-54.1-LIVE-CONNECTORS
+reads only the LAST path listed in `liveConnectorRecords`. It passes only when
+all of these hold:
+
+- the path is `docs/operations/live-connectors-<name>.json` and the record
+  parses as `unai-live-connectors/1`;
+- `exitCode` is 0 and `workspaceClean` is true;
+- the cases CRT-CON-02-A `GMAIL`, CRT-CON-03-A `GOOGLE_CALENDAR` and
+  CRT-CON-04-A `GITHUB` are present;
+- every case `passed`, except CRT-CON-06-A (revocation, opt-in), which may be
+  skipped but never failed. An Omi case counts once it is recorded, and becomes
+  required once its live case exists;
+- `totals` match the cases;
+- `sourceCommit` is HEAD or a records-only ancestor of HEAD (ADR 0044).
+
+A missing key, an empty list or an absent file records `LIVE_RECORD_MISSING`;
+any other listing, path or record problem records `LIVE_RECORD_INVALID` (under
+`liveConnectors` in `test-results/operations/status.json`). Any code change
+after the run fails the criterion until a new live run is recorded. `pnpm test`
+without credentials reports the live cases as skipped, never as passed.
 
 ## Gate 3: Registry tags
 
@@ -327,7 +371,14 @@ create or push tags.
 **Artifact:** the pushed tags themselves. Record each tag's commit in the Status
 row, for example `registry-v0.1.0 → <commit>`.
 
-**How `pnpm check:v0-release` reads it:** it reads no tags today.
+**How `pnpm check:v0-release` reads it:** criterion PRD-54.3-REGISTRY-TAGS runs
+the same read-only inspection as `pnpm uai registry tags` over the clone's LOCAL
+tags, and passes only when every version recorded in `registry/releases.yaml`
+is PRESENT. It fails on a MISSING or MISMATCH tag, an empty index, and the codes
+`REGISTRY_INDEX_INVALID`, `REGISTRY_HISTORY_SHALLOW`, `REGISTRY_GIT_UNAVAILABLE`
+and `REGISTRY_TAGS_UNAVAILABLE` (under `registryTags` in
+`test-results/operations/status.json`). A fresh clone holds no tags until
+`git fetch --tags origin` runs, so run that first.
 `pnpm uai registry publish` (used by the registry-migration runbook and every
 install or upgrade) resolves each tag and verifies its hash before writing
 anything.
@@ -345,9 +396,11 @@ run and records it.
 
 **Which run closes it:** a green run of the workflow `V0 pipeline`
 (`.github/workflows/foundation.yml`, job `foundation`, on every push) on the
-default branch `master`, at exactly the commit `pnpm check:v0-release` runs at,
-with all nine stages passing. The stage names in `ci.stages[].name`
-(`V0_CI_STAGES`, `packages/domain/src/operations.ts`) map to workflow steps:
+default branch `master`, with all nine stages passing, at the commit
+`pnpm check:v0-release` runs at (HEAD) or at a records-only ancestor of HEAD
+([ADR 0044](../adr/0044-release-records-after-certified-run.md)). The stage
+names in `ci.stages[].name` (`V0_CI_STAGES`, `packages/domain/src/operations.ts`)
+map to workflow steps:
 
 | `ci.stages[].name` | Workflow step name |
 | --- | --- |
@@ -393,7 +446,8 @@ then `gh run view <id> --json jobs`.
    }
    ```
 
-3. Run the release sequence from [README.md](README.md):
+3. Commit `release-input.json` together with the Status row, and nothing else.
+   Then run the release sequence from [README.md](README.md):
    `node scripts/local-policy-audit.mjs`, `pnpm test`, `pnpm ops:report`,
    `pnpm check:v0-release`.
 
@@ -403,17 +457,27 @@ URL in the Status row.
 
 **How `pnpm check:v0-release` reads it:** CRT-QA-01-A
 (`packages/domain/src/operations.ts`) passes only when the workspace is clean,
-`ci` is present, `ci.branch` equals `ci.defaultBranch`, `ci.commit` equals the
-checked-out HEAD, and each of the nine stages appears exactly once with `PASS`.
+`ci` is present, `ci.branch` equals `ci.defaultBranch`, `ci.commit` is the
+checked-out HEAD or a records-only ancestor of it, and each of the nine stages
+appears exactly once with `PASS`. Records-only
+([ADR 0044](../adr/0044-release-records-after-certified-run.md)) means that
+`git merge-base --is-ancestor <ci.commit> HEAD` succeeds and
+`git diff --name-only --no-renames <ci.commit> HEAD` lists only these paths:
 
-Known limitation, stated plainly:
+- `docs/operations/release-input.json`
+- `docs/operations/real-data-gates.md`
+- `docs/operations/live-connectors-<name>.json`
+- `corpus/expected/real-corpus-results.json`
 
-- `release-input.json` is tracked, so committing the `ci` block creates a new
-  HEAD that the recorded run never tested, and the criterion stays FAIL at every
-  commit that carries the record.
+A file renamed into one of these paths still lists its old path, so it fails.
+The relation found is recorded under `recordedCommits` in
+`test-results/operations/status.json`.
+
+Committing the record, stated plainly:
+
+- Commit the `ci` block and its Status row on their own, after the run. Any
+  other change after the certified commit fails the criterion until a new
+  hosted run certifies the new commit.
 - Never hide the edit (`git update-index --assume-unchanged` or
   `--skip-worktree`), and never run with a dirty tree to force a pass: that
   certifies an input the hosted run never saw.
-- Until the release checker accepts a record committed after the run it
-  certifies, record the green run's URL and commit in the Status row and leave
-  the Result UNVERIFIED.

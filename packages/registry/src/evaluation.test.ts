@@ -398,6 +398,67 @@ describe('CRT-QA-02-A and CRT-QA-03-A: the gold corpus, its thresholds and its r
     expect(await readdir(join(repo, 'corpus/private-local/threads'))).toEqual([imported.threadRef + '.json']);
   }, 120000);
 
+  /** A thread whose messages carry the decoded body.text shape. */
+  const thread = (id: string, bodies: string[]) => ({ id, messages: bodies.map((text, i) => (
+    { id: id + '-msg-' + (i + 1), threadId: id, payload: { headers: [], body: { text } } })) });
+  const importBodies = async (repo: string, id: string, bodies: string[]) => {
+    const source = join(repo, id + '.json');
+    await writeFile(source, JSON.stringify(thread(id, bodies)));
+    return importGmailThread(repo, source);
+  };
+
+  it('annotate splits a message body over 4,000 characters into line-aligned spans of at most 4,000 characters', async () => {
+    const repo = await repository();
+    const id = 'thr-annotate-long';
+    const bodies = ['Short body.', ('x'.repeat(149) + '\n').repeat(63), '', 'a'.repeat(3999) + '\u{1F600}' + 'b'.repeat(4001),
+      'c'.repeat(4000), 'd'.repeat(4001)];
+    const imported = await importBodies(repo, id, bodies);
+    const cli = run(repo, ['corpus', 'annotate', '--thread', imported.threadRef]);
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(JSON.parse(cli.stdout.trim())).toMatchObject({ result: 'PASS', created: true });
+    const path = join(repo, 'corpus/private-local/annotations', imported.threadRef + '.json');
+    const spans = corpusAnnotationSchema.parse(JSON.parse(await readFile(path, 'utf8'))).labelledSourceSpans;
+    expect(spans.map(span => span.spanRef)).toEqual(['m1', 'm2.1', 'm2.2', 'm2.3', 'm4.1', 'm4.2', 'm4.3', 'm5', 'm6.1', 'm6.2']);
+    const m = (n: number) => id + '-msg-' + n;
+    expect(spans.map(span => [span.messageExternalId, span.start, span.end])).toEqual([
+      [m(1), 0, 11], [m(2), 0, 3900], [m(2), 3900, 7800], [m(2), 7800, 9450], [m(4), 0, 3999], [m(4), 3999, 7999], [m(4), 7999, 8002],
+      [m(5), 0, 4000], [m(6), 0, 4000], [m(6), 4000, 4001]]);
+    const parsed = parseSourcePayload('GMAIL', thread(id, bodies));
+    for (const span of spans) {
+      const body = String(parsed.find(item => item.externalId === span.messageExternalId)?.content['body']);
+      expect(span.quote).toBe(body.slice(span.start, span.end));
+      expect(span.quote.length).toBeLessThanOrEqual(4000);
+      expect(span.quote).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    }
+    for (const item of parsed) {
+      expect(spans.filter(span => span.messageExternalId === item.externalId).map(span => span.quote).join(''))
+        .toBe(String(item.content['body']));
+    }
+    const again = await annotateThread(repo, 'REAL', imported.threadRef);
+    expect(again.created).toBe(false);
+    expect(await readFile(path, 'utf8')).toBe(JSON.stringify(JSON.parse(await readFile(path, 'utf8')), null, 2) + '\n');
+  }, 120000);
+
+  it('annotate refuses a thread it cannot label, with a stable code, and writes nothing', async () => {
+    const repo = await repository();
+    const big = 'f'.repeat(200000);
+    const cap = await importBodies(repo, 'thr-annotate-cap', Array(10).fill(big));
+    const created = await annotateThread(repo, 'REAL', cap.threadRef);
+    const spans = corpusAnnotationSchema.parse(JSON.parse(await readFile(created.path, 'utf8'))).labelledSourceSpans;
+    expect(spans).toHaveLength(500);
+    expect(spans[499]?.spanRef).toBe('m10.50');
+    const over = await importBodies(repo, 'thr-annotate-over', [...Array(10).fill(big), 'g']);
+    const cli = run(repo, ['corpus', 'annotate', '--thread', over.threadRef]);
+    expect(cli.status).toBe(1);
+    expect(cli.stderr).toContain('"code":"CORPUS_THREAD_TOO_LARGE"');
+    expect(cli.stderr).not.toContain('REGISTRY_COMMAND_FAILED');
+    const empty = await importBodies(repo, 'thr-annotate-empty', ['', '']);
+    await expect(annotateThread(repo, 'REAL', empty.threadRef)).rejects.toThrow('CORPUS_THREAD_EMPTY');
+    await writeFile(join(repo, 'corpus/private-local/threads/gmail-00000000000000ff.json'), '{"id":');
+    await expect(annotateThread(repo, 'REAL', 'gmail-00000000000000ff')).rejects.toThrow('CORPUS_SOURCE_INVALID');
+    expect(await readdir(join(repo, 'corpus/private-local/annotations'))).toEqual([cap.threadRef + '.json']);
+  }, 120000);
+
   it('records real-corpus results as counts only, and verify requires ten threads and every rule at its version', async () => {
     const repo = await repository();
     // Stand-in real threads for this throwaway repository only: the committed
