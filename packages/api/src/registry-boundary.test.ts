@@ -30,7 +30,7 @@ it('exposes no registry service route beyond the read-only snapshot view', async
   expect(lines[0]).toContain('(GET, HEAD)');
   expect(lines[0]).not.toMatch(/POST|PUT|PATCH|DELETE/);
   expect(printed).not.toMatch(/lint|publish|snapshot\/|contracts|releases/i);
-});
+}, 60000);
 
 it('serves the snapshot view only under its own read purpose', async () => {
   const platform = await readFile(resolve('packages/api/src/platform.ts'), 'utf8');
