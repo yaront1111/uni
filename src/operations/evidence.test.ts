@@ -18,15 +18,19 @@ it('requires every local end-to-end file to have only passed cases',()=>{
 });
 
 it('accepts only a complete coordinated recovery receipt and rejects database-only evidence',()=>{
-  const valid={format:'unai-coordinated-roundtrip/1',result:'PASS',executedAt:'2026-09-19T12:00:00.000Z',emptyTarget:true,
-    archiveRef:'test-results/operations/coordinated-backup.aesgcm',archiveDigest:'a'.repeat(64),objectsRestored:1,
-    keyRecoveryVerified:true,acceptanceAnswersRegenerated:true,
+  const valid={format:'unai-coordinated-roundtrip/2',archiveFormat:'uai-backup/1',result:'PASS',executedAt:'2026-09-19T12:00:00.000Z',emptyTarget:true,
+    archiveRef:'test-results/operations/coordinated-backup.tar.enc',archiveDigest:'a'.repeat(64),objectsRestored:1,
+    keyRecoveryVerified:true,wrongKeyRefused:true,tamperRefused:true,acceptanceAnswersRegenerated:true,
     fixtures:Array.from({length:20},(_,i)=>({id:'AC44.'+String(i+1).padStart(2,'0'),sourceDigest:'b'.repeat(64),restoredDigest:'b'.repeat(64)}))};
   expect(recoveryEvidence(valid)?.restore.result).toBe('PASS');
   for(const change of [{objectsRestored:0},{emptyTarget:false},{keyRecoveryVerified:false},{acceptanceAnswersRegenerated:false},
+    {format:'unai-coordinated-roundtrip/1'},{archiveFormat:'uai-backup/2'},{wrongKeyRefused:false},{tamperRefused:false},
     {fixtures:valid.fixtures.slice(1)},{fixtures:[...valid.fixtures.slice(1),valid.fixtures[1]]},
     {fixtures:valid.fixtures.map((f,i)=>i?f:{...f,restoredDigest:'c'.repeat(64)})}])
     expect(recoveryEvidence({...valid,...change})).toBeNull();
+  for(const field of ['archiveFormat','wrongKeyRefused','tamperRefused'] as const){
+    const {[field]:_,...missing}=valid;expect(recoveryEvidence(missing)).toBeNull();
+  }
   expect(recoveryEvidence({format:'unai-database-roundtrip/1',result:'PASS'})).toBeNull();
 });
 

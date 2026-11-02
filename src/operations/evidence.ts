@@ -23,8 +23,8 @@ export function localEndToEndPassed(report:TestReport):boolean{
 export function recoveryEvidence(input:unknown):{restore:OperationsReport['restore'];execution:NonNullable<OperationsReport['procedures'][number]['execution']>}|null{
   if(!input||typeof input!=='object')return null;
   const row=input as Record<string,unknown>;
-  if(row['format']!=='unai-coordinated-roundtrip/1'||row['result']!=='PASS'||row['emptyTarget']!==true
-    ||row['keyRecoveryVerified']!==true||row['acceptanceAnswersRegenerated']!==true
+  if(row['format']!=='unai-coordinated-roundtrip/2'||row['archiveFormat']!=='uai-backup/1'||row['result']!=='PASS'||row['emptyTarget']!==true
+    ||row['keyRecoveryVerified']!==true||row['wrongKeyRefused']!==true||row['tamperRefused']!==true||row['acceptanceAnswersRegenerated']!==true
     ||typeof row['objectsRestored']!=='number'||row['objectsRestored']<1
     ||typeof row['executedAt']!=='string'||!Number.isFinite(Date.parse(row['executedAt'])))return null;
   const parsed=operationsReportSchema.shape.restore.safeParse({result:'PASS',emptyEnvironment:true,objectsRestored:true,keyRecoveryVerified:true,

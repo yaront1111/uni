@@ -1,5 +1,5 @@
 import {spawnSync} from 'node:child_process';
-import {createHash,randomBytes,randomUUID,createCipheriv,createDecipheriv} from 'node:crypto';
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {mkdir,writeFile,readFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve,relative,isAbsolute} from 'node:path';
@@ -9,11 +9,13 @@ import {compareAcceptanceReads} from './recovery-acceptance.mjs';
 import {verifyEvidenceObjects} from './recovery-evidence-objects.mjs';
 import {startStorageHarness} from './storage-harness.mjs';
 import {POSTGRES_IMAGE} from './postgres-harness.mjs';
+import {DUMP_PART_BYTES,createArchiveWriter,readArchive,readBackupKey,tableDigests,verifyArchive} from './lib/backup-archive.mjs';
 const {Pool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg');
 
 /** All writers have stopped before this coordinated logical test backup. Source
- * KMS decrypts object bytes into an encrypted archive; an independent target KMS
- * re-encrypts them after separate backup-key recovery. Never a production tool. */
+ * KMS decrypts object bytes into a uai-backup/1 archive (scripts/lib/backup-archive.mjs);
+ * an independent target KMS re-encrypts them after separate backup-key recovery.
+ * Never a production tool. */
 export async function databaseRoundtrip(container,sourceUrl,storageEnv,sourceEvidence){
   if(container&&!/^unai-test-[a-f0-9-]{36}$/.test(container))throw new Error('BACKUP_TEST_CONTAINER_REQUIRED');
   const target='unai_restore_'+randomUUID().replaceAll('-','');
@@ -42,19 +44,36 @@ export async function databaseRoundtrip(container,sourceUrl,storageEnv,sourceEvi
   };
   const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
   const quoted=name=>'"'+name.replaceAll('"','""')+'"';
-  async function snapshot(pool){
-    const tables=(await pool.query("SELECT schemaname,tablename FROM pg_tables WHERE schemaname IN ('public','unai_private') ORDER BY schemaname,tablename")).rows;
-    const rows=[];
-    for(const t of tables){
-      const content=(await pool.query('SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),\'[]\'::jsonb)::text AS content FROM '
-        +quoted(t.schemaname)+'.'+quoted(t.tablename)+' t')).rows[0].content;
-      rows.push({table:t.schemaname+'.'+t.tablename,digest:hash(content),rows:JSON.parse(content).length});
-    }
-    return rows;
+  // Streaming digests in one snapshot. `legacy` also recomputes the old jsonb_agg
+  // formula once and requires equal digests, so earlier reports stay comparable.
+  async function snapshot(pool,legacy=false){
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+      const digests=await tableDigests(client);
+      if(legacy){
+        const tables=(await client.query("SELECT schemaname,tablename FROM pg_tables WHERE schemaname IN ('public','unai_private') ORDER BY schemaname,tablename")).rows;
+        const rows=[];
+        for(const t of tables){
+          const content=(await client.query('SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),\'[]\'::jsonb)::text AS content FROM '
+            +quoted(t.schemaname)+'.'+quoted(t.tablename)+' t')).rows[0].content;
+          rows.push({table:t.schemaname+'.'+t.tablename,digest:hash(content),rows:JSON.parse(content).length});
+        }
+        if(JSON.stringify(rows)!==JSON.stringify(digests))throw new Error('BACKUP_TABLE_DIGEST_MISMATCH');
+      }
+      await client.query('COMMIT');
+      return digests;
+    }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
+    finally{client.release();}
   }
+  const layout=()=>new Error('BACKUP_ARCHIVE_LAYOUT_INVALID');
+  const refused=async(run,code)=>{
+    try{await run();}catch(error){if(error.message===code)return true;}
+    throw new Error('RECOVERY_NEGATIVE_CHECK_FAILED');
+  };
   let created=false,targetStorage,keyDirectory;
   try{
-    const before=await snapshot(sourcePool);
+    const before=await snapshot(sourcePool,true);
     if(!before.length)throw new Error('BACKUP_SOURCE_EMPTY');
     const dump=command('pg_dump',['--username='+decodeURIComponent(source.username),'--dbname='+source.pathname.slice(1),'--format=custom']);
     const objects=await snapshotObjects(storageEnv);
@@ -64,30 +83,62 @@ export async function databaseRoundtrip(container,sourceUrl,storageEnv,sourceEvi
       JOIN source_items s ON s.owner_scope_id=k.owner_scope_id AND s.id=k.source_item_id`)).rows;
     const realKeyRef='kms:'+storageEnv.UNAI_TEST_S3_KMS_KEY_ID;
     const verifiedObjects=verifyEvidenceObjects(mappings,objects,realKeyRef);
-    const payload=Buffer.from(JSON.stringify({database:dump.toString('base64'),objects}));
-    const key=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);
-    const archive=Buffer.concat([iv,Buffer.alloc(16),cipher.update(payload),cipher.final()]);cipher.getAuthTag().copy(archive,12);
+    const archivePath='test-results/operations/coordinated-backup.tar.enc';
     await mkdir('test-results/operations',{recursive:true});
-    const archivePath='test-results/operations/coordinated-backup.aesgcm';await writeFile(archivePath,archive);
+    for(const stale of [archivePath,archivePath+'.partial','test-results/operations/coordinated-backup.aesgcm'])await rm(stale,{force:true});
+    const key=randomBytes(32),entry=index=>'objects/'+String(index).padStart(6,'0');
+    const manifest={format:'uai-backup/1',createdAt:new Date().toISOString(),tables:before,
+      objects:objects.map((object,index)=>({entry:entry(index),key:object.key,sha256:object.digest}))};
+    const writer=await createArchiveWriter(archivePath,key);
+    let written;
+    try{
+      await writer.add('manifest.json',Buffer.from(JSON.stringify(manifest)));
+      for(let offset=0,part=0;offset<dump.length;offset+=DUMP_PART_BYTES,part++)
+        await writer.add('database.dump.'+String(part).padStart(6,'0'),dump.subarray(offset,offset+DUMP_PART_BYTES));
+      for(const [index,object] of objects.entries())await writer.add(entry(index),Buffer.from(object.bytes,'base64'));
+      written=await writer.finish();
+    }catch(error){await writer.abort().catch(()=>{});throw error;}
     keyDirectory=await mkdtemp(join(tmpdir(),'unai-recovery-key-'));
-    await writeFile(join(keyDirectory,'backup-key'),key,{mode:0o600});key.fill(0);payload.fill(0);dump.fill(0);
+    await writeFile(join(keyDirectory,'backup-key'),key,{mode:0o600});key.fill(0);dump.fill(0);
     // Independent recovery path: read the saved artifact and key; no source key
     // object, plaintext dump or source storage access is used by the restorer.
-    const saved=await readFile(archivePath),recoveredKey=await readFile(join(keyDirectory,'backup-key'));
-    const decipher=createDecipheriv('aes-256-gcm',recoveredKey,saved.subarray(0,12));decipher.setAuthTag(saved.subarray(12,28));
-    const clear=Buffer.concat([decipher.update(saved.subarray(28)),decipher.final()]);recoveredKey.fill(0);
-    const recovery=JSON.parse(clear.toString('utf8'));clear.fill(0);
+    const recoveredKey=await readBackupKey(join(keyDirectory,'backup-key'),{outside:['test-results']});
+    const wrongKeyRefused=await refused(()=>readArchive(archivePath,randomBytes(32),()=>{throw layout();}),'BACKUP_KEY_INVALID');
+    const tampered=join(keyDirectory,'tampered.tar.enc'),copy=await readFile(archivePath);
+    copy[Math.floor((34+copy.length-16)/2)]^=0xff;await writeFile(tampered,copy,{mode:0o600});
+    const tamperRefused=await refused(()=>verifyArchive(tampered,recoveredKey),'BACKUP_ARCHIVE_INTEGRITY_FAILED');
+    await rm(tampered,{force:true});
+    // Entries are untrusted until readArchive resolves: collect, then apply.
+    let manifestBytes=null;const parts=[],stored=new Map();
+    const read=await readArchive(archivePath,recoveredKey,({name,bytes})=>{
+      if(manifestBytes===null){if(name!=='manifest.json')throw layout();manifestBytes=bytes;}
+      else if(!stored.size&&name==='database.dump.'+String(parts.length).padStart(6,'0'))parts.push(bytes);
+      else if(name.startsWith('objects/')&&!stored.has(name))stored.set(name,bytes);
+      else throw layout();
+    });
+    recoveredKey.fill(0);
+    if(read.sha256!==written.sha256)throw new Error('BACKUP_ARCHIVE_DIGEST_MISMATCH');
+    let recovered;
+    try{recovered=JSON.parse(manifestBytes.toString('utf8'));}catch{throw layout();}
+    if(recovered.format!=='uai-backup/1'||!Array.isArray(recovered.objects)||recovered.objects.length!==stored.size)throw layout();
+    const recoveredObjects=recovered.objects.map(object=>{
+      const bytes=stored.get(object.entry);
+      if(!bytes||hash(bytes)!==object.sha256)throw new Error('BACKUP_OBJECT_DIGEST_MISMATCH');
+      return {key:object.key,digest:object.sha256,bytes:bytes.toString('base64')};
+    });
+    const recoveredDump=Buffer.concat(parts);for(const part of parts)part.fill(0);
     await sourcePool.query('CREATE DATABASE '+target);created=true;
     if((await snapshot(restoredPool)).length!==0)throw new Error('RESTORE_TARGET_NOT_EMPTY');
-    command('pg_restore',['--username='+decodeURIComponent(source.username),'--dbname='+target,'--exit-on-error','--single-transaction'],Buffer.from(recovery.database,'base64'));
+    command('pg_restore',['--username='+decodeURIComponent(source.username),'--dbname='+target,'--exit-on-error','--single-transaction'],recoveredDump);
+    recoveredDump.fill(0);
     const after=await snapshot(restoredPool);
-    if(JSON.stringify(before)!==JSON.stringify(after))throw new Error('RESTORED_DATABASE_MISMATCH');
+    if(JSON.stringify(before)!==JSON.stringify(after)||JSON.stringify(recovered.tables)!==JSON.stringify(before))throw new Error('RESTORED_DATABASE_MISMATCH');
     targetStorage=await startStorageHarness();
-    const objectCount=await restoreObjects({...process.env,...targetStorage.env},recovery.objects);
+    const objectCount=await restoreObjects({...process.env,...targetStorage.env},recoveredObjects);
     const fixtures=await compareAcceptanceReads(sourceUrl,restored.href);
-    const report={...sourceEvidence,format:'unai-coordinated-roundtrip/1',executedAt:new Date().toISOString(),environment:'TEST',result:'PASS',
-      emptyTarget:true,archiveRef:archivePath,archiveDigest:hash(saved),tables:before,objectsRestored:objectCount,
-      keyRecoveryVerified:true,...verifiedObjects,acceptanceAnswersRegenerated:true,comparatorVersion:'recovery-output-v1',
+    const report={...sourceEvidence,format:'unai-coordinated-roundtrip/2',archiveFormat:'uai-backup/1',executedAt:new Date().toISOString(),environment:'TEST',result:'PASS',
+      emptyTarget:true,archiveRef:archivePath,archiveDigest:written.sha256,tables:before,objectsRestored:objectCount,
+      keyRecoveryVerified:true,wrongKeyRefused,tamperRefused,...verifiedObjects,acceptanceAnswersRegenerated:true,comparatorVersion:'recovery-output-v1',
       fixtureScope:'Fresh Today/Ask/Why reads of terminal persisted states from the existing passing AC44 suites; no fixture reseeding after restore.',fixtures};
     await writeFile('test-results/operations/coordinated-roundtrip.json',JSON.stringify(report,null,2)+'\n');
     console.log('Coordinated backup/restore: '+before.length+' tables, '+objectCount+' objects and '+fixtures.length+' fixture read digest pairs identical.');

@@ -31,7 +31,7 @@ async function main(){
   if(suiteVerified){
     try{
       const receipt=await json('test-results/operations/coordinated-roundtrip.json');
-      if(receipt.sourceCommit===current.sourceCommit&&receipt.workspaceDigest===current.workspaceDigest&&receipt.archiveRef==='test-results/operations/coordinated-backup.aesgcm'
+      if(receipt.sourceCommit===current.sourceCommit&&receipt.workspaceDigest===current.workspaceDigest&&receipt.archiveRef==='test-results/operations/coordinated-backup.tar.enc'
         &&createHash('sha256').update(await readFile(receipt.archiveRef)).digest('hex')===receipt.archiveDigest
         &&Date.parse(receipt.executedAt)<=Date.parse(completedAt))recovery=recoveryEvidence(receipt);
     }catch{/* Missing or corrupt archive remains unverified. */}
