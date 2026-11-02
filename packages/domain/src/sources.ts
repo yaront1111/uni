@@ -14,7 +14,7 @@ import {z} from 'zod';
  */
 
 export const sourceAnchorKindSchema = z.enum([
-  'MESSAGE_SPAN', 'DOCUMENT_RANGE', 'CALENDAR_FIELD', 'CONNECTOR_JSON_PATH', 'GITHUB_COMMENT',
+  'MESSAGE_SPAN', 'DOCUMENT_RANGE', 'CALENDAR_FIELD', 'CONNECTOR_JSON_PATH', 'GITHUB_COMMENT', 'TRANSCRIPT_SEGMENT',
 ]);
 export type SourceAnchorKind = z.infer<typeof sourceAnchorKindSchema>;
 
@@ -39,7 +39,7 @@ export const parsedSourceItemSchema = z.strictObject({
 });
 export type ParsedSourceItem = z.infer<typeof parsedSourceItemSchema>;
 
-export const parsedSourceTypeSchema = z.enum(['CONVERSATION', 'GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT']);
+export const parsedSourceTypeSchema = z.enum(['CONVERSATION', 'GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT', 'OMI']);
 export type ParsedSourceType = z.infer<typeof parsedSourceTypeSchema>;
 
 const externalId = z.string().min(1).max(512);
@@ -71,6 +71,41 @@ export const gmailThreadSchema = z.object({
   id: externalId,
   messages: z.array(gmailMessageSchema).min(1).max(512),
 });
+
+// --- Omi recorded conversation (ADR 0041 D3) -------------------------------
+const omiSpeakerIdSchema = z.union([z.number().int(), z.string().max(64)]).nullish();
+export const omiConversationSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9._-]{1,256}$/),
+  created_at: z.string().min(1).max(64),
+  started_at: z.string().max(64).nullish(),
+  finished_at: z.string().max(64).nullish(),
+  language: z.string().max(32).nullish(),
+  source: z.string().max(64).nullish(),
+  structured: z.object({
+    title: z.string().max(4096).nullish(),
+    overview: z.string().max(20000).nullish(),
+    category: z.string().max(64).nullish(),
+    action_items: z.array(z.object({
+      description: z.string().max(4096), due_at: z.string().max(64).nullish(),
+    })).max(256).nullish(),
+    events: z.array(z.object({
+      title: z.string().max(4096), start: z.string().max(64).nullish(), duration: z.number().int().nullish(),
+    })).max(64).nullish(),
+  }).nullish(),
+  transcript_segments: z.array(z.object({
+    id: z.string().max(256).nullish(),
+    text: z.string().max(8192),
+    original_text: z.string().max(8192).nullish(),
+    speaker_id: omiSpeakerIdSchema,
+    speaker_name: z.string().max(256).nullish(),
+    start: z.number().min(0), end: z.number().min(0),
+  })).max(2048).nullish(),
+  participants: z.array(z.object({
+    speaker_id: omiSpeakerIdSchema, person_id: z.string().max(256).nullish(), is_user: z.boolean().optional(),
+  })).max(64).optional(),
+  participants_included: z.boolean().optional(),
+});
+export type OmiConversation = z.infer<typeof omiConversationSchema>;
 
 // --- First-party conversation ----------------------------------------------
 /** Every message of a conversation, whoever said it. PRD §27.5 makes first-party
@@ -554,12 +589,104 @@ function parseUploadedDocument(payload: unknown): ParsedSourceItem[] {
   })];
 }
 
+/** ADR 0041 D3: require an offset; never infer the machine's local time zone. */
+function offsetInstant(value: string | null | undefined): string | null {
+  if (value == null || !/(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function omiSpeakerRole(conversation: OmiConversation, speakerId: string | null): 'OWNER' | 'OTHER' | 'UNKNOWN' {
+  if (conversation.participants_included !== true || speakerId === null) return 'UNKNOWN';
+  const matches = (conversation.participants ?? []).filter(participant =>
+    participant.speaker_id != null && String(participant.speaker_id) === speakerId);
+  if (matches.length === 0) return 'UNKNOWN';
+  if (matches.every(participant => participant.is_user === true)) return 'OWNER';
+  return matches.every(participant => participant.is_user !== true) ? 'OTHER' : 'UNKNOWN';
+}
+
+// ADR 0041 D3-D5: EXTERNAL speech and ASSISTANT summaries have distinct actors.
+// Derived roles live in metadata/anchors, never content identity. Anchor start/end
+// are character offsets; startSeconds/endSeconds retain the recording offsets.
+function omiTranscriptItem(conversation: OmiConversation): ParsedSourceItem {
+  const participantsIncluded = conversation.participants_included === true;
+  const segments = (conversation.transcript_segments ?? []).map((segment, index) => ({
+    index, segmentId: segment.id ?? null, speakerId: segment.speaker_id == null ? null : String(segment.speaker_id),
+    speakerName: segment.speaker_name ?? null, startSeconds: segment.start, endSeconds: segment.end,
+    text: segment.text, originalText: segment.original_text ?? null,
+  }));
+  const roles = segments.map(segment => omiSpeakerRole(conversation, segment.speakerId));
+  return parsedSourceItemSchema.parse({
+    sourceType: 'OMI', externalId: 'omi:conversation:' + conversation.id, parentExternalId: null,
+    actorRef: {type: 'EXTERNAL', id: 'omi:transcript'}, occurredAt: offsetInstant(conversation.started_at),
+    content: {
+      kind: 'OMI_TRANSCRIPT', conversationExternalId: conversation.id,
+      startedAt: offsetInstant(conversation.started_at), finishedAt: offsetInstant(conversation.finished_at),
+      language: conversation.language ?? null, participantsIncluded,
+      participants: participantsIncluded ? (conversation.participants ?? []).map(participant => ({
+        speakerId: participant.speaker_id == null ? null : String(participant.speaker_id),
+        personId: participant.person_id ?? null, isUser: participant.is_user === true,
+      })) : [],
+      segments,
+    },
+    deterministicMetadata: {
+      conversationExternalId: conversation.id, threadExternalId: 'omi:conversation:' + conversation.id,
+      createdAt: conversation.created_at, captureSource: conversation.source ?? null, providerApi: 'omi-developer-api-v1',
+      segmentCount: segments.length, segmentSpeakerRoles: roles,
+      ownerSegmentCount: roles.filter(role => role === 'OWNER').length,
+      otherSegmentCount: roles.filter(role => role === 'OTHER').length,
+      unknownSegmentCount: roles.filter(role => role === 'UNKNOWN').length,
+      speakerRoleBasis: participantsIncluded ? 'PARTICIPANTS' : 'UNAVAILABLE',
+      durationSeconds: segments.length === 0 ? null
+        : Math.max(...segments.map(segment => segment.endSeconds)) - Math.min(...segments.map(segment => segment.startSeconds)),
+    },
+    anchors: segments.map((segment, index) => span('TRANSCRIPT_SEGMENT', {
+      conversationExternalId: conversation.id, segmentIndex: index,
+      speakerId: segment.speakerId, speakerName: segment.speakerName, speakerRole: roles[index],
+      startSeconds: segment.startSeconds, endSeconds: segment.endSeconds, start: 0, end: segment.text.length,
+    }, segment.text)),
+  });
+}
+
+function omiStructuredItem(conversation: OmiConversation, structured: NonNullable<OmiConversation['structured']>): ParsedSourceItem {
+  const actionItems = (structured.action_items ?? []).map(item => ({description: item.description, dueAt: offsetInstant(item.due_at)}));
+  const events = (structured.events ?? []).map(event => ({
+    title: event.title, start: offsetInstant(event.start), durationMinutes: event.duration ?? null,
+  }));
+  return parsedSourceItemSchema.parse({
+    sourceType: 'OMI', externalId: 'omi:conversation:' + conversation.id + ':structured',
+    parentExternalId: 'omi:conversation:' + conversation.id, actorRef: {type: 'ASSISTANT', id: 'omi:structured'}, occurredAt: null,
+    content: {
+      kind: 'OMI_STRUCTURED_SUMMARY', conversationExternalId: conversation.id,
+      title: structured.title ?? null, overview: structured.overview ?? null, category: structured.category ?? null,
+      actionItems, events,
+    },
+    deterministicMetadata: {
+      conversationExternalId: conversation.id, threadExternalId: 'omi:conversation:' + conversation.id,
+      providerApi: 'omi-developer-api-v1', actionItemCount: actionItems.length, eventCount: events.length,
+    },
+    anchors: [
+      span('CONNECTOR_JSON_PATH', {path: '$.structured.title'}, structured.title ?? null),
+      span('CONNECTOR_JSON_PATH', {path: '$.structured.overview'}, structured.overview ?? null),
+      ...actionItems.map((item, index) => span('CONNECTOR_JSON_PATH', {path: '$.structured.action_items[' + index + '].description'}, item.description)),
+    ],
+  });
+}
+
+function parseOmiConversation(payload: unknown): ParsedSourceItem[] {
+  const conversation = omiConversationSchema.parse(payload);
+  const items = [omiTranscriptItem(conversation)];
+  if (conversation.structured != null) items.push(omiStructuredItem(conversation, conversation.structured));
+  return items;
+}
+
 const parsers: Record<ParsedSourceType, (payload: unknown) => ParsedSourceItem[]> = {
   CONVERSATION: parseConversation,
   GMAIL: parseGmailThread,
   GOOGLE_CALENDAR: parseGoogleCalendarEvent,
   GITHUB: parseGithubIssueThread,
   DOCUMENT: parseUploadedDocument,
+  OMI: parseOmiConversation,
 };
 
 export function parseSourcePayload(sourceType: string, payload: unknown): ParsedSourceItem[] {

@@ -14,7 +14,7 @@ import { lifeCategorySchema } from './context.js';
  */
 
 export const capabilityIdSchema = z.string().regex(/^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}$/);
-export const connectorTypeSchema = z.enum(['CONVERSATION', 'GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT']);
+export const connectorTypeSchema = z.enum(['CONVERSATION', 'GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT', 'OMI']);
 export type ConnectorType = z.infer<typeof connectorTypeSchema>;
 
 /** The lifecycle the Connected sources screen draws. `TOKEN_REVOKED` is the

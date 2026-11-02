@@ -42,9 +42,9 @@ export const publicDeviceSchema=registerDeviceSchema.extend({id:z.uuid(),lastSee
 export type PublicDevice=z.infer<typeof publicDeviceSchema>;
 export {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,type EvidenceInput,type PublicEvidence} from './evidence.js';
 export {sourceAnchorKindSchema,parsedSourceAnchorSchema,parsedSourceItemSchema,parsedSourceTypeSchema,
-  conversationSchema,gmailThreadSchema,googleCalendarEventSchema,githubIssueThreadSchema,uploadedDocumentSchema,
+  conversationSchema,gmailThreadSchema,omiConversationSchema,googleCalendarEventSchema,githubIssueThreadSchema,uploadedDocumentSchema,
   parseSourcePayload,SourcePayloadInvalid,
-  type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType} from './sources.js';
+  type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType,type OmiConversation} from './sources.js';
 export {registryVersionSchema,registryContentHashSchema,registryContractKindSchema,publicRegistryContractSchema,
   loadedRegistryReleaseSchema,registrySnapshotViewSchema,registryLintIssueSchema,registryLintedReleaseSchema,
   registryLintReportSchema,registryMigrationStatusSchema,

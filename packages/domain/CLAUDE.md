@@ -19,7 +19,7 @@ Consumers are `@unai/postgres` (`requestContextSchema`, `auditEventSchema` insid
 
 ## Source parsers (`sources.ts`)
 
-`parseSourcePayload(sourceType, payload)` is the only entry point; the per-source functions are private and dispatched through the `parsers` record keyed by `parsedSourceTypeSchema` (`GMAIL`, `GOOGLE_CALENDAR`, `GITHUB`, `DOCUMENT`). An unknown type, a raw payload that fails its schema, or an item that fails `parsedSourceItemSchema` all become `SourcePayloadInvalid`, whose message is always `SOURCE_PAYLOAD_INVALID` and which carries only `sourceType`. Never attach the Zod error or payload fragments to it; `sources.test.ts` checks that rejected values are not echoed.
+`parseSourcePayload(sourceType, payload)` is the only entry point; the per-source functions are private and dispatched through the `parsers` record keyed by `parsedSourceTypeSchema` (`GMAIL`, `GOOGLE_CALENDAR`, `GITHUB`, `DOCUMENT`, `OMI`). An unknown type, a raw payload that fails its schema, or an item that fails `parsedSourceItemSchema` all become `SourcePayloadInvalid`, whose message is always `SOURCE_PAYLOAD_INVALID` and which carries only `sourceType`. Never attach the Zod error or payload fragments to it; `sources.test.ts` checks that rejected values are not echoed.
 
 The raw connector schemas (`gmailThreadSchema` and the others) are the one intentional exception to `strictObject`: they use `z.object` so unknown provider fields are stripped, and `sources.test.ts` asserts that an added field leaves the parsed output unchanged. Parsers read only the payload. `instant()` returns null for an unparseable time and never falls back to the current clock, and `span()` truncates `normalizedText` to 8192 characters.
 
