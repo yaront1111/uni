@@ -271,6 +271,80 @@ it('reduces pathological HTML in linear time', () => {
   expect('bodyTruncated' in comments.deterministicMetadata).toBe(false);
 });
 
+function headerItems(headers: readonly unknown[]) {
+  return parseSourcePayload('GMAIL', {id: 'thread-headers', messages: [{
+    id: 'msg-headers', threadId: 'thread-headers',
+    payload: {headers, mimeType: 'text/plain', body: {data: 'Ym9keQ'}},
+  }]});
+}
+
+function expectedHeaderItems(values: {
+  subject?: string; from?: string; to?: string; cc?: string; inReplyTo?: string;
+}, truncated = false, actor = values.from ?? null) {
+  return [{
+    sourceType: 'GMAIL', externalId: 'msg-headers', parentExternalId: 'thread-headers',
+    actorRef: actor ? {type: 'EXTERNAL', id: actor} : null, occurredAt: null,
+    content: {messageExternalId: 'msg-headers', threadExternalId: 'thread-headers',
+      from: values.from ?? null, to: values.to ?? null, cc: values.cc ?? null,
+      subject: values.subject ?? null, body: 'body'},
+    deterministicMetadata: {threadExternalId: 'thread-headers', threadPosition: 0,
+      inReplyTo: values.inReplyTo ?? null, labelIds: [], ...(truncated ? {headersTruncated: true} : {})},
+    anchors: [
+      {kind: 'MESSAGE_SPAN', anchor: {messageExternalId: 'msg-headers', field: 'body', start: 0, end: 4}, normalizedText: 'body'},
+      {kind: 'CONNECTOR_JSON_PATH', anchor: {path: '$.messages[0].payload.headers[name=Subject].value'},
+        normalizedText: values.subject ?? null},
+    ],
+  }];
+}
+
+it('cuts a header value over 8,192 code units at a code-point boundary and records the cut', () => {
+  for (const [value, subject, truncated] of [
+    ['a'.repeat(8192), 'a'.repeat(8192), false],
+    ['a'.repeat(8193), 'a'.repeat(8192), true],
+    ['a'.repeat(8191) + '\u{1F600}', 'a'.repeat(8191), true],
+  ] as const) {
+    const items = headerItems([{name: 'Subject', value}]);
+    // Compare the long strings separately to avoid a pathological reporter diff.
+    expect(items[0]!.content.subject === subject).toBe(true);
+    expect(items[0]!.anchors[1]!.normalizedText === subject).toBe(true);
+    items[0]!.content.subject = 'checked';
+    items[0]!.anchors[1]!.normalizedText = 'checked';
+    expect(items).toEqual(expectedHeaderItems({subject: 'checked'}, truncated));
+  }
+});
+
+it('ignores a header whose name is over 128 code units', () => {
+  expect(headerItems([{name: 'X-' + 'a'.repeat(126), value: 'ignored'}]))
+    .toEqual(expectedHeaderItems({}));
+  expect(headerItems([{name: 'X-' + 'a'.repeat(127), value: 'ignored'}]))
+    .toEqual(expectedHeaderItems({}, true));
+});
+
+it('reads at most 256 headers and never validates the rest', () => {
+  const filler = {name: 'X-Filler', value: 'ignored'};
+  const subject = {name: 'Subject', value: 'Visible'};
+  expect(headerItems([...Array.from({length: 255}, () => filler), subject]))
+    .toEqual(expectedHeaderItems({subject: 'Visible'}));
+  expect(headerItems([...Array.from({length: 256}, () => filler), subject]))
+    .toEqual(expectedHeaderItems({}, true));
+  expect(headerItems([...Array.from({length: 256}, () => filler), {name: 5}]))
+    .toEqual(expectedHeaderItems({}, true));
+});
+
+it('keeps header values storable: U+0000 becomes U+FFFD and actorRef never splits a surrogate pair', () => {
+  expect(headerItems([
+    {name: 'Subject', value: 'a\u0000b'}, {name: 'From', value: 'Nul\u0000 <nul@example.test>'},
+    {name: 'To', value: 'to\u0000@example.test'}, {name: 'Cc', value: 'cc\u0000@example.test'},
+    {name: 'In-Reply-To', value: '<root\u0000@example.test>'},
+  ])).toEqual(expectedHeaderItems({subject: 'a\uFFFDb', from: 'Nul\uFFFD <nul@example.test>',
+    to: 'to\uFFFD@example.test', cc: 'cc\uFFFD@example.test', inReplyTo: '<root\uFFFD@example.test>'}));
+  const from = 'a'.repeat(511) + '\u{1F600}' + ' <x@example.test>';
+  expect(headerItems([{name: 'From', value: from}]))
+    .toEqual(expectedHeaderItems({from}, false, 'a'.repeat(511)));
+  expect(headerItems([{name: 'From', value: 'a'.repeat(512)}]))
+    .toEqual(expectedHeaderItems({from: 'a'.repeat(512)}));
+});
+
 it('CRT-EVD-04-B: parses each Google Calendar occurrence with the payload recurrence id', async () => {
   const items = parseSourcePayload('GOOGLE_CALENDAR', await fixture('google-calendar-recurring-event'));
   expect(items).toHaveLength(3);

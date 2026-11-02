@@ -46,7 +46,7 @@ const externalId = z.string().min(1).max(512);
 const text = z.string().max(200000);
 
 // --- Gmail -----------------------------------------------------------------
-const gmailHeaderSchema = z.object({name: z.string().min(1).max(128), value: z.string().max(8192)});
+const gmailHeaderSchema = z.object({name: z.string().min(1), value: z.string()});
 const gmailMessageSchema = z.object({
   id: externalId,
   threadId: externalId,
@@ -54,7 +54,8 @@ const gmailMessageSchema = z.object({
   internalDate: z.string().regex(/^\d{1,16}$/).optional(),
   labelIds: z.array(z.string().max(128)).max(64).optional(),
   payload: z.object({
-    headers: z.array(gmailHeaderSchema).max(256),
+    // Read by gmailHeaders, which cuts instead of refusing.
+    headers: z.array(z.unknown()),
     /** `text` is the decoded body that fixtures, the synthetic corpus and the
      * metadata-only narrowing carry. The Gmail API never sends it: its
      * users.threads.get format=full resource carries base64url `data` here or in
@@ -323,14 +324,42 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+function storable(text: string): string {
+  return text.replace(/\u0000/g, '\uFFFD');
+}
+
+function codeUnitPrefix(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xD800 && last <= 0xDBFF ? max - 1 : max);
+}
+
 /** A decoded body made storable: U+0000 (which a PostgreSQL text column refuses)
  * becomes U+FFFD, and a body over MAX_BODY is cut, one unit earlier when the cut
  * would split a surrogate pair. Size never refuses a thread. */
 function boundedBody(text: string, truncated: boolean): {body: string; truncated: boolean} {
-  const body = text.replace(/\u0000/g, '\uFFFD');
-  if (body.length <= MAX_BODY) return {body, truncated};
-  const last = body.charCodeAt(MAX_BODY - 1);
-  return {body: body.slice(0, last >= 0xD800 && last <= 0xDBFF ? MAX_BODY - 1 : MAX_BODY), truncated: true};
+  const body = storable(text);
+  return body.length <= MAX_BODY ? {body, truncated} : {body: codeUnitPrefix(body, MAX_BODY), truncated: true};
+}
+
+const MAX_HEADERS = 256;
+const MAX_HEADER_NAME = 128;
+const MAX_HEADER_VALUE = 8192;
+const MAX_ACTOR_REF = 512;
+
+/** Sender-controlled bounds cut rather than make a thread a sync poison pill:
+ * read only the first 256 headers, drop names over 128 UTF-16 units, cut values
+ * to 8192 without splitting a pair. PostgreSQL text and jsonb refuse U+0000;
+ * jsonb also refuses a lone surrogate. Record size cuts, not NUL replacement. */
+function gmailHeaders(raw: readonly unknown[]): {headers: {name: string; value: string}[]; truncated: boolean} {
+  let truncated = raw.length > MAX_HEADERS;
+  const headers: {name: string; value: string}[] = [];
+  for (const entry of z.array(gmailHeaderSchema).parse(raw.slice(0, MAX_HEADERS))) {
+    if (entry.name.length > MAX_HEADER_NAME) { truncated = true; continue; }
+    if (entry.value.length > MAX_HEADER_VALUE) truncated = true;
+    headers.push({name: entry.name, value: storable(codeUnitPrefix(entry.value, MAX_HEADER_VALUE))});
+  }
+  return {headers, truncated};
 }
 
 /** A message's body: a present `payload.body.text` unchanged (the decoded shape,
@@ -347,15 +376,16 @@ function gmailBody(payload: GmailPart & {body?: {text?: string | undefined} | un
 
 function parseGmailThread(payload: unknown): ParsedSourceItem[] {
   const thread = gmailThreadSchema.parse(payload);
+  const bounded = thread.messages.map(message => gmailHeaders(message.payload.headers));
   // RFC 5322 Message-Id to Gmail message id, so a reply anchors to the message it
   // answers; a message whose parent is absent from the payload anchors to the thread.
   const byMessageId = new Map<string, string>();
-  for (const message of thread.messages) {
-    const id = header(message.payload.headers, 'Message-Id');
+  for (const [index, message] of thread.messages.entries()) {
+    const id = header(bounded[index]!.headers, 'Message-Id');
     if (id) byMessageId.set(id.toLowerCase(), message.id);
   }
   return thread.messages.map((message, index) => {
-    const headers = message.payload.headers;
+    const headers = bounded[index]!.headers;
     const inReplyTo = header(headers, 'In-Reply-To');
     const parent = inReplyTo ? byMessageId.get(inReplyTo.toLowerCase()) : undefined;
     const subject = header(headers, 'Subject');
@@ -365,7 +395,7 @@ function parseGmailThread(payload: unknown): ParsedSourceItem[] {
       sourceType: 'GMAIL',
       externalId: message.id,
       parentExternalId: parent && parent !== message.id ? parent : thread.id,
-      actorRef: from ? {type: 'EXTERNAL', id: from.slice(0, 512)} : null,
+      actorRef: from ? {type: 'EXTERNAL', id: codeUnitPrefix(from, MAX_ACTOR_REF)} : null,
       occurredAt: instant(message.internalDate) ?? instant(header(headers, 'Date')),
       content: {
         messageExternalId: message.id, threadExternalId: thread.id,
@@ -375,6 +405,7 @@ function parseGmailThread(payload: unknown): ParsedSourceItem[] {
         threadExternalId: thread.id, threadPosition: index,
         inReplyTo: inReplyTo ?? null, labelIds: message.labelIds ?? [],
         ...(truncated ? {bodyTruncated: true} : {}),
+        ...(bounded[index]!.truncated ? {headersTruncated: true} : {}),
       },
       anchors: [
         span('MESSAGE_SPAN', {messageExternalId: message.id, field: 'body', start: 0, end: body.length}, body),

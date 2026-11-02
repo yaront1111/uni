@@ -62,7 +62,7 @@ other two belong to `drafts-actions-permissions-export-and-deletion-workflow`.
 | `POST /v1/connectors` | `connector.manage` | `201` with the connector; `403 CONNECTOR_WRITE_SCOPE_REFUSED`; `409 CONNECTOR_ALREADY_CONNECTED` |
 | `GET /v1/connectors/{id}/capabilities` | `connector.read` | one row per manifest capability with its risk class |
 | `POST /v1/connectors/{id}/capabilities` | `connector.manage` | the resulting grant set; `403` for a write scope or an unknown capability |
-| `POST /v1/connectors/{id}/sync` | `connector.sync` | run id, resumed cursor, requested and stored sensitivity, items ingested, duplicates suppressed, episodes aggregated, new cursor; `409 CONNECTOR_INGESTION_STOPPED`; `403 CONNECTOR_SENSITIVITY_CEILING_TOO_LOW` |
+| `POST /v1/connectors/{id}/sync` | `connector.sync` | run id, resumed cursor, requested and stored sensitivity, items ingested, duplicates suppressed, episodes aggregated, new cursor, per-payload `refusals`; `409 CONNECTOR_INGESTION_STOPPED`; `403 CONNECTOR_SENSITIVITY_CEILING_TOO_LOW` |
 | `POST /v1/connectors/{id}/disconnect` | `connector.manage` | tokens revoked, secret destroyed, ingestion stopped, retained-evidence options |
 | `POST /v1/documents` | `evidence.ingest` | `201` with the stored, indexed receipt and the extraction plan with its reason |
 | `GET /v1/documents/search?q=` | `evidence.read` | bounded lexical hits over the owner's stored documents |
@@ -195,6 +195,17 @@ U+FFFD, because a PostgreSQL `text` column refuses it. Only `data` that is not
 valid base64url in the selected part refuses the thread, with
 `SOURCE_PAYLOAD_INVALID`, echoing nothing.
 
+**Headers.** Names and values are sender-controlled, so their bounds cut instead
+of refusing. Only a message's first 256 headers are read; the rest are neither
+read nor validated. A header whose name is over 128 UTF-16 code units is ignored.
+A value over 8,192 code units keeps its first 8,192, one fewer when the cut would
+split a surrogate pair. A message where any of these rules fired carries
+`deterministicMetadata.headersTruncated: true`; the key is absent otherwise.
+U+0000 in a kept header value becomes U+FFFD. `actorRef` keeps the first 512 code
+units of From without splitting a surrogate pair, while the content keeps the
+whole bounded From. PostgreSQL `text` refuses U+0000, and `jsonb` refuses both
+U+0000 and a lone surrogate.
+
 **Corpus import.** `pnpm uai corpus import --source <file>` takes the same JSON:
 the `users.threads.get` `format=full` response saved byte for byte. `.eml` files
 and Google Takeout `.mbox` files are refused with `CORPUS_SOURCE_INVALID`, and
@@ -211,10 +222,16 @@ therefore request `gmail.readonly` without `gmail.metadata` when content is
 granted. The manifests are unchanged, and no live account has confirmed the
 behaviour.
 
-**Still open.** A header over its bound (a value over 8,192 characters, or more
-than 256 headers) still refuses the whole thread. A parse failure during a sync
-answers 500 without advancing the cursor, so such a thread is retried on every
-sync.
+**A payload that does not parse.** During a sync of any connector type, a payload
+the parser refuses is listed in the result's `refusals` as
+`{externalRef, code: 'SOURCE_PAYLOAD_INVALID', capabilityId: null}`; for Gmail,
+`externalRef` is the thread id. That payload is skipped, the rest of the page is
+stored and the cursor advances, so an incremental sync does not retry it. A
+BACKFILL ignores the cursor and refuses it again. The refusal carries no payload
+text. Any other ingest failure, such as the database or object storage, still
+fails the whole run with 500 `INTERNAL_ERROR`: the run is rolled back and the
+cursor stays where it was. Continuing after a parse refusal is safe because
+ingestion parses the whole payload before it writes anything.
 
 ## What this node does not claim
 

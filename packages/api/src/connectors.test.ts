@@ -64,6 +64,7 @@ interface Harness {
   revocations: { connectorType: string; secretRef: string }[];
   revokeAnswer: { revoked: boolean };
   objects: Map<string, Uint8Array>;
+  failObjectWrites: { value: boolean };
   close(): Promise<void>;
 }
 
@@ -74,9 +75,13 @@ async function harness(): Promise<Harness> {
   await adapter.createSession!({ userId: user.id, sessionToken: token, expires: new Date(Date.now() + 86400000) });
   const ownerScopeId = (user as unknown as { ownerScopeId: string }).ownerScopeId;
   const objects = new Map<string, Uint8Array>();
+  const failObjectWrites = { value: false };
   const evidenceObjects: EvidenceObjects = {
     encryptionKeyRef: 'kms:test-double',
-    async put(_tx, id, bytes) { objects.set(id, bytes); },
+    async put(_tx, id, bytes) {
+      if (failObjectWrites.value) throw new Error('OBJECT_STORE_UNAVAILABLE');
+      objects.set(id, bytes);
+    },
     async get(_tx, id) { return objects.get(id)!; },
   };
   const pages: { value: readonly (readonly unknown[])[] } = { value: [[]] };
@@ -100,7 +105,7 @@ async function harness(): Promise<Harness> {
     Object.defineProperty(request.raw.socket, 'encrypted', { value: true, configurable: true });
   });
   return {
-    app, ownerScopeId, userId: user.id, pages, fetches, revocations, revokeAnswer, objects,
+    app, ownerScopeId, userId: user.id, pages, fetches, revocations, revokeAnswer, objects, failObjectWrites,
     headers(purpose, extra = {}) {
       return {
         cookie: SESSION_COOKIE + '=' + token, 'x-owner-scope-id': ownerScopeId, 'x-purpose': purpose,
@@ -391,6 +396,105 @@ it('CRT-CON-06-A: a backfill re-reads from the beginning and still creates no du
     expect(backfill.json()).toMatchObject({ mode: 'BACKFILL', resumedFromCursor: null, duplicatesSuppressed: 4, itemsIngested: 0 });
     expect(h.fetches[1]!.cursor).toBeNull();
     expect(await items(h.ownerScopeId, 'CONVERSATION')).toHaveLength(4);
+  } finally { await h.close(); }
+});
+
+it('a Gmail thread that fails to parse is refused by name; the rest of the page is stored and the cursor advances', async () => {
+  const h = await harness();
+  try {
+    const created = await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
+        { capabilityId: 'gmail.read_content', granted: true }],
+    });
+    const connectorId = created.json().connectorId;
+    const bad = { id: 'thread-poison-01', messages: [{ id: 'msg-poison-01', threadId: 'thread-poison-01',
+      payload: { mimeType: 'text/plain', filename: '', headers: [
+        { name: 'Subject', value: 'Poison subject do-not-echo' },
+        { name: 'From', value: 'Mallory <mallory-do-not-echo@example.test>' },
+      ], body: { size: 12, data: 'do-not-echo!' } },
+    }] };
+    h.pages.value = [[bad, await fixture('gmail-thread')]];
+    const response = await sync(h, connectorId);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ itemsIngested: 3, duplicatesSuppressed: 0 });
+    expect(response.json().refusals).toEqual([
+      { externalRef: 'thread-poison-01', code: 'SOURCE_PAYLOAD_INVALID', capabilityId: null },
+    ]);
+    for (const text of ['do-not-echo', 'Mallory', 'Poison subject']) expect(response.body).not.toContain(text);
+    expect((await items(h.ownerScopeId, 'GMAIL')).map(row => row.external_id))
+      .toEqual(['msg-9a1c04', 'msg-9a1c05', 'msg-9a1c06']);
+    for (const value of h.objects.values()) expect(Buffer.from(value).toString('utf8')).not.toContain('do-not-echo');
+    expect(response.json().newCursor).toEqual({ position: 'page:1', providerToken: '1' });
+    expect((await admin.query('SELECT last_cursor,status,last_sync_error FROM connectors WHERE id=$1', [connectorId])).rows[0])
+      .toMatchObject({ last_cursor: { position: 'page:1', providerToken: '1' }, status: 'ACTIVE', last_sync_error: null });
+  } finally { await h.close(); }
+});
+
+it('an ingest failure that is not a parse refusal still fails the run and leaves the cursor where it was', async () => {
+  const h = await harness();
+  try {
+    const created = await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
+        { capabilityId: 'gmail.read_content', granted: true }],
+    });
+    const connectorId = created.json().connectorId;
+    h.pages.value = [[await fixture('gmail-thread')], [await fixture('gmail-api-thread')]];
+    const first = await sync(h, connectorId);
+    expect(first.statusCode).toBe(200);
+    expect(first.json().newCursor).toEqual({ position: 'page:1', providerToken: '1' });
+    h.failObjectWrites.value = true;
+    const response = await sync(h, connectorId);
+    expect(response.statusCode).toBe(500);
+    expect(response.json().code).toBe('INTERNAL_ERROR');
+    expect(response.body).not.toContain('OBJECT_STORE_UNAVAILABLE');
+    expect(h.fetches[1]!.cursor).toEqual({ position: 'page:1', providerToken: '1' });
+    expect((await admin.query('SELECT last_cursor,status,last_sync_error FROM connectors WHERE id=$1', [connectorId])).rows[0])
+      .toMatchObject({ last_cursor: { position: 'page:1', providerToken: '1' }, status: 'ACTIVE', last_sync_error: null });
+    expect((await items(h.ownerScopeId, 'GMAIL')).map(row => row.external_id))
+      .toEqual(['msg-9a1c04', 'msg-9a1c05', 'msg-9a1c06']);
+  } finally { await h.close(); }
+});
+
+it('a Gmail thread whose header values carry U+0000, or whose From is long, is stored', async () => {
+  const h = await harness();
+  try {
+    const created = await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
+        { capabilityId: 'gmail.read_content', granted: true }],
+    });
+    h.pages.value = [[{ id: 'thread-storable', messages: [
+      { id: 'msg-storable-1', threadId: 'thread-storable', payload: {
+        mimeType: 'text/plain', body: { data: Buffer.from('Hello').toString('base64url') },
+        headers: [{ name: 'From', value: 'a'.repeat(511) + '\u{1F600}' + ' <long@example.test>' }],
+      } },
+      { id: 'msg-storable-2', threadId: 'thread-storable', payload: {
+        mimeType: 'text/plain', body: { data: Buffer.from('Lunch plans').toString('base64url') }, headers: [
+          { name: 'Subject', value: 'Lunch\u0000 plans' }, { name: 'From', value: 'Nul\u0000 Sender <nul@example.test>' },
+          { name: 'To', value: 'owner\u0000@example.test' }, { name: 'Cc', value: 'cc\u0000@example.test' },
+          { name: 'In-Reply-To', value: '<root\u0000@example.test>' },
+        ],
+      } },
+    ] }]];
+    const response = await sync(h, created.json().connectorId);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ itemsIngested: 2, refusals: [] });
+    const rows = await items(h.ownerScopeId, 'GMAIL');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].actor_ref).toEqual({ type: 'EXTERNAL', id: 'a'.repeat(511) });
+    expect(rows[1].actor_ref.id).toBe('Nul\uFFFD Sender <nul@example.test>');
+    expect(rows[1].actor_ref.id).not.toContain('\u0000');
+    expect(rows[1].deterministic_metadata.inReplyTo).toBe('<root\uFFFD@example.test>');
+    expect((await admin.query(
+      "SELECT normalized_text FROM source_anchors WHERE source_item_id=$1 AND anchor_kind='CONNECTOR_JSON_PATH'", [rows[1].id])).rows)
+      .toEqual([{ normalized_text: 'Lunch\uFFFD plans' }]);
+    const triage = (await admin.query('SELECT tier0_parsed FROM triage_decisions WHERE source_item_id=$1', [rows[1].id])).rows;
+    expect(triage).toHaveLength(1);
+    expect(triage[0].tier0_parsed).toMatchObject({ subject: 'Lunch\uFFFD plans', participants: [
+      'Nul\uFFFD Sender <nul@example.test>', 'owner\uFFFD@example.test', 'cc\uFFFD@example.test',
+    ] });
   } finally { await h.close(); }
 });
 

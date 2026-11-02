@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { syncRequestSchema, syncResultSchema, type ConnectorCursor, type SyncRequest, type SyncResult }
+import { SourcePayloadInvalid, syncRequestSchema, syncResultSchema, type ConnectorCursor, type SyncRequest, type SyncResult }
   from '@unai/domain';
 import { ConnectorError, storedSensitivity, type StoredSensitivity } from './manifests.js';
 import {
@@ -29,7 +29,8 @@ import type { ConnectorClient } from './providers.js';
 
 /** The durable ingest path, supplied by the caller. Keeping it a port is what
  * keeps this package free of object storage, of the extraction worker and of the
- * canonical write path. */
+ * canonical write path. It may throw SourcePayloadInvalid only before any write;
+ * runConnectorSync records that as a per-item refusal. */
 export type SourceIngest = (tx: ConnectorTransaction, request: {
   readonly sourceType: string;
   readonly connectorId: string | null;
@@ -210,10 +211,20 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
     for (const payload of answer.payloads) {
       const prepared = prepareForCapabilities(connector.connectorType, payload, granted);
       if (isRefusal(prepared)) { refusals.push(prepared); continue; }
+      // Ingest parses the whole payload before any write (only a read-only connector
+      // lookup precedes it). Only that refusal is safe to continue: any other error
+      // may follow a write or leave this transaction aborted and must fail the run.
       const imported = await input.ingest(tx, {
         sourceType: prepared.sourceType, connectorId: input.connectorId, payload: prepared.payload,
         sensitivity, allowedPurposes: request.allowedPurposes,
+      }).catch((error: unknown) => {
+        if (error instanceof SourcePayloadInvalid) return null;
+        throw error;
       });
+      if (imported === null) {
+        refusals.push({ externalRef: prepared.externalRef, code: 'SOURCE_PAYLOAD_INVALID', capabilityId: null });
+        continue;
+      }
       for (const item of imported) {
         if (item.stored) { itemsIngested += 1; evidenceIds.push(item.evidenceId); }
         else duplicatesSuppressed += 1;
