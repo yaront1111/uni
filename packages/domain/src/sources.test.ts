@@ -168,6 +168,10 @@ it('reduces HTML to text deterministically', () => {
     '<html><head><title>Hidden title</title><meta charset="utf-8"></head><body><noscript>no script</noscript>'
     + '<template><p>template</p></template><TITLE>loose title</TITLE><p>Seen</p><SCRIPT type="x">bad()</SCRIPT></body></html>')))
     .toBe('Seen');
+  // `</head>` is optional in HTML, so a head that is never closed must not swallow the body.
+  expect(parsedBody(leaf('text/html', '<html><head><meta charset="utf-8"><title>T</title><body><p>Hello there</p></body></html>')))
+    .toBe('Hello there');
+  expect(parsedBody(leaf('text/html', '<head><meta charset="utf-8"><body>Visible</body>'))).toBe('Visible');
   expect(parsedBody(leaf('text/html', '<p>1 < 2 &amp;lt; 3 &AMP; &Quot;q&quot; &apos;a&apos;</p>'))).toBe('1 < 2 &lt; 3 & "q" \'a\'');
   expect(parsedBody(leaf('text/html', '&#65;&#x42;&#X43; &#0; &#xD800; &#x110000; &#9999999; &#12345678; &bogus;')))
     .toBe('ABC \uFFFD \uFFFD \uFFFD \uFFFD &#12345678; &bogus;');

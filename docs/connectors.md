@@ -171,7 +171,7 @@ each message part's body is `{size, data}` with `data` base64url-encoded, or
 - otherwise, the decoded `data` of the first non-attachment `text/plain` part
   found depth-first (an attachment is a part with a non-empty `filename` or an
   `attachmentId`, and it is skipped with its whole subtree);
-- else the first `text/html` part reduced to text: script, style, head, title,
+- else the first `text/html` part reduced to text: script, style, title,
   noscript and template elements and comments are dropped, tags are stripped,
   the basic entities are decoded and whitespace is collapsed;
 - else empty.
@@ -188,10 +188,12 @@ the claims-not-beliefs path, not this reducer.
 message (the root and attachments count), nothing deeper than depth 16 is read,
 at most 1 MiB (1,048,576 characters) of base64url is decoded per part, and a body
 longer than 200,000 characters is cut there without splitting a surrogate pair. A
-body cut by any of these bounds carries `deterministicMetadata.bodyTruncated:
-true`; the key is absent otherwise. U+0000 becomes U+FFFD, because a PostgreSQL
-`text` column refuses it. Only `data` that is not valid base64url in the selected
-part refuses the thread, with `SOURCE_PAYLOAD_INVALID`, echoing nothing.
+body cut by the 1 MiB or the 200,000-character bound carries
+`deterministicMetadata.bodyTruncated: true`; the key is absent otherwise, also
+when a part lies beyond the walk bounds and is simply not read. U+0000 becomes
+U+FFFD, because a PostgreSQL `text` column refuses it. Only `data` that is not
+valid base64url in the selected part refuses the thread, with
+`SOURCE_PAYLOAD_INVALID`, echoing nothing.
 
 **Corpus import.** `pnpm uai corpus import --source <file>` takes the same JSON:
 the `users.threads.get` `format=full` response saved byte for byte. `.eml` files
