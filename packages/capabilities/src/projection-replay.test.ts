@@ -345,6 +345,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // Migration 0036's application transcripts are independent of canonical tables.
   await admin!.query('DROP TABLE answer_provenance,conversation_turns,conversations CASCADE');
   await admin!.query('DROP FUNCTION unai_private.erase_conversation(uuid,uuid,uuid)');
+  await admin!.query('DROP FUNCTION unai_private.registry_release_published(uuid)');
   // Rebuild the schema from the same Git migrations the deployment applies.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
@@ -356,7 +357,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0029_derived_evidence_erasure.sql', '0030_memory_object_state_history.sql', '0031_durable_evidence_processing.sql',
     '0032_contextual_aging_policy_reader.sql', '0033_durable_owner_initiative.sql', '0034_goal_context_read_authority.sql',
     '0035_shared_attention_counts.sql', '0036_conversations.sql', '0037_conversation_answer_provenance.sql', '0038_owner_voice_settings.sql',
-    '0039_conversation_presented_answer.sql', '0040_omi_source_type.sql']);
+    '0039_conversation_presented_answer.sql', '0040_omi_source_type.sql', '0041_probe_release_reader.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {startTelemetry,type Telemetry} from '@unai/observability/telemetry';
+// One extraction (processing-runtime, 300s), initiative (initiative-runtime, 300s)
+// and connector sync (connector-sync-job, 600s) attempt per turn. Beyond their
+// summed leases a busy turn is wedged; while idle the limit is 3 * pollMs.
+const PROCESSING_TURN_LIMIT_MS = (300 + 300 + 600) * 1000;
 // Workspace modules create instruments at evaluation time; metrics has no proxy.
 // ESM evaluates static imports before this body, even beside a top-level await.
 // Start the SDK first, then load application modules so meters are not permanent no-ops.
@@ -23,7 +27,9 @@ async function main() {
   const { createEvidenceObjects }=await import('./evidence.js');
   const { createConnectorRuntime }=await import('./connectors.js');
   const { createConnectorSyncRuntime }=await import('./connector-sync-job.js');
+  const { probeConfiguration, createProbeServer, databaseCheck, registryReleaseCheck, createLoopHeartbeat }=await import('./probes.js');
   const configuration = processingConfiguration(process.env);
+  const probeConfig = probeConfiguration(process.env);
   const secrets = createDefaultSecretsManager();
   const provider = await resolveConfiguredModelProvider({ secrets, env: process.env });
   const ca = readFileSync(processingRequired(process.env, 'UNAI_DATABASE_CA_FILE'), 'utf8');
@@ -32,6 +38,7 @@ async function main() {
   const stop = () => abort.abort();
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
   let evidenceObjects: Awaited<ReturnType<typeof createEvidenceObjects>> | undefined;
+  let probes: Awaited<ReturnType<typeof createProbeServer>> | null = null;
   try {
     await assertDatabaseEncryptionAtRest(appPool);
     const runtime = createProcessingRuntime({ ...configuration, appPool, provider, workerId: 'processor-' + randomUUID() });
@@ -43,15 +50,22 @@ async function main() {
       bucket: processingRequired(process.env, 'UNAI_S3_BUCKET'), kmsKeyId: processingRequired(process.env, 'UNAI_S3_KMS_KEY_ID'),
     });
     if (process.argv.includes('--check')) return;
+    const heartbeat = createLoopHeartbeat({ pollMs: configuration.pollMs, busyLimitMs: PROCESSING_TURN_LIMIT_MS });
+    probes = probeConfig && await createProbeServer({ ...probeConfig, checks: {
+      database: databaseCheck(appPool), registry_release: registryReleaseCheck(appPool, configuration.registryReleaseId), loop: heartbeat.check,
+    } });
     const initiative = createInitiativeRuntime({ ...configuration, appPool, workerId: 'initiative-' + randomUUID() });
     const connectorSync = createConnectorSyncRuntime({ ...configuration, appPool, workerId: 'connector-sync-' + randomUUID(),
       evidenceObjects, connectorClient: createConnectorRuntime(secrets).connectorClient });
     while (!abort.signal.aborted) {
+      heartbeat.beat(true);
       try { await runtime.runOnce(); await initiative.runOnce(); await connectorSync.runOnce(); }
       catch { process.stderr.write('PROCESSING_TURN_FAILED\n'); }
+      heartbeat.beat(false);
       await sleep(configuration.pollMs, undefined, { signal: abort.signal }).catch(() => undefined);
     }
   } finally {
+    await probes?.close();
     process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
     evidenceObjects?.close();
     await appPool.end();
