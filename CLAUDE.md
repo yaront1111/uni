@@ -22,7 +22,7 @@ pnpm uai registry test | shadow-diff | projection-replay   # the other three PRD
 pnpm uai corpus import | annotate | run | verify | status   # the gold corpus (corpus/README.md)
 pnpm check:phase-exit     # typecheck + test + validate:registry + registry test + corpus run + corpus verify
 pnpm hooks:install        # core.hooksPath=.githooks (also run by `prepare`): blocks commits under corpus/private-local/
-pnpm db:migrate           # needs UNAI_MIGRATION_DATABASE_URL + UNAI_DATABASE_CA_PATH
+pnpm db:migrate           # needs UNAI_MIGRATION_DATABASE_URL + UNAI_DATABASE_CA_FILE (UNAI_DATABASE_CA_PATH: deprecated alias)
 pnpm start:api            # Fastify API over TLS, default port 3443
 pnpm dev:web              # Next.js via apps/web/server.ts (TLS listener)
 ```

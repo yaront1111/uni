@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { createDatabasePool } from '@unai/postgres';
+import { createDatabasePool, resolveDatabaseCaFile } from '@unai/postgres';
 import { RegistryError, lintRegistryRepository, loadRegistryRelease, readTaggedMigrationEvidence, type LoadedRegistryRelease } from './release.js';
 import { checkMigrationEvidence, type MigrationStatus } from './migration.js';
 import { publishRegistryRelease } from './snapshot.js';
@@ -43,8 +43,12 @@ async function latestRelease() {
     return (b[0]! - a[0]! || b[1]! - a[1]! || b[2]! - a[2]!) > 0 ? release : latest;
   });
 }
+// Rethrown as a RegistryError so fail() prints the CONFIG_ code, not REGISTRY_COMMAND_FAILED.
+function databaseCaFile() {
+  try { return resolveDatabaseCaFile(process.env); } catch (error) { throw new RegistryError(error instanceof Error ? error.message : 'REGISTRY_COMMAND_FAILED'); }
+}
 function databasePool(variable: 'UNAI_DATABASE_URL' | 'UNAI_MIGRATION_DATABASE_URL', missing: string) {
-  const url = process.env[variable], caPath = process.env.UNAI_DATABASE_CA_PATH;
+  const url = process.env[variable], caPath = databaseCaFile();
   if (!url || !caPath) throw new RegistryError(missing);
   return readFile(caPath, 'utf8').then(ca => createDatabasePool(url, ca));
 }
@@ -155,7 +159,7 @@ try {
       else console.log(JSON.stringify({ event, result: 'PASS', ...summary }));
     } else throw new RegistryError('SHADOW_SAMPLE_INVALID');
   } else if (group === 'registry' && command === 'publish') {
-    const url = process.env.UNAI_MIGRATION_DATABASE_URL, caPath = process.env.UNAI_DATABASE_CA_PATH, version = option('version');
+    const url = process.env.UNAI_MIGRATION_DATABASE_URL, caPath = databaseCaFile(), version = option('version');
     if (!url || !caPath || !version) throw new RegistryError('REGISTRY_PUBLISH_CONFIGURATION_REQUIRED');
     const correlationId = option('correlation-id') ?? randomUUID();
     const release = await loadRegistryRelease({ repository: process.cwd(), version });
@@ -172,7 +176,7 @@ try {
     // policy on any canonical table. The capability package is loaded here and not
     // at the top of the file, so `uai registry lint` still runs with no database
     // driver and no memory package in the process.
-    const url = process.env.UNAI_DATABASE_URL, caPath = process.env.UNAI_DATABASE_CA_PATH;
+    const url = process.env.UNAI_DATABASE_URL, caPath = databaseCaFile();
     const ownerScopeId = option('owner-scope'), actorId = option('actor');
     if (!url || !caPath || !ownerScopeId || !actorId) throw new RegistryError('PROJECTION_REPLAY_CONFIGURATION_REQUIRED');
     const asOfText = option('as-of');

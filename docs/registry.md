@@ -76,8 +76,9 @@ contract text.
 `publish` loads the release from the Git tag `registry-v<version>` (Git objects,
 not the working tree), verifies the recorded hash and inserts the immutable
 database snapshot atomically. It requires `UNAI_MIGRATION_DATABASE_URL` and
-`UNAI_DATABASE_CA_PATH` (the trusted migration principal over verified TLS; see
-docs/foundation.md). Re-running for the same tag and commit reports
+`UNAI_DATABASE_CA_FILE` (the trusted migration principal over verified TLS; see
+docs/foundation.md); `UNAI_DATABASE_CA_PATH` still works as a deprecated alias (see
+docs/operations/environment.md). Re-running for the same tag and commit reports
 `ALREADY_PUBLISHED`; a different hash or commit for a published version is
 refused with `REGISTRY_RELEASE_CONFLICT`. Output includes the UUIDv7 release ID,
 commit, content hash and correlation ID.

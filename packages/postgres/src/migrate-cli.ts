@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
-import { createDatabasePool, runMigrations, assertOwnershipCoverage } from './index.js';
+import { createDatabasePool, runMigrations, assertOwnershipCoverage, resolveDatabaseCaFile } from './index.js';
 
 const url = process.env.UNAI_MIGRATION_DATABASE_URL;
-const caPath = process.env.UNAI_DATABASE_CA_PATH;
+const caPath = resolveDatabaseCaFile(process.env);
 if (!url || !caPath) throw new Error('MIGRATION_TLS_CONFIGURATION_REQUIRED');
 const pool = createDatabasePool(url, await readFile(caPath, 'utf8'));
 try {

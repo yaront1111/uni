@@ -100,5 +100,6 @@ export async function withOwnerTransaction<T>(pool:Pool, input:RequestContext, r
 export { assertOwnershipCoverage, OWNER_SCOPED_TABLES } from './ownership.js';
 export { assertDatabaseEncryptionAtRest, ENCRYPTION_AT_REST_SETTING } from './encryption.js';
 export { runMigrations } from './migrations.js';
+export { resolveDatabaseCaFile } from './database-ca.js';
 
 
