@@ -118,6 +118,8 @@ reported durably. The daemon's independent verifier supplies acceptance proof.
 Real-account connector and private-corpus verification remain separate dependency
 and product checks; their absence is never counted as successful live evidence.
 
+The owner-run steps that close `hosted-main-pipeline-deferred` and the other real-data gates (real corpus, live connectors, registry tags), with exact commands, inputs, artifacts and a Status table, are in [real-data-gates.md](real-data-gates.md).
+
 
 [Local CI execution record](local-ci-2026-09-19.json): all nine named stages and
 the retained build, shadow-diff and corpus-status checks exited 0. Hosted default-branch
