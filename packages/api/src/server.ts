@@ -1,10 +1,15 @@
 import {readFileSync} from 'node:fs';
-import {createDatabasePool,assertDatabaseEncryptionAtRest} from '@unai/postgres';
-import {createDefaultSecretsManager,requireSecret} from '@unai/secrets';
-import {createPlatformApi} from './platform.js';
-import {createEvidenceObjects} from './evidence.js';
-import {createConnectorRuntime} from './connectors.js';
-import {processingRelease} from './processing-config.js';
+import {startTelemetry} from '@unai/observability/telemetry';
+// Workspace modules create instruments at evaluation time; metrics has no proxy.
+// ESM evaluates static imports before this body, even beside a top-level await.
+// Start the SDK first, then load application modules so meters are not permanent no-ops.
+const telemetry=await startTelemetry({serviceName:'unai-api',version:'0.1.0'});
+const {createDatabasePool,assertDatabaseEncryptionAtRest}=await import('@unai/postgres');
+const {createDefaultSecretsManager,requireSecret}=await import('@unai/secrets');
+const {createPlatformApi}=await import('./platform.js');
+const {createEvidenceObjects}=await import('./evidence.js');
+const {createConnectorRuntime}=await import('./connectors.js');
+const {processingRelease}=await import('./processing-config.js');
 function required(name:string){const value=process.env[name];if(!value)throw new Error('CONFIG_REQUIRED:'+name);return value;}
 // Credentials arrive as secrets-manager handles; configuration holding a literal
 // database URL is refused rather than started with.
@@ -23,4 +28,9 @@ const evidenceObjects=await createEvidenceObjects({endpoint:required('UNAI_S3_EN
 // secret:// handle on the connector row; this passes the manager, not a token.
 const app=createPlatformApi({appPool,authPool,evidenceObjects,...processingRelease(process.env),connectors:createConnectorRuntime(secrets),tls:{key:readFileSync(required('UNAI_API_TLS_KEY_FILE')),cert:readFileSync(required('UNAI_API_TLS_CERT_FILE'))}});
 await app.listen({port:Number(process.env.UNAI_API_PORT??3443),host:process.env.UNAI_API_BIND??'127.0.0.1'});
-process.on('SIGTERM',()=>{void app.close().then(()=>{evidenceObjects.close();return Promise.all([appPool.end(),authPool.end()]);});});
+let closing=false;
+const close=()=>{
+  if(closing)return;closing=true;
+  void app.close().then(()=>{evidenceObjects.close();return Promise.all([appPool.end(),authPool.end()]);}).finally(()=>telemetry.shutdown());
+};
+process.on('SIGTERM',close);process.on('SIGINT',close);

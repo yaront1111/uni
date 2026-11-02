@@ -2,9 +2,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { TLSSocket } from 'node:tls';
 import type { ServerOptions } from 'node:https';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { requestContextSchema, type RequestContext } from '@unai/domain';
 import { metrics, trace, SpanStatusCode } from '@opentelemetry/api';
+import { createRateLimiter, DEFAULT_RATE_LIMITS, type RateLimitSettings, type RateLimitBucket } from './rate-limit.js';
 
 declare module 'fastify' {
   interface FastifyRequest { ownerContext: RequestContext | null }
@@ -16,16 +17,25 @@ export interface ApiBoundaryOptions {
   /** Check active membership AND the requested purpose. RLS is enforced separately. */
   authorize(context: RequestContext): Promise<boolean>;
   tls?: Pick<ServerOptions, 'key' | 'cert' | 'ca'>;
-  log?(event: Readonly<{ event: 'api.response'; correlationId: string; statusCode: number; durationMs: number }>): void;
+  rateLimit?: RateLimitSettings;
+  credential?(headers: Readonly<IncomingHttpHeaders>): string | null;
+  /** Only tests pin the limiter clock. */
+  clock?: () => number;
+  log?(event: Readonly<
+    { event: 'api.response'; correlationId: string; statusCode: number; durationMs: number } |
+    { event: 'api.rate_limited'; correlationId: string; statusCode: 429; bucket: RateLimitBucket }
+  >): void;
 }
 
 const latency = metrics.getMeter('unai.api').createHistogram('unai.api.duration', { unit: 'ms' });
+const rateLimited = metrics.getMeter('unai.api').createCounter('unai.api.rate_limited');
 
 /** No authentication provider or public route is installed implicitly. */
 export function createApiBoundary(options: ApiBoundaryOptions): FastifyInstance {
   if (typeof options.authenticate !== 'function' || typeof options.authorize !== 'function') {
     throw new Error('API_AUTHORITY_PORTS_REQUIRED');
   }
+  const limiter = createRateLimiter(options.rateLimit ?? DEFAULT_RATE_LIMITS, options.clock);
   const app = Fastify({
     ...(options.tls ? { https: { ...options.tls, minVersion: 'TLSv1.2' as const } } : {}),
     logger: false, trustProxy: false,
@@ -41,8 +51,20 @@ export function createApiBoundary(options: ApiBoundaryOptions): FastifyInstance 
     const refuse = (status: number, code: string) => reply.code(status).send({ code, correlationId: request.ownerContext?.correlationId ?? request.id });
     if ((request.raw.socket as TLSSocket).encrypted !== true) { refuse(426, 'TLS_REQUIRED'); return payload; }
     reply.header('strict-transport-security', 'max-age=31536000');
-    const identity = await options.authenticate(Object.freeze({ ...request.headers }));
-    if (!identity) { refuse(401, 'AUTHENTICATION_REQUIRED'); return payload; }
+    const headers = Object.freeze({ ...request.headers });
+    const credential = options.credential?.(headers);
+    const hash = credential ? createHash('sha256').update(credential).digest('hex') : null;
+    const verdict = limiter.admit(hash, request.ip);
+    if (verdict.kind === 'refused') {
+      reply.header('retry-after', String(verdict.retryAfterSeconds));
+      rateLimited.add(1, { bucket: verdict.bucket });
+      try { options.log?.(Object.freeze({ event: 'api.rate_limited', correlationId: request.id, statusCode: 429, bucket: verdict.bucket })); }
+      catch { /* A logging failure must not bypass the limit. */ }
+      refuse(429, 'RATE_LIMITED'); return payload;
+    }
+    const identity = await options.authenticate(headers);
+    if (!identity) { limiter.failed(hash, request.ip); refuse(401, 'AUTHENTICATION_REQUIRED'); return payload; }
+    if (verdict.kind === 'unknown') limiter.authenticated(hash);
     const parsed = requestContextSchema.safeParse({
       actorId: identity.actorId, ownerScopeId: request.headers['x-owner-scope-id'],
       purpose: request.headers['x-purpose'], correlationId: request.headers['x-correlation-id'],

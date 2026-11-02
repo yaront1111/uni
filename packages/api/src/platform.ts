@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import { createApiBoundary, type ApiBoundaryOptions } from './index.js';
 import { resolveSession, sessionToken, revokeSessions } from '@unai/auth';
+import type { RateLimitSettings } from './rate-limit.js';
 import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { registerDeviceSchema,publicDeviceSchema,auditEventKindFor,type AuditEvent } from '@unai/domain';
 import {registerAuditRoutes,AUDIT_READ_PURPOSE,AUDIT_MODIFY_PURPOSE,auditPurposeFor} from './audit.js';
@@ -135,7 +136,7 @@ export function routePurpose(method:string,url:string|undefined):string|null{
     controlPurposeFor(method,url);
 }
 
-export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];
+export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBoundaryOptions['tls'];rateLimit?:RateLimitSettings;
   evidenceObjects?:EvidenceObjects;registryReleaseId?:string;registryRelease?:string;
   /** The policy ports the Context Broker evaluates reads through. The local
    * adapters are the default; a deployment that installs Cordum supplies them
@@ -163,6 +164,8 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   const purposes=PLATFORM_PURPOSES;
   const app=createApiBoundary({
     ...(options.tls?{tls:options.tls}:{}),
+    ...(options.rateLimit?{rateLimit:options.rateLimit}:{}),
+    credential:headers=>sessionToken(headers.cookie),
     async authenticate(headers){
       const token=sessionToken(headers.cookie);
       const session=token?await resolveSession(options.authPool,token):null;
