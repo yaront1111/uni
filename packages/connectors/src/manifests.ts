@@ -51,6 +51,7 @@ export const WRITE_SCOPE_PATTERNS: readonly RegExp[] = Object.freeze([
 export const WRITE_CAPABILITIES: readonly string[] = Object.freeze([
   'gmail.send', 'gmail.create_draft', 'calendar.create', 'calendar.update',
   'github.write_pull_requests', 'github.write_issues', 'documents.write',
+  'omi.write_conversations', 'omi.write_memories',
 ]);
 
 const WORK_PROFILE = {
@@ -85,10 +86,19 @@ const ASSISTANT_PROFILE = {
   tokenBudget: 5000,
 };
 
+// Reads only from Omi, needing no Uai context (§27.3): the smallest schema profile (min 256 tokens).
+const OMI_PROFILE = {
+  purpose: 'PERSONAL_ASSISTANCE',
+  lifeCategory: null,
+  excludedLifeCategories: ['HEALTH', 'FAMILY', 'FINANCE'] as const,
+  maximumSensitivity: 'NORMAL' as const,
+  tokenBudget: 256,
+};
+
 function capability(input: {
   capabilityId: string; description: string; riskClass: 'LOW' | 'MEDIUM' | 'HIGH';
   scopes?: readonly string[]; profile: typeof WORK_PROFILE | typeof SCHEDULE_PROFILE
-  | typeof PROJECT_PROFILE | typeof ASSISTANT_PROFILE;
+  | typeof PROJECT_PROFILE | typeof ASSISTANT_PROFILE | typeof OMI_PROFILE;
 }): ManifestCapability {
   return {
     capabilityId: input.capabilityId, description: input.description,
@@ -172,6 +182,19 @@ const MANIFEST_LIST: readonly ConnectorManifest[] = Object.freeze([
         description: 'Store a document you upload, and index its text immediately.' }),
       capability({ capabilityId: 'documents.read', riskClass: 'LOW', profile: ASSISTANT_PROFILE,
         description: 'Read and search the documents you have uploaded.' }),
+    ],
+  }),
+  // Optional beyond §27.5 (ADR 0041 D6); HIGH injection risk: anyone nearby can speak instructions.
+  connectorManifestSchema.parse({
+    id: 'connector.omi', connectorType: 'OMI', version: MANIFEST_VERSION,
+    displayName: 'Omi wearable (read-only)', sources: ['OMI_CONVERSATION'], emits: ['SOURCE_ITEM'],
+    sensitivity: { default: 'PRIVATE' }, retention: { raw: 'USER_CONFIGURABLE' },
+    requiredSecrets: ['developer_api_key'], promptInjectionRisk: 'HIGH',
+    minimumSyncCapability: 'omi.read_conversations',
+    capabilities: [
+      capability({ capabilityId: 'omi.read_conversations', riskClass: 'HIGH', scopes: ['conversations:read'],
+        profile: OMI_PROFILE,
+        description: 'Read the conversations your Omi recorded, as transcripts with speakers. Nothing is written to Omi.' }),
     ],
   }),
 ]);

@@ -45,7 +45,8 @@ it('CRT-CON-02-A/03-A/04-A: no V0 manifest offers a write capability or a write 
   for (const capabilityId of WRITE_CAPABILITIES) {
     const manifest = manifestFor(capabilityId.startsWith('gmail') ? 'GMAIL'
       : capabilityId.startsWith('calendar') ? 'GOOGLE_CALENDAR'
-        : capabilityId.startsWith('github') ? 'GITHUB' : 'DOCUMENT');
+        : capabilityId.startsWith('github') ? 'GITHUB'
+          : capabilityId.startsWith('omi') ? 'OMI' : 'DOCUMENT');
     expect(() => capabilityOf(manifest, capabilityId), capabilityId).toThrow('CONNECTOR_WRITE_SCOPE_REFUSED');
   }
   expect(() => capabilityOf(manifestFor('GMAIL'), 'gmail.read_everything')).toThrow('CONNECTOR_CAPABILITY_UNKNOWN');
@@ -153,4 +154,43 @@ it('every manifest capability declares the least context its operations receive'
     expect(profile.lifeCategory, capabilityId).toBe('WORK');
     expect([...profile.excludedLifeCategories].sort(), capabilityId).toEqual(['FAMILY', 'FINANCE', 'HEALTH']);
   }
+});
+
+it('ADR 0041 D6: the Omi connector reads conversations and nothing else', () => {
+  const manifest = manifestFor('OMI');
+  expect(manifest).toEqual({
+    id: 'connector.omi', connectorType: 'OMI', version: '0.1.0',
+    displayName: 'Omi wearable (read-only)', sources: ['OMI_CONVERSATION'], emits: ['SOURCE_ITEM'],
+    sensitivity: { default: 'PRIVATE' }, retention: { raw: 'USER_CONFIGURABLE' },
+    requiredSecrets: ['developer_api_key'], promptInjectionRisk: 'HIGH',
+    minimumSyncCapability: 'omi.read_conversations',
+    capabilities: [{
+      capabilityId: 'omi.read_conversations', access: 'READ', riskClass: 'HIGH',
+      scopes: ['conversations:read'],
+      description: 'Read the conversations your Omi recorded, as transcripts with speakers. Nothing is written to Omi.',
+      contextProfile: {
+        purpose: 'PERSONAL_ASSISTANCE', lifeCategory: null,
+        excludedLifeCategories: ['HEALTH', 'FAMILY', 'FINANCE'],
+        maximumSensitivity: 'NORMAL', tokenBudget: 256,
+      },
+    }],
+  });
+  expect(CONNECTOR_MANIFESTS.size).toBe(6);
+  expect(() => assertReadOnly(manifest)).not.toThrow();
+  for (const entry of manifest.capabilities) {
+    expect(entry.access).toBe('READ');
+    for (const scope of entry.scopes) expect(isWriteScope(scope), scope).toBe(false);
+  }
+  expect(requestedScopes(manifest, ['omi.read_conversations'])).toEqual(['conversations:read']);
+  for (const scope of ['conversations:write', 'memories:write', 'action_items:write', 'goals:write']) {
+    expect(isWriteScope(scope), scope).toBe(true);
+  }
+  expect(isWriteScope('conversations:read')).toBe(false);
+  expect(() => capabilityOf(manifest, 'omi.read_memories')).toThrow('CONNECTOR_CAPABILITY_UNKNOWN');
+  for (const id of ['omi.write_conversations', 'omi.write_memories']) {
+    expect(WRITE_CAPABILITIES).toContain(id);
+    expect(() => capabilityOf(manifest, id)).toThrow('CONNECTOR_WRITE_SCOPE_REFUSED');
+  }
+  expect(storedSensitivity(manifest, 'NORMAL', null)).toBe('PRIVATE');
+  expect(storedSensitivity(manifest, 'RESTRICTED', null)).toBe('RESTRICTED');
 });
