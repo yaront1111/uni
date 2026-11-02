@@ -26,6 +26,10 @@ import {
  */
 
 export const COMMITMENT_CAPABILITY_VERSION = 'capability-commitments-0.1.0';
+// Unchanged by the long-input fix: only inputs that used to throw (a ZodError on an
+// over-bound action or due phrase) get new readings, and every reading recorded under
+// 0.1.0 is reproduced byte for byte. A bump would make identical readings look
+// different in claim metadata and in replays.
 export const COMMITMENT_CLASSIFIER_VERSION = 'commitment-language-0.1.0';
 export const COMMITMENT_FRAME_TYPE = 'shared.commitment';
 export const COMMITMENT_RESOLUTION_CONTRACT = 'shared.commitment.resolution';
@@ -44,6 +48,19 @@ const COMMITMENT = /\b(?:I['’]ll|I will|I am going to|I'm going to|I’m going
  * instant is the temporal resolver's work and carries its own precision and
  * confidence (PRD §12.5). */
 const DUE_PHRASE = /\b(?:by|before|on|no later than)\s+([^.,;!?]+)/i;
+
+/** Mirror commitmentReadingSchema's bounds (@unai/domain projections.ts), in UTF-16
+ * code units, the unit zod's max() counts. The schema itself is not loosened. */
+const MAX_ACTION = 4096;
+const MAX_DUE = 512;
+
+/** The first `max` code units of `text`, or one fewer when that would split a
+ * surrogate pair (the same rule as boundedBody in @unai/domain, private there). */
+function codeUnitPrefix(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const high = text.charCodeAt(max - 1);
+  return text.slice(0, high >= 0xd800 && high <= 0xdbff ? max - 1 : max);
+}
 
 /**
  * Read a sentence as commitment language, consideration language, or neither.
@@ -68,12 +85,17 @@ export function classifyCommitmentLanguage(statement?: string | null): Commitmen
   if (!commitment) return commitmentReadingSchema.parse(none);
 
   const after = text.slice(commitment.index + commitment[0].length).trim();
-  const due = DUE_PHRASE.exec(after);
+  // A capture over MAX_DUE is a sentence that kept going, not a stated time. Cutting it
+  // would hand the temporal resolver prose it can never resolve (it matches whole
+  // phrases) and count an unresolved due time the owner never stated, so such a text
+  // has no due phrase and the action runs to the end of it.
+  const found = DUE_PHRASE.exec(after);
+  const due = found && found[1]!.trim().length <= MAX_DUE ? found : null;
   const action = (due ? after.slice(0, due.index) : after).replace(/\s+/g, ' ').trim().replace(/[.,;!?]+$/, '');
   return commitmentReadingSchema.parse({
     language: 'COMMITMENT',
     matchedText: commitment[0],
-    actionDescription: action === '' ? null : action,
+    actionDescription: action === '' ? null : codeUnitPrefix(action, MAX_ACTION),
     dueTimeText: due?.[1]?.trim() ?? null,
     classifierVersion: COMMITMENT_CLASSIFIER_VERSION,
   });
