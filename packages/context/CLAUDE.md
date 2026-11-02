@@ -100,7 +100,11 @@ Report: `docs/today-and-ask.md`; decisions:
   three, or a REDACT verdict only moves the value (CRT-WRT-03-B).
 - **Knowledge time filters on `recorded_at`.** A fixture that lets `recorded_at`
   default to the wall clock while pinning `knowledgeTime` to a past instant will
-  retrieve nothing and look like a broken query. Set it explicitly.
+  retrieve nothing and look like a broken query. Set it explicitly. A lifecycle
+  UPDATE cannot be pinned: migration 0030 journals it at database wall time, so a
+  fixture that supersedes, retires or merges an object must read "after" it at the
+  journal instant (+1 ms for Date truncation), never at a fixed NOW —
+  freshness.test.ts went red on 2026-10-19 that way.
 - **`evidence_labels` is the only thing that sees above the ceiling**, and it
   returns id, sensitivity and allowed purposes and nothing else. Do not widen it
   to carry text, an object key or an anchor: the point is to be able to *list* a

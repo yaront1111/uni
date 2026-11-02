@@ -159,7 +159,12 @@ it('withholds a superseded claim from freshness while a query before supersessio
     expect((await read())[0]!.assessment.basisAt).toBe(SOURCE);
     await client.query('RESET ROLE');
     await client.query("UPDATE claims SET lifecycle='SUPERSEDED' WHERE owner_scope_id=$1 AND id=$2", [owner, leaf.claimId]);
-    expect((await read())[0]!.assessment).toMatchObject({ state: 'UNKNOWN', basisAt: null });
+    // Migration 0030 journals lifecycle changes at database wall time; fixed NOW may precede this change.
+    // Add 1 ms so node-postgres Date truncation cannot place the read before the microsecond journal instant.
+    const supersededAt = (await client.query("SELECT max(recorded_at) + interval '1 millisecond' AS at FROM memory_object_state_history WHERE owner_scope_id=$1 AND object_type='claims' AND object_id=$2 AND record_kind='CHANGE'",
+      [owner, leaf.claimId])).rows[0].at as Date | null;
+    expect(supersededAt).toBeInstanceOf(Date);
+    expect((await read(undefined, supersededAt!.toISOString()))[0]!.assessment).toMatchObject({ state: 'UNKNOWN', basisAt: null });
     expect((await read(undefined, IMPORT))[0]!.assessment).toMatchObject({ state: 'VERIFY', basisAt: SOURCE });
   });
 });
