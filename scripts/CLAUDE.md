@@ -1,6 +1,6 @@
 # scripts
 
-This folder owns the `pnpm test` harness (`test.mjs` plus its storage and TLS helpers), the manual `verifier-rehearsal.mjs` diagnostic, `install-git-hooks.mjs`, the other tools that root `package.json` scripts name, and `lib/`, which holds libraries shared by the harness and the operator tools (`lib/backup-archive.mjs`). It must not own product code or test cases. Nothing under `packages/` or `apps/` imports from here. Under `src/`, tests import scripts to unit-test them (`src/recovery-output.test.ts`, `src/recovery-storage.test.ts`, `src/backup-archive.test.ts` and others), behind `// @ts-expect-error`, and `src/operations/report.ts` shares `workspace-evidence.mjs`.
+This folder owns the `pnpm test` harness (`test.mjs` plus its storage and TLS helpers), the manual `verifier-rehearsal.mjs` diagnostic, `install-git-hooks.mjs`, `pnpm backup` (`backup.mjs`), the other tools that root `package.json` scripts name, and `lib/`, which holds libraries shared by the harness and the operator tools (`lib/backup-archive.mjs`). It must not own product code or test cases. Nothing under `packages/` or `apps/` imports from here. Under `src/`, tests import scripts to unit-test them (`src/recovery-output.test.ts`, `src/recovery-storage.test.ts`, `src/backup-archive.test.ts` and others), behind `// @ts-expect-error`, and `src/operations/report.ts` shares `workspace-evidence.mjs`.
 
 `install-git-hooks.mjs` runs on every `pnpm install` (the `prepare` script), so it must never fail an install: it sets `core.hooksPath=.githooks` only inside a Git work tree that has `.githooks/pre-commit` and only when no other hooks path is configured, and otherwise prints why it did nothing and exits 0. The hook it activates refuses commits under `corpus/private-local/` (ADR 0031 §3).
 
@@ -19,7 +19,7 @@ The order in `test.mjs` is fixed: database, readiness probe, migrations, storage
 - Steps throw `StepError` and print `<STEP>: <cause>`: `DATABASE_PROVISIONING_FAILED`, `DATABASE_NOT_READY` (120 `SELECT 1` probes with a 2 s connect timeout, 250 ms apart), `MIGRATION_FAILED`, `STORAGE_PROVISIONING_FAILED`. Any error without a `.step` prints as `TEST_HARNESS_FAILED`. A new step needs its own `StepError` name.
 - Inner storage causes appear after `STORAGE_PROVISIONING_FAILED:`: `STORAGE_HARNESS_COMMAND_FAILED`, `STORAGE_HARNESS_NOT_READY`, `UNSAFE_TEST_CLEANUP`, and the "Delivered object storage is incomplete" message.
 - A failing suite prints no harness code; the vitest exit code is passed through. `STORAGE_CLEANUP_FAILED` and `DATABASE_CLEANUP_FAILED` force exit 1, while `DATABASE_CLEANUP_WARNING` (a leaked scratch database) intentionally leaves the suite's verdict alone.
-- Harness messages carry raw Docker and PostgreSQL error text. That is local to this disposable infrastructure; do not copy the pattern into `packages/`, where raw provider text is forbidden.
+- Harness messages carry raw Docker and PostgreSQL error text. That is local to this disposable infrastructure; do not copy the pattern into `packages/`, where raw provider text is forbidden. `backup.mjs` is the one tool here that runs against real infrastructure, so it follows the product rules instead (stable codes only, see below).
 
 ## Environment contract
 
@@ -110,13 +110,24 @@ Changing the format:
 
 Its consumers are `src/operations/evidence.ts` (`recoveryEvidence` accepts only that format) and `src/operations/report.ts` (expects that `archiveRef` and re-hashes the archive). Change all three together.
 
+## backup.mjs (pnpm backup)
+
+The production backup of ADR 0043 D9/D11; the operator procedure is `docs/operations/backup.md`, the variables are under `### pnpm backup` in `docs/operations/environment.md`.
+- **Output contract.** Exactly one JSON line: `backup.completed` on stdout (exit 0) or `{"event":"backup.failed","code":"BACKUP_…"}` on stderr (exit 1; 2 for flags). Only `BACKUP_CONFIGURATION_REQUIRED`/`_INVALID` add `variable`. Foreign errors are mapped through `MAPPED` (storage and TLS codes) or become `BACKUP_FAILED`; raw text, URLs, paths, keys and object keys never reach the output. pg_dump's stderr is discarded unread, and `process.noDeprecation` silences pg's pgpass notice. `--help` reads no variable.
+- **Configuration order** (`configuration()`), all before any network work: destination (absolute, real, writable; `s3://` is `BACKUP_DESTINATION_UNSUPPORTED` until task-e08becdf), key (`readBackupKey` with the destination as `outside`), retention, URL (no password: `PGPASSFILE` only, `PGPASSWORD` refused), CA file, `UNAI_S3_*`, `UNAI_BACKUP_PG_DUMP`. Every read stays a literal `process.env.NAME` for the env-contract guard; the pg_dump child's environment is an `Object.entries` filter (every `PG*` but `PGPASSFILE` dropped), so it reads no member.
+- **Precondition.** `systemctl is-active` per unit must exit 3/4 **and** print `inactive`/`failed` (an `activating` restart loop is not stopped); `--assume-quiescent` skips only that. The `pg_stat_activity` check for `unai_api_login`/`unai_worker_login` always runs, then a superuser-or-BYPASSRLS check.
+- **One exported snapshot.** The coordinator transaction is SERIALIZABLE READ ONLY DEFERRABLE with `row_security`, `statement_timeout` and `idle_in_transaction_session_timeout` off; it reads the digests, ledger, releases and evidence rows, and `pg_dump --snapshot=<id>` imports the same snapshot while the transaction idles. Do not move a manifest read outside it.
+- **`UNAI_BACKUP_PG_DUMP`** is one path or a JSON argv prefix (the test passes `docker run … pg_dump`); its `--version` major must equal the server's.
+- **Ordering of effects.** `state.archive` is set only after the writer's `finish` (the link-based publish), so a lost name race never deletes another run's archive; sidecars are `wx` 0600 `.partial` files renamed into place; retention runs last and only after success. A `BACKUP_RETENTION_FAILED` keeps the verified archive.
+- **Test** (`src/backup.test.ts`, stage `operations`). A scratch `unai_backup_<hex>` database is migrated; the harness PostgreSQL has no TLS, so the test runs an in-process TLS terminator with a `createSelfSignedCertificate` CA, and a 0600 pgpass for the password-less URL. pg_dump is the host's `/usr/lib/postgresql/<major>/bin/pg_dump`, else a PATH pg_dump of the server's major, else `docker run --network host` of `POSTGRES_IMAGE` with the temp root mounted read-only. A fake `systemctl` on `PATH` logs its arguments. The script is always spawned asynchronously, because the in-process S3 server lives on the test's event loop.
+
 ## verifier-rehearsal.mjs
 
 This script reproduces how the moe-next daemon verifier provisions its database; the daemon sources named in its header are not in this repo. It starts pgvector with the superuser `app`, mints a certificate with `openssl` inside the container, enables TLS through `ALTER SYSTEM` and `pg_reload_conf()`, and delivers a `postgres://` URL as `DATABASE_URL` and `UNAI_MIGRATION_DATABASE_URL` plus the CA path as `UNAI_DATABASE_CA_PATH` (names overridable with `MOE_VERIFIER_DB_URL_VARS`, `MOE_VERIFIER_DB_CA_VAR`, `MOE_VERIFIER_DB_IMAGE`). It removes `UNAI_TEST_DATABASE_URL` from the child environment, then runs its arguments as shell commands, or `pnpm db:migrate` followed by `pnpm test`, stopping at the first non-zero exit. `pnpm test` therefore takes the delivered-server path there. It needs Docker, and neither `pnpm test` nor CI runs it.
 
 ## Checking a change
 
-Only the helpers a `src/*.test.ts` imports have unit tests: `pnpm exec vitest run src/backup-archive.test.ts` needs neither Docker nor a database. The full check is `pnpm test` from the repo root, which also runs the recovery rehearsal. Two smoke checks need neither Docker nor a database:
+Only the helpers a `src/*.test.ts` imports have unit tests: `pnpm exec vitest run src/backup-archive.test.ts` needs neither Docker nor a database. `node scripts/test.mjs --stage <name>` runs one stage of `test-stages.mjs` behind its own database and storage, with its report in `test-results/acceptance/<name>.json` and no rehearsal; `--stage operations` covers `backup.mjs`, the archive library and the recovery helpers. The full check is `pnpm test` from the repo root, which also runs the recovery rehearsal. Two smoke checks need neither Docker nor a database:
 
 ```
 node -e "import('./scripts/s3-object-server.mjs').then(async m=>{const s=await m.startS3ObjectServer({bucket:'b',kmsKeyId:'k'});console.log(s.endpoint);s.close()})"
