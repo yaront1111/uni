@@ -20,16 +20,22 @@ double or backtick quotes), and calls to `required`, `secret`, `databasePool` (n
 argument 0) or `requireSecret`, `processingRequired`, `requiredNumber` (argument 1).
 Object-literal child-environment keys, bare names in comments and error-code strings
 are not reads. This is an idiom guard, not general TypeScript data-flow analysis:
-keep environment reads in these forms, not destructuring or arbitrary aliases.
-It does not naively strip `//` comments, which would truncate HTTPS strings.
+destructuring (`const {X} = process.env`) and aliases whose name does not end in
+`env`/`Env` are a documented non-goal and are not detected, so keep environment reads
+in these forms. It does not naively strip `//` comments, which would truncate HTTPS strings.
 
+Any bracket key on those receivers that is not exactly one quoted identifier literal
+is a computed lookup: a variable (`process.env[name]`), a quote-led concatenation
+(`process.env['UNAI_' + suffix]`) or an interpolated template
+(`` process.env[`UNAI_${suffix}`] ``). Empty brackets such as the type `Env[]` are not.
 Computed lookups are registered only in `packages/api/src/server.ts`,
 `apps/web/lib/server.ts`, `packages/api/src/processing-config.ts`,
 `packages/model/src/providers.ts`, `packages/secrets/src/index.ts`,
 `packages/registry/src/cli.ts` and `scripts/storage-harness.mjs`.
 Quoted exact uppercase names on a registered computed-read line are inventoried too.
-A new helper needs both its call idiom and its implementation file registered in the
-script, with a fixture test; an unregistered computed lookup fails closed.
+Anywhere else a computed lookup fails closed with
+`ENV_CONTRACT_DYNAMIC_READ_UNREGISTERED <file>:<line>`. A new helper needs both its
+call idiom and its implementation file registered in the script, with a fixture test.
 
 To add a variable, add a row in **each consuming process's table** in the same change
 as the read. Tables must start with `Variable`, contain a `Consumer` column with
@@ -54,7 +60,7 @@ and read failures also exit 1. Success prints `ENV_CONTRACT_PASS`.
   `secret://<provider>/<name>[#<field>]`, resolved through SecretsManager (ADR 0013).
   The S3 SDK's external credential chain is a separate existing exception below.
   This document records the CLI discrepancy; it does not authorize promoting it.
-- **Worker diagnostics:** `packages/api/src/processing-worker.ts:39` replaces startup
+- **Worker diagnostics:** `packages/api/src/processing-worker.ts:51` replaces startup
   messages containing a colon (including `CONFIG_REQUIRED:<NAME>` and suffixed
   `SECRET_*` errors) with `PROCESSING_STARTUP_FAILED`. `processing-config.ts:6`
   emits `PROCESSING_CONFIGURATION_REQUIRED` without identifying the variable.
@@ -121,11 +127,11 @@ is a handle. The **resolved** session secret must be at least 32 characters
 
 | Variable | Required / default | Kind | When read | Consumer | Failure when missing |
 | --- | --- | --- | --- | --- | --- |
-| `NEXTAUTH_URL` | required; canonical HTTPS origin | URL | startup | `apps/web/server.ts:5` | `CONFIG_REQUIRED:NEXTAUTH_URL` |
+| `NEXTAUTH_URL` | required; canonical HTTPS origin | URL | startup | `apps/web/server.ts:6` | `CONFIG_REQUIRED:NEXTAUTH_URL` |
 | `NEXTAUTH_URL` | required; compared against Origin on proxied writes | URL | per use | `apps/web/pages/api/platform/[...path].ts:18` | `CONFIG_REQUIRED:NEXTAUTH_URL` (proxy catches as `SERVICE_UNAVAILABLE`) |
-| `UNAI_WEB_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `apps/web/server.ts:10` | `CONFIG_REQUIRED:UNAI_WEB_TLS_KEY_FILE` |
-| `UNAI_WEB_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `apps/web/server.ts:10` | `CONFIG_REQUIRED:UNAI_WEB_TLS_CERT_FILE` |
-| `UNAI_WEB_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `apps/web/server.ts:15` | none; default |
+| `UNAI_WEB_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `apps/web/server.ts:12` | `CONFIG_REQUIRED:UNAI_WEB_TLS_KEY_FILE` |
+| `UNAI_WEB_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `apps/web/server.ts:12` | `CONFIG_REQUIRED:UNAI_WEB_TLS_CERT_FILE` |
+| `UNAI_WEB_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `apps/web/server.ts:13` | none; default |
 | `UNAI_SECRETS_MOUNT` | required when auth is first needed | file path | first request | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
 | `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle; pool cached | secret handle | first request | `apps/web/lib/server.ts:16` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
 | `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA; pool cached | file path | first request | `apps/web/lib/server.ts:17` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
@@ -145,10 +151,12 @@ replace them with `SERVICE_UNAVAILABLE` or a generic error. Reports never expose
 
 ## Processing worker (pnpm start:worker)
 
-Startup (`packages/api/src/processing-worker.ts:12-24`): release/owner/purpose/sensitivity/
+Startup (`packages/api/src/processing-worker.ts:15-34`): release/owner/purpose/sensitivity/
 poll configuration → secrets → model provider → database CA and resolved application
-URL → encryption-at-rest check → runtime validation and release comparison. `--check`
-performs these checks then exits; it does not skip required model credentials.
+URL → encryption-at-rest check → runtime validation and release comparison → evidence
+bucket check. `--check` performs these checks then exits; it does not skip required
+model credentials or the bucket check, which prints the API's `STORAGE_ENCRYPTION_REQUIRED`
+or `STORAGE_CONFIGURATION_INVALID`.
 A single process handles one owner scope and data purpose. Invalid UUIDs, release,
 purpose, sensitivity or poll bounds give `PROCESSING_CONFIGURATION_INVALID`.
 The table records the **printed** missing-configuration code (exit 1); suffixed
@@ -164,15 +172,19 @@ secret/configuration errors collapse to `PROCESSING_STARTUP_FAILED`, as noted ab
 | `UNAI_PROCESSING_MAXIMUM_SENSITIVITY` | required; NORMAL, PRIVATE or RESTRICTED | literal | startup | `packages/api/src/processing-config.ts:21` | `PROCESSING_CONFIGURATION_REQUIRED` |
 | `UNAI_PROCESSING_POLL_MS` | optional; 1000; integer 100–60000 | literal | startup | `packages/api/src/processing-config.ts:22` | none; default |
 | `UNAI_SECRETS_MOUNT` | required | file path | startup | `packages/secrets/src/index.ts:107` | `PROCESSING_STARTUP_FAILED` |
-| `UNAI_MODEL_PROVIDER` | required; registered provider (anthropic or openai bundled) | literal | startup | `packages/model/src/providers.ts:157` | `MODEL_CONFIG_REQUIRED` |
-| `UNAI_MODEL_ENDPOINT` | required; HTTPS provider endpoint | URL | startup | `packages/model/src/providers.ts:161` | `MODEL_CONFIG_REQUIRED` |
-| `UNAI_MODEL_ID` | required; provider model ID | literal | startup | `packages/model/src/providers.ts:161` | `MODEL_CONFIG_REQUIRED` |
-| `UNAI_MODEL_API_KEY` | required; model credential handle | secret handle | startup | `packages/model/src/providers.ts:163` | `PROCESSING_STARTUP_FAILED` |
-| `UNAI_MODEL_INPUT_MICROUNITS_PER_1K` | required; finite nonnegative input cost per 1000 tokens | literal | startup | `packages/model/src/providers.ts:167` | `MODEL_CONFIG_REQUIRED` |
-| `UNAI_MODEL_OUTPUT_MICROUNITS_PER_1K` | required; finite nonnegative output cost per 1000 tokens | literal | startup | `packages/model/src/providers.ts:168` | `MODEL_CONFIG_REQUIRED` |
-| `UNAI_MODEL_API_VERSION` | optional; anthropic defaults to 2023-06-01; unused by openai | literal | startup | `packages/model/src/providers.ts:170` | none; provider default |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/processing-worker.ts:15` | `PROCESSING_CONFIGURATION_REQUIRED` |
-| `UNAI_APP_DATABASE_URL` | required; application-role URL handle | secret handle | startup | `packages/api/src/processing-worker.ts:16` | `PROCESSING_STARTUP_FAILED` |
+| `UNAI_MODEL_PROVIDER` | required; registered provider (anthropic or openai bundled) | literal | startup | `packages/model/src/providers.ts:173` | `MODEL_CONFIG_REQUIRED` |
+| `UNAI_MODEL_ENDPOINT` | required; HTTPS provider endpoint | URL | startup | `packages/model/src/providers.ts:177` | `MODEL_CONFIG_REQUIRED` |
+| `UNAI_MODEL_ID` | required; provider model ID | literal | startup | `packages/model/src/providers.ts:177` | `MODEL_CONFIG_REQUIRED` |
+| `UNAI_MODEL_API_KEY` | required; model credential handle | secret handle | startup | `packages/model/src/providers.ts:179` | `PROCESSING_STARTUP_FAILED` |
+| `UNAI_MODEL_INPUT_MICROUNITS_PER_1K` | required; finite nonnegative input cost per 1000 tokens | literal | startup | `packages/model/src/providers.ts:183` | `MODEL_CONFIG_REQUIRED` |
+| `UNAI_MODEL_OUTPUT_MICROUNITS_PER_1K` | required; finite nonnegative output cost per 1000 tokens | literal | startup | `packages/model/src/providers.ts:184` | `MODEL_CONFIG_REQUIRED` |
+| `UNAI_MODEL_API_VERSION` | optional; anthropic defaults to 2023-06-01; unused by openai | literal | startup | `packages/model/src/providers.ts:186` | none; provider default |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/processing-worker.ts:18` | `PROCESSING_CONFIGURATION_REQUIRED` |
+| `UNAI_APP_DATABASE_URL` | required; application-role URL handle | secret handle | startup | `packages/api/src/processing-worker.ts:19` | `PROCESSING_STARTUP_FAILED` |
+| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/processing-worker.ts:31` | `PROCESSING_CONFIGURATION_REQUIRED` |
+| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/processing-worker.ts:31` | `PROCESSING_CONFIGURATION_REQUIRED` |
+| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/processing-worker.ts:32` | `PROCESSING_CONFIGURATION_REQUIRED` |
+| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/processing-worker.ts:32` | `PROCESSING_CONFIGURATION_REQUIRED` |
 
 Unknown providers give `MODEL_PROVIDER_UNKNOWN`; bad/non-HTTPS endpoints give
 `MODEL_ENDPOINT_INVALID`/`MODEL_ENDPOINT_INSECURE`. Empty numeric strings currently

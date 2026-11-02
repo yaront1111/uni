@@ -20,9 +20,10 @@ const REGISTERED=new Set([
 const MEMBERS=[new RegExp(RECEIVER+String.raw`\s*\??\.\s*([A-Z][A-Z0-9_]*)\b`,'g'),
   /\bprocess\.env\s*\??\.\s*([A-Za-z_]\w*)\b/g];
 const INDEX=new RegExp(RECEIVER+'\\s*(?:\\?\\.)?\\[\\s*([\'"`])([A-Za-z_]\\w*)\\1\\s*\\]','g');
-// Include whitespace in the exclusion: backtracking must not turn empty brackets
-// (including a TypeScript array type) into a computed lookup.
-const COMPUTED=new RegExp(RECEIVER+'\\s*(?:\\?\\.)?\\[\\s*(?![\\s\\]\'"`])');
+// Any bracket key except an empty one (a TypeScript array type) or exactly one quoted
+// identifier literal (an INDEX read) is computed, so a quote-led concatenation or
+// interpolated template fails closed. Whitespace is skipped inside the lookaheads.
+const COMPUTED=new RegExp(RECEIVER+'\\s*(?:\\?\\.)?\\[(?!\\s*\\])(?!\\s*([\'"`])[A-Za-z_]\\w*\\1\\s*\\])');
 const QUOTED=/(['"`])([A-Z][A-Z0-9_]*)\1/g;
 const skipped=name=>['node_modules','dist','.next'].includes(name)||name.startsWith('.moe');
 const portable=path=>path.split(sep).join('/');

@@ -34,12 +34,13 @@ it('reports undocumented reads and unread rows, not documented reads',async()=>{
 });
 
 it('recognises member, literal-index and helper reads without counting keys or error codes',async()=>{
-  const names=['BRACKET','ENV','SUFFIX','REQUIRED','SECRET','POOL','OPTIONAL','TEMPLATE','PROCESSING','NUMBER','SECRET_WRAPPER'];
+  const names=['BRACKET','ENV','SUFFIX','REQUIRED','SECRET','POOL','OPTIONAL','TEMPLATE','PROCESSING','NUMBER','SECRET_WRAPPER','PADDED'];
   const reads=["process.env['UNAI_FIXTURE_BRACKET']",'env.UNAI_FIXTURE_ENV','storageEnv.UNAI_FIXTURE_SUFFIX',
     "required('UNAI_FIXTURE_REQUIRED')","requireSecret(secrets,'UNAI_FIXTURE_SECRET')",
     "databasePool('UNAI_FIXTURE_POOL','UNAI_FIXTURE_POOL_CODE')",'env?.UNAI_FIXTURE_OPTIONAL',
     'process.env[`UNAI_FIXTURE_TEMPLATE`]',"processingRequired(env,'UNAI_FIXTURE_PROCESSING')",
-    "requiredNumber(env,'UNAI_FIXTURE_NUMBER')","secret('UNAI_FIXTURE_SECRET_WRAPPER')"];
+    "requiredNumber(env,'UNAI_FIXTURE_NUMBER')","secret('UNAI_FIXTURE_SECRET_WRAPPER')",
+    "process.env[ 'UNAI_FIXTURE_PADDED' ]"];
   await fixture({[document]:table(''),[source]:[...reads,"const x={UNAI_FIXTURE_WRITE:'x'};",
     '// UNAI_FIXTURE_COMMENT',"new Error('UNAI_FIXTURE_ERROR');",'type E=Env[];','env[ ];'].join('\n'),
     'packages/x/src/b.test.ts':'process.env.UNAI_EXCLUDED_TEST',
@@ -67,6 +68,18 @@ it('rejects computed reads in unregistered files and invalid consumer references
     expect(result.stderr).toContain('ENV_CONTRACT_DYNAMIC_READ_UNREGISTERED packages/x/src/c.ts:1');
     expect(result.stderr).toContain('ENV_CONTRACT_CONSUMER_INVALID UNAI_FIXTURE_READ packages/x/src/missing.ts:1');
     expect(result.stderr).not.toContain('NODE_FIXTURE_EXTERNAL');
+  });
+});
+
+it('treats a quote-led key that is not one identifier literal as a computed read',async()=>{
+  const keys=["process.env['UNAI_' + suffix]",'process.env[`UNAI_${suffix}`]',"env['UNAI_' + suffix]",
+    'process.env[ "UNAI_" + suffix ]',"process.env?.['UNAI_' + suffix]"];
+  await fixture({[document]:table(''),
+    'packages/x/src/d.ts':keys.map((key,index)=>`export const read${index} = (suffix: string) => ${key};`).join('\n')},root=>{
+    const result=run(root);
+    expect(result.status).toBe(1);
+    for(const line of keys.keys())expect(result.stderr).toContain(`ENV_CONTRACT_DYNAMIC_READ_UNREGISTERED packages/x/src/d.ts:${line+1}`);
+    expect(result.stderr).toContain(`ENV_CONTRACT_FAILED ${keys.length} issue(s)`);
   });
 });
 
