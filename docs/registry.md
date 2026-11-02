@@ -44,6 +44,7 @@ pnpm uai registry shadow-diff --baseline <v> --candidate <v> [--sample corpus:sy
     --baseline-extractor <model@prompt> --candidate-extractor <model@prompt>] [--report <path>]
 pnpm uai registry projection-replay --owner-scope <uuid> --actor <uuid> [--registry-version <v>] [--report <path>]
 pnpm uai registry publish --version 0.1.0 [--correlation-id <uuid>]
+pnpm uai registry tags [--require]
 pnpm validate:registry        # same as registry lint; runs in CI
 ```
 
@@ -81,6 +82,38 @@ docs/foundation.md). Re-running for the same tag and commit reports
 refused with `REGISTRY_RELEASE_CONFLICT`. Output includes the UUIDv7 release ID,
 commit, content hash and correlation ID.
 
+`tags` checks the tags `publish` needs. Without the tag `registry-v<version>`,
+`publish` refuses with `REGISTRY_TAG_MISSING`; without a published release the
+processing worker cannot start (`PROCESSING_RELEASE_UNAVAILABLE`,
+`packages/api/src/processing-runtime.ts`). The API starts once
+`UNAI_REGISTRY_RELEASE_ID` and `UNAI_REGISTRY_RELEASE` are set and well-formed,
+but every memory-processing path depends on the published row. For each version
+in `registry/releases.yaml`, in order, `tags` prints one line:
+
+- `<tag> PRESENT <commit>`: the tag's commit holds committed release files
+  that hash to the recorded `contentHash`.
+- `<tag> MISSING <command>`: no such tag exists.
+- `<tag> MISMATCH <command>`: the tag names a commit with other bytes, or no
+  commit at all.
+
+The command is the exact `git tag -a` to run, `git tag -a -f` for a MISMATCH.
+It names the newest commit that changed `registry/releases/<version>/` to bytes
+that hash to the recorded value. A version that no commit holds prints
+`no commit holds the recorded content hash` in place of a command. After the
+version lines come the push lines, by name only:
+
+- one `git push origin refs/tags/<tag> ...` line naming every MISSING tag that
+  has a command;
+- one `git push --force origin refs/tags/<tag>` line per MISMATCH tag that has
+  a command. Forcing is the owner's call.
+
+It runs only read-only Git commands and never creates, moves or pushes a tag.
+Report mode exits 0 whatever it finds; `--require` exits 1 with
+`REGISTRY_TAGS_INCOMPLETE` and the versions that are not PRESENT. It needs a
+Git repository (`REGISTRY_GIT_UNAVAILABLE`) with full history
+(`REGISTRY_HISTORY_SHALLOW`). CI runs the report after lint, on a checkout with
+full history and tags.
+
 ## Release procedure
 
 Release 0.3.0 adds optional `agingPolicy` metadata to existing predicates (ADR
@@ -107,9 +140,12 @@ release through `unai_private.aging_policy`, never a latest-release fallback.
    `releaseContentHash` computes it and `lint` prints it.
 3. Obtain registry review and record its decisions in the ADR. Release 0.1.0
    review is recorded: `shared.obligation.description` is SET (ADR 0011).
-4. After merge, tag the landing commit: `git tag registry-v<version>` and
-   push the tag. Never move or delete a release tag; a moved tag with changed
-   content is refused by the hash check.
+4. After merge, run `pnpm uai registry tags` and run the `git tag -a` command
+   it printed. Then run the push line or lines it printed. Do not run a bare
+   `git push` with the all-tags option: it pushes every local tag, including
+   unrelated or stale ones. Confirm that `pnpm uai registry tags --require`
+   exits 0. Never move or delete a correct release tag; a moved tag with
+   changed content is refused by the hash check.
 5. Run migrations (`pnpm db:migrate`), then `pnpm uai registry publish`.
 
 `.gitattributes` keeps release files byte-exact (`-text`), so Windows checkouts
@@ -141,7 +177,8 @@ hash identically to Git objects.
 `REGISTRY_KIND_INVALID`, `REGISTRY_LOAD_FAILED`, `REGISTRY_COMMAND_FAILED`,
 `REGISTRY_TAG_SOURCE_REQUIRED`, `REGISTRY_CORRELATION_ID_INVALID`,
 `REGISTRY_RELEASE_CONFLICT`, `REGISTRY_PUBLISH_FAILED`,
-`REGISTRY_PUBLISH_CONFIGURATION_REQUIRED`, `REGISTRY_COMMAND_UNKNOWN`.
+`REGISTRY_PUBLISH_CONFIGURATION_REQUIRED`, `REGISTRY_COMMAND_UNKNOWN`,
+`REGISTRY_TAGS_INCOMPLETE`, `REGISTRY_GIT_UNAVAILABLE`, `REGISTRY_HISTORY_SHALLOW`.
 `validatePredicateValue` refuses with `REGISTRY_PREDICATE_UNKNOWN` or
 `REGISTRY_VALUE_INVALID` (for example any non-monetary obligation principal).
 

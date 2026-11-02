@@ -4,9 +4,10 @@ import { createDatabasePool } from '@unai/postgres';
 import { RegistryError, lintRegistryRepository, loadRegistryRelease, readTaggedMigrationEvidence, type LoadedRegistryRelease } from './release.js';
 import { checkMigrationEvidence, type MigrationStatus } from './migration.js';
 import { publishRegistryRelease } from './snapshot.js';
+import { formatReleaseTagReport, inspectReleaseTags } from './tags.js';
 
 // CLI only (PRD §35.14): no network registry service exists in V0. The commands:
-//   uai registry lint | test | shadow-diff | projection-replay | publish
+//   uai registry lint | test | shadow-diff | projection-replay | publish | tags
 //   uai corpus import | annotate | run | verify | status
 const [group, command, ...rest] = process.argv.slice(2);
 const option = (name: string) => { const index = rest.indexOf('--' + name); return index >= 0 ? rest[index + 1] : undefined; };
@@ -212,6 +213,13 @@ try {
       if (result.equalsIncremental === false) { fail('PROJECTION_REPLAY_DIVERGED', { receipts: summary.receipts }); }
       else console.log(JSON.stringify(summary));
     } finally { await pool.end(); }
+  } else if (group === 'registry' && command === 'tags') {
+    // Plain lines, not one JSON line: the owner copies the printed `git tag -a`
+    // and push commands. Nothing here writes to Git; tagging is the owner's act.
+    const reports = await inspectReleaseTags(process.cwd());
+    for (const line of formatReleaseTagReport(reports)) console.log(line);
+    const incomplete = reports.filter(entry => entry.status !== 'PRESENT').map(entry => entry.version);
+    if (flag('require') && incomplete.length) fail('REGISTRY_TAGS_INCOMPLETE', { versions: incomplete });
   } else if (group === 'corpus') {
     const corpus = await import('./corpus.js');
     const kind = (option('corpus') ?? (command === 'import' || command === 'annotate' ? 'private' : 'synthetic')) === 'private'

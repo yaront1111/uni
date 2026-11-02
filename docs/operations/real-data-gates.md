@@ -309,10 +309,16 @@ create or push tags.
 
 1. `pnpm uai registry lint` prints every recorded version with its `tag` and
    `contentHash`, read from the working tree.
-2. Create the tags with a registry tag command once one is documented in
-   [registry.md](../registry.md); none exists at this writing. Until then, leave
-   this gate UNVERIFIED: a hand-placed tag on the wrong commit is discovered only
-   when publish refuses it.
+2. `pnpm uai registry tags` prints one line per recorded version, with the
+   exact `git tag -a` command for each one that is not PRESENT
+   ([registry.md](../registry.md)). Run each printed `git tag -a ...` command.
+   `pnpm uai registry tags --require` must then exit 0 before step 3. A
+   MISMATCH tag also gets a printed `git push --force origin refs/tags/<tag>`
+   line, and forcing it is the owner's call. When origin already holds that
+   tag, run the forced line before step 3: step 3's by-name push is rejected
+   for a tag that origin holds at another commit. Keep that line from the first
+   report, because a re-run after re-tagging reports PRESENT and prints no push
+   line.
 3. `git push origin registry-v0.1.0 registry-v0.2.0 registry-v0.3.0`. Push only
    these; pushing every local tag would also publish any other tag you hold.
 4. `git ls-remote --tags origin 'registry-v*'`. Its `^{}` line for each tag is

@@ -33,7 +33,7 @@ export interface LoadedRegistryRelease {
 /** The one release file that is neither the manifest nor a contract. */
 export const MIGRATION_FILE = 'migration.yaml';
 
-interface ReleaseFile { path: string; bytes: Buffer }
+export interface ReleaseFile { path: string; bytes: Buffer }
 interface ReleaseRecord { version: string; tag: string; contentHash: string }
 
 export const RELEASE_INDEX_PATH = 'registry/releases.yaml';
@@ -152,7 +152,8 @@ async function observed<T extends LoadedRegistryRelease>(operation: string, vers
   });
 }
 
-function git(repository: string, args: string[]): Buffer | null {
+/** Runs a read-only `git` command; stdout, or null on any failure. */
+export function git(repository: string, args: string[]): Buffer | null {
   const result = spawnSync('git', ['-c', 'core.quotepath=off', ...args], {
     cwd: repository, maxBuffer: 64 * 1024 * 1024, timeout: 30000, shell: false,
     // Replacement refs and prompts must not alter or block reads of the tagged objects.
@@ -168,22 +169,32 @@ export function loadRegistryRelease(options: { repository: string; version: stri
     const record = await recordFor(repository, options.version);
     const commit = git(repository, ['rev-parse', '--verify', '--quiet', 'refs/tags/' + record.tag + '^{commit}'])?.toString('utf8').trim();
     if (!commit || !/^([a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new RegistryError('REGISTRY_TAG_MISSING');
-    const prefix = RELEASES_DIRECTORY + '/' + record.version + '/';
-    const listing = git(repository, ['ls-tree', '-r', '-z', '--full-tree', commit, '--', prefix]);
-    if (!listing) throw new RegistryError('REGISTRY_RELEASE_MISSING');
-    const files: ReleaseFile[] = [];
-    for (const entry of listing.toString('utf8').split('\0').filter(Boolean)) {
-      const match = /^(\d{6}) (\w+) ([a-f0-9]+)\t(.+)$/s.exec(entry);
-      const path = match?.[4]?.slice(prefix.length) ?? '';
-      if (!match || match[1] !== '100644' || match[2] !== 'blob' || !match[4]!.startsWith(prefix) || path.includes('/')) {
-        throw new RegistryError('REGISTRY_FILE_INVALID');
-      }
-      const bytes = git(repository, ['cat-file', 'blob', match[3]!]);
-      if (!bytes) throw new RegistryError('REGISTRY_FILE_INVALID');
-      files.push({ path, bytes });
-    }
-    return assemble(record, files, 'GIT_TAG', commit);
+    return assemble(record, readCommittedReleaseFiles(repository, commit, record.version), 'GIT_TAG', commit);
   });
+}
+
+/** The committed files of `registry/releases/<version>/` at `commit`, read from
+ * Git objects (never the working tree): the bytes publish hashes. An empty
+ * directory yields []; anything but mode 100644 blobs directly inside it is refused. */
+export function readCommittedReleaseFiles(repository: string, commit: string, version: string): ReleaseFile[] {
+  // The loader validated both already; other callers get the same guard before Git.
+  if (!RELEASE_VERSION.test(version)) throw new RegistryError('REGISTRY_VERSION_INVALID');
+  if (!/^([a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new RegistryError('REGISTRY_RELEASE_MISSING');
+  const prefix = RELEASES_DIRECTORY + '/' + version + '/';
+  const listing = git(repository, ['ls-tree', '-r', '-z', '--full-tree', commit, '--', prefix]);
+  if (!listing) throw new RegistryError('REGISTRY_RELEASE_MISSING');
+  const files: ReleaseFile[] = [];
+  for (const entry of listing.toString('utf8').split('\0').filter(Boolean)) {
+    const match = /^(\d{6}) (\w+) ([a-f0-9]+)\t(.+)$/s.exec(entry);
+    const path = match?.[4]?.slice(prefix.length) ?? '';
+    if (!match || match[1] !== '100644' || match[2] !== 'blob' || !match[4]!.startsWith(prefix) || path.includes('/')) {
+      throw new RegistryError('REGISTRY_FILE_INVALID');
+    }
+    const bytes = git(repository, ['cat-file', 'blob', match[3]!]);
+    if (!bytes) throw new RegistryError('REGISTRY_FILE_INVALID');
+    files.push({ path, bytes });
+  }
+  return files;
 }
 
 /** The migration evidence a tagged release names, read from the same immutable

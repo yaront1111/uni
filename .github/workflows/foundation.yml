@@ -7,7 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Full history and the tags: `uai registry tags` walks each release
+      # directory's history and reads the registry-v<version> tags.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: pnpm/action-setup@v4
         with:
           version: 11.0.8
@@ -61,6 +66,10 @@ jobs:
       # rollback plan (PRD §17.7, CRT-REG-05-A).
       - name: Registry lint
         run: pnpm validate:registry --report registry-lint-report.json
+      # Report mode exits 0 whatever it finds: the owner creates and pushes the
+      # tags, and `pnpm uai registry tags --require` is the release gate.
+      - name: Registry release tags (report)
+        run: pnpm uai registry tags
       # The other three registry commands (PRD §35.14, CRT-REG-02-A). The
       # database-backed shadow-diff and projection-replay runs, as real CLI
       # processes over TLS, are part of `pnpm test` above
