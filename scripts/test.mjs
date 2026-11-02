@@ -6,14 +6,14 @@ import { fileURLToPath } from 'node:url';
 import {mkdir,readFile,writeFile,unlink} from 'node:fs/promises';
 import {acceptanceResults} from './acceptance-gate.mjs';
 import {deliveredStorage,startStorageHarness} from './storage-harness.mjs';
-import {stageFilters} from './test-stages.mjs';
+import {maxWorkers,stageFilters} from './test-stages.mjs';
 import {workspaceEvidence} from './workspace-evidence.mjs';
 import {databaseRoundtrip} from './database-roundtrip.mjs';
 import {postgresRunArguments} from './postgres-harness.mjs';
 
 const args=process.argv.slice(2);
 if(args.length&&!(args.length===2&&args[0]==='--stage'))throw new Error('TEST_ARGUMENTS_INVALID');
-const stage=args[1];
+const stage=args[1],workers=maxWorkers(process.env);
 const filters=stage?stageFilters(stage):[];
 
 const {Pool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg');
@@ -110,7 +110,7 @@ try {
   for(const path of stage?[testReport]:[testReport,'test-results/acceptance/scenarios.json','test-results/performance/load.json','test-results/performance/trace.json']){
     await unlink(path).catch(error=>{if(error.code!=='ENOENT')throw error;});
   }
-  const test=spawn(process.execPath,['node_modules/vitest/vitest.mjs','run',...filters,'--maxWorkers=4','--silent=passed-only','--reporter=default','--reporter=json','--outputFile.json='+testReport],{
+  const test=spawn(process.execPath,['node_modules/vitest/vitest.mjs','run',...filters,'--maxWorkers='+workers,'--silent=passed-only','--reporter=default','--reporter=json','--outputFile.json='+testReport],{
     stdio:'inherit',
     env:{...process.env,...storage.env,UNAI_TEST_DATABASE_URL:databaseUrl},
   });
