@@ -3,7 +3,7 @@ import { dataPurposeSchema, sensitivitySchema } from '@unai/domain';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export function processingRequired(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
-  if (!value) throw new Error('PROCESSING_CONFIGURATION_REQUIRED');
+  if (!value) throw new Error('PROCESSING_CONFIGURATION_REQUIRED:'+name);
   return value;
 }
 export function processingRelease(env: NodeJS.ProcessEnv) {

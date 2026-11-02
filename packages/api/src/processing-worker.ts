@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import {startTelemetry,type Telemetry} from '@unai/observability/telemetry';
+import {startTelemetry,startupFailureCode,type Telemetry} from '@unai/observability/telemetry';
 // One extraction (processing-runtime, 300s), initiative (initiative-runtime, 300s)
 // and connector sync (connector-sync-job, 600s) attempt per turn. Beyond their
 // summed leases a busy turn is wedged; while idle the limit is 3 * pollMs.
@@ -12,8 +12,9 @@ const PROCESSING_TURN_LIMIT_MS = (300 + 300 + 600) * 1000;
 let telemetry:Telemetry|undefined;
 try { telemetry=await startTelemetry({serviceName:'unai-worker',version:'0.1.0'});await main(); }
 catch (error) {
-  const code = error instanceof Error && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.message) ? error.message : 'PROCESSING_STARTUP_FAILED';
-  process.stderr.write(code + '\n'); process.exitCode = 1;
+  const failure = startupFailureCode(error);
+  process.stderr.write(JSON.stringify({event:'startup_failed',code:failure?.code??'PROCESSING_STARTUP_FAILED',variable:failure?.variable??null})+'\n');
+  process.exitCode = 1;
 }
 finally { await telemetry?.shutdown(); }
 

@@ -14,6 +14,20 @@ type Options={
 const OWN=/^unai\./;
 const log=(status:string)=>console.info(JSON.stringify({event:'telemetry',status}));
 
+/** Raw pg, AWS SDK, tls and fs text can carry hosts, paths or key material.
+ * Only known variable prefixes may retain a suffix, never configured values. */
+export function startupFailureCode(error:unknown):{code:string;variable:string|null}|null{
+  const match=/^([A-Z][A-Z0-9_]{0,63})(?::((?:UNAI|NEXTAUTH|GOOGLE)_[A-Z0-9_]{1,64})$|:|$)/.exec(error instanceof Error?error.message:'');
+  if(match){
+    const variable=match[2]??null;
+    return {code:match[1]!+(variable?':'+variable:''),variable};
+  }
+  if(typeof error==='object'&&error!==null&&'code' in error&&typeof error.code==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)){
+    return {code:error.code,variable:null};
+  }
+  return null;
+}
+
 function endpointUrl(value:string):string{
   let url:URL;
   try{url=new URL(value);}catch{throw new Error('TELEMETRY_ENDPOINT_INVALID');}
