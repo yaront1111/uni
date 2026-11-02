@@ -69,6 +69,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       // An export is the owner's own, bounded by the owner's widest ceiling.
       ...(purpose==='data.export'?{'x-maximum-sensitivity':'RESTRICTED'}:{})},scopedBody,
       purpose==='data.export'?EXPORT_RESPONSE_BYTES:undefined);
+    if(response.status===429&&typeof response.retryAfter==='string')res.setHeader('Retry-After',response.retryAfter);
     return res.status(response.status).json(response.body);
   }catch{return res.status(503).json({code:'SERVICE_UNAVAILABLE'});}
 }

@@ -89,7 +89,7 @@ options: `createDatabasePool` rejects **all** query options and blank CA content
 
 ## API (pnpm start:api)
 
-Startup order (`packages/api/src/server.ts:6-36`): startTelemetry → secrets manager → CA and the two
+Startup order (`packages/api/src/server.ts:6-41`): startTelemetry → rate-limit validation → secrets manager → CA and the two
 resolved database URLs → database encryption-at-rest declaration → S3 bucket check →
 registry pin, connector runtime and listener TLS → listen. `unai.encryption_at_rest`
 is a **database setting**, not an environment variable; absence or an invalid
@@ -102,24 +102,32 @@ below. File-open failures currently have no application-level translation here.
 
 | Variable | Required / default | Kind | When read | Consumer | Failure when missing |
 | --- | --- | --- | --- | --- | --- |
+| `UNAI_API_RATE_LIMIT_PER_MINUTE` | optional; 600 | literal | startup, before database connections | `packages/api/src/server.ts:18` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_API_RATE_LIMIT_PER_MINUTE` |
+| `UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` | optional; 30 | literal | startup, before database connections | `packages/api/src/server.ts:19` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` |
 | `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `packages/api/src/server.ts:6` | `packages/observability/src/telemetry.ts:56` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
 | `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:63` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
 | `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:60` | TELEMETRY_METRIC_INTERVAL_INVALID |
 | `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:61` | TELEMETRY_ENVIRONMENT_INVALID |
 | `UNAI_SECRETS_MOUNT` | required; mounted provider directory | file path | startup | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/server.ts:17` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
-| `UNAI_APP_DATABASE_URL` | required; low-privilege application URL handle | secret handle | startup | `packages/api/src/server.ts:18` | `CONFIG_REQUIRED:UNAI_APP_DATABASE_URL` |
-| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle | secret handle | startup | `packages/api/src/server.ts:19` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
-| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/server.ts:23` | `CONFIG_REQUIRED:UNAI_S3_ENDPOINT` |
-| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/server.ts:23` | `CONFIG_REQUIRED:UNAI_S3_REGION` |
-| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/server.ts:23` | `CONFIG_REQUIRED:UNAI_S3_BUCKET` |
-| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/server.ts:23` | `CONFIG_REQUIRED:UNAI_S3_KMS_KEY_ID` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/server.ts:22` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
+| `UNAI_APP_DATABASE_URL` | required; low-privilege application URL handle | secret handle | startup | `packages/api/src/server.ts:23` | `CONFIG_REQUIRED:UNAI_APP_DATABASE_URL` |
+| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle | secret handle | startup | `packages/api/src/server.ts:24` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
+| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/server.ts:28` | `CONFIG_REQUIRED:UNAI_S3_ENDPOINT` |
+| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/server.ts:28` | `CONFIG_REQUIRED:UNAI_S3_REGION` |
+| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/server.ts:28` | `CONFIG_REQUIRED:UNAI_S3_BUCKET` |
+| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/server.ts:28` | `CONFIG_REQUIRED:UNAI_S3_KMS_KEY_ID` |
 | `UNAI_REGISTRY_RELEASE_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:10` | `PROCESSING_CONFIGURATION_REQUIRED` |
 | `UNAI_REGISTRY_RELEASE` | required x.y.z release | literal | startup | `packages/api/src/processing-config.ts:11` | `PROCESSING_CONFIGURATION_REQUIRED` |
-| `UNAI_API_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `packages/api/src/server.ts:29` | `CONFIG_REQUIRED:UNAI_API_TLS_KEY_FILE` |
-| `UNAI_API_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `packages/api/src/server.ts:29` | `CONFIG_REQUIRED:UNAI_API_TLS_CERT_FILE` |
-| `UNAI_API_PORT` | optional; 3443 | literal | startup | `packages/api/src/server.ts:30` | none; default |
-| `UNAI_API_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `packages/api/src/server.ts:30` | none; default |
+| `UNAI_API_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `packages/api/src/server.ts:34` | `CONFIG_REQUIRED:UNAI_API_TLS_KEY_FILE` |
+| `UNAI_API_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `packages/api/src/server.ts:34` | `CONFIG_REQUIRED:UNAI_API_TLS_CERT_FILE` |
+| `UNAI_API_PORT` | optional; 3443 | literal | startup | `packages/api/src/server.ts:35` | none; default |
+| `UNAI_API_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `packages/api/src/server.ts:35` | none; default |
+
+Rate limits are per API process and per aligned one-minute window; a single-owner
+deployment runs one API process. A refused request answers 429 `RATE_LIMITED` with
+a whole-second `Retry-After`. Both settings accept integers 1–999999; unset or
+empty uses the default. Sessions that already authenticated in this process bypass
+the address-failure bucket, but still count against their own session budget.
 
 Malformed registry UUID/version gives `PROCESSING_CONFIGURATION_INVALID`. TLS is
 in-process, not terminated at a trusted proxy; these settings do not enable proxy trust.
@@ -152,8 +160,8 @@ is a handle. The **resolved** session secret must be at least 32 characters
 | `GOOGLE_CLIENT_SECRET` | required for auth options; resolved each call | secret handle | per use | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:GOOGLE_CLIENT_SECRET` |
 | `NEXTAUTH_SECRET` | required; resolved secret at least 32 characters | secret handle | per use | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:NEXTAUTH_SECRET` |
 | `GOOGLE_CLIENT_ID` | required; plain OAuth client identifier | literal | per use | `apps/web/lib/server.ts:22` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID` |
-| `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use | `apps/web/lib/server.ts:31` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
-| `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use | `apps/web/lib/server.ts:35` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
+| `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use | `apps/web/lib/server.ts:34` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
+| `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use | `apps/web/lib/server.ts:38` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
 | `UNAI_OPERATIONS_REPORT_FILE` | optional; no report if absent | file path | per use | `apps/web/lib/operations-status.ts:6` | none; null report |
 | `UNAI_REGISTRY_LINT_REPORT_FILE` | optional; no lint report if absent | file path | per use | `apps/web/pages/ops/registry.tsx:13` | none; null report |
 | `UNAI_CORPUS_STATUS_FILE` | optional; no corpus status if absent | file path | per use | `apps/web/lib/corpus-status.ts:26` | none; null status |

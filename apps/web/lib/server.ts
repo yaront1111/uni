@@ -25,9 +25,12 @@ export async function identity(req:IncomingMessage){
   if((req.socket as TLSSocket).encrypted!==true)throw new Error('TLS_REQUIRED');
   const token=sessionToken(req.headers.cookie);return token?resolveSession(await authPool(),token):null;
 }
+export function retryAfterHeader(value:string|string[]|undefined):string|null{
+  return typeof value==='string'&&/^[0-9]{1,5}$/.test(value)&&value.trim()===value?value:null;
+}
 /** `maxResponseBytes` stays 1 MiB for every screen read; only the owner's export,
  * whose bundle carries raw evidence, is allowed a larger answer (ADR 0030 §9). */
-export async function apiRequest(path:string,method:string,headers:Record<string,string>,body?:unknown,maxResponseBytes=1024*1024):Promise<{status:number;body:unknown}>{
+export async function apiRequest(path:string,method:string,headers:Record<string,string>,body?:unknown,maxResponseBytes=1024*1024):Promise<{status:number;body:unknown;retryAfter:string|null}>{
   const base=new URL(required('UNAI_API_ORIGIN'));
   if(base.protocol!=='https:'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw new Error('API_TLS_CONFIG_INVALID');
   return new Promise((resolve,reject)=>{
@@ -37,7 +40,7 @@ export async function apiRequest(path:string,method:string,headers:Record<string
       const chunks:Buffer[]=[];let bytes=0;
       res.on('data',(chunk:Buffer)=>{bytes+=chunk.length;if(bytes>maxResponseBytes){res.destroy();reject(new Error('API_RESPONSE_INVALID'));}else chunks.push(chunk);});
       res.on('error',()=>reject(new Error('API_UNAVAILABLE')));
-      res.on('end',()=>{try{resolve({status:res.statusCode??502,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{reject(new Error('API_RESPONSE_INVALID'));}});
+      res.on('end',()=>{try{resolve({status:res.statusCode??502,body:JSON.parse(Buffer.concat(chunks).toString()),retryAfter:retryAfterHeader(res.headers['retry-after'])});}catch{reject(new Error('API_RESPONSE_INVALID'));}});
     });
     req.setTimeout(15000,()=>req.destroy());req.on('error',()=>reject(new Error('API_UNAVAILABLE')));req.end(encoded);
   });

@@ -10,9 +10,14 @@ const {createPlatformApi}=await import('./platform.js');
 const {createEvidenceObjects}=await import('./evidence.js');
 const {createConnectorRuntime}=await import('./connectors.js');
 const {processingRelease}=await import('./processing-config.js');
+const {DEFAULT_RATE_LIMITS,parseRateLimit}=await import('./rate-limit.js');
 function required(name:string){const value=process.env[name];if(!value)throw new Error('CONFIG_REQUIRED:'+name);return value;}
 // Credentials arrive as secrets-manager handles; configuration holding a literal
 // database URL is refused rather than started with.
+const rateLimit={
+  perSessionPerMinute:parseRateLimit(process.env.UNAI_API_RATE_LIMIT_PER_MINUTE,'UNAI_API_RATE_LIMIT_PER_MINUTE',DEFAULT_RATE_LIMITS.perSessionPerMinute),
+  authFailuresPerAddressPerMinute:parseRateLimit(process.env.UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE,'UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE',DEFAULT_RATE_LIMITS.authFailuresPerAddressPerMinute),
+};
 const secrets=createDefaultSecretsManager();
 const ca=readFileSync(required('UNAI_DATABASE_CA_FILE'),'utf8');
 const appPool=createDatabasePool(await requireSecret(secrets,'UNAI_APP_DATABASE_URL'),ca);
@@ -26,7 +31,7 @@ const evidenceObjects=await createEvidenceObjects({endpoint:required('UNAI_S3_EN
 // can reach neither, so a sync would answer CONNECTOR_CLIENT_UNSUPPORTED and a
 // disconnect CONNECTOR_REVOCATION_UNAVAILABLE. The OAuth material stays a
 // secret:// handle on the connector row; this passes the manager, not a token.
-const app=createPlatformApi({appPool,authPool,evidenceObjects,...processingRelease(process.env),connectors:createConnectorRuntime(secrets),tls:{key:readFileSync(required('UNAI_API_TLS_KEY_FILE')),cert:readFileSync(required('UNAI_API_TLS_CERT_FILE'))}});
+const app=createPlatformApi({appPool,authPool,evidenceObjects,rateLimit,...processingRelease(process.env),connectors:createConnectorRuntime(secrets),tls:{key:readFileSync(required('UNAI_API_TLS_KEY_FILE')),cert:readFileSync(required('UNAI_API_TLS_CERT_FILE'))}});
 await app.listen({port:Number(process.env.UNAI_API_PORT??3443),host:process.env.UNAI_API_BIND??'127.0.0.1'});
 let closing=false;
 const close=()=>{
