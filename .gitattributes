@@ -5,6 +5,8 @@ registry/releases.yaml -text
 corpus/** -text
 # Git hooks run under sh, which a CRLF checkout would break.
 .githooks/* text eol=lf
+# Deploy files are read on Linux: bash breaks on CRLF.
+deploy/** text eol=lf
 # New migrations keep identical hashed bytes across Windows worktrees.
 # Applied migrations retain their existing checkout behavior.
 migrations/0029_derived_evidence_erasure.sql text eol=lf
