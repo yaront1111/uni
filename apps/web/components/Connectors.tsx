@@ -45,6 +45,14 @@ const REFUSAL_TEXT: Record<string, string> = {
   CONNECTOR_INGESTION_STOPPED: 'This source is disconnected or revoked, so nothing was ingested.',
   CONNECTOR_ALREADY_CONNECTED: 'That account is already connected to this owner scope.',
 };
+/** The one sentence a refused write shows. Only an object body whose own string
+ * `code` is a REFUSAL_TEXT key picks its own sentence; every other body (null,
+ * array, scalar, unknown or inherited name) gets the generic one. */
+function refusalText(answer: unknown): string {
+  const code = typeof answer === 'object' && answer !== null ? (answer as {code?: unknown}).code : undefined;
+  return typeof code === 'string' && Object.hasOwn(REFUSAL_TEXT, code) ? REFUSAL_TEXT[code]
+    : 'The request was refused. Nothing was changed.';
+}
 
 const MANUAL_REVOCATION_TEXT = 'Uai has stopped using this key and forgotten its handle. Omi does not let apps revoke developer keys: revoke it in the Omi app under Settings > Developer.';
 
@@ -80,14 +88,12 @@ export function Connectors(props: ConnectorsProps) {
         body: JSON.stringify(body),
       });
       if (response.status === 401) {window.location.assign('/signin?reason=expired'); return;}
-      if (!response.ok) {
-        const answer = await response.json().catch(() => ({code: 'REQUEST_REFUSED'}));
-        throw new Error(REFUSAL_TEXT[answer.code as string] ?? 'The request was refused. Nothing was changed.');
-      }
+      if (!response.ok) {setError(refusalText(await response.json().catch(() => null))); return;}
       if (next) window.location.assign(next(await response.json().catch(() => null)));
       else window.location.reload();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'The request could not be completed.');
+    } catch {
+      // A thrown error's text (a network failure names the URL) is never shown.
+      setError('The request could not be completed.');
     } finally {setBusy(false);}
   }
   const disabled = busy || props.state !== 'IDLE';
