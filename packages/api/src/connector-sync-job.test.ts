@@ -9,6 +9,7 @@ import { listDeadLetterJobs } from '@unai/jobs';
 import { ConnectorError, createConnector, disconnectConnector, type ConnectorClient, type ConnectorFetch } from '@unai/connectors';
 import type { EvidenceObjects } from './evidence.js';
 import { CONNECTOR_SYNC_JOB_KIND, createConnectorSyncRuntime, enqueueConnectorSync } from './connector-sync-job.js';
+import { createConnectorRuntime } from './connectors.js';
 
 /**
  * Durable `connector.sync` jobs over real PostgreSQL: the worker-side handler, its
@@ -217,6 +218,46 @@ it('a disconnected connector completes the job with nothing to do', async () => 
     [o.ownerScopeId, job.jobId])).rows;
   expect(audits).toEqual([{ purpose: 'connector.sync', result: 'REFUSED', policy_decision: 'DENY' }]);
 }, TIMEOUT);
+
+// A first-party type has no provider to poll. The attempt is done on its first try
+// and records nothing on the connector: a recorded SYNC_FAILED would make migration
+// 0018's connector_ingestion_active trigger refuse every later upload naming it.
+for (const [connectorType, capabilityId] of [['DOCUMENT', 'documents.upload'], ['CONVERSATION', 'conversation.read_user_messages']] as const) {
+  it('a ' + connectorType + ' connector.sync job completes on its first attempt and records nothing on the connector', async () => {
+    const o = await owner();
+    const connectorId = await o.as('connector.manage', async tx => (await createConnector(tx, {
+      connectorType, externalAccountRef: 'first-party', secretRef: null,
+      requestedCapabilities: [{ capabilityId, granted: true }],
+    })).connectorId);
+    const logs = captureLogs();
+    const job = await enqueue(o, { connectorId });
+    // The production factory, with a NORMAL ceiling: that is below the PRIVATE floor,
+    // so a type check placed after the ceiling check would fail the run.
+    const production = createConnectorRuntime({ async resolve() { throw new Error('UNEXPECTED_SECRET_RESOLVE'); } });
+    const built: string[] = [];
+    const sync = createConnectorSyncRuntime({
+      appPool, ownerScopeId: o.ownerScopeId, actorId: o.actorId, dataPurpose: 'PERSONAL_ASSISTANCE',
+      maximumSensitivity: 'NORMAL', workerId: 'connector-sync-test-' + randomUUID(),
+      evidenceObjects: {
+        encryptionKeyRef: 'kms:test-double',
+        async put() { throw new Error('UNEXPECTED_PUT'); },
+        async get() { throw new Error('UNEXPECTED_GET'); },
+      },
+      connectorClient: input => { built.push(input.connectorType); return production.connectorClient(input); },
+    });
+    expect(await sync.runOnce()).toMatchObject({ claimed: true, job: { jobId: job.jobId, status: 'SUCCEEDED', attemptCount: 1 } });
+    expect(await sync.runOnce()).toEqual({ claimed: false });
+    expect(built).toEqual([]);
+    expect(await connectorRow(connectorId)).toMatchObject({ status: 'ACTIVE', last_sync_error: null });
+    const audits = (await admin.query(`SELECT purpose,result,policy_decision,objects_and_fields_accessed AS objects
+      FROM audit_events WHERE owner_scope_id=$1 AND correlation_id=$2`, [o.ownerScopeId, job.jobId])).rows;
+    expect(audits).toEqual([{
+      purpose: 'connector.sync', result: 'REFUSED', policy_decision: 'DENY',
+      objects: [{ type: 'connectors', id: connectorId, fields: ['connector_type'] }],
+    }]);
+    expect(logs()).toContain('CONNECTOR_CLIENT_UNSUPPORTED');
+  }, TIMEOUT);
+}
 
 it('the worker composes connector.sync beside the two existing runtimes', async () => {
   const source = await readFile(resolve('packages/api/src/processing-worker.ts'), 'utf8');

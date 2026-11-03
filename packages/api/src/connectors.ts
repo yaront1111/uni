@@ -70,6 +70,13 @@ export interface ConnectorRouteOptions {
   readonly connectorClient?: (input: { readonly connectorType: string; readonly secretRef: string | null })
     => Promise<ConnectorClient> | ConnectorClient;
   readonly revokeTokens?: TokenRevoker;
+  /** The connector types `connectorClient` can poll. A sync of any other type is
+   * refused `CONNECTOR_CLIENT_UNSUPPORTED` before the evidence context, the
+   * ceiling or the client is consulted, and nothing is recorded on the connector.
+   * The production runtime supplies it. When it is omitted, the injected
+   * `connectorClient` decides for every type (the recorded double behind
+   * CRT-CON-01-A and the CRT-CON-06-A backfill polls CONVERSATION). */
+  readonly hasSyncClient?: (connectorType: string) => boolean;
   /** Enqueues `evidence.extract` for a FULL document plan, in its own owner
    * transaction under `jobs.enqueue`: an upload route may store evidence, and
    * queueing work is a different authority. */
@@ -93,16 +100,33 @@ export interface ConnectorRouteOptions {
  * client: first-party messages and uploads arrive through `POST /v1/evidence`
  * and `POST /v1/documents`, and a sync of one is refused
  * `CONNECTOR_CLIENT_UNSUPPORTED` rather than silently answering nothing.
+ * `hasSyncClient` makes that refusal before anything is recorded on the connector.
  */
 export function createConnectorRuntime(secrets: SecretsManager): {
   readonly connectorClient: (input: { readonly connectorType: string; readonly secretRef: string | null })
     => ConnectorClient;
   readonly revokeTokens: TokenRevoker;
+  readonly hasSyncClient: (connectorType: string) => boolean;
 } {
   return {
     connectorClient: input => createConnectorClient(input.connectorType, secrets, input.secretRef),
     revokeTokens: createTokenRevoker(secrets),
+    hasSyncClient,
   };
+}
+
+/**
+ * The types `@unai/connectors` `createConnectorClient` can poll (OMI included).
+ * First-party CONVERSATION and DOCUMENT have no provider: their evidence arrives
+ * through `POST /v1/evidence` and `POST /v1/documents`. A sync of one is refused
+ * before anything is recorded, because a recorded SYNC_FAILED makes migration
+ * 0018's connector_ingestion_active trigger refuse every later evidence row naming
+ * the connector, and no sync of these types could restore ACTIVE. The drift test
+ * in connectors.test.ts pins this set to the factory.
+ */
+const POLLED_CONNECTOR_TYPES: ReadonlySet<string> = new Set(['GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'OMI']);
+export function hasSyncClient(connectorType: string): boolean {
+  return POLLED_CONNECTOR_TYPES.has(connectorType);
 }
 
 export function registerConnectorRoutes(app: FastifyInstance, work: Work, options: ConnectorRouteOptions = {}): void {
@@ -217,10 +241,16 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
     if (!options.connectorClient) return refuse(request, reply, 'CONNECTOR_CLIENT_UNSUPPORTED');
     try {
       return await work(request, async tx => {
-        const authority = await declareEvidenceAuthority(tx, request);
+        // Read first, so a type with no provider to poll is refused by name before
+        // anything can fail and be recorded on it. NOT_FOUND keeps its place after
+        // the evidence declaration, so every other refusal keeps its order.
         const connector = (await tx.query(
           'SELECT connector_type,secret_ref FROM connectors WHERE id=$1 AND owner_scope_id=$2',
           [request.params.id, tx.context.ownerScopeId])).rows[0];
+        if (connector && options.hasSyncClient && !options.hasSyncClient(connector.connector_type as string)) {
+          throw new ConnectorError('CONNECTOR_CLIENT_UNSUPPORTED', { connectorType: connector.connector_type as string });
+        }
+        const authority = await declareEvidenceAuthority(tx, request);
         if (!connector) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId: request.params.id });
         // The owner's stored-sensitivity setting is read here, at the sync, so a
         // change saved on the Permissions surface applies to this run (ADR 0030 §7).
@@ -246,7 +276,11 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
       // The failed run is recorded on the connector in its own transaction: the
       // work it refused has been rolled back, and "sync failed with a named
       // reason" is a state the Connected sources screen has to be able to show.
-      await work(request, tx => recordSyncFailure(tx, request.params.id, error.message)).catch(() => undefined);
+      // An unsupported type is not a failed run: recording it would set SYNC_FAILED
+      // and block the connector's uploads.
+      if (error.message !== 'CONNECTOR_CLIENT_UNSUPPORTED') {
+        await work(request, tx => recordSyncFailure(tx, request.params.id, error.message)).catch(() => undefined);
+      }
       return refuse(request, reply, error.message, error.detail);
     }
   });

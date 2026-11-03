@@ -10,6 +10,9 @@ import type { EvidenceObjects } from './evidence.js';
 import type { ConnectorClient, ConnectorFetch } from '@unai/connectors';
 import { requireCapability, listGrants } from '@unai/connectors';
 import { createConnectorRuntime } from './connectors.js';
+import { hasSyncClient, type ConnectorRouteOptions } from './connectors.js';
+import { importSource } from './evidence.js';
+import { connectorTypeSchema } from '@unai/domain';
 
 /**
  * The required V0 connectors, their capability grants and their lifecycle, over
@@ -68,7 +71,7 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function harness(): Promise<Harness> {
+async function harness(connectors?: ConnectorRouteOptions): Promise<Harness> {
   const adapter = postgresAdapter(admin);
   const user = await adapter.createUser!({ name: 'Connector test', email: 'connector-' + randomUUID() + '@example.test', emailVerified: null });
   const token = randomBytes(32).toString('base64url');
@@ -90,7 +93,7 @@ async function harness(): Promise<Harness> {
   const revokeAnswer = { revoked: true };
   const app = createPlatformApi({
     authPool: admin, appPool, evidenceObjects, registryReleaseId: randomUUID(),
-    connectors: {
+    connectors: connectors ?? {
       connectorClient: () => ({
         async fetchPage(request) {
           fetches.push(request);
@@ -771,4 +774,107 @@ it('CRT-CON-06-A: the production runtime builds a read-only client per provider 
     expect(() => runtime.connectorClient({ connectorType, secretRef: 'secret://mounted/x#t' }))
       .toThrow('CONNECTOR_CLIENT_UNSUPPORTED');
   }
+});
+
+/**
+ * A type with no provider to poll is refused by name before anything can fail and
+ * be recorded on it. A recorded SYNC_FAILED would make migration 0018's
+ * connector_ingestion_active trigger refuse every later evidence row naming the
+ * connector, and no sync of a first-party type could ever restore ACTIVE.
+ */
+it('a DOCUMENT or CONVERSATION sync is refused by name and records nothing, so evidence naming the connector is still accepted', async () => {
+  const resolved: string[] = [];
+  const built: string[] = [];
+  const production = createConnectorRuntime({ async resolve(handle) { resolved.push(handle); return 'x'; } });
+  const h = await harness({
+    ...production,
+    connectorClient: input => { built.push(input.connectorType); return production.connectorClient(input); },
+  });
+  try {
+    const document = (await connect(h, {
+      connectorType: 'DOCUMENT', externalAccountRef: 'uploads',
+      requestedCapabilities: [{ capabilityId: 'documents.upload', granted: true }],
+    })).json().connectorId as string;
+    const conversation = (await connect(h, {
+      connectorType: 'CONVERSATION', externalAccountRef: 'first-party',
+      requestedCapabilities: [{ capabilityId: 'conversation.read_user_messages', granted: true }],
+    })).json().connectorId as string;
+    const variants: Record<string, string>[] = [
+      {},
+      // Below the PRIVATE floor: a type check placed after the ceiling would fail the run instead.
+      { 'x-maximum-sensitivity': 'NORMAL' },
+      // No valid evidence context at all (the purpose must match ^[A-Z][A-Z0-9_]*$).
+      { 'x-data-purpose': 'bad-purpose' },
+    ];
+    for (const [id, type] of [[document, 'DOCUMENT'], [conversation, 'CONVERSATION']] as const) {
+      for (const extra of variants) {
+        const headers = h.headers('connector.sync', extra);
+        const response = await h.app.inject({
+          method: 'POST', url: '/v1/connectors/' + id + '/sync', headers, payload: { allowedPurposes: ['PERSONAL_ASSISTANCE'] },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          code: 'CONNECTOR_CLIENT_UNSUPPORTED', correlationId: headers['x-correlation-id'], connectorType: type,
+        });
+        expect((await admin.query('SELECT status,last_sync_error FROM connectors WHERE id=$1', [id])).rows)
+          .toEqual([{ status: 'ACTIVE', last_sync_error: null }]);
+      }
+    }
+    expect(built).toEqual([]);
+    expect(resolved).toEqual([]);
+
+    // Evidence naming the connector is still accepted: migration 0018's
+    // connector_ingestion_active trigger refuses every source_items row of a
+    // connector that is not ACTIVE. This goes through importSource, the path the
+    // sync and the job use, because POST /v1/documents with a connectorId is
+    // refused for an unrelated reason (task-a4c2dc3a: the grants SELECT policy
+    // does not admit evidence.ingest), sync or no sync.
+    const stored = new Map<string, Uint8Array>();
+    const imported = await withOwnerTransaction(appPool,
+      { ownerScopeId: h.ownerScopeId, actorId: h.userId, purpose: 'evidence.ingest', correlationId: randomUUID() },
+      async tx => {
+        await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
+          ['PERSONAL_ASSISTANCE', 'RESTRICTED']);
+        return importSource(tx, {
+          encryptionKeyRef: 'kms:test-double',
+          async put(_tx, id, bytes) { stored.set(id, bytes); },
+          async get(_tx, id) { return stored.get(id)!; },
+        }, {
+          sourceType: 'DOCUMENT', connectorId: document,
+          payload: { documentId: 'doc-after-refused-sync-' + randomUUID(), mediaType: 'text/plain',
+            pages: [{ page: 1, text: 'Stored after a refused sync.' }] },
+          sensitivity: 'PRIVATE', allowedPurposes: ['PERSONAL_ASSISTANCE'],
+        });
+      });
+    expect(imported).toHaveLength(1);
+    expect((await admin.query('SELECT connector_id FROM source_items WHERE id=$1', [imported[0]!.evidenceId])).rows)
+      .toEqual([{ connector_id: document }]);
+
+    // A pollable type keeps today's order: the evidence context is declared first.
+    const gmail = (await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }],
+    })).json().connectorId as string;
+    const noContext = await h.app.inject({
+      method: 'POST', url: '/v1/connectors/' + gmail + '/sync',
+      headers: h.headers('connector.sync', { 'x-data-purpose': 'bad-purpose' }),
+      payload: { allowedPurposes: ['PERSONAL_ASSISTANCE'] },
+    });
+    expect(noContext.json().code).toBe('EVIDENCE_CONTEXT_REQUIRED');
+    expect(built).toEqual([]);
+  } finally { await h.close(); }
+});
+
+it('the production runtime declares exactly the connector types createConnectorClient can poll', () => {
+  const runtime = createConnectorRuntime({ async resolve() { return 'x'; } });
+  expect(runtime.hasSyncClient).toBe(hasSyncClient);
+  const polled = connectorTypeSchema.options.filter(connectorType => {
+    try { runtime.connectorClient({ connectorType, secretRef: 'secret://mounted/x#t' }); return true; }
+    catch (error) {
+      if (error instanceof Error && error.message === 'CONNECTOR_CLIENT_UNSUPPORTED') return false;
+      throw error;
+    }
+  });
+  expect(connectorTypeSchema.options.filter(hasSyncClient)).toEqual(polled);
+  expect([...polled].sort()).toEqual(['GITHUB', 'GMAIL', 'GOOGLE_CALENDAR', 'OMI']);
 });

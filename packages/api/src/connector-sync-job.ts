@@ -12,6 +12,7 @@ import {
   type ConnectorClient, type SourceIngest,
 } from '@unai/connectors';
 import { readSensitivityFloor } from '@unai/control';
+import { hasSyncClient } from './connectors.js';
 import { importSource, type EvidenceObjects } from './evidence.js';
 
 /**
@@ -73,11 +74,13 @@ const context = (options: ConnectorSyncRuntimeOptions, purpose: string, correlat
   ownerScopeId: options.ownerScopeId, actorId: options.actorId, purpose, correlationId,
 });
 
-/** The sync transaction. Answers false, with a refusal audited, for a connector
- * that may not ingest: its status is checked before a client is built, because a
- * revoked or disconnected connector holds no credential handle. */
+/** The sync transaction. Answers null when the run completed, otherwise the stable
+ * code of a refusal that leaves the job done, with the refusal audited: a connector
+ * that may not ingest (its status is checked before a client is built, because a
+ * revoked or disconnected connector holds no credential handle) or a type with no
+ * provider to poll. */
 async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, payload: ConnectorSyncJobPayload,
-  correlationId: string): Promise<boolean> {
+  correlationId: string): Promise<string | null> {
   return withOwnerTransaction(options.appPool, context(options, CONNECTOR_SYNC_PURPOSE, correlationId), async tx => {
     await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
       [options.dataPurpose, options.maximumSensitivity]);
@@ -87,9 +90,17 @@ async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, 
     if (connector.status !== 'ACTIVE' && connector.status !== 'SYNC_FAILED') {
       await tx.audit({ policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED',
         objects: [{ type: 'connectors', id: payload.connectorId, fields: ['status'] }] });
-      return false;
+      return 'CONNECTOR_INGESTION_STOPPED';
     }
     const connectorType = connector.connector_type as string;
+    // First: past this point a ceiling below the type's floor throws CEILING_TOO_LOW
+    // and the production factory throws CREDENTIAL_MISSING, and settle() records and
+    // retries both. A first-party type must never be recorded as a failed sync.
+    if (!hasSyncClient(connectorType)) {
+      await tx.audit({ policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED',
+        objects: [{ type: 'connectors', id: payload.connectorId, fields: ['connector_type'] }] });
+      return 'CONNECTOR_CLIENT_UNSUPPORTED';
+    }
     const request = syncRequestSchema.parse({ mode: payload.mode, maxPages: payload.maxPages, allowedPurposes: [options.dataPurpose] });
     const sensitivityFloor = await readSensitivityFloor(tx, connectorType);
     // The route's ceiling check (connectors.ts assertCeilingAdmitsFloor), by name.
@@ -102,7 +113,7 @@ async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, 
       objects: [{ type: 'connectors', id: payload.connectorId, fields: ['last_cursor', 'cursor_updated_at'] },
         ...result.evidenceIds.slice(0, 99).map(id => ({
           type: 'source_items', id, fields: ['source_type', 'external_id', 'content_hash'] }))] });
-    return true;
+    return null;
   });
 }
 
@@ -147,7 +158,8 @@ export function createConnectorSyncRuntime(options: ConnectorSyncRuntimeOptions)
     // its audit rows can be found from the jobs console.
     const correlationId = job.jobId;
     try {
-      if (!await sync(options, ingest, parsed.data, correlationId)) log(correlationId, 'CONNECTOR_INGESTION_STOPPED');
+      const refused = await sync(options, ingest, parsed.data, correlationId);
+      if (refused !== null) log(correlationId, refused);
     } catch (error) {
       // settle only ever throws an Error carrying a stable code.
       try { log(correlationId, await settle(options, parsed.data.connectorId, correlationId, error)); }
