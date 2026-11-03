@@ -112,6 +112,7 @@ it.each([
   [{NEXTAUTH_URL:'https://web.test:8443',UNAI_WEB_TLS_KEY_FILE:join(directory,sentinel,'key.pem'),
     UNAI_WEB_TLS_CERT_FILE:join(directory,sentinel,'cert.pem')},'ENOENT'],
   [{NEXTAUTH_URL:'invalid-'+sentinel},'ERR_INVALID_URL'],
+  [{UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE:'0'},'CONFIG_INVALID:UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE'],
 ] satisfies [Record<string,string>,string][])('reports one web startup failure (%#)',(configuration,cause)=>{
   spawnFailure('apps/web/server.ts',configuration,{event:'startup_failed',code:'WEB_STARTUP_FAILED',cause});
 },180000);

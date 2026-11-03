@@ -28,6 +28,8 @@ function apiHandshake(origin:URL,ca:Buffer):Promise<'API_UNREACHABLE'|undefined>
 // Start the SDK first, then load application modules so meters are not permanent no-ops.
 try {
   const telemetry=await startTelemetry({serviceName:'unai-web',version:'0.1.0'});
+  const {DEFAULT_RATE_LIMITS,parseRateLimit}=await import('@unai/auth/rate-limit');
+  const authFailureLimit=()=>parseRateLimit(process.env.UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE,'UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE',DEFAULT_RATE_LIMITS.authFailuresPerAddressPerMinute);
   const {required,authOptions,authPool}=await import('./lib/server');
   function bareOrigin(value:string,code:string):URL{
     const origin=new URL(value);
@@ -37,6 +39,7 @@ try {
   const webTls=()=>({key:readFileSync(required('UNAI_WEB_TLS_KEY_FILE')),cert:readFileSync(required('UNAI_WEB_TLS_CERT_FILE'))});
   if(process.argv.includes('--check')){
     const passed=await runPreflight({
+      rate_limits:()=>{authFailureLimit();},
       origin:()=>{bareOrigin(required('NEXTAUTH_URL'),'WEB_TLS_CONFIG_INVALID');},
       tls_certificate:()=>{
         const tls=webTls();
@@ -49,15 +52,20 @@ try {
     const exit=()=>process.stdout.write('',()=>process.exit()),deadline=setTimeout(exit,10_000);
     await Promise.resolve().then(authPool).then(pool=>pool.end(),()=>undefined);await telemetry.shutdown();clearTimeout(deadline);exit();
   }else{
+  const authFailuresPerMinute=authFailureLimit();
   const {default:next}=await import('next');
   const {createRequestListener}=await import('./lib/security-headers');
+  const {createSessionGate}=await import('./lib/session-gate');
+  const {resolveSession}=await import('@unai/auth');
   const origin=bareOrigin(required('NEXTAUTH_URL'),'WEB_TLS_CONFIG_INVALID');
   const tls=webTls();
   const dev=process.argv.includes('--dev');
   const app=next({dev,hostname:origin.hostname,port:Number(origin.port||443),webpack:true});
   await app.prepare();
   const handle=app.getRequestHandler();
-  const server=createServer({...tls,minVersion:'TLSv1.2'},createRequestListener({origin,dev,handle}));
+  // The listener's lookup uses the same process-wide auth pool as identity() and next-auth.
+  const gate=createSessionGate({authFailuresPerMinute,lookup:async token=>(await resolveSession(await authPool(),token))!==null});
+  const server=createServer({...tls,minVersion:'TLSv1.2'},createRequestListener({origin,dev,handle,gate}));
   await new Promise<void>((resolve,reject)=>{
     server.once('error',reject);
     server.listen(Number(origin.port||443),process.env.UNAI_WEB_BIND??'127.0.0.1',()=>{

@@ -27,14 +27,21 @@ export function securityHeaders(nonce:string,dev:boolean):Record<string,string>{
  * security header on each response, 421 for any Host but the configured
  * origin's, `Cache-Control: no-store` as the /api/ default (a route that sets
  * its own wins), and the nonce handed to `pages/_document.tsx` as the
- * `x-nonce` request header, overwriting whatever the client sent. */
-export function createRequestListener({origin,dev,handle}:{origin:URL;dev:boolean;handle:(req:IncomingMessage,res:ServerResponse)=>Promise<void>}){
+ * `x-nonce` request header, overwriting whatever the client sent. `gate`
+ * (`lib/session-gate.ts`) runs last, before handle(): a refusal answers 429
+ * with Retry-After and never reaches Next. */
+export function createRequestListener({origin,dev,handle,gate}:{origin:URL;dev:boolean;handle:(req:IncomingMessage,res:ServerResponse)=>Promise<void>;
+  gate?:(req:IncomingMessage)=>Promise<{refused:false}|{refused:true;retryAfterSeconds:number}>}){
   return (req:IncomingMessage,res:ServerResponse):void=>{
     const nonce=randomBytes(16).toString('base64');
     for(const [name,value] of Object.entries(securityHeaders(nonce,dev)))res.setHeader(name,value);
     if(req.headers.host!==origin.host){res.writeHead(421);res.end();return;}
     if(req.url?.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
     req.headers['x-nonce']=nonce;
-    void handle(req,res).catch(()=>{res.statusCode=500;res.end('Service unavailable');});
+    void (gate?gate(req).then(verdict=>{
+      if(!verdict.refused)return handle(req,res);
+      res.writeHead(429,{'Retry-After':String(verdict.retryAfterSeconds),'Cache-Control':'no-store','Content-Type':'application/json; charset=utf-8'});
+      res.end('{"code":"RATE_LIMITED"}');
+    }):handle(req,res)).catch(()=>{res.statusCode=500;res.end('Service unavailable');});
   };
 }

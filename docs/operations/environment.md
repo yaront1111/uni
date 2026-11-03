@@ -68,7 +68,7 @@ and read failures also exit 1. Success prints `ENV_CONTRACT_PASS`.
   startup. Telemetry resolves the mount at startup when the endpoint and
   UNAI_OTEL_EXPORTER_OTLP_HEADERS are set. The manager is cached, the auth pool is cached after successful creation,
   but OAuth and session secrets are resolved on every `authOptions()` request
-  (`apps/web/lib/server.ts:13-22`; `packages/secrets/CLAUDE.md`).
+  (`apps/web/lib/server.ts:13-27`; `packages/secrets/CLAUDE.md`).
 - **Observed auth fallback:** next-auth has raw `NEXTAUTH_SECRET`/`AUTH_SECRET`
   fallbacks, but the current Pages API route supplies the resolved `options.secret`
   and short-circuits them. Do not introduce a bare middleware or `getToken()` call
@@ -200,10 +200,15 @@ The Host check remains enforced. Register `NEXTAUTH_URL` + `/api/auth/callback/g
 as the Google OAuth callback. OAuth client ID is plain configuration; its secret
 is a handle. The **resolved** session secret must be at least 32 characters
 (`AUTH_CONFIG_REQUIRED`, `packages/auth/src/index.ts:70`).
+Before Next.js loads, the listener's pre-auth session gate parses its limit: per
+web process and aligned one-minute window, a client address (its TLS socket's,
+IPv6 by /64) may fail that many session lookups, after which a token not yet
+resolved in this process answers 429 `RATE_LIMITED` with a whole-second
+`Retry-After` (integers 1–999999; unset or empty uses 30; `apps/web/CLAUDE.md`).
 
-`pnpm start:web -- --check` runs `origin`, `tls_certificate`, `auth` and `api`
+`pnpm start:web -- --check` runs `rate_limits`, `origin`, `tls_certificate`, `auth` and `api`
 in order, using the API preflight JSON line and exit-status contract above. It
-validates the bare HTTPS origin, parses and matches the listener TLS key/cert
+parses the session-gate limit, validates the bare HTTPS origin, parses and matches the listener TLS key/cert
 (`WEB_TLS_CONFIG_INVALID`), resolves mounted auth secrets and validates the
 auth-pool configuration without connecting to the auth database. Next.js never
 loads and the web service port is never bound.
@@ -222,19 +227,20 @@ failure; secrets, URLs and raw error text never appear in output.
 | `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:102` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
 | `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:99` | TELEMETRY_METRIC_INTERVAL_INVALID |
 | `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:100` | TELEMETRY_ENVIRONMENT_INVALID |
-| `NEXTAUTH_URL` | required; canonical HTTPS origin | URL | startup | `apps/web/server.ts:54` | `CONFIG_REQUIRED:NEXTAUTH_URL` |
+| `NEXTAUTH_URL` | required; canonical HTTPS origin | URL | startup | `apps/web/server.ts:60` | `CONFIG_REQUIRED:NEXTAUTH_URL` |
 | `NEXTAUTH_URL` | required; compared against Origin on proxied writes | URL | per use | `apps/web/pages/api/platform/[...path].ts:18` | `CONFIG_REQUIRED:NEXTAUTH_URL` (proxy catches as `SERVICE_UNAVAILABLE`) |
-| `UNAI_WEB_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `apps/web/server.ts:37` | `CONFIG_REQUIRED:UNAI_WEB_TLS_KEY_FILE` |
-| `UNAI_WEB_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `apps/web/server.ts:37` | `CONFIG_REQUIRED:UNAI_WEB_TLS_CERT_FILE` |
-| `UNAI_WEB_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `apps/web/server.ts:63` | none; default |
+| `UNAI_WEB_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `apps/web/server.ts:39` | `CONFIG_REQUIRED:UNAI_WEB_TLS_KEY_FILE` |
+| `UNAI_WEB_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `apps/web/server.ts:39` | `CONFIG_REQUIRED:UNAI_WEB_TLS_CERT_FILE` |
+| `UNAI_WEB_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `apps/web/server.ts:71` | none; default |
+| `UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` | optional; 30 | literal | startup, before Next.js loads; startup under --check | `apps/web/server.ts:32` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` |
 | `UNAI_SECRETS_MOUNT` | required when auth or telemetry headers are first needed | file path | first request; at startup when endpoint and UNAI_OTEL_EXPORTER_OTLP_HEADERS are set; startup under --check | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
-| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle; pool cached | secret handle | first request; startup under --check | `apps/web/lib/server.ts:16` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA; pool cached | file path | first request; startup under --check | `apps/web/lib/server.ts:17` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
-| `GOOGLE_CLIENT_SECRET` | required for auth options; resolved each call | secret handle | per use; startup under --check | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:GOOGLE_CLIENT_SECRET` |
-| `NEXTAUTH_SECRET` | required; resolved secret at least 32 characters | secret handle | per use; startup under --check | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:NEXTAUTH_SECRET` |
-| `GOOGLE_CLIENT_ID` | required; plain OAuth client identifier | literal | per use; startup under --check | `apps/web/lib/server.ts:22` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID` |
-| `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use; startup under --check | `apps/web/lib/server.ts:34`, `apps/web/server.ts:46` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
-| `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use; startup under --check | `apps/web/lib/server.ts:38`, `apps/web/server.ts:46` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
+| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle; pool cached | secret handle | first request; startup under --check | `apps/web/lib/server.ts:20` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA; pool cached | file path | first request; startup under --check | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
+| `GOOGLE_CLIENT_SECRET` | required for auth options; resolved each call | secret handle | per use; startup under --check | `apps/web/lib/server.ts:25` | `CONFIG_REQUIRED:GOOGLE_CLIENT_SECRET` |
+| `NEXTAUTH_SECRET` | required; resolved secret at least 32 characters | secret handle | per use; startup under --check | `apps/web/lib/server.ts:25` | `CONFIG_REQUIRED:NEXTAUTH_SECRET` |
+| `GOOGLE_CLIENT_ID` | required; plain OAuth client identifier | literal | per use; startup under --check | `apps/web/lib/server.ts:26` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID` |
+| `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use; startup under --check | `apps/web/lib/server.ts:38`, `apps/web/server.ts:49` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
+| `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use; startup under --check | `apps/web/lib/server.ts:42`, `apps/web/server.ts:49` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
 | `UNAI_OPERATIONS_REPORT_FILE` | optional; no report if absent | file path | per use | `apps/web/lib/operations-status.ts:6` | none; null report |
 | `UNAI_REGISTRY_LINT_REPORT_FILE` | optional; no lint report if absent | file path | per use | `apps/web/pages/ops/registry.tsx:13` | none; null report |
 | `UNAI_CORPUS_STATUS_FILE` | optional; no corpus status if absent | file path | per use | `apps/web/lib/corpus-status.ts:26` | none; null status |

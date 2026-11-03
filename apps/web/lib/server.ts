@@ -11,11 +11,15 @@ export function required(name:string){const value=process.env[name];if(!value)th
  * configuration value. */
 let secrets:ReturnType<typeof createDefaultSecretsManager>|undefined;
 function secret(name:string){return requireSecret(secrets??=createDefaultSecretsManager(),name);}
-let pool:Promise<ReturnType<typeof createDatabasePool>>|undefined;
+/** `server.ts` (under tsx) and Next's bundle each load their own copy of this
+ * file, so the pool promise lives in one process-wide slot rather than a module
+ * variable: one web process holds one auth pool (ADR 0043 D4). */
+const POOL=Symbol.for('unai.web.authPool');
+const shared=globalThis as unknown as Record<symbol,Promise<ReturnType<typeof createDatabasePool>>|undefined>;
 export function authPool(){
-  return pool??=secret('UNAI_AUTH_DATABASE_URL')
+  return shared[POOL]??=secret('UNAI_AUTH_DATABASE_URL')
     .then(url=>createDatabasePool(url,readFileSync(required('UNAI_DATABASE_CA_FILE'),'utf8')))
-    .catch(error=>{pool=undefined;throw error;});
+    .catch(error=>{delete shared[POOL];throw error;});
 }
 export async function authOptions(){
   const [clientSecret,sessionSecret]=await Promise.all([secret('GOOGLE_CLIENT_SECRET'),secret('NEXTAUTH_SECRET')]);
