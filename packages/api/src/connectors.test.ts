@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
@@ -498,6 +498,66 @@ it('a Gmail thread whose header values carry U+0000, or whose From is long, is s
     expect(triage[0].tier0_parsed).toMatchObject({ subject: 'Lunch\uFFFD plans', participants: [
       'Nul\uFFFD Sender <nul@example.test>', 'owner\uFFFD@example.test', 'cc\uFFFD@example.test',
     ] });
+  } finally { await h.close(); }
+});
+
+it('a Gmail thread whose header values, label ids or message id carry a lone surrogate is stored with its content identity and re-syncs as duplicates', async () => {
+  const h = await harness();
+  try {
+    const created = await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
+        { capabilityId: 'gmail.read_content', granted: true }],
+    });
+    const connectorId = created.json().connectorId;
+    const from = 'Lone \uD800 Sender <lone@example.test>', subject = 'Lunch \uDC00 plans \u{1F600}';
+    h.pages.value = [[{ id: 'thread-lone', messages: [
+      { id: 'msg-lone-1', threadId: 'thread-lone', labelIds: ['INBOX', 'Label_\uD800'], payload: {
+        mimeType: 'text/plain', body: { data: Buffer.from('Lunch plans').toString('base64url') }, headers: [
+          { name: 'Subject', value: subject }, { name: 'From', value: from },
+          { name: 'To', value: 'owner\uDC00@example.test' }, { name: 'Cc', value: 'cc\uDE00\uD83D@example.test' },
+          { name: 'In-Reply-To', value: '<root\uD800@example.test>' },
+        ],
+      } },
+      { id: 'msg-lone-\uDC00', threadId: 'thread-lone', payload: {
+        mimeType: 'text/plain', body: { data: Buffer.from('Hello').toString('base64url') },
+        headers: [{ name: 'From', value: 'Plain <plain@example.test>' }],
+      } },
+    ] }]];
+    const first = await sync(h, connectorId);
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ itemsIngested: 2, duplicatesSuppressed: 0, refusals: [] });
+    // Found by value: where U+FFFD sorts under ORDER BY external_id depends on the collation.
+    const rows = await items(h.ownerScopeId, 'GMAIL');
+    expect(rows.map(row => row.external_id).sort()).toEqual(['msg-lone-1', 'msg-lone-\uFFFD']);
+    const m1 = rows.find(row => row.external_id === 'msg-lone-1');
+    const m2 = rows.find(row => row.external_id === 'msg-lone-\uFFFD');
+    expect(m1.actor_ref).toEqual({ type: 'EXTERNAL', id: 'Lone \uFFFD Sender <lone@example.test>' });
+    expect(m1.deterministic_metadata).toMatchObject({ inReplyTo: '<root\uFFFD@example.test>', labelIds: ['INBOX', 'Label_\uFFFD'] });
+    const triage = (await admin.query('SELECT tier0_parsed FROM triage_decisions WHERE source_item_id=$1', [m1.id])).rows;
+    expect(triage).toHaveLength(1);
+    expect(triage[0].tier0_parsed).toMatchObject({ subject: 'Lunch \uFFFD plans \u{1F600}', participants: [
+      'Lone \uFFFD Sender <lone@example.test>', 'owner\uFFFD@example.test', 'cc\uFFFD\uFFFD@example.test',
+    ], structuredFields: { labelIds: ['INBOX', 'Label_\uFFFD'] } });
+    expect((await admin.query(
+      "SELECT anchor FROM source_anchors WHERE source_item_id=$1 AND anchor_kind='MESSAGE_SPAN'", [m2.id])).rows)
+      .toEqual([{ anchor: { messageExternalId: 'msg-lone-\uFFFD', field: 'body', start: 0, end: 5 } }]);
+    // Identity stays on the parsed item: the object keeps the escapes and is what content_hash covers.
+    const stored = Buffer.from(h.objects.get(m1.raw_object_ref)!);
+    const text = stored.toString('utf8');
+    expect(text).toContain('"from":' + JSON.stringify(from));
+    expect(text).toContain('"subject":' + JSON.stringify(subject));
+    expect(text).not.toContain('\uFFFD');
+    expect(createHash('sha256').update(stored).digest('hex')).toBe(m1.content_hash);
+    const counts = async () => (await admin.query(
+      'SELECT (SELECT count(*) FROM source_anchors WHERE owner_scope_id=$1) AS anchors, (SELECT count(*) FROM triage_decisions WHERE owner_scope_id=$1) AS triage',
+      [h.ownerScopeId])).rows[0];
+    const before = await counts();
+    const second = await sync(h, connectorId);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ itemsIngested: 0, duplicatesSuppressed: 2, refusals: [] });
+    expect(await items(h.ownerScopeId, 'GMAIL')).toHaveLength(2);
+    expect(await counts()).toEqual(before);
   } finally { await h.close(); }
 });
 

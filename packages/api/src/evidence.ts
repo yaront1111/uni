@@ -3,7 +3,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
 import type {OwnerTransaction} from '@unai/postgres';
-import {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,parseSourcePayload,
+import {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,parseSourcePayload,storableJson,wellFormedText,
   type EvidenceInput,type ParsedSourceAnchor,type ParsedSourceItem} from '@unai/domain';
 import {recordTriageDecision,readTriageDecision,publicTriage} from '@unai/extraction';
 import {createEncryptedS3Store,type StorageConfiguration} from '../../storage/src/index.js';
@@ -153,11 +153,13 @@ async function ingestImpl(tx:OwnerTransaction,input:EvidenceInput,objects:Eviden
   // Serialize retries sharing a transport key even when their content differs.
   await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[tx.context.ownerScopeId+':'+input.idempotencyKey]);
   const prior=(await tx.query('SELECT s.* FROM source_items s JOIN evidence_ingestion_receipts r ON r.owner_scope_id=s.owner_scope_id AND r.source_item_id=s.id WHERE r.owner_scope_id=$1 AND r.idempotency_key=$2',[tx.context.ownerScopeId,input.idempotencyKey])).rows[0];
-  if(prior&&(prior.connector_id!==input.connectorId||prior.source_type!==input.sourceType||prior.external_id!==input.externalId||prior.content_hash!==hash))throw new Refusal(409,'IDEMPOTENCY_CONFLICT');
+  // external_id is a text column, which node-postgres writes with each lone surrogate as U+FFFD ('msg-\uDC00'
+  // reads back 'msg-\uFFFD'): compare that form, or a re-import answers IDEMPOTENCY_CONFLICT and fails the sync.
+  if(prior&&(prior.connector_id!==input.connectorId||prior.source_type!==input.sourceType||prior.external_id!==wellFormedText(input.externalId)||prior.content_hash!==hash))throw new Refusal(409,'IDEMPOTENCY_CONFLICT');
   const id=uuidV7(),objectId=uuidV7();
   const inserted=await tx.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,content_hash,parent_external_id,actor_ref,submitted_by_user_id,occurred_at,raw_object_ref,deterministic_metadata,sensitivity,allowed_purposes,ingestion_version,idempotency_key)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'evidence-json-v1',$15)
-    ON CONFLICT DO NOTHING RETURNING *`,[id,...identity,input.parentExternalId,JSON.stringify(input.actorRef),tx.context.actorId,input.occurredAt,objectId,JSON.stringify(input.deterministicMetadata),input.sensitivity,input.allowedPurposes,input.idempotencyKey]);
+    ON CONFLICT DO NOTHING RETURNING *`,[id,...identity,input.parentExternalId,storableJson(input.actorRef),tx.context.actorId,input.occurredAt,objectId,storableJson(input.deterministicMetadata),input.sensitivity,input.allowedPurposes,input.idempotencyKey]);
   const row=inserted.rows[0]??(await tx.query('SELECT * FROM source_items WHERE owner_scope_id=$1 AND connector_id IS NOT DISTINCT FROM $2::uuid AND source_type=$3 AND external_id=$4 AND content_hash=$5',identity)).rows[0];
   if(!row)throw new Refusal(409,'EVIDENCE_CONFLICT');
   await tx.query('INSERT INTO evidence_ingestion_receipts(owner_scope_id,idempotency_key,source_item_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[tx.context.ownerScopeId,input.idempotencyKey,row.id]);
@@ -324,7 +326,7 @@ async function writeAnchors(tx:OwnerTransaction,sourceItemId:string,anchors:read
     // makes the second write a no-op instead of a duplicate row.
     await tx.query(`INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor,normalized_text)
       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-      [uuidV7(),tx.context.ownerScopeId,sourceItemId,anchor.kind,JSON.stringify(anchor.anchor),anchor.normalizedText]);
+      [uuidV7(),tx.context.ownerScopeId,sourceItemId,anchor.kind,storableJson(anchor.anchor),anchor.normalizedText]);
   }
 }
 

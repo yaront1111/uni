@@ -43,7 +43,7 @@ export type PublicDevice=z.infer<typeof publicDeviceSchema>;
 export {evidenceInputSchema,publicEvidenceSchema,dataPurposeSchema,sensitivitySchema,type EvidenceInput,type PublicEvidence} from './evidence.js';
 export {sourceAnchorKindSchema,parsedSourceAnchorSchema,parsedSourceItemSchema,parsedSourceTypeSchema,
   conversationSchema,gmailThreadSchema,omiConversationSchema,googleCalendarEventSchema,githubIssueThreadSchema,uploadedDocumentSchema,
-  parseSourcePayload,SourcePayloadInvalid,
+  parseSourcePayload,SourcePayloadInvalid,storableJson,wellFormedText,
   type SourceAnchorKind,type ParsedSourceAnchor,type ParsedSourceItem,type ParsedSourceType,type OmiConversation} from './sources.js';
 export {registryVersionSchema,registryContentHashSchema,registryContractKindSchema,publicRegistryContractSchema,
   loadedRegistryReleaseSchema,registrySnapshotViewSchema,registryLintIssueSchema,registryLintedReleaseSchema,

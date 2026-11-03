@@ -331,6 +331,21 @@ function storable(text: string): string {
   return text.replace(/\u0000/g, '\uFFFD');
 }
 
+/** Each unpaired UTF-16 surrogate becomes U+FFFD; in `u` mode a valid pair is one
+ * code point and never matches (String.prototype.toWellFormed, untyped in ES2022). */
+export function wellFormedText(text: string): string {
+  return text.replace(/[\uD800-\uDFFF]/gu, '\uFFFD');
+}
+
+/** JSON for a PostgreSQL jsonb parameter. JSON.stringify writes a lone surrogate as
+ * a \udXXX escape that jsonb refuses (22P02), while node-postgres already turns one
+ * into U+FFFD in a text parameter; this does the same to every string value. Equal
+ * to JSON.stringify for well-formed input, so every value that stores today keeps
+ * its bytes. Object keys are not rewritten. Never use it for content or hashing. */
+export function storableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => typeof item === 'string' ? wellFormedText(item) : item);
+}
+
 function codeUnitPrefix(text: string, max: number): string {
   if (text.length <= max) return text;
   const last = text.charCodeAt(max - 1);

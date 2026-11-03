@@ -208,7 +208,13 @@ split a surrogate pair. A message where any of these rules fired carries
 U+0000 in a kept header value becomes U+FFFD. `actorRef` keeps the first 512 code
 units of From without splitting a surrogate pair, while the content keeps the
 whole bounded From. PostgreSQL `text` refuses U+0000, and `jsonb` refuses both
-U+0000 and a lone surrogate.
+U+0000 and a lone surrogate. A lone surrogate (an unpaired half of a UTF-16
+pair) is not a parse error: it stays in the parsed item, so the stored object,
+the content hash and the idempotency key keep it. The ingest writes every
+`jsonb` value (`actorRef`, the deterministic metadata, each anchor and the
+Tier-0 parse) through `storableJson` in `@unai/domain`, which turns each lone
+surrogate into U+FFFD, as node-postgres already does to a `text` parameter such
+as `external_id`. A payload that stores today writes the same bytes.
 
 **Corpus import.** `pnpm uai corpus import --source <file>` takes the same JSON:
 the `users.threads.get` `format=full` response saved byte for byte. `.eml` files

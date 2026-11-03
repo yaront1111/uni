@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {readdir, readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {expect, it} from 'vitest';
-import {parseSourcePayload, SourcePayloadInvalid} from './sources.js';
+import {parseSourcePayload, SourcePayloadInvalid, storableJson, wellFormedText} from './sources.js';
 import {connectorTypeSchema, omiConversationSchema, type OmiConversation} from './index.js';
 
 async function fixture(name: string) {
@@ -715,4 +715,52 @@ it('OMI: accepts exactly 2048 anchors and refuses nonfinite or oversized provide
     ...[Infinity, -Infinity, NaN].map(end => ({...raw, transcript_segments: [{...segment, end}]})),
   ];
   for (const payload of invalid) expect(() => parseSourcePayload('OMI', payload)).toThrow('SOURCE_PAYLOAD_INVALID');
+});
+
+it('wellFormedText replaces each unpaired surrogate with U+FFFD and keeps every well-formed string', () => {
+  for (const [input, output] of [
+    ['a\uD800', 'a\uFFFD'], ['\uDC00b', '\uFFFDb'], ['\uDE00\uD83D', '\uFFFD\uFFFD'],
+    ['\uD800\u{10000}', '\uFFFD\u{10000}'], ['\u{10000}\uDC00', '\u{10000}\uFFFD'],
+    ['\u{1F600}', '\u{1F600}'], ['plain', 'plain'], ['\uFFFD', '\uFFFD'], ['', ''],
+  ] as const) expect(wellFormedText(input)).toBe(output);
+});
+
+it('storableJson is JSON.stringify with every string value made well-formed', () => {
+  expect(storableJson({id: '\uD800', list: ['ok', '\uDC00x', {deep: 'a\uD83D'}], n: 1, b: true, z: null}))
+    .toBe(JSON.stringify({id: '\uFFFD', list: ['ok', '\uFFFDx', {deep: 'a\uFFFD'}], n: 1, b: true, z: null}));
+  const wellFormed = {s: '\u{1F600}', n: [1, 'x']};
+  expect(storableJson(wellFormed)).toBe(JSON.stringify(wellFormed));
+});
+
+it('keeps lone surrogates in parsed header values; only storableJson replaces them', () => {
+  const items = headerItems([
+    {name: 'From', value: 'Lone \uD800 <lone@example.test>'}, {name: 'Subject', value: 'Lunch \uDC00 plans'},
+    {name: 'To', value: 'to\uDC00@example.test'}, {name: 'Cc', value: 'cc\uD800@example.test'},
+    {name: 'In-Reply-To', value: '<root\uD800@example.test>'},
+  ]);
+  expect(items).toEqual(expectedHeaderItems({from: 'Lone \uD800 <lone@example.test>', subject: 'Lunch \uDC00 plans',
+    to: 'to\uDC00@example.test', cc: 'cc\uD800@example.test', inReplyTo: '<root\uD800@example.test>'}));
+  expect(storableJson(items[0]!.actorRef)).toBe('{"type":"EXTERNAL","id":"Lone \uFFFD <lone@example.test>"}');
+  expect(storableJson(items[0]!.deterministicMetadata))
+    .toBe(JSON.stringify({...items[0]!.deterministicMetadata, inReplyTo: '<root\uFFFD@example.test>'}));
+});
+
+it('storableJson equals JSON.stringify for every fixture item\'s actorRef, metadata and anchors', async () => {
+  const types: [RegExp, string][] = [[/^gmail-/, 'GMAIL'], [/^google-calendar-/, 'GOOGLE_CALENDAR'],
+    [/^github-/, 'GITHUB'], [/^conversation-/, 'CONVERSATION'], [/^uploaded-document/, 'DOCUMENT'], [/^omi-/, 'OMI']];
+  const files = [
+    ...(await readdir(resolve('fixtures/sources'))).filter(name => name.endsWith('.json'))
+      .map(name => ['fixtures/sources/' + name, types.find(([prefix]) => prefix.test(name))?.[1]] as const),
+    ...(await readdir(resolve('corpus/synthetic/threads'))).filter(name => name.endsWith('.json'))
+      .map(name => ['corpus/synthetic/threads/' + name, 'GMAIL'] as const),
+  ];
+  expect(files).toHaveLength(23);
+  for (const [file, type] of files) {
+    expect(type, file).toBeDefined();
+    for (const item of parseSourcePayload(type!, JSON.parse(await readFile(resolve(file), 'utf8')))) {
+      for (const value of [item.actorRef, item.deterministicMetadata, ...item.anchors.map(anchor => anchor.anchor)]) {
+        expect(storableJson(value), file).toBe(JSON.stringify(value));
+      }
+    }
+  }
 });

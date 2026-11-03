@@ -1,4 +1,4 @@
-import { triageDecisionSchema, publicTriageSchema, routingReasonSchema, tier1RouteSchema,
+import { triageDecisionSchema, publicTriageSchema, routingReasonSchema, tier1RouteSchema, storableJson,
   type TriageDecision } from '@unai/domain';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { triage, type TriageInput, type TriageResult } from './triage.js';
@@ -24,7 +24,7 @@ export async function recordTriageDecision(tx: ExtractionTransaction, input: Rec
   const inserted = await tx.query(
     `INSERT INTO triage_decisions(id,owner_scope_id,source_item_id,tier0_parsed,tier1_route,routing_reason,cost_budget_microunits)
      VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id,decided_at`,
-    [id, input.ownerScopeId, input.sourceItemId, JSON.stringify(triaged.tier0), triaged.route,
+    [id, input.ownerScopeId, input.sourceItemId, storableJson(triaged.tier0), triaged.route,
       JSON.stringify(triaged.reason), triaged.costBudgetMicrounits]);
   if (inserted.rowCount === 1) {
     const row = inserted.rows[0]!;
