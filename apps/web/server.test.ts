@@ -3,13 +3,14 @@ import {existsSync,readdirSync,readFileSync,statSync} from 'node:fs';
 import {mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {createServer,request,type IncomingHttpHeaders,type IncomingMessage,type Server} from 'node:http';
 import {request as secureRequest} from 'node:https';
-import {createServer as createNetServer,type AddressInfo} from 'node:net';
+import {createServer as createNetServer,Socket,type AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {createServer as createTlsServer,type Server as TlsServer} from 'node:tls';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
 import {createRequestListener,securityHeaders} from './lib/security-headers';
+import {googleClientId} from './lib/server';
 
 /** The headers every response of the web process carries besides the policy. */
 const FIXED_HEADERS={
@@ -139,6 +140,21 @@ describe('the policy',()=>{
 });
 
 const WEB=fileURLToPath(new URL('.',import.meta.url));
+const CLIENT_ID='123456789012-0123456789abcdefghijklmnopqrstuv.apps.googleusercontent.com';
+/** The shipped deploy placeholder, CRLF-normalised. */
+const PLACEHOLDER=/^GOOGLE_CLIENT_ID=(.+)$/m.exec(readFileSync(join(WEB,'../../deploy/env/web.env.example'),'utf8').replaceAll('\r',''))?.[1]??'';
+describe('googleClientId',()=>{
+  it("refuses an unreplaced deploy placeholder client ID and accepts Google's documented forms offline",()=>{
+    expect(PLACEHOLDER).toContain('<');
+    const connect=vi.spyOn(Socket.prototype,'connect'),fetch=vi.spyOn(globalThis,'fetch');
+    try{
+      for(const id of [CLIENT_ID,'424911365001.apps.googleusercontent.com'])expect(googleClientId(id)).toBe(id);
+      for(const id of [PLACEHOLDER,'sign-in-client-id.apps.googleusercontent.com',CLIENT_ID+'.evil.test',' '+CLIENT_ID,CLIENT_ID+'\n','GOCSPX-not-a-client-id','test-client'])
+        expect(()=>googleClientId(id)).toThrow(/^CONFIG_INVALID:GOOGLE_CLIENT_ID$/);
+      expect(connect).not.toHaveBeenCalled();expect(fetch).not.toHaveBeenCalled();
+    }finally{connect.mockRestore();fetch.mockRestore();}
+  });
+});
 type CheckRun={status:number|null;stdout:string;stderr:string};
 function webCheck(env:NodeJS.ProcessEnv):Promise<CheckRun>{
   return new Promise((done,reject)=>{
@@ -172,12 +188,13 @@ describe('web --check (no Next build or database needed)',()=>{
     const downPort=(down.address() as AddressInfo).port;await new Promise<void>(done=>down.close(()=>done()));
     const env:NodeJS.ProcessEnv={PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,NODE_ENV:'test',
       NEXTAUTH_URL:`https://127.0.0.1:${(held.address() as AddressInfo).port}`,UNAI_WEB_TLS_KEY_FILE:key,UNAI_WEB_TLS_CERT_FILE:cert,
-      UNAI_SECRETS_MOUNT:mount,NEXTAUTH_SECRET:'secret://mounted/session',GOOGLE_CLIENT_SECRET:'secret://mounted/google',GOOGLE_CLIENT_ID:'test-client',
+      UNAI_SECRETS_MOUNT:mount,NEXTAUTH_SECRET:'secret://mounted/session',GOOGLE_CLIENT_SECRET:'secret://mounted/google',GOOGLE_CLIENT_ID:CLIENT_ID,
       UNAI_AUTH_DATABASE_URL:'secret://mounted/auth',UNAI_DATABASE_CA_FILE:cert,
       UNAI_API_ORIGIN:`https://127.0.0.1:${(api.address() as AddressInfo).port}`,UNAI_API_CA_FILE:cert};
     runs=await Promise.all([webCheck(env),webCheck({...env,UNAI_API_ORIGIN:`https://127.0.0.1:${downPort}`}),
       webCheck({...env,NEXTAUTH_URL:'http://x'}),webCheck({...env,NEXTAUTH_SECRET:'secret://mounted/short'}),webCheck({...env,UNAI_API_CA_FILE:wrong}),
-      webCheck({...env,UNAI_SECRETS_MOUNT:undefined}),webCheck({...env,UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE:'0'})]);
+      webCheck({...env,UNAI_SECRETS_MOUNT:undefined}),webCheck({...env,UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE:'0'}),
+      webCheck({...env,GOOGLE_CLIENT_ID:PLACEHOLDER})]);
   },180000);
   afterAll(async()=>{
     await Promise.all([api,held].filter(Boolean).map(server=>new Promise<void>(done=>server.close(()=>done()))));
@@ -192,14 +209,15 @@ describe('web --check (no Next build or database needed)',()=>{
   it('completes the API handshake without sending application bytes',()=>{expect(handshakes).toBeGreaterThan(0);expect(bytes).toBe(0);});
   it.each([[1,'api','warn','API_UNREACHABLE',0],[2,'origin','fail','WEB_TLS_CONFIG_INVALID',1],
     [3,'auth','fail','AUTH_CONFIG_REQUIRED',1],[4,'api','fail','API_TLS_HANDSHAKE_FAILED',1],
-    [5,'auth','fail','CONFIG_REQUIRED:UNAI_SECRETS_MOUNT',1],[6,'rate_limits','fail','CONFIG_INVALID:UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE',1]] as const)(
+    [5,'auth','fail','CONFIG_REQUIRED:UNAI_SECRETS_MOUNT',1],[6,'rate_limits','fail','CONFIG_INVALID:UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE',1],
+    [7,'auth','fail','CONFIG_INVALID:GOOGLE_CLIENT_ID',1]] as const)(
     'classifies case %s and continues the remaining checks',(index,check,status,code,exit)=>{
       expect(runs[index]!.status).toBe(exit);expect(lines(runs[index]!).filter(line=>line.status!=='ok')).toEqual([{check,status,code}]);
     });
   it('prints only JSON status words and codes without any sensitive material',()=>{
     for(const run of runs){
       expect(run.stderr).toBe('');expect(lines(run).map(line=>line.check)).toEqual(CHECKS);
-      for(const secret of ['SENTINEL','://','BEGIN',root,'startup_failed'])expect(run.stdout+run.stderr).not.toContain(secret);
+      for(const secret of ['SENTINEL','://','BEGIN','googleusercontent',root,'startup_failed'])expect(run.stdout+run.stderr).not.toContain(secret);
     }
   });
 });

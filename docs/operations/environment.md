@@ -199,7 +199,10 @@ origin shape gives cause `WEB_TLS_CONFIG_INVALID`; unparseable URLs give
 prepares; file-open and bind failures print their errno, never paths or addresses.
 The Host check remains enforced. Register `NEXTAUTH_URL` + `/api/auth/callback/google`
 as the Google OAuth callback. OAuth client ID is plain configuration; its secret
-is a handle. The **resolved** session secret must be at least 32 characters
+is a handle. A client ID outside those two shapes, such as the unreplaced
+`deploy/env/web.env.example` placeholder, fails `--check`'s `auth` check and every
+sign-in with `CONFIG_INVALID:GOOGLE_CLIENT_ID`. The check is a local pattern match
+and never contacts Google. The **resolved** session secret must be at least 32 characters
 (`AUTH_CONFIG_REQUIRED`, `packages/auth/src/index.ts:70`).
 Before Next.js loads, the listener's pre-auth session gate parses its limit: per
 web process and aligned one-minute window, a client address (its TLS socket's,
@@ -210,8 +213,8 @@ resolved in this process answers 429 `RATE_LIMITED` with a whole-second
 `pnpm start:web -- --check` runs `rate_limits`, `origin`, `tls_certificate`, `auth` and `api`
 in order, using the API preflight JSON line and exit-status contract above. It
 parses the session-gate limit, validates the bare HTTPS origin, parses and matches the listener TLS key/cert
-(`WEB_TLS_CONFIG_INVALID`), resolves mounted auth secrets and validates the
-auth-pool configuration without connecting to the auth database. Next.js never
+(`WEB_TLS_CONFIG_INVALID`), resolves mounted auth secrets, checks the Google client ID's shape and validates the
+auth-pool configuration without connecting to the auth database or to Google. Next.js never
 loads and the web service port is never bound.
 
 The `api` check verifies a TLS handshake against `UNAI_API_CA_FILE` without any
@@ -239,7 +242,7 @@ failure; secrets, URLs and raw error text never appear in output.
 | `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA; pool cached | file path | first request; startup under --check | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
 | `GOOGLE_CLIENT_SECRET` | required for auth options; resolved each call | secret handle | per use; startup under --check | `apps/web/lib/server.ts:25` | `CONFIG_REQUIRED:GOOGLE_CLIENT_SECRET` |
 | `NEXTAUTH_SECRET` | required; resolved secret at least 32 characters | secret handle | per use; startup under --check | `apps/web/lib/server.ts:25` | `CONFIG_REQUIRED:NEXTAUTH_SECRET` |
-| `GOOGLE_CLIENT_ID` | required; plain OAuth client identifier | literal | per use; startup under --check | `apps/web/lib/server.ts:26` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID` |
+| `GOOGLE_CLIENT_ID` | required; Google OAuth client ID, `<number>.apps.googleusercontent.com` or `<number>-<id>.apps.googleusercontent.com` | literal | per use; startup under --check | `apps/web/lib/server.ts:26` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID`; any other shape, an unreplaced deploy placeholder included, gives `CONFIG_INVALID:GOOGLE_CLIENT_ID` |
 | `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use; startup under --check | `apps/web/lib/server.ts:38`, `apps/web/server.ts:49` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
 | `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use; startup under --check | `apps/web/lib/server.ts:42`, `apps/web/server.ts:49` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
 | `UNAI_OPERATIONS_REPORT_FILE` | optional; no report if absent | file path | per use | `apps/web/lib/operations-status.ts:6` | none; null report |

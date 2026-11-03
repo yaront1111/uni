@@ -23,7 +23,7 @@ export function authPool(){
 }
 export async function authOptions(){
   const [clientSecret,sessionSecret]=await Promise.all([secret('GOOGLE_CLIENT_SECRET'),secret('NEXTAUTH_SECRET')]);
-  return createAuthOptions(await authPool(),{clientId:required('GOOGLE_CLIENT_ID'),clientSecret,secret:sessionSecret});
+  return createAuthOptions(await authPool(),{clientId:googleClientId(required('GOOGLE_CLIENT_ID')),clientSecret,secret:sessionSecret});
 }
 export async function identity(req:IncomingMessage){
   if((req.socket as TLSSocket).encrypted!==true)throw new Error('TLS_REQUIRED');
@@ -48,4 +48,15 @@ export async function apiRequest(path:string,method:string,headers:Record<string
     });
     req.setTimeout(15000,()=>req.destroy());req.on('error',()=>reject(new Error('API_UNAVAILABLE')));req.end(encoded);
   });
+}
+/** Refuses a Google OAuth client ID that has neither of Google's documented
+ * shapes: `424911365001.apps.googleusercontent.com` (OpenID Connect docs) or
+ * `1234567890-abc123def456.apps.googleusercontent.com` (GIS setup guide). An
+ * unreplaced deploy placeholder such as deploy/env/web.env.example's
+ * `<sign-in-client-id>.apps.googleusercontent.com` fails here, in `--check`'s
+ * auth check and on every sign-in, because both call `authOptions()`. It is a
+ * local pattern match, never a request to Google, and the value is never echoed. */
+export function googleClientId(value:string):string{
+  if(!/^[0-9]+(?:-[0-9a-z]+)?\.apps\.googleusercontent\.com$/.test(value))throw new Error('CONFIG_INVALID:GOOGLE_CLIENT_ID');
+  return value;
 }
