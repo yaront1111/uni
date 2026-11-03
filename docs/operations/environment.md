@@ -252,23 +252,36 @@ replace them with `SERVICE_UNAVAILABLE` or a generic error. Reports never expose
 
 ## Processing worker (pnpm start:worker)
 
-Startup (`packages/api/src/processing-worker.ts:13-80`): startTelemetry → connector-sync interval/release/owner/
+Startup (`packages/api/src/processing-worker.ts:13-86`): startTelemetry → connector-sync and retention-cleanup intervals/release/owner/
 purpose/sensitivity/poll configuration → probe configuration → secrets → model provider → database CA and resolved application
 URL → encryption-at-rest check → runtime validation and release comparison → evidence
 bucket check. `--check` performs these checks then exits; it does not skip required
 model credentials or the bucket check, which prints the API's `STORAGE_ENCRYPTION_REQUIRED`
-or `STORAGE_CONFIGURATION_INVALID`. `--once` runs the same checks, then one connector-sync
+or `STORAGE_CONFIGURATION_INVALID`. `--once` runs the same checks, then one retention cleanup tick (below; none when its
+interval is 0; a failed tick prints `RETENTION_SCHEDULER_TICK_FAILED`, does not stop what
+follows and makes the exit code 1) and one connector-sync
 scheduling pass (a `connector.read` listing, and one INCREMENTAL `connector.sync` job per
 due connector under `jobs.enqueue`), and exits 0 without probes or job turns; it is meant
 for timer-driven deployments, whose long-running worker sets the interval to 0. The probe
 listener starts after the `--check` return and before the loop; a listen failure gives `PROBE_LISTEN_FAILED`. Its
 loopback-only HTTP `/healthz` and `/readyz` carry status words only. The loop check
-allows 3× pollMs while idle and 1,200,000 ms while busy (the sum of the extraction,
-initiative and connector-sync leases), so a healthy long sync stays ready.
+allows 3× pollMs while idle and 1,800,000 ms while busy (the sum of the extraction,
+initiative and connector-sync leases plus 600,000 ms for a retention drain), so a healthy long sync stays ready.
 Each turn ends with a connector-sync scheduler tick at the next window boundary, where
 window = floor(now / max(interval, per-type minimum)); it skips connectors that are not
 ACTIVE or SYNC_FAILED, hold no granted capability, or are of a type without a sync client.
 A failed tick prints `CONNECTOR_SCHEDULER_TICK_FAILED` and waits for the next boundary.
+Just before it, the retention scheduler runs, once per window = floor(now /
+`UNAI_RETENTION_CLEANUP_INTERVAL_MS`), the cleanup `POST /v1/data/retention/cleanup` runs
+(`runRetentionCleanup` in `packages/api/src/control.ts`) for this process's owner scope only:
+under `data.delete` (audit kind DELETION; the projection replay under `memory.project`), in
+passes of at most 50 evidence items until one comes back short, at most 20 per tick. It
+prints one `retention.scheduler` JSON line of counts; a failed tick prints
+`RETENTION_SCHEDULER_TICK_FAILED` and waits for the next boundary. The window is
+process-local, so a restart or each `--once` run repeats the cleanup: idempotent, but an
+empty pass still records one DELETION audit row. Raw objects are deleted inside the erasure
+transaction, so the worker principal needs `s3:DeleteObject` on the evidence bucket
+(ADR 0043 D5) unless the interval is 0.
 A single process handles one owner scope and data purpose. Invalid UUIDs, release,
 purpose, sensitivity or poll bounds give `PROCESSING_CONFIGURATION_INVALID`.
 The table records the **printed** missing-configuration code (exit 1). The
@@ -296,6 +309,7 @@ Probe binds reject hostnames, IPv4-mapped IPv6, IPv6 zones and padded IPv4 octet
 | `UNAI_PROCESSING_MAXIMUM_SENSITIVITY` | required; NORMAL, PRIVATE or RESTRICTED | literal | startup | `packages/api/src/processing-config.ts:22` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_MAXIMUM_SENSITIVITY` |
 | `UNAI_PROCESSING_POLL_MS` | optional; 1000; integer 100–60000 | literal | startup | `packages/api/src/processing-config.ts:23` | none; default |
 | `UNAI_CONNECTOR_SYNC_INTERVAL_MS` | optional; 900000 when unset or empty; integer 60000–86400000, or 0 to disable connector-sync scheduling (one CONNECTOR_SCHEDULER_DISABLED line; the loop never ticks and --once does nothing); GMAIL, GOOGLE_CALENDAR and GITHUB never faster than 300000, OMI never faster than 900000 | literal | startup | `packages/api/src/processing-config.ts:31` | none; default. Out of range or not an integer: `CONFIG_INVALID:UNAI_CONNECTOR_SYNC_INTERVAL_MS` |
+| `UNAI_RETENTION_CLEANUP_INTERVAL_MS` | optional; 86400000 when unset or empty; integer 3600000–86400000, or 0 to disable the scheduled retention cleanup (one RETENTION_SCHEDULER_DISABLED line; the loop never cleans and --once makes no retention cleanup) | literal | startup | `packages/api/src/processing-config.ts:41` | none; default. Out of range or not an integer: `CONFIG_INVALID:UNAI_RETENTION_CLEANUP_INTERVAL_MS` (`--check` exits 1) |
 | `UNAI_SECRETS_MOUNT` | required | file path | startup | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
 | `UNAI_MODEL_PROVIDER` | required; registered provider (anthropic or openai bundled) | literal | startup | `packages/model/src/providers.ts:173` | `MODEL_CONFIG_REQUIRED` |
 | `UNAI_MODEL_ENDPOINT` | required; HTTPS provider endpoint | URL | startup | `packages/model/src/providers.ts:177` | `MODEL_CONFIG_REQUIRED` |
