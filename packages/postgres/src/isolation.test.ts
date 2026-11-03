@@ -907,6 +907,33 @@ describe('real PostgreSQL owner isolation', () => {
     }
   });
 
+  it('CRT-SEC-01-A: an evidence.ingest transaction reads only its own documents.upload grants and writes none',async()=>{
+    // Migration 0042: a document upload proves its connector's documents.upload
+    // grant under evidence.ingest. That purpose sees exactly those rows: not
+    // another owner's, not another capability's, and it has no write path.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT owner_scope_id,capability_id,granted FROM connector_capability_grants')).rows)
+        .toEqual([{owner_scope_id:a,capability_id:'documents.upload',granted:true}]);
+      const changed=await c.query("UPDATE connector_capability_grants SET granted=false,revoked_at=now() WHERE capability_id='documents.upload'");
+      expect(changed.rowCount).toBe(0);
+      await expect(c.query(`INSERT INTO connector_capability_grants(id,owner_scope_id,connector_id,capability_id,risk_class,access_kind,granted,granted_at)
+        SELECT $1,owner_scope_id,connector_id,'documents.export','LOW','READ',true,now() FROM connector_capability_grants LIMIT 1`,[randomUUID()]))
+        .rejects.toMatchObject({code:'42501'});
+    },'evidence.ingest');
+    // Another owner's rows stay invisible under the same purpose.
+    await asOwner(b,alice,async c=>{
+      expect((await c.query('SELECT * FROM connector_capability_grants')).rows).toEqual([]);
+    },'evidence.ingest');
+    await asOwner(b,bob,async c=>{
+      const rows=(await c.query('SELECT owner_scope_id,capability_id FROM connector_capability_grants')).rows;
+      expect(rows).toEqual([{owner_scope_id:b,capability_id:'documents.upload'}]);
+    },'evidence.ingest');
+    // The policy is the upload's purpose only: evidence.read still sees none.
+    await asOwner(a,alice,async c=>{
+      expect((await c.query('SELECT * FROM connector_capability_grants')).rows).toEqual([]);
+    },'evidence.read');
+  });
+
   it('refuses success when a caught SQL error causes COMMIT to roll back',async()=>{
     const correlationId=randomUUID();
     await expect(withOwnerTransaction(appPool,{actorId:alice,ownerScopeId:a,purpose:'test',correlationId},async tx=>{

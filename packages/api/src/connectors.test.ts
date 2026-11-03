@@ -11,7 +11,6 @@ import type { ConnectorClient, ConnectorFetch } from '@unai/connectors';
 import { requireCapability, listGrants } from '@unai/connectors';
 import { createConnectorRuntime } from './connectors.js';
 import { hasSyncClient, type ConnectorRouteOptions } from './connectors.js';
-import { importSource } from './evidence.js';
 import { connectorTypeSchema } from '@unai/domain';
 
 /**
@@ -804,6 +803,60 @@ it('CRT-CON-05-A: an upload is stored at the documents manifest floor, not below
   } finally { await h.close(); }
 });
 
+it('CRT-CON-05-A: an upload naming its DOCUMENT connector is stored against it only while documents.upload is granted', async () => {
+  const h = await harness();
+  const stranger = await harness();
+  try {
+    const upload = (connectorId: string, owner: Harness = h) => owner.app.inject({
+      method: 'POST', url: '/v1/documents', headers: owner.headers('evidence.ingest'),
+      payload: {
+        documentId: 'doc-named-' + randomUUID(), mediaType: 'text/plain', connectorId,
+        pages: [{ page: 1, text: 'Uploaded under a named connector.' }],
+        sensitivity: 'PRIVATE', allowedPurposes: ['PERSONAL_ASSISTANCE'],
+      },
+    });
+    const stored = async (connectorId: string) => Number((await admin.query(
+      'SELECT count(*)::int AS n FROM source_items WHERE connector_id=$1', [connectorId])).rows[0].n);
+    const granted = (await connect(h, {
+      connectorType: 'DOCUMENT', externalAccountRef: 'uploads',
+      requestedCapabilities: [{ capabilityId: 'documents.upload', granted: true }, { capabilityId: 'documents.read', granted: true }],
+    })).json().connectorId as string;
+    const accepted = await upload(granted);
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json()).toMatchObject({ ingestionStatus: 'STORED', indexed: true, searchable: true });
+    expect((await admin.query('SELECT connector_id FROM source_items WHERE id=$1', [accepted.json().evidenceId])).rows)
+      .toEqual([{ connector_id: granted }]);
+
+    // An ACTIVE connector whose upload capability was never granted is refused by name.
+    const ungranted = (await connect(h, {
+      connectorType: 'DOCUMENT', externalAccountRef: 'read-only-uploads',
+      requestedCapabilities: [{ capabilityId: 'documents.upload', granted: false }, { capabilityId: 'documents.read', granted: true }],
+    })).json().connectorId as string;
+    const refused = await upload(ungranted);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ code: 'CONNECTOR_CAPABILITY_NOT_GRANTED', capabilityId: 'documents.upload' });
+    expect(await stored(ungranted)).toBe(0);
+
+    // Revoking exactly that capability refuses the next upload; the connector stays ACTIVE.
+    const revoked = await h.app.inject({
+      method: 'POST', url: '/v1/connectors/' + granted + '/capabilities', headers: h.headers('connector.manage'),
+      payload: { capabilities: [{ capabilityId: 'documents.upload', granted: false }] },
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect((await admin.query('SELECT status FROM connectors WHERE id=$1', [granted])).rows).toEqual([{ status: 'ACTIVE' }]);
+    const afterRevoke = await upload(granted);
+    expect(afterRevoke.statusCode).toBe(403);
+    expect(afterRevoke.json()).toMatchObject({ code: 'CONNECTOR_CAPABILITY_NOT_GRANTED', capabilityId: 'documents.upload' });
+    expect(await stored(granted)).toBe(1);
+
+    // Another owner cannot upload against this owner's connector.
+    const foreign = await upload(ungranted, stranger);
+    expect(foreign.statusCode).toBe(404);
+    expect(foreign.json().code).toBe('CONNECTOR_NOT_FOUND');
+    expect(await stored(ungranted)).toBe(0);
+  } finally { await h.close(); await stranger.close(); }
+});
+
 /**
  * The production wiring, tested without a listener and without a network call.
  *
@@ -883,31 +936,19 @@ it('a DOCUMENT or CONVERSATION sync is refused by name and records nothing, so e
     expect(built).toEqual([]);
     expect(resolved).toEqual([]);
 
-    // Evidence naming the connector is still accepted: migration 0018's
+    // An upload naming the connector is still accepted: migration 0018's
     // connector_ingestion_active trigger refuses every source_items row of a
-    // connector that is not ACTIVE. This goes through importSource, the path the
-    // sync and the job use, because POST /v1/documents with a connectorId is
-    // refused for an unrelated reason (task-a4c2dc3a: the grants SELECT policy
-    // does not admit evidence.ingest), sync or no sync.
-    const stored = new Map<string, Uint8Array>();
-    const imported = await withOwnerTransaction(appPool,
-      { ownerScopeId: h.ownerScopeId, actorId: h.userId, purpose: 'evidence.ingest', correlationId: randomUUID() },
-      async tx => {
-        await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity',$2,true)",
-          ['PERSONAL_ASSISTANCE', 'RESTRICTED']);
-        return importSource(tx, {
-          encryptionKeyRef: 'kms:test-double',
-          async put(_tx, id, bytes) { stored.set(id, bytes); },
-          async get(_tx, id) { return stored.get(id)!; },
-        }, {
-          sourceType: 'DOCUMENT', connectorId: document,
-          payload: { documentId: 'doc-after-refused-sync-' + randomUUID(), mediaType: 'text/plain',
-            pages: [{ page: 1, text: 'Stored after a refused sync.' }] },
-          sensitivity: 'PRIVATE', allowedPurposes: ['PERSONAL_ASSISTANCE'],
-        });
-      });
-    expect(imported).toHaveLength(1);
-    expect((await admin.query('SELECT connector_id FROM source_items WHERE id=$1', [imported[0]!.evidenceId])).rows)
+    // connector that is not ACTIVE, so a sync recorded as failed would block it.
+    const upload = await h.app.inject({
+      method: 'POST', url: '/v1/documents', headers: h.headers('evidence.ingest'),
+      payload: {
+        documentId: 'doc-after-refused-sync-' + randomUUID(), mediaType: 'text/plain', connectorId: document,
+        pages: [{ page: 1, text: 'Stored after a refused sync.' }],
+        sensitivity: 'PRIVATE', allowedPurposes: ['PERSONAL_ASSISTANCE'],
+      },
+    });
+    expect(upload.statusCode).toBe(201);
+    expect((await admin.query('SELECT connector_id FROM source_items WHERE id=$1', [upload.json().evidenceId])).rows)
       .toEqual([{ connector_id: document }]);
 
     // A pollable type keeps today's order: the evidence context is declared first.
