@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import type {PermissionsView} from '@unai/domain';
+import {connectorTypeSchema, type PermissionsView} from '@unai/domain';
 import {Navigation} from './Navigation';
 import {platformWrite, RefusedWrite} from './controlWrite';
 
@@ -161,7 +161,7 @@ function RetentionEditor(props: {view: PermissionsView; busy: boolean; onSave(bo
       props.onSave({rules: [{sourceType, rawRetentionDays: days(raw), derivedRetentionDays: days(derived)}]});}}>
       <label htmlFor="retention-source">Source type</label>
       <select id="retention-source" value={sourceType} onChange={event => setSourceType(event.target.value)}>
-        {['CONVERSATION', 'GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'DOCUMENT'].map(type => <option key={type} value={type}>{type}</option>)}
+        {connectorTypeSchema.options.map(type => <option key={type} value={type}>{type}</option>)}
       </select>
       <label htmlFor="retention-raw">Keep raw evidence for (days, empty keeps it)</label>
       <input id="retention-raw" inputMode="numeric" value={raw} onChange={event => setRaw(event.target.value)}/>

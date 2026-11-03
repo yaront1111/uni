@@ -1,7 +1,8 @@
 import {expect,it} from 'vitest';
 import {createElement} from 'react';
+import {connectorTypeSchema, disconnectResultSchema, publicConnectorSchema} from '@unai/domain';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {Connectors,type ConnectorsProps} from './Connectors';
+import {afterDisconnect, lastDisconnectFrom, Connectors,type ConnectorsProps} from './Connectors';
 import {Evidence} from './Evidence';
 
 /** One assertion per state the design draws for "Connected sources", "Grant
@@ -38,6 +39,17 @@ it('draws the empty state when no source is connected',()=>{
   expect(html).toContain('href="/connectors"');
 });
 
+it('offers every connector type with the Omi credential guidance',()=>{
+  const html=render({});
+  const select=html.slice(html.indexOf('id="connect-type"'),html.indexOf('</select>'));
+  expect(select).toContain('<option value="OMI">Omi wearable</option>');
+  for(const type of connectorTypeSchema.options) expect(select).toContain('<option value="'+type+'"');
+  expect(select.match(/<option /g)).toHaveLength(connectorTypeSchema.options.length);
+  expect(select).toContain('<option value="GMAIL" selected="">Gmail</option>');
+  expect(html).toContain('Omi developer API key');
+  expect(html).toContain('conversations:read');
+});
+
 it('lists a connected source with its status, granted capabilities and stored cursor',()=>{
   const html=render({connectors:[connector() as never]});
   expect(html).toContain('Gmail (read-only)');
@@ -70,9 +82,65 @@ it('names a failed sync, a revoked token and a disconnected source in text',()=>
     .toContain('Reauthorization required');
   const disconnected=render({connectors:[connector({status:'DISCONNECTED',cursor:null,credentialHeld:false,
     disconnectedAt:'2026-09-15T09:00:00.000Z',grantedCapabilities:[]}) as never]});
-  expect(disconnected).toContain('tokens revoked and ingestion stopped');
+  expect(disconnected).toContain('Status: Disconnected: ingestion stopped.');
+  expect(disconnected).not.toContain('tokens revoked');
   // A disconnected source offers no sync button.
   expect(disconnected).not.toContain('Sync now');
+});
+
+const omiDisconnected=publicConnectorSchema.parse(connector({
+  connectorType:'OMI',manifestId:'connector.omi',displayName:'Omi wearable (read-only)',status:'DISCONNECTED',
+  cursor:null,credentialHeld:false,grantedCapabilities:[],capabilities:[],requestedScopes:[],
+}));
+const omiReceipt=disconnectResultSchema.parse({
+  connectorId:omiDisconnected.connectorId,status:'DISCONNECTED',tokensRevokedAtProvider:false,
+  secretReferenceDestroyed:true,ingestionStopped:true,capabilitiesRevoked:['omi.read_conversations'],
+  retainedEvidence:'RETAINED',retainedEvidenceOptions:['KEEP_EVIDENCE','REQUEST_DELETION'],
+  providerRevocationNotice:'CONNECTOR_REVOCATION_MANUAL_REQUIRED',
+});
+
+it('renders the manual provider revocation notice from the disconnect receipt',()=>{
+  const html=render({connectors:[omiDisconnected],lastDisconnect:omiReceipt});
+  expect(html).toContain('<p role="status" aria-live="polite">Omi wearable (read-only) is disconnected: ingestion stopped and the evidence already stored is kept.');
+  expect(html).toContain('Uai has stopped using this key and forgotten its handle. Omi does not let apps revoke developer keys: revoke it in the Omi app under Settings &gt; Developer.');
+  expect(render({lastDisconnect:omiReceipt})).toContain('The source is disconnected: ingestion stopped');
+});
+
+it('omits manual revocation instructions when the notice or receipt is absent',()=>{
+  const html=render({connectors:[omiDisconnected],lastDisconnect:{...omiReceipt,providerRevocationNotice:null}});
+  expect(html).toContain('Omi wearable (read-only) is disconnected: ingestion stopped');
+  for(const markup of [html,render({connectors:[omiDisconnected]}),render({lastDisconnect:null})]){
+    expect(markup).not.toContain('Omi does not let apps revoke');
+    expect(markup).not.toContain('Settings &gt; Developer');
+  }
+  expect(render({connectors:[omiDisconnected]})).not.toContain('is disconnected: ingestion stopped');
+});
+
+it('navigates to a disconnect receipt with only a schema-validated notice',()=>{
+  const path='/connectors?disconnected='+omiDisconnected.connectorId;
+  expect(afterDisconnect(omiDisconnected.connectorId,omiReceipt))
+    .toBe(path+'&notice=CONNECTOR_REVOCATION_MANUAL_REQUIRED');
+  for(const answer of [{...omiReceipt,providerRevocationNotice:null},null,{},'not json',
+    {...omiReceipt,providerRevocationNotice:'<script>'},{...omiReceipt,extra:true}]){
+    expect(afterDisconnect(omiDisconnected.connectorId,answer)).toBe(path);
+  }
+  expect(afterDisconnect('a&notice=untrusted',null)).toBe('/connectors?disconnected=a%26notice%3Duntrusted');
+});
+
+it('accepts a receipt query only for a freshly read disconnected source',()=>{
+  const id=omiDisconnected.connectorId;
+  const receipt={connectorId:id,providerRevocationNotice:omiReceipt.providerRevocationNotice};
+  expect(lastDisconnectFrom(id,omiReceipt.providerRevocationNotice,[omiDisconnected])).toEqual(receipt);
+  for(const notice of ['<script>',undefined,null,['CONNECTOR_REVOCATION_MANUAL_REQUIRED']]){
+    expect(lastDisconnectFrom(id,notice,[omiDisconnected])).toEqual({connectorId:id,providerRevocationNotice:null});
+  }
+  for(const disconnected of [[id],undefined,null,'','22222222-2222-4222-8222-222222222222']){
+    expect(lastDisconnectFrom(disconnected,omiReceipt.providerRevocationNotice,[omiDisconnected])).toBeNull();
+  }
+  expect(lastDisconnectFrom(id,omiReceipt.providerRevocationNotice,[{...omiDisconnected,status:'ACTIVE'}])).toBeNull();
+  expect(lastDisconnectFrom(id,omiReceipt.providerRevocationNotice,[])).toBeNull();
+  const query=new URLSearchParams(afterDisconnect(id,omiReceipt).split('?')[1]);
+  expect(lastDisconnectFrom(query.get('disconnected'),query.get('notice'),[omiDisconnected])).toEqual(receipt);
 });
 
 it('draws one independent control per capability with its risk classification',()=>{

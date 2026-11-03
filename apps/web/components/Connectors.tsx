@@ -1,6 +1,8 @@
 import React, {useState} from 'react';
-import type {PublicConnector, PublicCapabilityGrant, SyncResult} from '@unai/domain';
+import {disconnectResultSchema, type ConnectorType, type DisconnectResult, type PublicConnector, type PublicCapabilityGrant, type SyncResult} from '@unai/domain';
 import {Navigation} from './Navigation';
+
+export type DisconnectReceipt = Pick<DisconnectResult, 'connectorId' | 'providerRevocationNotice'>;
 
 /** The design screens "Connected sources" and "Grant connector capabilities".
  *
@@ -16,6 +18,8 @@ export interface ConnectorsProps {
   /** The result of the most recent sync, so the screen can show that the second
    * run resumed from the stored cursor and discarded the redelivered items. */
   lastSync: SyncResult | null;
+  /** Validated receipt of the last disconnect; omitted in embedded screens. */
+  lastDisconnect?: DisconnectReceipt | null;
   state: 'IDLE' | 'SYNCING' | 'DISCONNECTING';
   /** A refusal the API named, shown with its reason rather than as a generic
    * failure: a request needing a write scope is the drawn case. */
@@ -28,7 +32,12 @@ const STATUS_TEXT: Record<string, string> = {
   ACTIVE: 'Connected.',
   SYNC_FAILED: 'Sync failed.',
   TOKEN_REVOKED: 'Access was revoked at the provider. Reauthorization required.',
-  DISCONNECTED: 'Disconnected: tokens revoked and ingestion stopped.',
+  DISCONNECTED: 'Disconnected: ingestion stopped.',
+};
+/** The Connect form's words, in display order. A new domain type requires a label here. */
+const CONNECTOR_TYPE_LABEL: Record<ConnectorType, string> = {
+  GMAIL: 'Gmail', GOOGLE_CALENDAR: 'Google Calendar', GITHUB: 'GitHub', DOCUMENT: 'Documents',
+  CONVERSATION: 'Conversation source', OMI: 'Omi wearable',
 };
 const REFUSAL_TEXT: Record<string, string> = {
   CONNECTOR_WRITE_SCOPE_REFUSED: 'That capability needs a write scope. Uai V0 is read-only and refused it.',
@@ -37,12 +46,31 @@ const REFUSAL_TEXT: Record<string, string> = {
   CONNECTOR_ALREADY_CONNECTED: 'That account is already connected to this owner scope.',
 };
 
+const MANUAL_REVOCATION_TEXT = 'Uai has stopped using this key and forgotten its handle. Omi does not let apps revoke developer keys: revoke it in the Omi app under Settings > Developer.';
+
+/** Preserve only the domain notice when navigating to the fresh server render. */
+export function afterDisconnect(connectorId: string, answer: unknown): string {
+  const path = '/connectors?disconnected=' + encodeURIComponent(connectorId);
+  const receipt = disconnectResultSchema.safeParse(answer);
+  return receipt.success && receipt.data.providerRevocationNotice !== null
+    ? path + '&notice=' + receipt.data.providerRevocationNotice : path;
+}
+
+/** Query values become props only after matching the freshly parsed source list. */
+export function lastDisconnectFrom(disconnected: unknown, notice: unknown,
+  connectors: readonly PublicConnector[]): DisconnectReceipt | null {
+  const connector = connectors.find(entry => entry.connectorId === disconnected && entry.status === 'DISCONNECTED');
+  if (!connector) return null;
+  const parsed = disconnectResultSchema.shape.providerRevocationNotice.safeParse(notice ?? null);
+  return {connectorId: connector.connectorId, providerRevocationNotice: parsed.success ? parsed.data : null};
+}
+
 export function Connectors(props: ConnectorsProps) {
   const Frame=props.embedded?'section':'main';
   const Heading=props.embedded?'h2':'h1';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(props.error ?? '');
-  async function post(path: string, body: Record<string, unknown>, purpose: string) {
+  async function post(path: string, body: Record<string, unknown>, purpose: string, next?: (answer: unknown) => string) {
     setBusy(true); setError('');
     try {
       const response = await fetch('/api/platform/' + path, {
@@ -56,7 +84,8 @@ export function Connectors(props: ConnectorsProps) {
         const answer = await response.json().catch(() => ({code: 'REQUEST_REFUSED'}));
         throw new Error(REFUSAL_TEXT[answer.code as string] ?? 'The request was refused. Nothing was changed.');
       }
-      window.location.reload();
+      if (next) window.location.assign(next(await response.json().catch(() => null)));
+      else window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The request could not be completed.');
     } finally {setBusy(false);}
@@ -75,18 +104,23 @@ export function Connectors(props: ConnectorsProps) {
       {props.state === 'SYNCING' && <p role="status" aria-live="polite">Initial sync running. Reading only what you granted.</p>}
       {props.state === 'DISCONNECTING' && <p role="status" aria-live="polite">Disconnecting and revoking tokens.</p>}
 
+      {props.lastDisconnect && <p role="status" aria-live="polite">
+        {props.connectors.find(connector => connector.connectorId === props.lastDisconnect?.connectorId)?.displayName ?? 'The source'} is disconnected: ingestion stopped and the evidence already stored is kept.
+        {props.lastDisconnect.providerRevocationNotice === 'CONNECTOR_REVOCATION_MANUAL_REQUIRED' ? ' ' + MANUAL_REVOCATION_TEXT : ''}
+      </p>}
+
       <form className="card" onSubmit={event=>{event.preventDefault();const data=new FormData(event.currentTarget);
         const secretRef=String(data.get('secretRef')??'').trim();
         if(secretRef&&!/^secret:\/\/[^\s]+$/.test(secretRef)){setError('Enter a secrets-manager handle, never a token or password.');return;}
         void post('connectors',{connectorType:data.get('connectorType'),externalAccountRef:data.get('externalAccountRef'),requestedCapabilities:[],secretRef:secretRef||null},'connector.manage');}}>
         <h3>Connect a source</h3>
         <label htmlFor="connect-type">Source type</label><select id="connect-type" name="connectorType" defaultValue="GMAIL">
-          <option value="GMAIL">Gmail</option><option value="GOOGLE_CALENDAR">Google Calendar</option><option value="GITHUB">GitHub</option>
-          <option value="DOCUMENT">Documents</option><option value="CONVERSATION">Conversation source</option>
+          {Object.entries(CONNECTOR_TYPE_LABEL).map(([type, label]) => <option key={type} value={type}>{label}</option>)}
         </select>
         <label htmlFor="connect-account">Account reference</label><input id="connect-account" name="externalAccountRef" required maxLength={512}/>
         <details><summary>Existing credential reference</summary>
           <p>If your deployment has provisioned this connection, enter its secrets-manager handle. Never enter a token or password.</p>
+          <p>For the Omi wearable, the handle must resolve to an Omi developer API key that has the conversations:read scope. Omi has no consent screen, so without a handle it cannot sync.</p>
           <label htmlFor="connect-secret">Secrets-manager handle (optional)</label><input id="connect-secret" name="secretRef" maxLength={512} autoComplete="off"/>
         </details>
         <p>After connecting, grant each capability separately. No access is granted by this form.</p>
@@ -117,7 +151,7 @@ export function Connectors(props: ConnectorsProps) {
               <button disabled={disabled} onClick={() => post('connectors/' + connector.connectorId + '/sync',
                 {mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE']}, 'connector.sync')}>Sync now</button>
               <button disabled={disabled} onClick={() => post('connectors/' + connector.connectorId + '/disconnect',
-                {}, 'connector.manage')}>Disconnect</button>
+                {}, 'connector.manage', answer => afterDisconnect(connector.connectorId, answer))}>Disconnect</button>
             </>}
           </li>)}</ul>}
 

@@ -1,7 +1,7 @@
 import type {GetServerSideProps} from 'next';
 import {randomUUID} from 'node:crypto';
 import {publicConnectorSchema} from '@unai/domain';
-import {Connectors} from '../components/Connectors';
+import {Connectors, lastDisconnectFrom} from '../components/Connectors';
 import {apiRequest, identity} from '../lib/server';
 
 export default Connectors;
@@ -24,5 +24,6 @@ export const getServerSideProps: GetServerSideProps = async ({req, res, query}) 
   const parsed = connectors as ReturnType<typeof publicConnectorSchema.parse>[];
   const selected = wanted === null ? null : parsed.find(connector => connector.connectorId === wanted) ?? null;
   if (wanted !== null && selected === null && error === null) error = 'That source is not connected to this owner scope.';
-  return {props: {connectors: parsed, selected, lastSync: null, state: 'IDLE', refusal: null, error}};
+  return {props: {connectors: parsed, selected, lastSync: null,
+    lastDisconnect: lastDisconnectFrom(query.disconnected, query.notice, parsed), state: 'IDLE', refusal: null, error}};
 };

@@ -1,7 +1,7 @@
 import {expect, it} from 'vitest';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import type {ActionHistoryEntry, DeletionReceipt, PermissionsView, PublicDraft, PublicRecommendation} from '@unai/domain';
+import {connectorTypeSchema, type ActionHistoryEntry, type DeletionReceipt, type PermissionsView, type PublicDraft, type PublicRecommendation} from '@unai/domain';
 import {Permissions, type PermissionsProps} from './Permissions';
 import {DataControl, type DataControlProps} from './DataControl';
 import {ActionHistory} from './ActionHistory';
@@ -56,6 +56,19 @@ it('Permissions and integrations: sources with read and write scopes, sensitivit
   expect(saved).toContain('Attention budget saved. The change takes effect on the next operation that uses it');
   expect(saved).toContain('role="status"');
   expect(permissions({view: null, error: 'Permissions could not be loaded. Please retry.'})).toContain('role="alert"');
+});
+
+it('Permissions: OMI is listed with its PRIVATE default, and retention offers every connector type', () => {
+  const html = permissions({view: {...view, domainSensitivity: [...view.domainSensitivity,
+    {sourceType: 'OMI', defaultSensitivity: 'PRIVATE', effectiveSensitivity: 'PRIVATE', ownerSetting: null, updatedAt: null}]}});
+  const sensitivity = html.slice(html.indexOf('for="sensitivity-OMI"'), html.indexOf('</li>', html.indexOf('for="sensitivity-OMI"')));
+  expect(sensitivity).toContain('for="sensitivity-OMI"');
+  expect(sensitivity).toContain('OMI (default PRIVATE)');
+  expect(sensitivity).toContain('Stored at: PRIVATE (default)');
+  const select = html.slice(html.indexOf('id="retention-source"'), html.indexOf('</select>', html.indexOf('id="retention-source"')));
+  expect(select).toContain('<option value="OMI">OMI</option>');
+  for (const type of connectorTypeSchema.options) expect(select).toContain('<option value="' + type + '"');
+  expect(select.match(/<option /g)).toHaveLength(connectorTypeSchema.options.length);
 });
 
 const counts = {conversations: 0, conversationTurns: 0, rawObjects: 1, parsedContent: 1, anchors: 2, claims: 1, unsupportedBeliefs: 2, beliefAssessments: 2,
