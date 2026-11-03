@@ -1,0 +1,42 @@
+# ADR 0043 D1-D3, D6, D8, D10-D12: distinct users, not the rejected shared unai user.
+# Direct node (no pnpm wrapper) delivers SIGTERM to the process. The install task
+# must make systemd's fixed executable search path resolve node to Node 24.
+# Next.js has no explicit dir: start from apps/web; tsx resolves from root node_modules.
+# PID 1 reads the root:root 0600 env file. Web holds no AWS credentials (D6).
+# 180 s is the common preflight budget: API can need ten 10 s checks plus shutdown.
+# No write grant: Pages Router uses getServerSideProps, no next/image, ISR or fetch
+# cache. Expect no runtime .next writes; the deploy rehearsal must prove this.
+# The release is root-owned; tsx caches in private /tmp. Logs go to journald.
+# D3 binds 0.0.0.0:443 via NEXTAUTH_URL: CAP_NET_BIND_SERVICE only, never root.
+# MemoryMax is an initial placeholder for the recommended 8 GB host; rehearse/tune.
+# Do not use MemoryDenyWriteExecute: V8's JIT needs writable/executable pages.
+[Unit]
+Description=Uai web
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=unai-web
+Group=unai-web
+WorkingDirectory=/opt/unai/current/apps/web
+EnvironmentFile=/etc/unai/web.env
+Environment=NODE_ENV=production
+ExecStartPre=node --import tsx server.ts --check
+ExecStart=node --import tsx server.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/unai/secrets
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target

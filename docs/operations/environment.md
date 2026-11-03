@@ -456,6 +456,10 @@ relevant dependency behavior, not permission to configure credentials as literal
 runtime handle variables. Source references below are within the named installed
 package, inspected under `node_modules/.pnpm` (not scanned by the guard).
 
+The ADR 0043 units set `NODE_ENV=production` on all three processes and
+`AWS_SHARED_CREDENTIALS_FILE` plus `AWS_EC2_METADATA_DISABLED` on API and worker
+through `Environment=` lines, not the process env files.
+
 `packages/storage/src/index.ts:24` supplies neither credentials nor a CA option to
 S3Client. Thus the SDK credential chain applies, and `NODE_EXTRA_CA_CERTS` at process
 startup is the existing way to add a private S3 CA to the API's client. Node 24's
@@ -470,6 +474,7 @@ source is the deployment ADR 0043 decision, not a choice made by this contract.
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | optional environment provider; token for temporary credentials | literal | per use | @aws-sdk/credential-provider-env 3.972.71 `dist-cjs/index.js:12-14` | chain tries alternatives; API maps bucket-check failure to `STORAGE_ENCRYPTION_REQUIRED` |
 | `AWS_PROFILE` | optional; default profile; explicit profile takes precedence over static env pair | literal | per use | @smithy/core 3.34.1 `dist-cjs/submodules/config/index.js:165-167`; @aws-sdk/credential-provider-node 3.972.83 `dist-cjs/index.js:98-118` | none; default profile |
 | `AWS_SHARED_CREDENTIALS_FILE` | optional; ~/.aws/credentials | file path | per use | @smithy/core 3.34.1 `dist-cjs/submodules/config/index.js:207-208` | chain tries alternatives |
+| `AWS_EC2_METADATA_DISABLED` | optional; true skips the EC2 instance-metadata credential source | literal | per use | @aws-sdk/credential-provider-node 3.972.83 `dist-cjs/index.js:4,12` | none |
 | `AWS_CONFIG_FILE` | optional; ~/.aws/config | file path | per use | @smithy/core 3.34.1 `dist-cjs/submodules/config/index.js:204-205` | chain tries alternatives |
 | `AWS_WEB_IDENTITY_TOKEN_FILE` | optional web-identity token file; requires role | file path | per use | @aws-sdk/credential-provider-web-identity 3.972.77 `dist-cjs/index.js:31-38` | chain tries alternatives |
 | `AWS_ROLE_ARN` | optional web-identity role identifier; requires token file | literal | per use | @aws-sdk/credential-provider-web-identity 3.972.77 `dist-cjs/index.js:31-38` | chain tries alternatives |

@@ -1,0 +1,43 @@
+# ADR 0043 D1-D3, D6, D8, D10-D12: distinct users, not the rejected shared unai user.
+# Direct node (no pnpm wrapper) delivers SIGTERM to the process. The install task
+# must make systemd's fixed executable search path resolve node to Node 24.
+# PostgreSQL ordering is not a dependency: its restart must not stop this unit.
+# PID 1 reads the root:root 0600 env file; AWS credentials stay in the API mount.
+# --check briefly binds the probe port; ExecStartPre guarantees the API is stopped.
+# 180 s permits ten 10 s checks plus a bounded 10 s shutdown, beyond the 90 s default.
+# No write grant: only PostgreSQL, S3 and journald receive writes; tsx uses private
+# /tmp. The release is root-owned. Confirm this in the deploy rehearsal.
+# Ports 3443 and 9101 are unprivileged; no capabilities are needed.
+# MemoryMax is an initial placeholder for the recommended 8 GB host; rehearse/tune.
+# Do not use MemoryDenyWriteExecute: V8's JIT needs writable/executable pages.
+[Unit]
+Description=Uai API
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=exec
+User=unai-api
+Group=unai-api
+WorkingDirectory=/opt/unai/current
+EnvironmentFile=/etc/unai/api.env
+Environment=NODE_ENV=production
+Environment=AWS_SHARED_CREDENTIALS_FILE=/etc/unai/secrets/api/aws/credentials
+Environment=AWS_EC2_METADATA_DISABLED=true
+ExecStartPre=node --import tsx packages/api/src/server.ts --check
+ExecStart=node --import tsx packages/api/src/server.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/unai/secrets
+CapabilityBoundingSet=
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
