@@ -13,6 +13,7 @@ export function processingRelease(env: NodeJS.ProcessEnv) {
   return { registryReleaseId, registryRelease };
 }
 export function processingConfiguration(env: NodeJS.ProcessEnv) {
+  const connectorSyncIntervalMs = connectorSyncInterval(env);
   const release = processingRelease(env);
   const ownerScopeId = processingRequired(env, 'UNAI_PROCESSING_OWNER_SCOPE_ID');
   const actorId = processingRequired(env, 'UNAI_PROCESSING_ACTOR_ID');
@@ -21,5 +22,15 @@ export function processingConfiguration(env: NodeJS.ProcessEnv) {
   const sensitivity = sensitivitySchema.safeParse(processingRequired(env, 'UNAI_PROCESSING_MAXIMUM_SENSITIVITY'));
   const pollMs = Number(env.UNAI_PROCESSING_POLL_MS ?? 1000);
   if (!purpose.success || !sensitivity.success || !Number.isInteger(pollMs) || pollMs < 100 || pollMs > 60000) throw new Error('PROCESSING_CONFIGURATION_INVALID');
-  return { ...release, ownerScopeId, actorId, dataPurpose: purpose.data, maximumSensitivity: sensitivity.data, pollMs };
+  return { ...release, ownerScopeId, actorId, dataPurpose: purpose.data, maximumSensitivity: sensitivity.data, pollMs, connectorSyncIntervalMs };
+}
+/** Connector-sync scheduling interval in ms: 900000 when unset or empty, 0 to
+ * disable, else an integer 60000 to 86400000. Empty never means 0, so scheduling
+ * is only ever switched off explicitly; the one-day cap keeps windows moving. */
+export function connectorSyncInterval(env: NodeJS.ProcessEnv): number {
+  const raw = env.UNAI_CONNECTOR_SYNC_INTERVAL_MS;
+  if (raw === undefined || raw === '') return 900000;
+  const value = /^[0-9]{1,8}$/.test(raw) ? Number(raw) : NaN;
+  if (value === 0 || (value >= 60000 && value <= 86400000)) return value;
+  throw new Error('CONFIG_INVALID:UNAI_CONNECTOR_SYNC_INTERVAL_MS');
 }

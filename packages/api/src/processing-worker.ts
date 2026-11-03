@@ -29,6 +29,7 @@ async function main() {
   const { createConnectorRuntime }=await import('./connectors.js');
   const { createConnectorSyncRuntime }=await import('./connector-sync-job.js');
   const { probeConfiguration, createProbeServer, databaseCheck, registryReleaseCheck, createLoopHeartbeat }=await import('./probes.js');
+  const { createConnectorSyncScheduler, connectorSyncSchedulerPorts }=await import('./connector-sync-scheduler.js');
   const configuration = processingConfiguration(process.env);
   const probeConfig = probeConfiguration(process.env);
   const secrets = createDefaultSecretsManager();
@@ -50,7 +51,11 @@ async function main() {
       endpoint: processingRequired(process.env, 'UNAI_S3_ENDPOINT'), region: processingRequired(process.env, 'UNAI_S3_REGION'),
       bucket: processingRequired(process.env, 'UNAI_S3_BUCKET'), kmsKeyId: processingRequired(process.env, 'UNAI_S3_KMS_KEY_ID'),
     });
+    const scheduler = createConnectorSyncScheduler({ clock: Date.now, intervalMs: configuration.connectorSyncIntervalMs,
+      ...connectorSyncSchedulerPorts({ ...configuration, appPool }) });
     if (process.argv.includes('--check')) return;
+    // Timer-driven deployments: one connector-sync scheduling pass, no probes and no job turns.
+    if (process.argv.includes('--once')) { await scheduler.tick(); return; }
     const heartbeat = createLoopHeartbeat({ pollMs: configuration.pollMs, busyLimitMs: PROCESSING_TURN_LIMIT_MS });
     probes = probeConfig && await createProbeServer({ ...probeConfig, checks: {
       database: databaseCheck(appPool), registry_release: registryReleaseCheck(appPool, configuration.registryReleaseId), loop: heartbeat.check,
@@ -62,6 +67,7 @@ async function main() {
       heartbeat.beat(true);
       try { await runtime.runOnce(); await initiative.runOnce(); await connectorSync.runOnce(); }
       catch { process.stderr.write('PROCESSING_TURN_FAILED\n'); }
+      await scheduler.tickIfDue().catch(() => { process.stderr.write('CONNECTOR_SCHEDULER_TICK_FAILED\n'); });
       heartbeat.beat(false);
       await sleep(configuration.pollMs, undefined, { signal: abort.signal }).catch(() => undefined);
     }
