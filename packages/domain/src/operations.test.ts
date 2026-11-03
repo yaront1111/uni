@@ -12,8 +12,9 @@ function liveRecord(){return {
     {criterion:'CRT-CON-03-A',connector:'GOOGLE_CALENDAR',status:'passed',testName:'CRT-CON-03-A calendar live'},
     {criterion:'CRT-CON-04-A',connector:'GITHUB',status:'passed',testName:'CRT-CON-04-A github live'},
     {criterion:'CRT-CON-06-A',connector:'GMAIL',status:'skipped',testName:'CRT-CON-06-A revocation live'},
+    {criterion:'ADR-0041-LIVE-A',connector:'OMI',status:'passed',testName:'ADR-0041-LIVE-A omi live'},
   ],
-  totals:{passed:3,failed:0,skipped:1},
+  totals:{passed:4,failed:0,skipped:1},
 };}
 type LiveRecord=ReturnType<typeof liveRecord>;
 function ready(){return {
@@ -116,8 +117,15 @@ function live(mutate:(record:LiveRecord)=>void){const r=ready();mutate(r.liveCon
 it('PRD-54.1-LIVE-CONNECTORS passes a complete owner record whose opt-in revocation case is skipped, passed or absent',()=>{
   expect(gate(ready(),LIVE)).toBe(true);
   expect(gate(live(record=>{record.cases[3]!.status='passed';}),LIVE)).toBe(true);
-  expect(gate(live(record=>{record.cases.pop();}),LIVE)).toBe(true);
+  expect(gate(live(record=>{record.cases=record.cases.filter(c=>c.criterion!=='CRT-CON-06-A');}),LIVE)).toBe(true);
   expect(gate(live(record=>{record.cases.push({criterion:'CRT-CON-07-A',connector:'OMI',status:'passed',testName:'omi live'});}),LIVE)).toBe(true);
+});
+it('PRD-54.1-LIVE-CONNECTORS requires the Omi case ADR-0041-LIVE-A, passed, under connector OMI',()=>{
+  expect(gate(ready(),LIVE)).toBe(true);
+  expect.soft(gate(live(record=>{record.cases=record.cases.filter(c=>c.connector!=='OMI');}),LIVE)).toBe(false);
+  expect.soft(gate(live(record=>{record.cases[4]!.criterion='CRT-CON-07-A';}),LIVE)).toBe(false);
+  expect.soft(gate(live(record=>{record.cases[4]!.connector='GMAIL';}),LIVE)).toBe(false);
+  expect.soft(gate(live(record=>{record.cases[4]!.status='skipped';}),LIVE)).toBe(false);
 });
 it('fails a missing or invalid listing, and a failure code beside a record',()=>{
   for(const failure of ['LIVE_RECORD_MISSING','LIVE_RECORD_INVALID'])
@@ -126,7 +134,7 @@ it('fails a missing or invalid listing, and a failure code beside a record',()=>
   const empty=ready();empty.liveConnectors.record=null;expect(gate(empty,LIVE)).toBe(false);
 });
 it('fails a required case that is skipped, pending, failed or absent, a failed opt-in case and any other unpassed case',()=>{
-  for(const index of [0,1,2])for(const status of ['skipped','pending','failed','todo'])
+  for(const index of [0,1,2,4])for(const status of ['skipped','pending','failed','todo'])
     expect(gate(live(record=>{record.cases[index]!.status=status;}),LIVE)).toBe(false);
   expect(gate(live(record=>{record.cases=record.cases.filter(c=>c.connector!=='GITHUB');}),LIVE)).toBe(false);
   expect(gate(live(record=>{record.cases[2]!.criterion='CRT-CON-05-A';}),LIVE)).toBe(false);
@@ -138,7 +146,7 @@ it('fails a required case that is skipped, pending, failed or absent, a failed o
 it('fails a nonzero exit, a dirty workspace and totals that do not match the cases',()=>{
   expect(gate(live(record=>{record.exitCode=1;}),LIVE)).toBe(false);
   expect(gate(live(record=>{record.workspaceClean=false;}),LIVE)).toBe(false);
-  for(const totals of [{passed:4,failed:0,skipped:1},{passed:3,failed:1,skipped:1},{passed:3,failed:0,skipped:0},{passed:4,failed:0,skipped:0}]){
+  for(const totals of [{passed:5,failed:0,skipped:1},{passed:4,failed:1,skipped:1},{passed:4,failed:0,skipped:0},{passed:5,failed:0,skipped:0}]){
     const r=ready();r.liveConnectors.record!.totals=totals;expect(gate(r,LIVE)).toBe(false);
   }
 });

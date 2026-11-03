@@ -163,11 +163,9 @@ steps 5-8.
 
 **Closes:** PRD §54 item 1, "All required connectors ingest real data
 read-only". It covers the live half of CRT-CON-02-A (Gmail), CRT-CON-03-A
-(Google Calendar) and CRT-CON-04-A (GitHub), plus the opt-in CRT-CON-06-A
-(revocation at the provider): the four cases in
-`packages/api/src/connectors.live.test.ts`. The Omi connector joins this gate
-when its live case exists; that case reads `UNAI_SECRETS_MOUNT` and
-`UNAI_LIVE_OMI_SECRET`, a `secret://` handle to an Omi developer key.
+(Google Calendar), CRT-CON-04-A (GitHub) and ADR-0041-LIVE-A (the Omi
+connector of ADR 0041), plus the opt-in CRT-CON-06-A (revocation at the
+provider): the five cases in `packages/api/src/connectors.live.test.ts`.
 
 **Who runs it:** the owner, with test accounts and credentials the repository
 never holds.
@@ -194,6 +192,13 @@ never holds.
     `https://www.googleapis.com/auth/calendar.readonly` only.
   - GitHub: a token limited to the one test repository, with read-only access to
     metadata, issues, pull requests and checks, and never one that can write.
+  - Omi: an Omi developer key created at app.omi.me/developers with only the
+    `conversations:read` scope. The key names its account, so no account variable
+    is needed. The case makes one GET (one conversation-list page) against the
+    key's hourly rate limit; on a 429, run again later, never record a pass.
+    The account must have a completed, non-discarded conversation with transcript
+    segments and a structured summary; otherwise the case fails as misconfigured.
+    Uai cannot revoke the key; the owner revokes it in the Omi app (ADR 0041 D8).
   - The suite asserts that the connector requested only read-only scopes. It
     cannot see a token's grant, so a token with write access is the owner's own
     finding, not a pass.
@@ -208,9 +213,11 @@ never holds.
   | `UNAI_LIVE_CALENDAR_SECRET` | a handle |
   | `UNAI_LIVE_GITHUB_REPOSITORY` | `owner/name` |
   | `UNAI_LIVE_GITHUB_SECRET` | a handle |
+  | `UNAI_LIVE_OMI_SECRET` | a handle |
   | `UNAI_LIVE_CONNECTOR_ALLOW_REVOCATION` | `true` only for the revocation case |
 
-  A case runs only when `UNAI_SECRETS_MOUNT` and both of its variables are set;
+  A case runs only when `UNAI_SECRETS_MOUNT` and its secret handle are set,
+  plus its account/repository variable where listed (Omi needs none);
   otherwise `pnpm test` reports it skipped.
 - Revocation is destructive: with `UNAI_LIVE_CONNECTOR_ALLOW_REVOCATION=true`,
   CRT-CON-06-A revokes the Gmail token at Google and a new one must be minted.
@@ -220,7 +227,7 @@ never holds.
   decoding (its parser rejects every real thread because it expects a decoded
   `payload.body.text`). That is a code finding, not an account problem.
 - Never committed: the secrets directory, tokens, account addresses, calendar
-  ids, repository names, mailbox content.
+  ids, repository names, mailbox content and Omi conversation content.
 
 **Commands, in order:**
 
@@ -236,6 +243,7 @@ export UNAI_LIVE_CALENDAR_ACCOUNT='<calendar id>'
 export UNAI_LIVE_CALENDAR_SECRET='secret://mounted/<name>'
 export UNAI_LIVE_GITHUB_REPOSITORY='<owner>/<name>'
 export UNAI_LIVE_GITHUB_SECRET='secret://mounted/<name>'
+export UNAI_LIVE_OMI_SECRET='secret://mounted/<name>'
 
 # 3. Run the suite.
 pnpm test
@@ -273,9 +281,10 @@ The record has the shape `unai-live-connectors/1`:
     { "criterion": "CRT-CON-02-A", "connector": "GMAIL", "status": "passed", "testName": "<fullName as printed>" },
     { "criterion": "CRT-CON-03-A", "connector": "GOOGLE_CALENDAR", "status": "passed", "testName": "<fullName as printed>" },
     { "criterion": "CRT-CON-04-A", "connector": "GITHUB", "status": "passed", "testName": "<fullName as printed>" },
-    { "criterion": "CRT-CON-06-A", "connector": "GMAIL", "status": "skipped", "testName": "<fullName as printed>" }
+    { "criterion": "CRT-CON-06-A", "connector": "GMAIL", "status": "skipped", "testName": "<fullName as printed>" },
+    { "criterion": "ADR-0041-LIVE-A", "connector": "OMI", "status": "passed", "testName": "<fullName as printed>" }
   ],
-  "totals": { "passed": 3, "failed": 0, "skipped": 1 }
+  "totals": { "passed": 4, "failed": 0, "skipped": 1 }
 }
 ```
 
@@ -285,7 +294,7 @@ Rules for the record:
 - `workspaceClean` is true only when command 1 printed nothing.
 - `totals` counts `cases` by status; anything neither passed nor failed counts as
   skipped.
-- An Omi case uses connector `OMI`.
+- The Omi case is criterion `ADR-0041-LIVE-A` with connector `OMI`.
 - The record holds no account address, calendar id, repository name, token,
   handle or path.
 - `recordedBy` is the literal `owner`, and `command` is the literal `pnpm test`.
@@ -293,8 +302,8 @@ Rules for the record:
 - Unknown keys, another `format` and an unknown `connector` are refused.
 - The file is named `live-connectors-<name>.json`, where `<name>` is 1-100
   letters, digits, `.`, `_` or `-` (by convention the UTC date of the run).
-- Gate result: PASS only when `exitCode` is 0 and the Gmail, Calendar and GitHub
-  cases (and Omi's, once it exists) are `passed`; FAIL when any of them failed;
+- Gate result: PASS only when `exitCode` is 0 and the Gmail, Calendar, GitHub
+  and Omi cases are `passed`; FAIL when any of them failed;
   otherwise UNVERIFIED.
 - Adding `liveConnectorRecords` is the only change to `release-input.json`.
 
@@ -305,11 +314,10 @@ all of these hold:
 - the path is `docs/operations/live-connectors-<name>.json` and the record
   parses as `unai-live-connectors/1`;
 - `exitCode` is 0 and `workspaceClean` is true;
-- the cases CRT-CON-02-A `GMAIL`, CRT-CON-03-A `GOOGLE_CALENDAR` and
-  CRT-CON-04-A `GITHUB` are present;
+- the cases CRT-CON-02-A `GMAIL`, CRT-CON-03-A `GOOGLE_CALENDAR`,
+  CRT-CON-04-A `GITHUB` and ADR-0041-LIVE-A `OMI` are present;
 - every case `passed`, except CRT-CON-06-A (revocation, opt-in), which may be
-  skipped but never failed. An Omi case counts once it is recorded, and becomes
-  required once its live case exists;
+  skipped but never failed;
 - `totals` match the cases;
 - `sourceCommit` is HEAD or a records-only ancestor of HEAD (ADR 0044).
 

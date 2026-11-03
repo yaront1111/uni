@@ -11,7 +11,7 @@ import type { EvidenceObjects } from './evidence.js';
 
 /**
  * The connector integration suite against *real* test accounts (CRT-CON-02-A,
- * CRT-CON-03-A, CRT-CON-04-A, CRT-CON-06-A).
+ * CRT-CON-03-A, CRT-CON-04-A, CRT-CON-06-A and ADR-0041-LIVE-A, the Omi connector).
  *
  * Those four criteria each name a live account: "ingests a real test account's
  * threads", "a real test account's events", "a real repository's PRs and issues",
@@ -32,11 +32,20 @@ import type { EvidenceObjects } from './evidence.js';
  *   UNAI_LIVE_CALENDAR_SECRET       secret://mounted/<name> for its Google REFRESH token
  *   UNAI_LIVE_GITHUB_REPOSITORY     owner/name
  *   UNAI_LIVE_GITHUB_SECRET         secret://mounted/<name> for a read-only fine-grained PAT
+ *   UNAI_LIVE_OMI_SECRET            secret://mounted/<name> for an Omi developer key limited to conversations:read
  *
  * Google refresh tokens are minted by the Uai connectors OAuth client.
  * UNAI_GOOGLE_CONNECTOR_CLIENT names its JSON {client_id, client_secret} secret;
  * createConnectorRuntime reads it from process.env. Without it, Google syncs
  * refuse CONNECTOR_OAUTH_CLIENT_MISSING. Revoking a Google token ends its grant.
+ *
+ * Omi needs no account variable: the developer key names its account. It runs
+ * one INCREMENTAL sync of one page (one GET against the hourly limit, ADR 0041
+ * D7); a 429 CONNECTOR_RATE_LIMITED means run again later, never a pass. The
+ * account must have a completed, non-discarded conversation with transcript
+ * segments and a structured summary, or the case fails as misconfigured.
+ * There is no Omi disconnect half: Uai cannot revoke the key; the owner revokes
+ * it in the Omi app (ADR 0041 D8).
  *
  * The token must carry only the read-only scopes the manifest lists; the suite
  * asserts that the connector requested exactly those and nothing wider, so a
@@ -50,7 +59,7 @@ import type { EvidenceObjects } from './evidence.js';
  *
  * `pnpm test` therefore reports these as skipped, never as passed. A skipped case
  * is not evidence: while it is skipped, the live half of CRT-CON-02-A,
- * CRT-CON-03-A and CRT-CON-04-A stays unverified and is reported as a finding.
+ * CRT-CON-03-A, CRT-CON-04-A and ADR-0041-LIVE-A stays unverified and is reported as a finding.
  */
 
 if (!process.env.UNAI_TEST_DATABASE_URL) throw new Error('Run pnpm test for the required PostgreSQL harness');
@@ -70,9 +79,11 @@ function live(account: string | undefined, secretRef: string | undefined): { acc
 const GMAIL = live(process.env.UNAI_LIVE_GMAIL_ACCOUNT, process.env.UNAI_LIVE_GMAIL_SECRET);
 const CALENDAR = live(process.env.UNAI_LIVE_CALENDAR_ACCOUNT, process.env.UNAI_LIVE_CALENDAR_SECRET);
 const GITHUB = live(process.env.UNAI_LIVE_GITHUB_REPOSITORY, process.env.UNAI_LIVE_GITHUB_SECRET);
+// The reserved example address only fills the required externalAccountRef.
+const OMI = live('omi-live@example.test', process.env.UNAI_LIVE_OMI_SECRET);
 const REVOCATION_ALLOWED = process.env.UNAI_LIVE_CONNECTOR_ALLOW_REVOCATION === 'true';
 
-const configured = GMAIL !== null || CALENDAR !== null || GITHUB !== null;
+const configured = GMAIL !== null || CALENDAR !== null || GITHUB !== null || OMI !== null;
 
 beforeAll(async () => {
   if (!configured) return;
@@ -147,6 +158,35 @@ function assertReadOnlyConsent(connector: { requestedScopes: string[]; capabilit
   }
   for (const capability of connector.capabilities) {
     if (capability.granted) expect(capability.access).toBe('READ');
+  }
+}
+
+/** Observe only method and URL, never the Authorization header or body. */
+function observeFetch() {
+  const original = globalThis.fetch;
+  const requests: { method: string; url: URL }[] = [];
+  const wrapper: typeof fetch = async (input, init) => {
+    requests.push({
+      method: (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase(),
+      url: new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url),
+    });
+    return original(input, init);
+  };
+  return { requests, install() { globalThis.fetch = wrapper; }, restore() { globalThis.fetch = original; } };
+}
+/** Everything written to the console or the process streams while `run` runs. */
+async function capturingLogs<T>(run: () => Promise<T>): Promise<{ value: T; lines: string[] }> {
+  const lines: string[] = [];
+  const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+  const originals = methods.map(method => console[method]);
+  const out = process.stdout.write, err = process.stderr.write;
+  methods.forEach(method => { console[method] = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); }; });
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => { lines.push(String(chunk)); return (out as (...a: unknown[]) => boolean).call(process.stdout, chunk, ...rest); }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => { lines.push(String(chunk)); return (err as (...a: unknown[]) => boolean).call(process.stderr, chunk, ...rest); }) as typeof process.stderr.write;
+  try { return { value: await run(), lines }; }
+  finally {
+    methods.forEach((method, index) => { console[method] = originals[index]!; });
+    process.stdout.write = out; process.stderr.write = err;
   }
 }
 
@@ -283,6 +323,62 @@ it.skipIf(GITHUB === null)('CRT-CON-04-A (live): a real repository\'s PRs and is
     expect(second.json().resumedFromCursor).toEqual(result.json().newCursor);
   } finally { await h.close(); }
 }, 180000);
+
+it.skipIf(OMI === null)('ADR-0041-LIVE-A (live): the Omi connector ingests real conversations read-only, transcripts anchored by segment and the Omi summary SOURCE_ONLY', async () => {
+  const h = await harness();
+  const observed = observeFetch();
+  try {
+    const key = await createDefaultSecretsManager().resolve(OMI!.secretRef);
+    observed.install();
+    const bodies: string[] = [];
+    const { value: result, lines } = await capturingLogs(async () => {
+      console.info('omi-live-log-canary');
+      const created = await connect(h, {
+        connectorType: 'OMI', externalAccountRef: OMI!.account, secretRef: OMI!.secretRef,
+        requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }],
+      });
+      bodies.push(created.body);
+      expect(created.statusCode).toBe(201);
+      assertReadOnlyConsent(created.json());
+      expect(created.json().requestedScopes).toEqual(['conversations:read']);
+      const synced = await sync(h, created.json().connectorId, { mode: 'INCREMENTAL' });
+      bodies.push(synced.body);
+      expect(synced.statusCode).toBe(200);
+      return synced.json<{ mode: string; pagesFetched: number; itemsIngested: number; storedSensitivity: string }>();
+    });
+    expect(result.mode).toBe('INCREMENTAL');
+    expect(result.pagesFetched).toBe(1);
+    expect(result.itemsIngested).toBeGreaterThan(0);
+    expect(result.storedSensitivity).toBe('PRIVATE');
+    expect(observed.requests.length).toBe(result.pagesFetched);
+    for (const request of observed.requests) {
+      expect([request.method, request.url.origin + request.url.pathname])
+        .toEqual(['GET', 'https://api.omi.me/v1/dev/user/conversations']);
+    }
+    const rows = await items(h.ownerScopeId, 'OMI') as { id: string; external_id: string; sensitivity: string }[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect([...new Set(rows.map(row => row.sensitivity))]).toEqual(['PRIVATE']);
+    const structured = rows.filter(row => row.external_id.endsWith(':structured'));
+    const transcripts = rows.filter(row => !row.external_id.endsWith(':structured'));
+    // Like Calendar's recurrence guard, require a summary so SOURCE_ONLY is not vacuous.
+    expect(structured.length).toBeGreaterThan(0);
+    expect(transcripts.length).toBeGreaterThan(0);
+    const kinds = (await admin.query<{ anchor_kind: string }>(
+      'SELECT anchor_kind FROM source_anchors WHERE owner_scope_id=$1 AND source_item_id=ANY($2::uuid[])',
+      [h.ownerScopeId, transcripts.map(row => row.id)])).rows.map(row => row.anchor_kind);
+    expect(kinds.length).toBeGreaterThan(0);
+    expect([...new Set(kinds)]).toEqual(['TRANSCRIPT_SEGMENT']);
+    const routes = (await admin.query<{ tier1_route: string }>(
+      'SELECT tier1_route FROM triage_decisions WHERE owner_scope_id=$1 AND source_item_id=ANY($2::uuid[])',
+      [h.ownerScopeId, structured.map(row => row.id)])).rows.map(row => row.tier1_route);
+    expect(routes.length).toBe(structured.length);
+    expect([...new Set(routes)]).toEqual(['SOURCE_ONLY']);
+    expect(key.length).toBeGreaterThanOrEqual(16);
+    expect(lines.some(line => line.includes('omi-live-log-canary'))).toBe(true);
+    // Only booleans enter matchers: a failure must not print private text or the key.
+    for (const text of [...bodies, ...lines]) expect(text.includes(key)).toBe(false);
+  } finally { observed.restore(); await h.close(); }
+}, 120000);
 
 /**
  * The destructive half of CRT-CON-06-A. It really revokes the operator's token

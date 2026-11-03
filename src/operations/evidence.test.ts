@@ -63,8 +63,9 @@ function liveRecord(sourceCommit:string){return {
   cases:[{criterion:'CRT-CON-02-A',connector:'GMAIL',status:'passed',testName:'gmail live'},
     {criterion:'CRT-CON-03-A',connector:'GOOGLE_CALENDAR',status:'passed',testName:'calendar live'},
     {criterion:'CRT-CON-04-A',connector:'GITHUB',status:'passed',testName:'github live'},
-    {criterion:'CRT-CON-06-A',connector:'GMAIL',status:'skipped',testName:'revocation live'}],
-  totals:{passed:3,failed:0,skipped:1}};}
+    {criterion:'CRT-CON-06-A',connector:'GMAIL',status:'skipped',testName:'revocation live'},
+    {criterion:'ADR-0041-LIVE-A',connector:'OMI',status:'passed',testName:'omi live'}],
+  totals:{passed:4,failed:0,skipped:1}};}
 /** C1 holds code and the release input; C2 changes and adds only release records. */
 async function fixture(){
   const repository=await mkdtemp(join(tmpdir(),'unai-operations-evidence-'));directories.push(repository);

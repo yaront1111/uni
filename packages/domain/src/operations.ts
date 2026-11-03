@@ -17,9 +17,10 @@ const liveConnectorRecord=z.object({format:z.literal('unai-live-connectors/1'),r
   workspaceClean:z.boolean(),revocationAllowed:z.boolean(),
   cases:z.array(z.object({criterion:text,connector:z.enum(['GMAIL','GOOGLE_CALENDAR','GITHUB','OMI']),status:z.string().min(1).max(32),testName:text}).strict()).max(50),
   totals:z.object({passed:count,failed:count,skipped:count}).strict()}).strict();
-/** Every live case required for PRD §54 item 1. The Omi live case joins once it exists. */
+/** PRD §54 item 1: every non-opt-in case in packages/api/src/connectors.live.test.ts,
+ * including Omi (ADR 0041). */
 const LIVE_REQUIRED_CASES=[{criterion:'CRT-CON-02-A',connector:'GMAIL'},{criterion:'CRT-CON-03-A',connector:'GOOGLE_CALENDAR'},
-  {criterion:'CRT-CON-04-A',connector:'GITHUB'}] as const;
+  {criterion:'CRT-CON-04-A',connector:'GITHUB'},{criterion:'ADR-0041-LIVE-A',connector:'OMI'}] as const;
 /** Revocation runs only when the owner allows it, so it may be skipped but never failed. */
 const LIVE_OPT_IN_CASE='CRT-CON-06-A';
 const execution=z.object({executedAt:instant,environment:z.literal('TEST'),evidenceRef:text,testNames:z.array(text).min(1).max(200)}).strict();
