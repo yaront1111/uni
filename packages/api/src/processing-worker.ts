@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {startTelemetry,startupFailureCode,type Telemetry} from '@unai/observability/telemetry';
-// One extraction (processing-runtime, 300s), initiative (initiative-runtime, 300s)
-// and connector sync (connector-sync-job, 600s) attempt per turn. Beyond their
-// summed leases a busy turn is wedged; while idle the limit is 3 * pollMs.
-const PROCESSING_TURN_LIMIT_MS = (300 + 300 + 600) * 1000;
+// One extraction (processing-runtime, 300s), initiative (initiative-runtime, 300s) and
+// connector sync (connector-sync-job, 600s) attempt per turn, plus 600s for a retention
+// drain; beyond that a busy turn is wedged. While idle the limit is 3 * pollMs.
+const PROCESSING_TURN_LIMIT_MS = (300 + 300 + 600 + 600) * 1000;
 // Workspace modules create instruments at evaluation time; metrics has no proxy.
 // ESM evaluates static imports before this body, even beside a top-level await.
 // Start the SDK first, then load application modules so meters are not permanent no-ops.
@@ -53,8 +53,13 @@ async function main() {
     });
     const scheduler = createConnectorSyncScheduler({ clock: Date.now, intervalMs: configuration.connectorSyncIntervalMs,
       ...connectorSyncSchedulerPorts({ ...configuration, appPool }) });
+    const { createRetentionScheduler, retentionSchedulerPorts }=await import('./retention-scheduler.js');
+    const retention = createRetentionScheduler({ clock: Date.now, intervalMs: configuration.retentionCleanupIntervalMs,
+      ...retentionSchedulerPorts({ ...configuration, appPool, evidenceObjects }) });
     if (process.argv.includes('--check')) return;
-    // Timer-driven deployments: one connector-sync scheduling pass, no probes and no job turns.
+    // Timer-driven deployments: one retention cleanup tick and one connector-sync scheduling pass,
+    // no probes and no job turns. As in the loop, a failed cleanup never stops the sync pass.
+    if (process.argv.includes('--once')) await retention.tick().catch(() => { process.stderr.write('RETENTION_SCHEDULER_TICK_FAILED\n'); process.exitCode = 1; });
     if (process.argv.includes('--once')) { await scheduler.tick(); return; }
     const heartbeat = createLoopHeartbeat({ pollMs: configuration.pollMs, busyLimitMs: PROCESSING_TURN_LIMIT_MS });
     probes = probeConfig && await createProbeServer({ ...probeConfig, checks: {
@@ -67,6 +72,7 @@ async function main() {
       heartbeat.beat(true);
       try { await runtime.runOnce(); await initiative.runOnce(); await connectorSync.runOnce(); }
       catch { process.stderr.write('PROCESSING_TURN_FAILED\n'); }
+      await retention.tickIfDue().catch(() => { process.stderr.write('RETENTION_SCHEDULER_TICK_FAILED\n'); });
       await scheduler.tickIfDue().catch(() => { process.stderr.write('CONNECTOR_SCHEDULER_TICK_FAILED\n'); });
       heartbeat.beat(false);
       await sleep(configuration.pollMs, undefined, { signal: abort.signal }).catch(() => undefined);

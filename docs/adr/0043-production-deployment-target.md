@@ -358,14 +358,30 @@ Cites PRD §28, PRD §30.5, ADR 0032 §4 and ADR 0004.
 default chain through files laid out by D6.
 
 - `unai-api`: `s3:GetEncryptionConfiguration` on the bucket; `s3:PutObject`,
-  `s3:GetObject` and `s3:DeleteObject` on `<bucket>/*` (delete only because the
-  deletion cascade runs in the API); `kms:GenerateDataKey` and `kms:Decrypt` on
-  the evidence key. No `s3:ListBucket`: the adapter never lists.
-- `unai-worker`: the same minus `s3:DeleteObject`. Installed only once the
-  worker holds the evidence store (task-1d49e470fb8f4d08aa0e705b081a40c3);
-  until then the worker holds no AWS credentials.
+  `s3:GetObject` and `s3:DeleteObject` on `<bucket>/*` (delete because the
+  owner's deletion and retention-cleanup routes run the ADR 0030 cascade in the
+  API); `kms:GenerateDataKey` and `kms:Decrypt` on the evidence key. No
+  `s3:ListBucket`: the adapter never lists.
+- `unai-worker`: the same, INCLUDING `s3:DeleteObject` on `<bucket>/*`.
+  - Why: the scheduled retention cleanup
+    (`UNAI_RETENTION_CLEANUP_INTERVAL_MS`,
+    task-ab12fb507e884936b6d0258e80f87f16) runs the same ADR 0030 cascade in
+    the worker. That cascade deletes each raw object inside the erasure
+    transaction, so without this permission every worker erasure rolls back.
+  - With `UNAI_RETENTION_CLEANUP_INTERVAL_MS=0` the worker deletes nothing, and
+    the operator may withhold `s3:DeleteObject` from it.
+  - Installed only once the worker holds the evidence store
+    (task-1d49e470fb8f4d08aa0e705b081a40c3); until then the worker holds no AWS
+    credentials.
+- Neither principal ever holds `s3:DeleteObjectVersion`, so the **Versioning**
+  reasoning above holds for both: a compromised host only adds delete markers,
+  and noncurrent copies are kept for 30 days.
 - No host principal may run `kms:ScheduleKeyDeletion` or `kms:DisableKey`, or
   change key policies.
+
+Amended 2026-11-03 (owner decision, task-ab12fb507e884936b6d0258e80f87f16):
+`unai-worker` gains `s3:DeleteObject`, never `s3:DeleteObjectVersion`, for the
+scheduled retention cleanup.
 
 Cites PRD §30.5, PRD §30.7, ADR 0005, ADR 0007 and ADR 0030.
 
