@@ -251,3 +251,112 @@ it('retains known sessions across windows but bounds their cache', () => {
   for (let i = 1; i <= RATE_LIMIT_MAX_KEYS; i++) limiter.authenticated(String(i));
   expect(limiter.admit('first', 'blocked')).toEqual({ kind: 'refused', bucket: 'authentication', retryAfterSeconds: 60 });
 });
+
+it('reserves an address slot for each unknown admission until release', () => {
+  let now = 121_000;
+  const limiter = createRateLimiter({ perSessionPerMinute: 5, authFailuresPerAddressPerMinute: 2 }, () => now);
+  limiter.release('z');
+  limiter.release('z'); // Nothing in flight: a no-op, never a negative count.
+  expect(limiter.admit(null, 'a')).toEqual({ kind: 'unknown' });
+  expect(limiter.admit('h', 'a')).toEqual({ kind: 'unknown' });
+  expect(limiter.admit(null, 'a')).toEqual({ kind: 'refused', bucket: 'authentication', retryAfterSeconds: 59 });
+  expect(limiter.admit(null, 'b')).toEqual({ kind: 'unknown' });
+  limiter.authenticated('k');
+  expect(limiter.admit('k', 'a')).toEqual({ kind: 'counted' }); // A known hash neither reserves nor sees the bucket.
+  limiter.release('a');
+  expect(limiter.admit(null, 'a')).toEqual({ kind: 'unknown' });
+  limiter.release('a');
+  limiter.failed(null, 'a');
+  expect(limiter.admit(null, 'a').kind).toBe('refused'); // One failure plus one slot in flight fill the budget.
+  now = 180_000;
+  expect(limiter.admit(null, 'a')).toEqual({ kind: 'unknown' }); // Failures reset with the window; in-flight slots survive.
+  expect(limiter.admit(null, 'a').kind).toBe('refused');
+  expect(limiter.admit(null, 'z')).toEqual({ kind: 'unknown' });
+  expect(limiter.admit(null, 'z')).toEqual({ kind: 'unknown' });
+  expect(limiter.admit(null, 'z').kind).toBe('refused'); // The earlier releases of 'z' did not go negative.
+});
+
+/** Authentication that stays pending until `open()`, counting each unknown entry and each 429 as one decision. */
+function held(authFailuresPerAddressPerMinute: number) {
+  const unknownAuths: string[] = [], events: Array<{ event: string; bucket?: string }> = [];
+  const waiting: Array<{ count: number; resolve: () => void }> = [];
+  let now = 121_000, decisions = 0, open!: () => void;
+  const gate = new Promise<void>(resolve => { open = resolve; });
+  const decide = () => { decisions++; for (const waiter of waiting) if (decisions >= waiter.count) waiter.resolve(); };
+  const decided = (count: number) => new Promise<void>(resolve => {
+    if (decisions >= count) resolve(); else waiting.push({ count, resolve });
+  });
+  const credential = (headers: Readonly<IncomingHttpHeaders>) => /(?:^|;\s*)t=([^;]+)/.exec(headers.cookie ?? '')?.[1] ?? null;
+  const app = api.createApiBoundary({
+    credential, rateLimit: { perSessionPerMinute: 100, authFailuresPerAddressPerMinute }, clock: () => now,
+    authenticate: async headers => {
+      const token = credential(headers);
+      if (token === 'A') return { actorId };
+      if (token === 'boom') throw new Error('auth-pool-down-do-not-log');
+      unknownAuths.push(token ?? '(none)'); decide();
+      await gate;
+      return null;
+    },
+    authorize: async () => true,
+    log: event => { events.push(event); if (event.event === 'api.rate_limited') decide(); },
+  });
+  app.addHook('onRequest', async request => {
+    if (request.headers['x-test-plaintext'] === undefined) Object.defineProperty(request.raw.socket, 'encrypted', { value: true });
+  });
+  app.get('/probe', async () => ({ ok: true }));
+  servers.push(app);
+  const send = (token: string | null = 'A', remoteAddress = '10.0.0.7', extra: Record<string, string> = {}) =>
+    app.inject({ url: '/probe', remoteAddress, headers: { ...headers, ...(token ? { cookie: 't=' + token } : {}), ...extra } });
+  const refusals = () => events.filter(event => event.event === 'api.rate_limited');
+  return { send, open, decided, unknownAuths, refusals, advance: (time: number) => { now = time; } };
+}
+
+it('caps concurrent unknown authentications at the address budget while authentication is held', async () => {
+  const hold = held(2);
+  expect((await hold.send('A')).statusCode).toBe(200);
+  const settled: Array<{ statusCode: number; headers: Record<string, unknown>; json(): unknown }> = [];
+  let sixRefused!: () => void;
+  const refusedSix = new Promise<void>(resolve => { sixRefused = resolve; });
+  const burst = Array.from({ length: 8 }, (_, i) => hold.send(i % 2 ? 'bad' + i : null).then(response => {
+    settled.push(response);
+    if (settled.length === 6) sixRefused();
+    return response;
+  }));
+  await hold.decided(8);
+  expect(hold.unknownAuths).toHaveLength(2);
+  expect(hold.refusals()).toHaveLength(6);
+  for (const event of hold.refusals()) expect(event.bucket).toBe('authentication');
+  await refusedSix;
+  for (const response of settled) {
+    expect(response.statusCode).toBe(429);
+    expect(response.json()).toEqual({ code: 'RATE_LIMITED', correlationId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(response.headers['retry-after']).toBe('59');
+  }
+  expect((await hold.send('A')).statusCode).toBe(200); // A known session keeps its exemption from the address bucket.
+  expect((await hold.send('bad12')).statusCode).toBe(429); // ...and neither reserved nor freed an unknown slot.
+  expect((await hold.send('bad9', '10.0.0.7', { 'x-test-plaintext': '1' })).statusCode).toBe(426);
+  expect(hold.unknownAuths).toHaveLength(2); // TLS is checked before admission.
+  const other = hold.send('bad8', '10.0.0.8');
+  await hold.decided(10); // 2 held + 7 refused + this one.
+  expect(hold.unknownAuths).toHaveLength(3); // Another address has its own bucket.
+  hold.open();
+  const statuses = (await Promise.all(burst)).map(response => response.statusCode).sort((a, b) => a - b);
+  expect(statuses).toEqual([401, 401, 429, 429, 429, 429, 429, 429]);
+  expect((await other).statusCode).toBe(401);
+  expect((await hold.send('bad10')).statusCode).toBe(429); // The two failures now fill the budget.
+  expect(hold.unknownAuths).toHaveLength(3);
+  expect((await hold.send('A')).statusCode).toBe(200);
+  hold.advance(180_000);
+  expect((await hold.send('bad11')).statusCode).toBe(401);
+});
+
+it('frees the slot when authentication succeeds or throws and does not count a throw', async () => {
+  const hold = held(1);
+  hold.open();
+  expect((await hold.send('A')).statusCode).toBe(200);
+  const thrown = await hold.send('boom');
+  expect(thrown.statusCode).toBe(500);
+  expect(thrown.body).not.toContain('auth-pool-down');
+  expect((await hold.send('bad')).statusCode).toBe(401);
+  expect((await hold.send('bad2')).statusCode).toBe(429);
+});

@@ -54,7 +54,8 @@ export function createApiBoundary(options: ApiBoundaryOptions): FastifyInstance 
     const headers = Object.freeze({ ...request.headers });
     const credential = options.credential?.(headers);
     const hash = credential ? createHash('sha256').update(credential).digest('hex') : null;
-    const verdict = limiter.admit(hash, request.ip);
+    const address = request.ip; // Read once: admit, release and failed must key the same bucket.
+    const verdict = limiter.admit(hash, address);
     if (verdict.kind === 'refused') {
       reply.header('retry-after', String(verdict.retryAfterSeconds));
       rateLimited.add(1, { bucket: verdict.bucket });
@@ -62,8 +63,12 @@ export function createApiBoundary(options: ApiBoundaryOptions): FastifyInstance 
       catch { /* A logging failure must not bypass the limit. */ }
       refuse(429, 'RATE_LIMITED'); return payload;
     }
-    const identity = await options.authenticate(headers);
-    if (!identity) { limiter.failed(hash, request.ip); refuse(401, 'AUTHENTICATION_REQUIRED'); return payload; }
+    let identity: { actorId: string } | null;
+    // try/finally, not Promise.prototype.finally: the release and the failed() below run in one
+    // synchronous continuation, so no other admission can slip in between them.
+    try { identity = await options.authenticate(headers); }
+    finally { if (verdict.kind === 'unknown') limiter.release(address); }
+    if (!identity) { limiter.failed(hash, address); refuse(401, 'AUTHENTICATION_REQUIRED'); return payload; }
     if (verdict.kind === 'unknown') limiter.authenticated(hash);
     const parsed = requestContextSchema.safeParse({
       actorId: identity.actorId, ownerScopeId: request.headers['x-owner-scope-id'],
