@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SecretsManager } from '@unai/secrets';
-import { ConnectorError } from './manifests.js';
+import { ConnectorError, manifestFor } from './manifests.js';
+import * as googleProviders from './providers.js';
 import { createConnectorClient, createOmiClient, createTokenRevoker, type ConnectorFetch } from './providers.js';
 
 /**
@@ -30,7 +31,7 @@ function stubFetch(...script: Scripted[]): Recorded[] {
   });
   return recorded;
 }
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const T1 = '2026-11-02T10:00:00.123456+00:00';
 const T2 = '2026-11-02T09:30:00.500000+00:00';
@@ -390,4 +391,228 @@ describe('createTokenRevoker (ADR 0023, ADR 0041 D8)', () => {
       .rejects.toThrow('CONNECTOR_REVOCATION_UNAVAILABLE');
     expect(recorded).toEqual([]);
   });
+});
+
+// Google credentials are invented sentinels, never live credentials.
+const REF = 'secret://mounted/gmail#refresh_token';
+const REFRESH = '1//REFRESH_TEST_ONLY';
+const ACCESS = 'ya29.ACCESS_TEST_ONLY';
+const ACCESS2 = 'ya29.SECOND_TEST_ONLY';
+const CLIENT_ID = 'connector-client.apps.example.test';
+const CLIENT_SECRET = 'GOCSPX-CLIENT_TEST_ONLY';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const googleRequest: ConnectorFetch = {
+  cursor: null, capabilities: ['gmail.read_content'], externalAccountRef: 'me', limit: 2,
+};
+const issued = (access_token = ACCESS, expires_in = 3599) => ({ body: { access_token, expires_in } });
+
+function googleSource() {
+  const resolved: string[] = [];
+  const manager: SecretsManager = { resolve: async ref => { resolved.push(ref); return REFRESH; } };
+  // This assertion makes the pre-implementation RED a missing-behavior failure.
+  expect(googleProviders.createGoogleAccessTokens).toBeTypeOf('function');
+  const tokens = googleProviders.createGoogleAccessTokens(manager, {
+    resolve: async () => ({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
+  });
+  return { tokens, resolved, manager };
+}
+function googleCalls(calls: Recorded[]) { return calls.filter(call => call.url !== TOKEN_URL); }
+function tokenCalls(calls: Recorded[]) { return calls.filter(call => call.url === TOKEN_URL); }
+async function googleFailure(run: Promise<unknown>, code: string, detail: Record<string, unknown> = {}) {
+  const error = await failure(run);
+  expect(error.message).toBe(code);
+  expect(error.detail).toEqual(detail);
+  expect(error.cause).toBeUndefined();
+  const everything = [error.message, JSON.stringify(error.detail), error.stack].join('\n');
+  for (const secret of [REFRESH, ACCESS, ACCESS2, CLIENT_SECRET, SENTINEL]) expect(everything).not.toContain(secret);
+  return error;
+}
+
+describe('Google refresh exchange (ADR 0043 D6)', () => {
+  beforeEach(() => {
+    for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) vi.spyOn(console, method);
+  });
+  afterEach(() => {
+    for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) expect(console[method]).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it('T1: exchanges once for two Gmail pages and sends only the access token to Gmail', async () => {
+    const calls = stubFetch(issued(), { body: { threads: [{ id: 't1' }], nextPageToken: 'page2' } },
+      { body: { id: 't1' } }, { body: { threads: [{ id: 't2' }] } }, { body: { id: 't2' } });
+    const { tokens, resolved } = googleSource();
+    const client = googleProviders.createGmailClient(tokens, REF);
+    const first = await client.fetchPage(googleRequest);
+    const second = await client.fetchPage({ ...googleRequest, cursor: first.nextCursor });
+    expect(first.payloads).toEqual([{ id: 't1' }]);
+    expect(second.payloads).toEqual([{ id: 't2' }]);
+    expect(tokenCalls(calls)).toHaveLength(1);
+    expect(resolved).toEqual([REF]);
+    expect(calls[0]).toEqual({ url: TOKEN_URL, init: {
+      method: 'POST', redirect: 'error',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: REFRESH,
+        client_id: CLIENT_ID, client_secret: CLIENT_SECRET }).toString(),
+    } });
+    expect(Object.fromEntries(new URLSearchParams(String(calls[0]?.init.body)))).toEqual({
+      grant_type: 'refresh_token', refresh_token: REFRESH, client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+    });
+    expect(googleCalls(calls).map(c => c.url)).toEqual([
+      'https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=2',
+      'https://gmail.googleapis.com/gmail/v1/users/me/threads/t1?format=full',
+      'https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=2&pageToken=page2',
+      'https://gmail.googleapis.com/gmail/v1/users/me/threads/t2?format=full',
+    ]);
+    for (const call of googleCalls(calls)) {
+      expect(call.init.headers).toEqual({ authorization: 'Bearer ' + ACCESS, accept: 'application/json' });
+      for (const secret of [REFRESH, CLIENT_SECRET]) expect(JSON.stringify(call)).not.toContain(secret);
+    }
+  });
+
+  it.each(['GMAIL', 'GOOGLE_CALENDAR'])('T2: %s refreshes and retries once on a 401', async type => {
+    const calls = stubFetch(issued(), { status: 401 }, issued(ACCESS2), { body: {} });
+    const { tokens, manager } = googleSource();
+    await googleProviders.createConnectorClient(type, manager, REF, tokens).fetchPage(googleRequest);
+    expect(tokenCalls(calls)).toHaveLength(2);
+    expect(googleCalls(calls)).toHaveLength(2);
+    expect(googleCalls(calls)[1]?.url).toBe(googleCalls(calls)[0]?.url);
+    expect(new Headers(googleCalls(calls)[1]?.init.headers).get('authorization')).toBe('Bearer ' + ACCESS2);
+  });
+
+  it('T3: a second 401 on one page is final, even on a later thread', async () => {
+    const calls = stubFetch(issued(), { status: 401 }, issued(ACCESS2),
+      { body: { threads: [{ id: 't1' }] } }, { status: 401 });
+    const { tokens } = googleSource();
+    await googleFailure(googleProviders.createGmailClient(tokens, REF).fetchPage(googleRequest),
+      'CONNECTOR_TOKEN_REVOKED', { status: 401 });
+    expect(tokenCalls(calls)).toHaveLength(2);
+    expect(googleCalls(calls)).toHaveLength(3);
+  });
+
+  it('T3: an immediate second 401 is not retried', async () => {
+    const calls = stubFetch(issued(), { status: 401 }, issued(ACCESS2), { status: 401 });
+    const { tokens } = googleSource();
+    await googleFailure(googleProviders.createGmailClient(tokens, REF).fetchPage(googleRequest),
+      'CONNECTOR_TOKEN_REVOKED', { status: 401 });
+    expect(tokenCalls(calls)).toHaveLength(2);
+    expect(googleCalls(calls)).toHaveLength(2);
+  });
+
+  it('T4: a 403 never refreshes', async () => {
+    const calls = stubFetch(issued(), { status: 403 });
+    const { tokens } = googleSource();
+    await googleFailure(googleProviders.createGmailClient(tokens, REF).fetchPage(googleRequest),
+      'CONNECTOR_TOKEN_REVOKED', { status: 403 });
+    expect(tokenCalls(calls)).toHaveLength(1);
+  });
+
+  it('T5: invalid_grant alone revokes the refresh credential', async () => {
+    const calls = stubFetch({ status: 400, body: { error: 'invalid_grant', error_description: SENTINEL } });
+    const { tokens } = googleSource();
+    const error = await googleFailure(tokens.accessToken(REF, false), 'CONNECTOR_TOKEN_REVOKED', { status: 400 });
+    expect(googleProviders.credentialRevoked(error)).toBe(true);
+    expect(googleCalls(calls)).toEqual([]);
+  });
+
+  it.each([[400, 'invalid_request'], [400, 'unauthorized_client'], [401, 'invalid_client'],
+    [429, 'rate_limit'], [500, 'invalid_grant'], [503, null]] as const)(
+    'T6: token HTTP %s %s is a deployment/provider failure, not revocation', async (status, error) => {
+      stubFetch({ status, body: error === null ? SENTINEL : { error, error_description: SENTINEL } });
+      const { tokens } = googleSource();
+      const caught = await googleFailure(tokens.accessToken(REF, false), 'CONNECTOR_PROVIDER_UNAVAILABLE', { status });
+      expect(googleProviders.credentialRevoked(caught)).toBe(false);
+    });
+
+  it('T6: a rejected exchange discards even a secret-bearing error and cause', async () => {
+    vi.stubGlobal('fetch', async () => { throw new Error([REFRESH, ACCESS, CLIENT_SECRET, SENTINEL].join(' ')); });
+    const { tokens } = googleSource();
+    await googleFailure(tokens.accessToken(REF, false), 'CONNECTOR_PROVIDER_UNAVAILABLE', { status: null });
+  });
+
+  it.each([{ expires_in: 3599 }, { access_token: ACCESS, expires_in: '3599' },
+    { access_token: ACCESS, expires_in: 0 }, SENTINEL])('T6: malformed successful token response %#', async body => {
+    stubFetch({ body });
+    const { tokens } = googleSource();
+    await googleFailure(tokens.accessToken(REF, false), 'CONNECTOR_PROVIDER_RESPONSE_INVALID');
+  });
+
+  it('T7: expiry uses a 60 second safety margin', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const calls = stubFetch(issued(), { body: {} }, { body: {} }, issued(ACCESS2), { body: {} });
+    const { tokens } = googleSource();
+    const client = googleProviders.createGmailClient(tokens, REF);
+    await client.fetchPage(googleRequest);
+    vi.setSystemTime(3538999); await client.fetchPage(googleRequest);
+    expect(tokenCalls(calls)).toHaveLength(1);
+    vi.setSystemTime(3539000); await client.fetchPage(googleRequest);
+    expect(tokenCalls(calls)).toHaveLength(2);
+  });
+
+  it('T7: tokens with less than a minute remaining are never cached', async () => {
+    const calls = stubFetch(issued(ACCESS, 30), { body: {} }, issued(ACCESS2, 30), { body: {} });
+    const { tokens } = googleSource();
+    const client = googleProviders.createGmailClient(tokens, REF);
+    await client.fetchPage(googleRequest); await client.fetchPage(googleRequest);
+    expect(tokenCalls(calls)).toHaveLength(2);
+  });
+
+  it('T8: a failed forced refresh evicts the rejected token', async () => {
+    const calls = stubFetch(issued(), { status: 401 }, { status: 500 }, issued(ACCESS2), { body: {} });
+    const { tokens } = googleSource();
+    const client = googleProviders.createGmailClient(tokens, REF);
+    await googleFailure(client.fetchPage(googleRequest), 'CONNECTOR_PROVIDER_UNAVAILABLE', { status: 500 });
+    await client.fetchPage(googleRequest);
+    expect(tokenCalls(calls)).toHaveLength(3);
+    expect(new Headers(googleCalls(calls)[1]?.init.headers).get('authorization')).toBe('Bearer ' + ACCESS2);
+  });
+
+  it.each([false, true])('T11: a rejected data request stays secret-free (after refresh: %s)', async retry => {
+    let exchanges = 0, dataRequests = 0;
+    vi.stubGlobal('fetch', async (url: string) => {
+      if (url === TOKEN_URL) { exchanges++; return Response.json(issued().body); }
+      dataRequests++;
+      if (retry && dataRequests === 1) return new Response(null, { status: 401 });
+      throw new TypeError([REFRESH, ACCESS, ACCESS2, CLIENT_SECRET, SENTINEL].join(' '));
+    });
+    const { tokens } = googleSource();
+    await googleFailure(googleProviders.createGmailClient(tokens, REF).fetchPage(googleRequest),
+      'CONNECTOR_PROVIDER_UNAVAILABLE', { status: null });
+    expect(exchanges).toBe(retry ? 2 : 1);
+    expect(dataRequests).toBe(retry ? 2 : 1);
+  });
+
+  it('T9: absent OAuth config constructs but refuses before secret resolution or fetch', async () => {
+    const calls = stubFetch();
+    const resolve = vi.fn(async () => REFRESH);
+    const client = googleProviders.createConnectorClient('GMAIL', { resolve }, REF);
+    await googleFailure(client.fetchPage(googleRequest), 'CONNECTOR_OAUTH_CLIENT_MISSING');
+    expect(calls).toEqual([]); expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('isolates caches by runtime and by handle', async () => {
+    const calls = stubFetch(issued(), issued(ACCESS2), issued(ACCESS2));
+    const one = googleSource().tokens, two = googleSource().tokens;
+    expect(await one.accessToken(REF, false)).toBe(ACCESS);
+    expect(await two.accessToken(REF, false)).toBe(ACCESS2);
+    expect(await one.accessToken('secret://mounted/calendar', false)).toBe(ACCESS2);
+    expect(tokenCalls(calls)).toHaveLength(3);
+  });
+
+  it.each([
+    [new ConnectorError('CONNECTOR_TOKEN_REVOKED', { status: 401 }), true],
+    [new ConnectorError('CONNECTOR_TOKEN_REVOKED', { status: 400 }), true],
+    [new ConnectorError('CONNECTOR_TOKEN_REVOKED', { status: 403 }), false],
+    [new ConnectorError('CONNECTOR_PROVIDER_UNAVAILABLE', { status: 401 }), false],
+    [new Error('CONNECTOR_TOKEN_REVOKED'), false], [undefined, false],
+  ])('T10: revocation predicate %#', (error, expected) => {
+    expect(googleProviders.credentialRevoked).toBeTypeOf('function');
+    expect(googleProviders.credentialRevoked(error)).toBe(expected);
+  });
+});
+
+
+it('manifests distinguish Google refresh handles from GitHub bearer handles', () => {
+  expect(manifestFor('GMAIL').requiredSecrets).toEqual(['oauth_refresh_token']);
+  expect(manifestFor('GOOGLE_CALENDAR').requiredSecrets).toEqual(['oauth_refresh_token']);
+  expect(manifestFor('GITHUB').requiredSecrets).toEqual(['access_token']);
 });

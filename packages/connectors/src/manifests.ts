@@ -129,6 +129,7 @@ const MANIFEST_LIST: readonly ConnectorManifest[] = Object.freeze([
     id: 'connector.gmail', connectorType: 'GMAIL', version: MANIFEST_VERSION,
     displayName: 'Gmail (read-only)', sources: ['EMAIL_THREAD'], emits: ['SOURCE_ITEM'],
     sensitivity: { default: 'PRIVATE' }, retention: { raw: 'USER_CONFIGURABLE' },
+    // REFRESH token minted by the Uai connectors client (ADR 0043 D6); access tokens stay in memory.
     requiredSecrets: ['oauth_refresh_token'], promptInjectionRisk: 'HIGH',
     minimumSyncCapability: 'gmail.read_metadata',
     capabilities: [
@@ -147,6 +148,7 @@ const MANIFEST_LIST: readonly ConnectorManifest[] = Object.freeze([
     id: 'connector.google_calendar', connectorType: 'GOOGLE_CALENDAR', version: MANIFEST_VERSION,
     displayName: 'Google Calendar (read-only)', sources: ['CALENDAR_EVENT'], emits: ['SOURCE_ITEM'],
     sensitivity: { default: 'PRIVATE' }, retention: { raw: 'USER_CONFIGURABLE' },
+    // REFRESH token minted by the Uai connectors client (ADR 0043 D6); access tokens stay in memory.
     requiredSecrets: ['oauth_refresh_token'], promptInjectionRisk: 'MEDIUM',
     minimumSyncCapability: 'calendar.read',
     capabilities: [
@@ -159,7 +161,8 @@ const MANIFEST_LIST: readonly ConnectorManifest[] = Object.freeze([
     id: 'connector.github', connectorType: 'GITHUB', version: MANIFEST_VERSION,
     displayName: 'GitHub (read-only)', sources: ['GITHUB_ISSUE', 'GITHUB_PULL_REQUEST'], emits: ['SOURCE_ITEM'],
     sensitivity: { default: 'PRIVATE' }, retention: { raw: 'USER_CONFIGURABLE' },
-    requiredSecrets: ['oauth_refresh_token'], promptInjectionRisk: 'HIGH',
+    // Read-only fine-grained PAT or installation token, sent as bearer without refresh (ADR 0043 D6).
+    requiredSecrets: ['access_token'], promptInjectionRisk: 'HIGH',
     minimumSyncCapability: 'github.read_issues',
     capabilities: [
       capability({ capabilityId: 'github.read_pull_requests', riskClass: 'LOW',

@@ -6,12 +6,12 @@ import {
 } from '@unai/domain';
 import {
   CONNECTOR_MANAGE_PURPOSE, CONNECTOR_READ_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError,
-  ceilingAdmits, createConnector, createConnectorClient, createTokenRevoker, disconnectConnector,
+  ceilingAdmits, credentialRevoked, createConnector, createConnectorClient, createGoogleAccessTokens, createTokenRevoker, disconnectConnector,
   listConnectors, listGrants, manifestFor, markTokenRevoked, readConnector, recordSyncFailure, runConnectorSync,
   searchDocuments, setCapabilityGrants, storedSensitivity, uploadDocument,
-  type ConnectorClient, type SourceIngest, type StoredSensitivity, type TokenRevoker,
+  type ConnectorClient, type GoogleOAuthClientConfig, type SourceIngest, type StoredSensitivity, type TokenRevoker,
 } from '@unai/connectors';
-import type { SecretsManager } from '@unai/secrets';
+import { isSecretHandle, parseSecretHandle, type SecretsManager } from '@unai/secrets';
 import { readTriageDecision } from '@unai/extraction';
 import { importSource, type EvidenceObjects } from './evidence.js';
 import { readSensitivityFloor } from '@unai/control';
@@ -49,6 +49,7 @@ const REFUSAL_STATUS = new Map<string, number>([
   ['CONNECTOR_ALREADY_CONNECTED', 409],
   ['CONNECTOR_PURPOSE_REFUSED', 403],
   ['CONNECTOR_CREDENTIAL_MISSING', 409],
+  ['CONNECTOR_OAUTH_CLIENT_MISSING', 503],
   ['CONNECTOR_CLIENT_UNSUPPORTED', 400],
   ['CONNECTOR_REVOCATION_UNAVAILABLE', 503],
   ['CONNECTOR_REVOCATION_FAILED', 502],
@@ -94,8 +95,9 @@ export interface ConnectorRouteOptions {
  *
  * It exists as its own function so the entry point wires one object and so the
  * wiring is testable without starting a listener. Constructing a client resolves
- * no secret and makes no request — the handle is resolved per fetch inside
- * `@unai/connectors`, and the bearer token never leaves that file — so this is
+ * no secret and makes no request. Google refresh handles are exchanged through
+ * an optional, separate OAuth client; access tokens are cached per runtime in
+ * `@unai/connectors`, never shared between deployments. This is
  * safe to call for a connector whose provider is unreachable.
  *
  * A connector type with no provider to poll (CONVERSATION, DOCUMENT) has no
@@ -104,16 +106,35 @@ export interface ConnectorRouteOptions {
  * `CONNECTOR_CLIENT_UNSUPPORTED` rather than silently answering nothing.
  * `hasSyncClient` makes that refusal before anything is recorded on the connector.
  */
-export function createConnectorRuntime(secrets: SecretsManager): {
+export function createConnectorRuntime(
+  secrets: SecretsManager, env: Readonly<Record<string, string | undefined>> = process.env,
+): {
   readonly connectorClient: (input: { readonly connectorType: string; readonly secretRef: string | null })
     => ConnectorClient;
   readonly revokeTokens: TokenRevoker;
   readonly hasSyncClient: (connectorType: string) => boolean;
 } {
+  const client = googleOAuthClient(secrets, env.UNAI_GOOGLE_CONNECTOR_CLIENT);
+  const tokens = createGoogleAccessTokens(secrets, client);
   return {
-    connectorClient: input => createConnectorClient(input.connectorType, secrets, input.secretRef),
+    connectorClient: input => createConnectorClient(input.connectorType, secrets, input.secretRef, tokens),
     revokeTokens: createTokenRevoker(secrets),
     hasSyncClient,
+  };
+}
+
+/** Unlike requireSecret at entrypoint startup, this client is optional and
+ * resolves each exchange so rotation applies live. Runtime construction still
+ * refuses literals on normal API/worker startup; --check does not build it. */
+function googleOAuthClient(secrets: SecretsManager, value: string | undefined): GoogleOAuthClientConfig | null {
+  if (!value) return null;
+  if (!isSecretHandle(value)) throw new Error('SECRET_HANDLE_REQUIRED:UNAI_GOOGLE_CONNECTOR_CLIENT');
+  if (parseSecretHandle(value).field !== null) throw new Error('CONFIG_INVALID:UNAI_GOOGLE_CONNECTOR_CLIENT');
+  return {
+    async resolve() {
+      return { clientId: await secrets.resolve(value + '#client_id'),
+        clientSecret: await secrets.resolve(value + '#client_secret') };
+    },
   };
 }
 
@@ -282,12 +303,12 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
       });
     } catch (error) {
       if (!(error instanceof ConnectorError)) throw error;
-      // The failed run has rolled back. Match the connector.sync job: only a 401
-      // revokes under connector.manage; a 403 (scope/rate refusal) stays retryable.
+      // The failed run has rolled back. Match the job: a final provider 401 or
+      // Google invalid_grant (400) revokes; a 403 (scope/rate refusal) stays retryable.
       // Other failures, including ADR 0041 D7 rate limits, keep the saved cursor.
       // An unsupported type is not a failed run: recording it would set SYNC_FAILED
       // and block the connector's uploads.
-      if (error.message === 'CONNECTOR_TOKEN_REVOKED' && error.detail['status'] === 401) {
+      if (credentialRevoked(error)) {
         await work(request, async tx => {
           await markTokenRevoked(tx, request.params.id);
           await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',

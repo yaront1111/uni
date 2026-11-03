@@ -123,10 +123,10 @@ it('a connector.sync job ingests the fixture page, stores the cursor and audits 
   expect(audits).toHaveLength(4);
 }, TIMEOUT);
 
-it('a 401 marks the connector TOKEN_REVOKED and completes the job without a retry', async () => {
+it.each([401, 400] as const)('a %s marks the connector TOKEN_REVOKED and completes the job without a retry', async status => {
   const o = await owner();
   const job = await enqueue(o);
-  const sync = runtime(o, provider(new ConnectorError('CONNECTOR_TOKEN_REVOKED', { status: 401 })).client);
+  const sync = runtime(o, provider(new ConnectorError('CONNECTOR_TOKEN_REVOKED', { status })).client);
   expect(await sync.runOnce()).toMatchObject({ claimed: true, job: { jobId: job.jobId, status: 'SUCCEEDED', attemptCount: 1 } });
   const connector = await connectorRow(o.connectorId);
   expect(connector).toMatchObject({ status: 'TOKEN_REVOKED', secret_ref: null, last_sync_error: 'CONNECTOR_TOKEN_REVOKED' });

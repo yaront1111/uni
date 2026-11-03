@@ -27,11 +27,16 @@ import type { EvidenceObjects } from './evidence.js';
  *
  *   UNAI_SECRETS_MOUNT              directory the secrets manager reads
  *   UNAI_LIVE_GMAIL_ACCOUNT         mailbox address, e.g. uai-test@example.com
- *   UNAI_LIVE_GMAIL_SECRET          secret://mounted/<name> for its OAuth token
+ *   UNAI_LIVE_GMAIL_SECRET          secret://mounted/<name> for its Google REFRESH token
  *   UNAI_LIVE_CALENDAR_ACCOUNT      calendar id
- *   UNAI_LIVE_CALENDAR_SECRET       secret://mounted/<name>
+ *   UNAI_LIVE_CALENDAR_SECRET       secret://mounted/<name> for its Google REFRESH token
  *   UNAI_LIVE_GITHUB_REPOSITORY     owner/name
- *   UNAI_LIVE_GITHUB_SECRET         secret://mounted/<name>
+ *   UNAI_LIVE_GITHUB_SECRET         secret://mounted/<name> for a read-only fine-grained PAT
+ *
+ * Google refresh tokens are minted by the Uai connectors OAuth client.
+ * UNAI_GOOGLE_CONNECTOR_CLIENT names its JSON {client_id, client_secret} secret;
+ * createConnectorRuntime reads it from process.env. Without it, Google syncs
+ * refuse CONNECTOR_OAUTH_CLIENT_MISSING. Revoking a Google token ends its grant.
  *
  * The token must carry only the read-only scopes the manifest lists; the suite
  * asserts that the connector requested exactly those and nothing wider, so a
@@ -41,7 +46,7 @@ import type { EvidenceObjects } from './evidence.js';
  * Revocation is destructive — it consumes the operator's token — so the
  * disconnect half runs only under `UNAI_LIVE_CONNECTOR_ALLOW_REVOCATION=true`
  * and is skipped even when credentials are present. Everything else this suite
- * does at a provider is a GET.
+ * does at a provider is a GET, except the Google OAuth refresh-token POST.
  *
  * `pnpm test` therefore reports these as skipped, never as passed. A skipped case
  * is not evidence: while it is skipped, the live half of CRT-CON-02-A,

@@ -7,7 +7,7 @@ import {
 import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { enqueueJob, runJobAttempt, type JobAttempt } from '@unai/jobs';
 import {
-  CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError, ceilingAdmits, manifestFor,
+  CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError, ceilingAdmits, credentialRevoked, manifestFor,
   markTokenRevoked, recordSyncFailure, runConnectorSync, storedSensitivity,
   type ConnectorClient, type SourceIngest,
 } from '@unai/connectors';
@@ -25,10 +25,10 @@ import { importSource, type EvidenceObjects } from './evidence.js';
  * claimed under the configured owner scope, and a connector of another owner is
  * invisible under row-level security, so it fails as CONNECTOR_NOT_FOUND.
  *
- * Only a 401 marks the token revoked. The provider adapters map 401 and 403 to
- * CONNECTOR_TOKEN_REVOKED, but Google and GitHub also answer 403 for rate limits
- * and insufficient scope; revoking on a 403 would destroy a working credential
- * handle, so a 403 is recorded as a sync failure and retried.
+ * A provider 401 (after one forced refresh for Google), or a Google token
+ * exchange invalid_grant (400), marks TOKEN_REVOKED. A 403 never does: Google
+ * and GitHub use it for rate limits and insufficient scope, so it is recorded
+ * as a sync failure and retried with its credential handle intact.
  *
  * Only stable codes leave this file: a ConnectorError's detail, provider text and
  * database text never reach jobs.last_error, an audit row or a log line.
@@ -125,7 +125,7 @@ async function settle(options: ConnectorSyncRuntimeOptions, connectorId: string,
   const code = error instanceof Error && CODE.test(error.message) ? error.message : 'CONNECTOR_SYNC_FAILED';
   if (!(error instanceof ConnectorError) || code === 'CONNECTOR_NOT_FOUND') throw new Error(code);
   if (code === 'CONNECTOR_INGESTION_STOPPED') return code;
-  if (code === 'CONNECTOR_TOKEN_REVOKED' && error.detail['status'] === 401) {
+  if (credentialRevoked(error)) {
     await withOwnerTransaction(options.appPool, context(options, CONNECTOR_MANAGE_PURPOSE, correlationId), async tx => {
       await markTokenRevoked(tx, connectorId);
       await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
