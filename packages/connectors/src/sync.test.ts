@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { prepareForCapabilities } from './sync.js';
+import { randomUUID } from 'node:crypto';
+import { ConnectorError } from './manifests.js';
+import type { ConnectorTransaction } from './grants.js';
+import { prepareForCapabilities, runConnectorSync } from './sync.js';
 
 const fixture: unknown = JSON.parse(await readFile(resolve('fixtures/sources/omi-conversation.json'), 'utf8'));
 const capabilityId = 'omi.read_conversations';
@@ -47,4 +50,44 @@ it('keeps unknown connector types refused', () => {
   expect(prepareForCapabilities('NOT_A_CONNECTOR', fixture, [capabilityId])).toEqual({
     externalRef: 'NOT_A_CONNECTOR', code: 'CONNECTOR_TYPE_UNSUPPORTED', capabilityId: null,
   });
+});
+
+function ingestionFailure(error: Error) {
+  const connectorId = randomUUID();
+  const tx: ConnectorTransaction = {
+    context: { ownerScopeId: randomUUID(), actorId: randomUUID(), purpose: 'connector.sync', correlationId: randomUUID() },
+    async query(sql) {
+      if (/SELECT.*connector_capability_grants/s.test(sql)) {
+        return { rows: [{ capability_id: capabilityId }], rowCount: 1 };
+      }
+      if (/SELECT.*FROM connectors/s.test(sql)) {
+        return { rows: [{ id: connectorId, connector_type: 'OMI', external_account_ref: 'owner@example.test',
+          status: 'ACTIVE', secret_ref: null, last_cursor: null }], rowCount: 1 };
+      }
+      throw new Error('UNEXPECTED_TEST_QUERY');
+    },
+  };
+  return { connectorId, run: () => runConnectorSync(tx, {
+    connectorId, request: { mode: 'INCREMENTAL', sensitivity: 'PRIVATE', allowedPurposes: ['PERSONAL_ASSISTANCE'], maxPages: 1 },
+    client: { async fetchPage() { return { payloads: [{ id: 'conv-1' }], nextCursor: null }; } },
+    ingest: async () => { throw error; },
+  }) };
+}
+
+it.each([
+  Object.assign(new Error('CONNECTOR_INGESTION_STOPPED'), { code: '55000' }),
+  new Error('CONNECTOR_REFUSED'),
+])('names the stopped-ingestion port refusal: %s', async error => {
+  const { connectorId, run } = ingestionFailure(error);
+  const refusal = await run().then(() => null, (failure: unknown) => failure);
+  expect(refusal).toBeInstanceOf(ConnectorError);
+  expect(refusal).toMatchObject({ message: 'CONNECTOR_INGESTION_STOPPED' });
+  expect((refusal as ConnectorError).detail).toEqual({ connectorId });
+});
+
+it.each([
+  Object.assign(new Error('EVIDENCE_IMMUTABLE'), { code: '55000' }),
+  Object.assign(new Error('CONNECTOR_INGESTION_STOPPED'), { code: '23505' }),
+])('rethrows an unrelated ingest failure unchanged: %s', async error => {
+  await expect(ingestionFailure(error).run()).rejects.toBe(error);
 });

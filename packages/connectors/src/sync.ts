@@ -30,7 +30,10 @@ import type { ConnectorClient } from './providers.js';
 /** The durable ingest path, supplied by the caller. Keeping it a port is what
  * keeps this package free of object storage, of the extraction worker and of the
  * canonical write path. It may throw SourcePayloadInvalid only before any write;
- * runConnectorSync records that as a per-item refusal. */
+ * runConnectorSync records that as a per-item refusal. A stopped connector may
+ * throw Error('CONNECTOR_REFUSED') before writing, or the migration 0018 trigger's
+ * Error('CONNECTOR_INGESTION_STOPPED') with code '55000'. Both abort the whole run;
+ * after the trigger error the transaction is aborted and cannot read status. */
 export type SourceIngest = (tx: ConnectorTransaction, request: {
   readonly sourceType: string;
   readonly connectorId: string | null;
@@ -164,6 +167,11 @@ function isRefusal(value: PreparedPayload | Refusal): value is Refusal {
   return (value as Refusal).code !== undefined;
 }
 
+function connectorStopped(error: unknown): boolean {
+  return error instanceof Error && (error.message === 'CONNECTOR_REFUSED'
+    || (error.message === 'CONNECTOR_INGESTION_STOPPED' && 'code' in error && error.code === '55000'));
+}
+
 export async function runConnectorSync(tx: ConnectorTransaction, input: {
   readonly connectorId: string;
   readonly request: SyncRequest;
@@ -230,6 +238,9 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
         sensitivity, allowedPurposes: request.allowedPurposes,
       }).catch((error: unknown) => {
         if (error instanceof SourcePayloadInvalid) return null;
+        if (connectorStopped(error)) {
+          throw new ConnectorError('CONNECTOR_INGESTION_STOPPED', { connectorId: input.connectorId });
+        }
         throw error;
       });
       if (imported === null) {
@@ -252,10 +263,22 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
     if (answer.exhausted === true || answer.nextCursor === null || answer.payloads.length === 0) break;
   }
 
+  // Commit point, even without a cursor: a stop committed during provider I/O
+  // wins and rolls back this run's evidence, cursor and cleared error. A later
+  // stop waits for our commit. NO KEY UPDATE avoids conflicting with the KEY
+  // SHARE locks evidence inserts hold, so two syncs cannot deadlock here.
+  // Only a SYNC_FAILED retry already holds this row while calling the provider.
+  const live = (await tx.query(
+    'SELECT status FROM connectors WHERE id=$1 AND owner_scope_id=$2 FOR NO KEY UPDATE',
+    [input.connectorId, tx.context.ownerScopeId])).rows[0];
+  const status = (live?.['status'] as string | undefined) ?? null;
+  if (status !== 'ACTIVE') {
+    throw new ConnectorError('CONNECTOR_INGESTION_STOPPED', { connectorId: input.connectorId, status });
+  }
   if (cursor !== null) {
     await tx.query(
       `UPDATE connectors SET last_cursor=$3::jsonb,cursor_updated_at=now(),last_sync_error=NULL,updated_at=now()
-       WHERE id=$1 AND owner_scope_id=$2`,
+       WHERE id=$1 AND owner_scope_id=$2 AND status='ACTIVE'`,
       [input.connectorId, tx.context.ownerScopeId, JSON.stringify(cursor)]);
   }
   return syncResultSchema.parse({

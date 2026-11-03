@@ -291,16 +291,20 @@ export async function listConnectors(tx: ConnectorTransaction): Promise<PublicCo
  *
  * It runs under `connector.manage` and not under `connector.sync`, because
  * clearing the credential handle is a change of authority and migration 0018's
- * trigger refuses one from a sync. A sync that meets a revoked token records
- * `SYNC_FAILED` with the reason and leaves the consent state to the owner. */
+ * trigger refuses one from a sync. Both sync paths call it in a separate manage
+ * transaction when credentialRevoked() reports a refused credential (provider
+ * 401 or Google invalid_grant 400). Other failures, including 403, record
+ * SYNC_FAILED through recordSyncFailure. It never moves a DISCONNECTED row,
+ * even one disconnected after its initial read. */
 export async function markTokenRevoked(tx: ConnectorTransaction, connectorId: string): Promise<PublicConnector> {
   requirePurpose(tx, CONNECTOR_MANAGE_PURPOSE);
   const connector = await loadConnector(tx, connectorId);
   if (connector.status === 'DISCONNECTED') throw new ConnectorError('CONNECTOR_DISCONNECTED', { connectorId });
-  await tx.query(
+  const changed = await tx.query(
     `UPDATE connectors SET status='TOKEN_REVOKED',secret_ref=NULL,last_sync_error='CONNECTOR_TOKEN_REVOKED',
-       updated_at=now() WHERE id=$1 AND owner_scope_id=$2`,
+       updated_at=now() WHERE id=$1 AND owner_scope_id=$2 AND status<>'DISCONNECTED'`,
     [connectorId, tx.context.ownerScopeId]);
+  if (changed.rowCount !== 1) throw new ConnectorError('CONNECTOR_DISCONNECTED', { connectorId });
   return readConnector(tx, connectorId);
 }
 

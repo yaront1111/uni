@@ -242,6 +242,42 @@ text. Any other ingest failure, such as the database or object storage, still
 fails the whole run with 500 `INTERNAL_ERROR`: the run is rolled back and the
 cursor stays where it was. Continuing after a parse refusal is safe because
 ingestion parses the whole payload before it writes anything.
+The exception is a connector stopped while the run was reading: it refuses with
+409 `CONNECTOR_INGESTION_STOPPED`, as described below.
+
+## Concurrent syncs and lifecycle changes
+
+A sync holds no connector-row lock during provider I/O. The exception is a retry
+from `SYNC_FAILED`: its initial flip to `ACTIVE` already holds that lock for the
+run, so lifecycle changes wait for it.
+
+The sync's commit point is a final re-read of the connector under
+`FOR NO KEY UPDATE`, even when the provider returns no cursor. It serializes with
+lifecycle updates without conflicting with the `KEY SHARE` locks evidence inserts
+take through their foreign key. Unlike `FOR UPDATE`, it does not introduce a
+deadlock between two syncs that both inserted evidence and then reach this guard.
+
+- A token revocation, disconnect or last-capability revocation committed before
+  this point wins. The run refuses with 409 `CONNECTOR_INGESTION_STOPPED` and
+  `{connectorId, status}`; its transactional effects (evidence rows, cursor and
+  cleared error) roll back, preserving the stop's cursor and error.
+- A stop committed before an evidence insert can instead be refused by the
+  importer (`CONNECTOR_REFUSED`) or migration 0018's ingestion trigger (SQLSTATE
+  `55000`, `CONNECTOR_INGESTION_STOPPED`). Both yield the same 409 code with only
+  `{connectorId}`. The trigger aborts the transaction, so the handler must not
+  query it again to retrieve a status.
+- A stop starting after the commit point waits for the sync's commit and applies
+  after it. Failure bookkeeping cannot overwrite a stop: `recordSyncFailure`
+  changes only `ACTIVE`/`SYNC_FAILED` rows, and `markTokenRevoked` never changes a
+  `DISCONNECTED` row, even when the disconnect commits after its initial read.
+- Two syncs of one connector serialize at this point. The later commit's cursor
+  wins; redelivered items deduplicate by identity (ADR 0010).
+
+Two races are deliberately not serialized here, tracked by
+`task-53f1a1c18c5944b6850c5f55c1c83008`: revoking one of several capabilities during
+a provider read (the run still uses the grants loaded at its start), and
+`setCapabilityGrants`' check-then-write against a concurrent disconnect.
+The real-PostgreSQL proof is `packages/api/src/connector-sync-race.test.ts`.
 
 ## What this node does not claim
 
