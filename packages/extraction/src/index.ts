@@ -21,5 +21,5 @@ export { EXTRACTION_PROMPT_VERSION, EXTRACTION_PURPOSES, ExtractionError, runExt
   buildExtractionInput, resolveExtractedSpan,
   type ExtractionRequest, type ExtractionResult, type ExtractionTransaction,
   type ExtractionTransactionRunner, type StoredAnchor } from './runs.js';
-export { EXTRACTION_JOB_KIND, extractionJobPayloadSchema, createExtractionJobHandler,
+export { EXTRACTION_JOB_KIND, TERMINAL_EXTRACTION_ERROR_CODES, extractionJobPayloadSchema, createExtractionJobHandler,
   type ExtractionJobPayload } from './worker.js';

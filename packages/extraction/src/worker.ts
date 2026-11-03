@@ -9,11 +9,22 @@ import { runExtraction, ExtractionError,
  * Deep extraction runs here and nowhere else: the ingest path stores evidence
  * synchronously and returns, so an acknowledged ingestion never waits on a model
  * (PRD §35.1). A handler that throws a stable code lets `runJobAttempt` retry the
- * job within its attempt budget and dead-letter it when the budget is spent; the
- * evidence it read is untouched in both cases (CRT-EVD-05-A).
+ * job within its attempt budget and dead-letter it when the budget is spent.
+ * A code in TERMINAL_EXTRACTION_ERROR_CODES dead-letters on the failing attempt
+ * when the worker turn passes the list as `runJobAttempt`'s `terminalErrorCodes`;
+ * the evidence it read is untouched in both cases (CRT-EVD-05-A).
  */
 
 export const EXTRACTION_JOB_KIND = 'evidence.extract';
+
+/** Explicit deterministic refusals; every other code remains retryable.
+ * EXTRACTION_TRIAGE_REQUIRED may recover when the missing decision is written (no model call).
+ * MODEL_OUTPUT_INVALID and MODEL_PROVIDER_FAILED may succeed on a later call. */
+export const TERMINAL_EXTRACTION_ERROR_CODES = Object.freeze([
+  'EXTRACTION_INPUT_TOO_LARGE', // Immutable bytes/anchors and triage route exceed fixed bounds before any run INSERT or call.
+  'MODEL_COST_BUDGET_EXCEEDED', // The immutable triage budget was exceeded by a recorded, billed call; retries bill again.
+  'EXTRACTION_ROUTE_REFUSED', // Immutable triage route and job payload run kind cannot become admissible on retry.
+] as const);
 
 export const extractionJobPayloadSchema = z.strictObject({
   ownerScopeId: z.uuid(),

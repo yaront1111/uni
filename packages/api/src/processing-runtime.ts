@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import type { ClaimedJob, RequestContext } from '@unai/domain';
 import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { createModelGateway, type ModelProvider } from '@unai/model';
-import { EXTRACTION_JOB_KIND, extractionJobPayloadSchema, runExtraction } from '@unai/extraction';
+import { EXTRACTION_JOB_KIND, TERMINAL_EXTRACTION_ERROR_CODES, extractionJobPayloadSchema, runExtraction } from '@unai/extraction';
 import { runJobAttempt } from '@unai/jobs';
 import { proposeBeliefTransaction, validateBeliefTransaction, commitBeliefTransaction } from '@unai/belief';
 import { replayProjection } from '@unai/capabilities';
@@ -174,7 +174,8 @@ export function createProcessingRuntime(options: ProcessingRuntimeOptions) {
     async runOnce() {
       await dispatch();
       return runJobAttempt(options.appPool, context('jobs.work'), { worker: options.workerId,
-        leaseSeconds: options.leaseSeconds ?? 300, jobKinds: [EXTRACTION_JOB_KIND], handler: handle });
+        leaseSeconds: options.leaseSeconds ?? 300, jobKinds: [EXTRACTION_JOB_KIND],
+        terminalErrorCodes: TERMINAL_EXTRACTION_ERROR_CODES, handler: handle });
     },
   };
 }

@@ -25,6 +25,55 @@ function context(purpose:string):RequestContext{return {actorId:actor,ownerScope
 function as<T>(purpose:string,run:(tx:OwnerTransaction)=>Promise<T>){return withOwnerTransaction(appPool,context(purpose),run);}
 const key=()=>randomUUID().replaceAll('-','');
 
+async function assertAttemptConstraints(){
+  const invalid=await admin.query(`SELECT count(*)::int AS count FROM jobs
+    WHERE NOT (status<>'DEAD_LETTER' OR (last_error IS NOT NULL AND attempt_count>=max_attempts))
+    OR NOT (attempt_count<=max_attempts)`);
+  expect(invalid.rows[0].count).toBe(0);
+  const constraints=await admin.query(`SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint WHERE conrelid='jobs'::regclass
+    AND conname IN ('jobs_dead_letter_is_explained','jobs_attempts_bounded')`);
+  expect(constraints.rows).toHaveLength(2);
+  for(const [name,comparison] of [['jobs_dead_letter_is_explained','attempt_count >= max_attempts'],
+    ['jobs_attempts_bounded','attempt_count <= max_attempts']]){
+    expect(constraints.rows.find(row=>row.conname===name)).toMatchObject({convalidated:true,definition:expect.stringContaining(comparison!)});
+  }
+}
+
+it('closes the attempt budget only for explicitly terminal handler codes',async()=>{
+  const enqueue=(jobKind:string,maxAttempts=3)=>as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind,idempotencyKey:key(),maxAttempts}));
+  const turn=(jobKind:string,handler:()=>Promise<void>)=>runJobAttempt(appPool,context(JOB_PURPOSES.work),{
+    worker:'terminal-worker',leaseSeconds:60,jobKinds:[jobKind],terminalErrorCodes:['DETERMINISTIC_REFUSAL','JOB_HANDLER_FAILED'],handler});
+  const refuse=async()=>{throw new Error('DETERMINISTIC_REFUSAL');};
+  const transient=async()=>{throw new Error('TRANSIENT_FAILURE');};
+  const enqueued=await enqueue('evidence.terminal');
+  let calls=0;
+  const terminalTurn=()=>turn('evidence.terminal',async()=>{calls++;await refuse();});
+  expect(await terminalTurn()).toMatchObject({claimed:true,job:{status:'DEAD_LETTER',attemptCount:1,maxAttempts:1,
+    lastError:'DETERMINISTIC_REFUSAL',leaseOwner:null,leaseExpiresAt:null}});
+  expect(await terminalTurn()).toEqual({claimed:false});
+  expect(calls).toBe(1);
+  expect(await as(JOB_PURPOSES.readDeadLetter,tx=>listDeadLetterJobs(tx,{limit:50})))
+    .toEqual(expect.arrayContaining([expect.objectContaining({jobId:enqueued.jobId})]));
+  await enqueue('evidence.terminal_late');
+  expect(await turn('evidence.terminal_late',transient)).toMatchObject({job:{status:'FAILED',attemptCount:1,maxAttempts:3}});
+  expect(await turn('evidence.terminal_late',refuse)).toMatchObject({job:{status:'DEAD_LETTER',attemptCount:2,maxAttempts:2,lastError:'DETERMINISTIC_REFUSAL'}});
+  await enqueue('evidence.ordinary');
+  for(const attemptCount of [1,2,3]){
+    expect(await turn('evidence.ordinary',transient)).toMatchObject({job:{status:attemptCount===3?'DEAD_LETTER':'FAILED',
+      attemptCount,maxAttempts:3,lastError:'TRANSIENT_FAILURE'}});
+  }
+  for(const [jobKind,error] of [['evidence.unknown_error',new Error('connection to 10.0.0.4 failed for user alice@example.test')],
+    ['evidence.non_error','DETERMINISTIC_REFUSAL']] as const){
+    await enqueue(jobKind,2);
+    expect(await turn(jobKind,async()=>{throw error;})).toMatchObject({job:{status:'FAILED',lastError:'JOB_HANDLER_FAILED',attemptCount:1,maxAttempts:2}});
+  }
+  expect(await as(JOB_PURPOSES.retryDeadLetter,tx=>retryDeadLetterJob(tx,enqueued.jobId)))
+    .toMatchObject({status:'PENDING',attemptCount:0,maxAttempts:1,lastError:'DETERMINISTIC_REFUSAL'});
+  expect(await turn('evidence.terminal',async()=>{})).toMatchObject({claimed:true,job:{status:'SUCCEEDED',attemptCount:1,maxAttempts:1}});
+  await assertAttemptConstraints();
+});
+
 it('CRT-NFR-02-A: a handler that always fails is retried to its attempt limit and then inspectable in the dead-letter list',async()=>{
   const enqueued=await as(JOB_PURPOSES.enqueue,tx=>enqueueJob(tx,{jobKind:'evidence.extract',payload:{note:'always fails'},idempotencyKey:key(),maxAttempts:3}));
   expect(enqueued).toMatchObject({status:'PENDING',attemptCount:0,maxAttempts:3,leaseOwner:null,lastError:null});

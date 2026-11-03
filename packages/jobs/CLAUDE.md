@@ -13,13 +13,14 @@
 
 - `claimJob` takes the oldest row (`created_at,id`) of the owner that is `PENDING`, `FAILED`, or `RUNNING` with an expired lease, and that has `attempt_count<max_attempts`, using `FOR UPDATE SKIP LOCKED`. The attempt is counted at claim time, not at outcome time.
 - `completeJob` and `failJob` go through `reportOutcome`, which matches only `status='RUNNING'`, the same `lease_owner` and a lease still in the future; otherwise it throws `JOB_LEASE_LOST`. `failJob` writes `DEAD_LETTER` when `attempt_count>=max_attempts`, else `FAILED`.
+- `failJob` with `terminal:true` writes `DEAD_LETTER` on the current attempt and closes the budget (`max_attempts=attempt_count`), never raising `attempt_count`. A manual `retryDeadLetterJob` re-queues it with that closed budget, normally one attempt (ADR 0012, addition dated 2026-11-03).
 - `retryDeadLetterJob` is the only exit from `DEAD_LETTER`: back to `PENDING` with `attempt_count=0` and `last_error` kept. It returns `null` instead of throwing when the job is not dead-lettered in this owner scope, and `ops.ts` turns that into 404 `DEAD_LETTER_JOB_NOT_FOUND`.
 - `SUCCEEDED` is terminal and rows are never deleted: `unai_app` has no DELETE or TRUNCATE on `jobs` (asserted in `packages/postgres/src/isolation.test.ts`).
 - A worker that dies on its last attempt leaves the row `RUNNING` with an expired lease and `attempt_count=max_attempts`, which no claim or outcome can match. `claimJob` therefore first retires every such row of the owner scope, whatever kind the caller claims, to `DEAD_LETTER` with `last_error='JOB_LEASE_EXPIRED'`, where `retryDeadLetterJob` reaches it. Until the next claim in that owner scope, the row shows only as `queueDepth.expiredLeases`. That sweep is a plain `UPDATE`, so a concurrent claim waits on it for the length of the other claim transaction.
 
 ## Invariants a change must keep
 
-- The CHECKs `jobs_lease_matches_status` and `jobs_lease_deadline` require both lease columns to be set exactly while the status is `RUNNING`. `reportOutcome` appends the lease reset to every outcome; a new transition must do the same. `jobs_dead_letter_is_explained` requires `last_error` and an exhausted budget before `DEAD_LETTER`.
+- The CHECKs `jobs_lease_matches_status` and `jobs_lease_deadline` require both lease columns to be set exactly while the status is `RUNNING`. `reportOutcome` appends the lease reset to every outcome; a new transition must do the same. `jobs_dead_letter_is_explained` requires `last_error` and an exhausted budget before `DEAD_LETTER`. A terminal failure satisfies it by closing the budget, never raising `attempt_count`; 0007's CHECKs, including `jobs_attempts_bounded`, are unchanged.
 - Every lease comparison uses the database's `statement_timestamp()`, never the worker's clock.
 - The `job_update` trigger (function `unai_private.job_update`) raises `JOB_IDENTITY_IMMUTABLE` (SQLSTATE 55000) when id, owner scope, kind, payload, idempotency key or `created_at` change, and it sets `updated_at`. The library never writes `updated_at`, and the dead-letter list orders by it.
 - `COLUMNS` excludes `payload`; only `claimJob` returns it, through `claimedJobSchema`. `publicJobSchema` is a strict object, so a new column means a new migration plus `COLUMNS`, `publicJob`, the domain schema and `jobFields` in `ops.ts`. The first test asserts that payload text never appears in the dead-letter list.
@@ -32,6 +33,7 @@ It opens two transactions itself, claim and outcome. The handler runs between th
 
 - There is no lease renewal. A handler that outlasts `leaseSeconds` (0 to 3600, else `JOB_LEASE_INVALID`) makes `runJobAttempt` reject with `JOB_LEASE_LOST`, and another worker may already be running the job again, so handlers must tolerate re-execution. `leaseSeconds:0` is legal and is how the tests simulate a killed worker.
 - A handler reports a specific failure by throwing `new Error('SOME_CODE')`: the message is stored as `last_error` only when it matches `jobErrorCodeSchema`, and anything else becomes `JOB_HANDLER_FAILED`.
+- `terminalErrorCodes` is the caller's explicit allowlist for the job kinds it claims. Only a handler message that is itself a valid code can match: non-code text and non-Error throws mapped to the `JOB_HANDLER_FAILED` fallback are never terminal. An absent or empty list leaves the ordinary retry behavior unchanged. The processing worker passes `TERMINAL_EXTRACTION_ERROR_CODES` from `@unai/extraction` in `packages/api/src/processing-runtime.ts`'s `runOnce`.
 - The counter `unai.jobs.attempts` carries only the attribute `outcome` (`CLAIMED` or the resulting status), and the span `jobs.attempt` carries only the claimed flag, kind, attempt number and outcome status. Never add the payload or error text.
 
 ## Purposes

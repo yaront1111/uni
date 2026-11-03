@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { claimJob, retryDeadLetterJob } from '@unai/jobs';
+import { TERMINAL_EXTRACTION_ERROR_CODES } from '@unai/extraction';
 import { replayProjection, resolveOwnerEntity } from '@unai/capabilities';
 import { recordClaim, recordResolutionAssertion, setResolutionLifecycle } from '@unai/memory';
 import type { ModelProvider } from '@unai/model';
@@ -73,13 +74,14 @@ async function owner(clock?: () => Date) {
     expect(response.statusCode, response.body).toBe(200);
     return response.json().evidenceId as string;
   }
-  const model = { calls: 0, failing: false, frameType: 'shared.commitment' };
+  const model = { calls: 0, failing: false, frameType: 'shared.commitment', cost: 1, output: null as string | null };
   const provider: ModelProvider = { providerId: 'recorded-test', defaultModelId: 'source-span-test', async complete(request) {
     model.calls++;
     if (model.failing) throw new Error('MODEL_PROVIDER_UNAVAILABLE');
+    if (model.output !== null) return { modelId: 'source-span-test', costMicrounits: model.cost, outputText: model.output };
     const input = JSON.parse(request.input) as { anchors: { anchorKind: string; parentAnchor: Record<string, unknown>; text: string }[] };
     const anchor = input.anchors[0]!;
-    return { modelId: 'source-span-test', costMicrounits: 1, outputText: JSON.stringify({ claims: [{
+    return { modelId: 'source-span-test', costMicrounits: model.cost, outputText: JSON.stringify({ claims: [{
       frameTypeId: model.frameType, statement: anchor.text, span: { anchorKind: anchor.anchorKind,
         parentAnchor: anchor.parentAnchor, start: 0, end: anchor.text.length, quote: anchor.text },
       extractionConfidence: 0.95, temporalExpression: /tomorrow/.test(anchor.text) ? 'tomorrow' : null, participants: [],
@@ -283,6 +285,48 @@ it('leaves source-only and index-only evidence readable without calling the mode
     }
     expect((await o.runtime().runOnce()).claimed).toBe(false);expect(o.model.calls).toBe(0);
   }finally{await o.app.close();}
+});
+
+it.each([
+  { code: 'EXTRACTION_INPUT_TOO_LARGE', body: 'I will send the oversized report. ' + 'x'.repeat(40000), cost: 1, calls: 0 },
+  { code: 'MODEL_COST_BUDGET_EXCEEDED', body: 'I will send the costly report.', cost: 1_000_000, calls: 1 },
+])('dead-letters deterministic extraction refusal $code on its first attempt', async ({ code, body, cost, calls }) => {
+  const o = await owner();
+  try {
+    const id = await o.ingest(body);
+    o.model.cost = cost;
+    const runtime = o.runtime();
+    expect((await runtime.runOnce()).job).toMatchObject({ status: 'DEAD_LETTER', lastError: code, attemptCount: 1, maxAttempts: 1 });
+    expect((await runtime.runOnce()).claimed).toBe(false);
+    expect(o.model.calls).toBe(calls);
+    expect((await admin.query('SELECT count(*)::int AS n FROM model_call_records WHERE owner_scope_id=$1', [o.ownerScopeId])).rows[0].n).toBe(calls);
+    expect(await o.state(id)).toMatchObject({ status: 'PENDING', last_error: code });
+  } finally { await o.app.close(); }
+});
+
+it.each(['MODEL_OUTPUT_INVALID', 'MODEL_PROVIDER_FAILED'])('keeps %s retryable through the configured attempt budget', async code => {
+  const o = await owner();
+  try {
+    await o.ingest('I will send the retryable report.');
+    if (code === 'MODEL_OUTPUT_INVALID') o.model.output = 'not json';
+    else o.model.failing = true;
+    const runtime = o.runtime();
+    for (const attemptCount of [1, 2, 3]) {
+      expect((await runtime.runOnce()).job).toMatchObject({ status: attemptCount === 3 ? 'DEAD_LETTER' : 'FAILED',
+        lastError: code, attemptCount, maxAttempts: 3 });
+    }
+    expect(o.model.calls).toBe(3);
+  } finally { await o.app.close(); }
+});
+
+it('pins the immutable deterministic extraction refusal allowlist', () => {
+  expect([...TERMINAL_EXTRACTION_ERROR_CODES].sort()).toEqual([
+    'EXTRACTION_INPUT_TOO_LARGE', 'EXTRACTION_ROUTE_REFUSED', 'MODEL_COST_BUDGET_EXCEEDED',
+  ]);
+  expect(Object.isFrozen(TERMINAL_EXTRACTION_ERROR_CODES)).toBe(true);
+  for (const code of ['MODEL_OUTPUT_INVALID', 'MODEL_PROVIDER_FAILED', 'EXTRACTION_TRIAGE_REQUIRED']) {
+    expect(TERMINAL_EXTRACTION_ERROR_CODES).not.toContain(code);
+  }
 });
 
 it('retains raw evidence across model dead letters and supports explicit manual retry', async () => {

@@ -26,6 +26,17 @@ TRUNCATE privilege, so a dead-lettered job cannot be discarded through the
 runtime credential. Job identity, owner scope, kind, payload and creation time
 are immutable after insert, enforced by a trigger.
 
+A handler's stable code in `runJobAttempt.terminalErrorCodes` is a deterministic
+refusal every retry would repeat (added 2026-11-03,
+task-2c05639a7dc14766a22f3bc09108c371). Passed as `failJob`'s `terminal` option,
+it becomes DEAD_LETTER on that attempt. `attempt_count` stays truthful; closing
+`max_attempts` to `attempt_count` preserves 0007's `jobs_dead_letter_is_explained`
+and `jobs_attempts_bounded` without a migration. Manual retry keeps that closed
+budget. This is an explicit per-call allowlist, never a default; all other
+failures, including non-code errors mapped to JOB_HANDLER_FAILED, stay retryable.
+Extraction's list is `TERMINAL_EXTRACTION_ERROR_CODES` in
+`packages/extraction/src/worker.ts`.
+
 A claim takes the oldest runnable job with `FOR UPDATE SKIP LOCKED`: never
 claimed, failed with attempts remaining, or RUNNING under a lease whose deadline
 has passed. Claiming increments the attempt count and writes a new lease owner

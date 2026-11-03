@@ -90,10 +90,12 @@ export async function completeJob(tx:OwnerTransaction,options:{jobId:string;work
   attempts.add(1,{outcome:job.status});
   return job;
 }
-/** Exhausting the attempt limit dead-letters the job instead of retrying it. */
-export async function failJob(tx:OwnerTransaction,options:{jobId:string;worker:string;errorCode:string}):Promise<PublicJob>{
+/** Exhausting the attempt limit dead-letters the job instead of retrying it.
+ * A terminal failure closes the budget rather than inflating the true attempt count. */
+export async function failJob(tx:OwnerTransaction,options:{jobId:string;worker:string;errorCode:string;terminal?:boolean}):Promise<PublicJob>{
   requirePurpose(tx,JOB_PURPOSES.work);
   const job=await reportOutcome(tx,options.jobId,options.worker,
+    options.terminal===true?"status='DEAD_LETTER',max_attempts=attempt_count,last_error=$4":
     "status=CASE WHEN attempt_count>=max_attempts THEN 'DEAD_LETTER' ELSE 'FAILED' END,last_error=$4",
     [jobErrorCodeSchema.parse(options.errorCode)]);
   attempts.add(1,{outcome:job.status});
@@ -145,6 +147,8 @@ export interface JobAttempt {claimed:boolean;job?:PublicJob}
  * expiring lease that another worker reclaims. */
 export async function runJobAttempt(pool:Pool,context:RequestContext,options:{
   worker:string;leaseSeconds:number;jobKinds?:readonly string[];
+  /** Explicit per-turn allowlist of stable handler codes that must not retry. */
+  terminalErrorCodes?:readonly string[];
   handler(job:ClaimedJob):Promise<void>;
 }):Promise<JobAttempt>{
   if(context.purpose!==JOB_PURPOSES.work)throw new Error('JOB_PURPOSE_REFUSED');
@@ -154,15 +158,18 @@ export async function runJobAttempt(pool:Pool,context:RequestContext,options:{
       if(!claimed){span.setAttribute('unai.jobs.claimed',false);return {claimed:false};}
       span.setAttributes({'unai.jobs.claimed':true,'unai.jobs.kind':claimed.jobKind,'unai.jobs.attempt':claimed.attemptCount});
       let errorCode:string|null=null;
+      let terminal=false;
       try{await options.handler(claimed);}
       catch(error){
         // Only a stable code is recorded: handler error text may hold owner content.
         const message=error instanceof Error?error.message:'';
-        errorCode=jobErrorCodeSchema.safeParse(message).success?message:'JOB_HANDLER_FAILED';
+        const stable=jobErrorCodeSchema.safeParse(message).success;
+        errorCode=stable?message:'JOB_HANDLER_FAILED';
+        terminal=stable&&options.terminalErrorCodes?.includes(message)===true;
       }
       const job=await withOwnerTransaction(pool,context,tx=>errorCode===null
         ?completeJob(tx,{jobId:claimed.jobId,worker:options.worker})
-        :failJob(tx,{jobId:claimed.jobId,worker:options.worker,errorCode}));
+        :failJob(tx,{jobId:claimed.jobId,worker:options.worker,errorCode,terminal}));
       span.setAttribute('unai.jobs.outcome',job.status);
       return {claimed:true,job};
     }finally{span.end();}
