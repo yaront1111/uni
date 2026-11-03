@@ -45,8 +45,22 @@ const GMAIL = 'https://gmail.googleapis.com/gmail/v1';
 const CALENDAR = 'https://www.googleapis.com/calendar/v3';
 const GITHUB = 'https://api.github.com';
 
+/**
+ * The one door to a provider. A native rejection must never reach a caller:
+ * the request is validated before it connects, and that TypeError quotes an invalid
+ * header value whole (a bearer holding a newline), while a network, TLS or redirect
+ * failure carries OS text in its cause. Only the code and a null status survive,
+ * so the catch binds nothing, passes no cause and logs nothing. `return await` is
+ * required: a bare return would hand the rejection past this catch.
+ */
+async function providerFetch(url: string, init: RequestInit): Promise<Response> {
+  try { return await fetch(url, init); } catch {
+    throw new ConnectorError('CONNECTOR_PROVIDER_UNAVAILABLE', { status: null });
+  }
+}
+
 async function getJson(url: string, token: string, headers: Record<string, string> = {}): Promise<unknown> {
-  const response = await fetch(url, {
+  const response = await providerFetch(url, {
     method: 'GET',
     headers: { authorization: 'Bearer ' + token, accept: 'application/json', ...headers },
     redirect: 'error',
@@ -79,17 +93,12 @@ const googleTokenSchema = z.object({ access_token: z.string().min(1), expires_in
 
 async function exchangeGoogleToken(refreshToken: string, client: GoogleOAuthClientConfig) {
   const { clientId, clientSecret } = await client.resolve();
-  let response: Response;
-  try {
-    response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST', redirect: 'error',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken,
-        client_id: clientId, client_secret: clientSecret }).toString(),
-    });
-  } catch {
-    throw new ConnectorError('CONNECTOR_PROVIDER_UNAVAILABLE', { status: null });
-  }
+  const response = await providerFetch('https://oauth2.googleapis.com/token', {
+    method: 'POST', redirect: 'error',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken,
+      client_id: clientId, client_secret: clientSecret }).toString(),
+  });
   // Consume once, discard provider text, and never retain the body or a cause.
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
@@ -127,26 +136,17 @@ export function credentialRevoked(error: unknown): boolean {
     && (error.detail['status'] === 401 || error.detail['status'] === 400);
 }
 
-/** Native fetch/header errors can quote the bearer. Keep Google's new access-token
- * path status-only on both the first attempt and the retry. */
-async function googleJson(url: string, token: string): Promise<unknown> {
-  try { return await getJson(url, token); } catch (error) {
-    if (error instanceof ConnectorError) throw error;
-    throw new ConnectorError('CONNECTOR_PROVIDER_UNAVAILABLE', { status: null });
-  }
-}
-
 /** One refresh budget for the entire page, including Gmail thread-detail requests. */
 async function googlePageRequest(tokens: GoogleAccessTokens, secretRef: string) {
   let token = await tokens.accessToken(secretRef, false);
   let refreshed = false;
   return async (url: string): Promise<unknown> => {
-    try { return await googleJson(url, token); } catch (error) {
+    try { return await getJson(url, token); } catch (error) {
       if (!(error instanceof ConnectorError) || error.message !== 'CONNECTOR_TOKEN_REVOKED'
         || error.detail['status'] !== 401 || refreshed) throw error;
       refreshed = true;
       token = await tokens.accessToken(secretRef, true);
-      return googleJson(url, token);
+      return getJson(url, token);
     }
   };
 }
@@ -333,14 +333,9 @@ interface OmiList {
  * ever kept, and its body is cancelled unread: Omi error text can carry the
  * owner's own words. Never sleeps and never retries. */
 async function omiGet(key: string, query: URLSearchParams): Promise<OmiList> {
-  let response: Response;
-  try {
-    response = await fetch(OMI + '?' + query.toString(), {
-      method: 'GET', headers: { authorization: 'Bearer ' + key, accept: 'application/json' }, redirect: 'error',
-    });
-  } catch {
-    throw new ConnectorError('CONNECTOR_PROVIDER_UNAVAILABLE', { status: null });
-  }
+  const response = await providerFetch(OMI + '?' + query.toString(), {
+    method: 'GET', headers: { authorization: 'Bearer ' + key, accept: 'application/json' }, redirect: 'error',
+  });
   if (!response.ok) {
     void response.body?.cancel().catch(() => undefined);
     const status = response.status;
@@ -451,7 +446,7 @@ export function createTokenRevoker(secrets: SecretsManager) {
       // including its access tokens (RFC 7009 section 2.1); the next exchange fails invalid_grant.
       // https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke
       // https://www.rfc-editor.org/rfc/rfc7009#section-2.1
-      const response = await fetch('https://oauth2.googleapis.com/revoke', {
+      const response = await providerFetch('https://oauth2.googleapis.com/revoke', {
         method: 'POST', redirect: 'error',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ token }).toString(),
@@ -461,7 +456,7 @@ export function createTokenRevoker(secrets: SecretsManager) {
       return { revoked: response.ok || response.status === 400 };
     }
     if (input.connectorType === 'GITHUB') {
-      const response = await fetch(GITHUB + '/installation/token', {
+      const response = await providerFetch(GITHUB + '/installation/token', {
         method: 'DELETE', redirect: 'error',
         headers: { authorization: 'Bearer ' + token, accept: 'application/vnd.github+json', 'user-agent': 'uai-connector' },
       });
