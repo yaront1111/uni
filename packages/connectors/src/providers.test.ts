@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SecretsManager } from '@unai/secrets';
 import { ConnectorError } from './manifests.js';
-import { createConnectorClient, createOmiClient, type ConnectorFetch } from './providers.js';
+import { createConnectorClient, createOmiClient, createTokenRevoker, type ConnectorFetch } from './providers.js';
 
 /**
  * The read-only Omi client (ADR 0041 D2 and D7). No network: `fetch` is stubbed,
@@ -26,7 +26,7 @@ function stubFetch(...script: Scripted[]): Recorded[] {
     const next = queue.shift();
     if (!next) throw new Error('unscripted request');
     const body = typeof next.body === 'string' ? next.body : JSON.stringify(next.body ?? []);
-    return new Response(body, { status: next.status ?? 200, headers: next.headers ?? {} });
+    return new Response(next.status === 204 ? null : body, { status: next.status ?? 200, headers: next.headers ?? {} });
   });
   return recorded;
 }
@@ -336,5 +336,58 @@ describe('createConnectorClient', () => {
     await client.fetchPage(ask(null));
     expect(new URL(recorded[0]?.url ?? '').pathname).toBe(PATH);
     expect(() => createConnectorClient('OMI', secrets, null)).toThrowError('CONNECTOR_CREDENTIAL_MISSING');
+  });
+});
+
+describe('createTokenRevoker (ADR 0023, ADR 0041 D8)', () => {
+  it('OMI reports manual revocation without resolving a secret or making a request', async () => {
+    const recorded = stubFetch();
+    const resolved: string[] = [];
+    const recordingSecrets: SecretsManager = {
+      async resolve(handle) { resolved.push(handle); return KEY; },
+    };
+    await expect(createTokenRevoker(recordingSecrets)({
+      connectorType: 'OMI', secretRef: 'secret://mounted/omi#key',
+    })).resolves.toEqual({ revoked: false, manualRevocationRequired: true });
+    expect(recorded).toEqual([]);
+    expect(resolved).toEqual([]);
+  });
+
+  it.each([
+    ['GMAIL', 200, true],
+    ['GOOGLE_CALENDAR', 400, true],
+    ['GOOGLE_CALENDAR', 500, false],
+  ] as const)('%s with status %i preserves its Google revocation result', async (connectorType, status, revoked) => {
+    const recorded = stubFetch({ status });
+    await expect(createTokenRevoker(secrets)({ connectorType, secretRef: 'secret://mounted/google#token' }))
+      .resolves.toEqual({ revoked });
+    expect(recorded).toEqual([{
+      url: 'https://oauth2.googleapis.com/revoke',
+      init: {
+        method: 'POST', redirect: 'error',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: KEY }).toString(),
+      },
+    }]);
+  });
+
+  it('GITHUB preserves its installation-token DELETE and successful result', async () => {
+    const recorded = stubFetch({ status: 204 });
+    await expect(createTokenRevoker(secrets)({ connectorType: 'GITHUB', secretRef: 'secret://mounted/github#token' }))
+      .resolves.toEqual({ revoked: true });
+    expect(recorded).toEqual([{
+      url: 'https://api.github.com/installation/token',
+      init: {
+        method: 'DELETE', redirect: 'error',
+        headers: { authorization: 'Bearer ' + KEY, accept: 'application/vnd.github+json', 'user-agent': 'uai-connector' },
+      },
+    }]);
+  });
+
+  it('DOCUMENT is still refused without a provider request', async () => {
+    const recorded = stubFetch();
+    await expect(createTokenRevoker(secrets)({ connectorType: 'DOCUMENT', secretRef: 'secret://mounted/document#token' }))
+      .rejects.toThrow('CONNECTOR_REVOCATION_UNAVAILABLE');
+    expect(recorded).toEqual([]);
   });
 });

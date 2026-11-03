@@ -355,9 +355,12 @@ export function createConnectorClient(
 
 /** Revoke an OAuth token at the provider. Google exposes one revocation
  * endpoint; GitHub revokes a token through its app installation. A provider with
- * no revocation endpoint is refused rather than reported as revoked. */
+ * no revocation endpoint is refused unless it explicitly requires manual revocation. */
 export function createTokenRevoker(secrets: SecretsManager) {
-  return async (input: { connectorType: string; secretRef: string }): Promise<{ revoked: boolean }> => {
+  return async (input: { connectorType: string; secretRef: string }): Promise<{ revoked: boolean; manualRevocationRequired?: boolean }> => {
+    // Omi keys cannot revoke themselves: DELETE /v1/dev/keys needs a Firebase ID token (OMI-2).
+    // This branch makes no request and resolves no secret (ADR 0041 D8).
+    if (input.connectorType === 'OMI') return { revoked: false, manualRevocationRequired: true };
     const token = await secrets.resolve(input.secretRef);
     if (input.connectorType === 'GMAIL' || input.connectorType === 'GOOGLE_CALENDAR') {
       const response = await fetch('https://oauth2.googleapis.com/revoke', {

@@ -205,6 +205,9 @@ export const disconnectResultSchema = z.strictObject({
   connectorId: z.uuid(),
   status: z.literal('DISCONNECTED'),
   tokensRevokedAtProvider: z.boolean(),
+  /** Notice on a successful receipt, not a refusal: the provider cannot revoke
+   * a held credential through Uai. Null when no manual revocation is required. */
+  providerRevocationNotice: z.literal('CONNECTOR_REVOCATION_MANUAL_REQUIRED').nullable(),
   secretReferenceDestroyed: z.boolean(),
   ingestionStopped: z.literal(true),
   capabilitiesRevoked: z.array(capabilityIdSchema),

@@ -304,17 +304,18 @@ export async function markTokenRevoked(tx: ConnectorTransaction, connectorId: st
   return readConnector(tx, connectorId);
 }
 
-/** What a disconnect asks the provider to do. The default adapter is a real
- * HTTPS revocation call; a connector with no credential has nothing to revoke. */
+/** What a disconnect asks the provider to do. The default adapter revokes over
+ * HTTPS or explicitly reports manual revocation (ADR 0041 D8); no handle means no call. */
 export type TokenRevoker = (input: { readonly connectorType: string; readonly secretRef: string })
-  => Promise<{ readonly revoked: boolean }>;
+  => Promise<{ readonly revoked: boolean; readonly manualRevocationRequired?: boolean }>;
 
 /**
  * Disconnect: revoke the tokens at the provider, destroy the credential handle,
  * revoke every capability, and stop ingestion (CRT-CON-06-A).
  *
  * The order matters. The provider call happens first, because a failed
- * revocation must not be recorded as a completed one; then the row moves to
+ * revocation must not be recorded as a completed one. A manual-only provider
+ * instead reports a notice (ADR 0041 D8); then the row moves to
  * DISCONNECTED with `secret_ref` NULL, which is the state migration 0018's
  * trigger reads to refuse any further evidence row naming this connector. The
  * evidence already stored stays exactly where it is, and the owner is offered
@@ -326,12 +327,13 @@ export async function disconnectConnector(
   requirePurpose(tx, CONNECTOR_MANAGE_PURPOSE);
   const connector = await loadConnector(tx, connectorId);
   if (connector.status === 'DISCONNECTED') throw new ConnectorError('CONNECTOR_DISCONNECTED', { connectorId });
-  let revoked = false;
+  let revoked = false, manual = false;
   if (connector.secretRef !== null) {
     if (!revoke) throw new ConnectorError('CONNECTOR_REVOCATION_UNAVAILABLE', { connectorId });
     const answer = await revoke({ connectorType: connector.connectorType, secretRef: connector.secretRef });
-    if (!answer.revoked) throw new ConnectorError('CONNECTOR_REVOCATION_FAILED', { connectorId });
-    revoked = true;
+    if (answer.revoked) revoked = true;
+    else if (answer.manualRevocationRequired === true) manual = true;
+    else throw new ConnectorError('CONNECTOR_REVOCATION_FAILED', { connectorId });
   }
   const capabilities = await grantedCapabilities(tx, connectorId);
   const now = new Date().toISOString();
@@ -345,6 +347,7 @@ export async function disconnectConnector(
     [connectorId, tx.context.ownerScopeId]);
   return disconnectResultSchema.parse({
     connectorId, status: 'DISCONNECTED', tokensRevokedAtProvider: revoked, secretReferenceDestroyed: true,
+    providerRevocationNotice: manual ? 'CONNECTOR_REVOCATION_MANUAL_REQUIRED' : null,
     ingestionStopped: true, capabilitiesRevoked: capabilities,
     retainedEvidence: 'RETAINED', retainedEvidenceOptions: ['KEEP_EVIDENCE', 'REQUEST_DELETION'],
   });
