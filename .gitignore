@@ -17,3 +17,5 @@ registry-test-report.json
 shadow-diff-report.json
 # The accessibility report and keyboard-only walkthrough `pnpm test` writes (CRT-UX-14-A); CI uploads it.
 test-results/
+# Scratch scripts are never tracked; src/hygiene.test.ts fails on a tracked or staged file here.
+scripts/.tmp/

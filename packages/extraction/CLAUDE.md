@@ -17,9 +17,14 @@ is `docs/model-path-and-extraction.md`.
   the caller's `ExtractionTransactionRunner`: `memory.extract` to open the run,
   `model.call` inside the gateway, and `memory.canonicalize` to write the claims
   and complete the run atomically with them.
-- `createExtractionJobHandler` is the handler for job kind `evidence.extract` on
-  the durable queue. This package starts no worker and enqueues nothing; the
-  connector sync path decides when an item is extracted.
+- `createExtractionJobHandler` handles job kind `evidence.extract`, but only
+  `packages/api/src/extraction-pipeline.test.ts` calls it. Production runs
+  `evidence.extract` in the worker process `packages/api/src/processing-worker.ts`
+  through `createProcessingRuntime` (`packages/api/src/processing-runtime.ts`),
+  which calls `runExtraction` directly. This package starts no worker and
+  enqueues nothing: `enqueueEvidenceProcessing`
+  (`packages/api/src/processing-store.ts`) queues the job, from the worker's
+  dispatch of recorded processing intents and from a FULL document upload.
 - Runtime dependencies are `zod`, `@unai/domain`, `@unai/memory` and
   `@unai/model`. `pg` and `@unai/postgres` are devDependencies.
 

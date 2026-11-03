@@ -83,3 +83,13 @@ production deployment, worker supervisor process or scheduler is configured: a
 deployment must run `runJobAttempt` on its own schedule with a worker identity
 and lease duration. Node acceptance, phase exit and whole-product acceptance are
 distinct, and the daemon's independent verifier remains authoritative.
+
+Update 2026-11: a worker process and three handlers now exist, all in
+`packages/api/src`. `processing-worker.ts` (`pnpm start:worker`, one owner scope
+per process) calls `runJobAttempt` each turn for `evidence.extract`
+(`processing-runtime.ts`), `initiative.evaluate` (`initiative-runtime.ts`) and
+`connector.sync` (`connector-sync-job.ts`), then waits `UNAI_PROCESSING_POLL_MS`
+(`docs/processing-runtime.md`). ADR 0043 decides that systemd supervises it as
+`unai-worker.service`. No other job kind has a handler.
+`packages/api/src/connector-sync-scheduler.ts` enqueues `connector.sync` once per
+eligible connector and interval window.

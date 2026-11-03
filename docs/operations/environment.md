@@ -418,7 +418,6 @@ pgvector; storage uses delivered S3, else MinIO, else the in-process encrypted s
 | `MOE_VERIFIER_DB_IMAGE` | optional; pgvector/pgvector:pg17 | literal | startup | `scripts/verifier-rehearsal.mjs:18` | none; default |
 | `MOE_VERIFIER_DB_URL_VARS` | optional; DATABASE_URL,UNAI_MIGRATION_DATABASE_URL (comma-separated names to export) | literal | startup | `scripts/verifier-rehearsal.mjs:19` | none; default |
 | `MOE_VERIFIER_DB_CA_VAR` | optional; UNAI_DATABASE_CA_PATH (name to export) | literal | startup | `scripts/verifier-rehearsal.mjs:20` | none; default |
-| `DEV_DB_URL` | optional in tracked scratch script; otherwise pg defaults (not safe for production) | URL | startup | `scripts/.tmp/migrate-check.mjs:5` | no explicit guard; connection may fail |
 
 The dev orchestrator is not a production start script. `scripts/dev-stack.mjs:19,150`
 refuses any set environment key containing `DATABASE` or matching its PG selector
@@ -426,9 +425,7 @@ refuses any set environment key containing `DATABASE` or matching its PG selecto
 SYSCONFDIR, SSLMODE, SSLROOTCERT), with `DEV_STACK_EXTERNAL_DATABASE_REFUSED`.
 Its child passthrough at `:22-24` allows only PATH, SYSTEMROOT, WINDIR, TEMP, TMP, HOME,
 USERPROFILE, LANG and LC_ALL (case-insensitive). These pattern reads are described
-here, not expanded into guard rows. `scripts/.tmp/migrate-check.mjs` is tracked debris
-for `task-de6f21daedcb402392b44cee4c666d9e` to remove **together with its DEV_DB_URL row**;
-otherwise the reverse inventory check fails.
+here, not expanded into guard rows.
 
 ## Read by Node.js and dependencies
 

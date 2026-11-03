@@ -223,6 +223,16 @@ cap of 2,048 for other callers are unchanged.
 - **No worker process or scheduler.** `runJobAttempt` from `@unai/jobs` drives the
   handler; nothing here runs a loop or owns a lease renewer.
 
+Update 2026-11: the **Nothing enqueues an extraction job yet** and **No worker
+process or scheduler** bullets no longer hold. `enqueueEvidenceProcessing`
+(`packages/api/src/processing-store.ts`) queues `evidence.extract`, from the
+worker's dispatch of recorded processing intents (ADR 0038) and from a FULL
+document upload. The worker process `packages/api/src/processing-worker.ts` runs
+those jobs through `createProcessingRuntime`
+(`packages/api/src/processing-runtime.ts`), which calls `runExtraction` directly;
+only `packages/api/src/extraction-pipeline.test.ts` calls
+`createExtractionJobHandler`. No lease renewer exists.
+
 ## Verification
 
 `pnpm test` exited 0: 392 tests in 39 files (367 in 36 before this node), over
