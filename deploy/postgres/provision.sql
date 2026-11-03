@@ -32,8 +32,11 @@
 -- the rotation path. unai_app and unai_auth are created only when absent and are
 -- never altered here: migrations 0001 and 0002 assert their attributes.
 --
--- Do not run this with log_statement set to ddl or all: the server would log the
--- role statements together with their passwords.
+-- The server would log a role statement together with its password when
+-- statement logging is on or the statement fails, so this session turns
+-- log_statement, log_min_duration_statement and log_min_error_statement off
+-- before any role statement. They need the superuser this file runs as. psql's
+-- VERBOSITY terse keeps a failing statement's text off the terminal too.
 --
 -- This file contains no transaction control: CREATE DATABASE cannot run inside a
 -- transaction block.
@@ -41,6 +44,9 @@
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 SET client_min_messages = warning;
+SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = panic;
 \if :{?dbname}
 \else
 \set dbname unai
