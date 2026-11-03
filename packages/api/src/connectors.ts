@@ -7,7 +7,7 @@ import {
 import {
   CONNECTOR_MANAGE_PURPOSE, CONNECTOR_READ_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError,
   ceilingAdmits, createConnector, createConnectorClient, createTokenRevoker, disconnectConnector,
-  listConnectors, listGrants, manifestFor, readConnector, recordSyncFailure, runConnectorSync,
+  listConnectors, listGrants, manifestFor, markTokenRevoked, readConnector, recordSyncFailure, runConnectorSync,
   searchDocuments, setCapabilityGrants, storedSensitivity, uploadDocument,
   type ConnectorClient, type SourceIngest, type StoredSensitivity, type TokenRevoker,
 } from '@unai/connectors';
@@ -36,7 +36,7 @@ export const DOCUMENT_UPLOAD_PURPOSE = 'evidence.ingest';
 export const DOCUMENT_SEARCH_PURPOSE = 'evidence.read';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>) => Promise<unknown>;
+type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>, purpose?: string) => Promise<unknown>;
 
 const REFUSAL_STATUS = new Map<string, number>([
   ['CONNECTOR_NOT_FOUND', 404],
@@ -53,6 +53,8 @@ const REFUSAL_STATUS = new Map<string, number>([
   ['CONNECTOR_REVOCATION_UNAVAILABLE', 503],
   ['CONNECTOR_REVOCATION_FAILED', 502],
   ['CONNECTOR_TOKEN_REVOKED', 409],
+  ['CONNECTOR_RATE_LIMITED', 429],
+  ['CONNECTOR_CURSOR_INVALID', 409],
   ['CONNECTOR_PROVIDER_UNAVAILABLE', 502],
   ['CONNECTOR_PROVIDER_RESPONSE_INVALID', 502],
   ['CONNECTOR_CONTEXT_PROFILE_INVALID', 500],
@@ -245,13 +247,20 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
         // anything can fail and be recorded on it. NOT_FOUND keeps its place after
         // the evidence declaration, so every other refusal keeps its order.
         const connector = (await tx.query(
-          'SELECT connector_type,secret_ref FROM connectors WHERE id=$1 AND owner_scope_id=$2',
+          'SELECT connector_type,secret_ref,status FROM connectors WHERE id=$1 AND owner_scope_id=$2',
           [request.params.id, tx.context.ownerScopeId])).rows[0];
         if (connector && options.hasSyncClient && !options.hasSyncClient(connector.connector_type as string)) {
           throw new ConnectorError('CONNECTOR_CLIENT_UNSUPPORTED', { connectorType: connector.connector_type as string });
         }
         const authority = await declareEvidenceAuthority(tx, request);
         if (!connector) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId: request.params.id });
+        // Stopped connectors must resolve no secret and send no provider request.
+        // Revoked/disconnected rows have no handle; building their client first
+        // would mask this refusal with CONNECTOR_CREDENTIAL_MISSING.
+        if (connector.status !== 'ACTIVE' && connector.status !== 'SYNC_FAILED') {
+          throw new ConnectorError('CONNECTOR_INGESTION_STOPPED',
+            { connectorId: request.params.id, status: connector.status as string });
+        }
         // The owner's stored-sensitivity setting is read here, at the sync, so a
         // change saved on the Permissions surface applies to this run (ADR 0030 §7).
         const sensitivityFloor = await readSensitivityFloor(tx, connector.connector_type as string);
@@ -273,12 +282,18 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
       });
     } catch (error) {
       if (!(error instanceof ConnectorError)) throw error;
-      // The failed run is recorded on the connector in its own transaction: the
-      // work it refused has been rolled back, and "sync failed with a named
-      // reason" is a state the Connected sources screen has to be able to show.
+      // The failed run has rolled back. Match the connector.sync job: only a 401
+      // revokes under connector.manage; a 403 (scope/rate refusal) stays retryable.
+      // Other failures, including ADR 0041 D7 rate limits, keep the saved cursor.
       // An unsupported type is not a failed run: recording it would set SYNC_FAILED
       // and block the connector's uploads.
-      if (error.message !== 'CONNECTOR_CLIENT_UNSUPPORTED') {
+      if (error.message === 'CONNECTOR_TOKEN_REVOKED' && error.detail['status'] === 401) {
+        await work(request, async tx => {
+          await markTokenRevoked(tx, request.params.id);
+          await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
+            objects: [{ type: 'connectors', id: request.params.id, fields: ['status', 'secret_ref', 'last_sync_error'] }] });
+        }, CONNECTOR_MANAGE_PURPOSE).catch(() => undefined);
+      } else if (error.message !== 'CONNECTOR_CLIENT_UNSUPPORTED') {
         await work(request, tx => recordSyncFailure(tx, request.params.id, error.message)).catch(() => undefined);
       }
       return refuse(request, reply, error.message, error.detail);

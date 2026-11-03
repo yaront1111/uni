@@ -207,7 +207,7 @@ async function count(sql: string, values: string[]): Promise<number> {
   return Number(rows[0]!.n);
 }
 
-it.skip('(1) ADR 0041 D6: an OMI connector gets one HIGH read grant and Omi write capabilities are refused by name', async () => {
+it('(1) ADR 0041 D6: an OMI connector gets one HIGH read grant and Omi write capabilities are refused by name', async () => {
   const h = await harness();
   try {
     const connected = await connectOmi(h);
@@ -263,7 +263,7 @@ async function assertStoredItems(owner: string, fixture: OmiFixture): Promise<It
   return items;
 }
 interface TriageRow { source_item_id: string; tier1_route: string; routing_reason: { code: string; positiveSignals: string[] } }
-it.skip('(2) ADR 0041 D2/D3/D7: the first sync stores two items, TRANSCRIPT_SEGMENT anchors, triage routes and the cursor', async () => {
+it('(2) ADR 0041 D2/D3/D7: the first sync stores two items, TRANSCRIPT_SEGMENT anchors, triage routes and the cursor', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture(), refs = fixtureRefs(fixture);
@@ -306,7 +306,7 @@ it.skip('(2) ADR 0041 D2/D3/D7: the first sync stores two items, TRANSCRIPT_SEGM
   } finally { await h.close(); }
 }, 60_000);
 
-it.skip('(3) ADR 0041 D2/D7: a second sync resumes with the 24 h lookback and suppresses the redelivered conversation', async () => {
+it('(3) ADR 0041 D2/D7: a second sync resumes with the 24 h lookback and suppresses the redelivered conversation', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture(), refs = fixtureRefs(fixture);
@@ -337,7 +337,7 @@ it.skip('(3) ADR 0041 D2/D7: a second sync resumes with the 24 h lookback and su
   } finally { await h.close(); }
 }, 60_000);
 
-it.skip('(4) ADR 0041 D7: truncated pages keep the window open, including empty pages; a closing page ends the run', async () => {
+it('(4) ADR 0041 D7: truncated pages keep the window open, including empty pages; a closing page ends the run', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture(), refs = fixtureRefs(fixture);
@@ -368,7 +368,7 @@ it.skip('(4) ADR 0041 D7: truncated pages keep the window open, including empty 
   } finally { await h.close(); }
 }, 60_000);
 
-it.skip('(5) ADR 0041 D7: a 429 fails at once with CONNECTOR_RATE_LIMITED and the next sync resumes from the stored cursor', async () => {
+it('(5) ADR 0041 D7: a 429 fails at once with CONNECTOR_RATE_LIMITED and the next sync resumes from the stored cursor', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture(), connected = await connectOmi(h);
@@ -402,7 +402,7 @@ it.skip('(5) ADR 0041 D7: a 429 fails at once with CONNECTOR_RATE_LIMITED and th
   } finally { await h.close(); }
 }, 60_000);
 
-it.skip('(6) ADR 0041 D7 with the connector.sync job rule: a 401 marks TOKEN_REVOKED and the next sync is stopped without calling Omi', async () => {
+it('(6) ADR 0041 D7 with the connector.sync job rule: a 401 marks TOKEN_REVOKED and the next sync is stopped without calling Omi', async () => {
   const h = await harness();
   try {
     const connected = await connectOmi(h);
@@ -429,7 +429,7 @@ it.skip('(6) ADR 0041 D7 with the connector.sync job rule: a 401 marks TOKEN_REV
   } finally { await h.close(); }
 }, 60_000);
 
-it.skip('(7) ADR 0041 D8: disconnect revokes grants, forgets the handle and reports manual revocation without calling Omi or resolving the key', async () => {
+it('(7) ADR 0041 D8: disconnect revokes grants, forgets the handle and reports manual revocation without calling Omi or resolving the key', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture(), connected = await connectOmi(h);
@@ -465,7 +465,7 @@ it.skip('(7) ADR 0041 D8: disconnect revokes grants, forgets the handle and repo
   } finally { await h.close(); }
 }, 60_000);
 
-it.skip('(8) ADR 0041 D6: a ceiling below PRIVATE is refused and a request asking for NORMAL still stores PRIVATE', async () => {
+it('(8) ADR 0041 D6: a ceiling below PRIVATE is refused and a request asking for NORMAL still stores PRIVATE', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture(), connected = await connectOmi(h);
@@ -494,7 +494,7 @@ async function storedCorpus(owner: string): Promise<string[]> {
   }
   return corpus;
 }
-it.skip('(9) ADR 0041 D2/D6 and FR-104: no key or provider error body reaches responses, stored rows, objects or logs; provider calls are GET-only', async () => {
+it('(9) ADR 0041 D2/D6 and FR-104: no key or provider error body reaches responses, stored rows, objects or logs; provider calls are GET-only', async () => {
   const h = await harness();
   try {
     const fixture = await omiFixture();

@@ -144,6 +144,17 @@ export function prepareForCapabilities(
       }
       return { sourceType: 'DOCUMENT', payload, externalRef, aggregatedEvents: 0, capabilityUsed: 'documents.upload' };
     }
+    case 'OMI': {
+      const id = body['id'];
+      const externalRef = reference(typeof id === 'string' && id !== '' ? 'omi:conversation:' + id : undefined,
+        'omi:conversation');
+      if (!granted.includes('omi.read_conversations')) {
+        return { externalRef, code: 'CONNECTOR_CAPABILITY_NOT_GRANTED', capabilityId: 'omi.read_conversations' };
+      }
+      // ADR 0041 D6: one capability reads both transcript and structured output,
+      // so narrowing removes nothing; parsing remains the ingest port's job.
+      return { sourceType: 'OMI', payload, externalRef, aggregatedEvents: 0, capabilityUsed: 'omi.read_conversations' };
+    }
     default:
       return { externalRef: connectorType, code: 'CONNECTOR_TYPE_UNSUPPORTED', capabilityId: null };
   }
@@ -237,7 +248,8 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
       }
     }
     cursor = answer.nextCursor;
-    if (answer.nextCursor === null || answer.payloads.length === 0) break;
+    // ADR 0041 D7: persist the closing page's cursor without reopening its window.
+    if (answer.exhausted === true || answer.nextCursor === null || answer.payloads.length === 0) break;
   }
 
   if (cursor !== null) {
