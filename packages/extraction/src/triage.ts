@@ -38,6 +38,15 @@ export const ROUTE_EXTRACTION_LIMITS = Object.freeze({
 });
 export const EXTRACTION_FRAMING_TOKENS = 128;
 
+// ADR 0041 D4 rule 2: measured anchor overhead rounded up, plus system/input framing.
+const OMI_ANCHOR_BYTES_PER_SEGMENT = 320;
+const OMI_INPUT_FRAMING_BYTES = 2048;
+
+function omiInputEstimateBytes(tier0: Tier0Parse): number {
+  const segmentCount = typeof tier0.structuredFields.segmentCount === 'number' ? tier0.structuredFields.segmentCount : 0;
+  return Buffer.byteLength(tier0.newText, 'utf8') + OMI_ANCHOR_BYTES_PER_SEGMENT * segmentCount + OMI_INPUT_FRAMING_BYTES;
+}
+
 /** Budget every UTF-8 byte as a token (byte-level tokenization), plus framing.
  * Count the entire output cap, including any thinking tokens. Round each half
  * up so this never undercuts the adapter's rounded combined usage cost. */
@@ -108,6 +117,7 @@ export function parseTier0(input: TriageInput): Tier0Parse {
   const content = input.content, metadata = input.deterministicMetadata;
   const participants = new Set<string>();
   let subject: string | null = null, body = '', automated = false;
+  let omiText: string | null = null;
   const structuredFields: Record<string, unknown> = {};
 
   if (input.sourceType === 'GMAIL') {
@@ -150,15 +160,42 @@ export function parseTier0(input: TriageInput): Tier0Parse {
     body = pages.map(page => page && typeof page === 'object' ? text((page as Record<string, unknown>).text) : '').join('\n');
     structuredFields.pageCount = pages.length;
     structuredFields.mediaType = optionalText(content.mediaType);
+  } else if (input.sourceType === 'OMI') {
+    // Omi's model output is never extraction input. Even if its ASSISTANT
+    // actor is lost, empty Tier-0 text keeps the summary SOURCE_ONLY.
+    omiText = '';
+    if (content.kind !== 'OMI_STRUCTURED_SUMMARY') {
+      const segments = content.segments, roles = metadata.segmentSpeakerRoles;
+      if (!Array.isArray(segments) || !Array.isArray(roles) || segments.length !== roles.length
+        || !roles.every(role => role === 'OWNER' || role === 'OTHER' || role === 'UNKNOWN')) {
+        throw new Error('TIER0_OMI_TRANSCRIPT_INVALID');
+      }
+      omiText = segments.map((segment: unknown, index: number) => {
+        if (segment === null || typeof segment !== 'object' || !('text' in segment) || typeof segment.text !== 'string') {
+          throw new Error('TIER0_OMI_TRANSCRIPT_INVALID');
+        }
+        const fields = segment as Record<string, unknown>;
+        const speakerId = optionalText(fields.speakerId);
+        const label = roles[index] === 'OWNER' ? 'Owner'
+          : optionalText(fields.speakerName) ?? (speakerId === null ? 'Unknown speaker' : 'Speaker ' + speakerId);
+        if (roles[index] !== 'OWNER') participants.add(label);
+        return label + ': ' + segment.text;
+      }).join('\n');
+      structuredFields.segmentCount = segments.length;
+      structuredFields.ownerSegmentCount = roles.filter(role => role === 'OWNER').length;
+      structuredFields.startedAt = optionalText(content.startedAt);
+      structuredFields.finishedAt = optionalText(content.finishedAt);
+      structuredFields.durationSeconds = typeof metadata.durationSeconds === 'number' ? metadata.durationSeconds : null;
+    }
   } else {
     // An unknown source type is parsed for whatever text it carries and nothing
     // is assumed about its shape: Tier 0 never guesses structure.
     subject = optionalText(content.subject) ?? optionalText(content.title);
     body = text(content.body) ?? '';
   }
-  if (input.actorRef.type !== 'USER') participants.add(input.actorRef.id);
+  if (input.sourceType !== 'OMI' && input.actorRef.type !== 'USER') participants.add(input.actorRef.id);
 
-  const split = splitQuotedHistory(body);
+  const split = omiText === null ? splitQuotedHistory(body) : { newText: omiText, quotedText: '' };
   return tier0ParseSchema.parse({
     parserVersion: TIER0_PARSER_VERSION,
     sourceType: input.sourceType,
@@ -183,7 +220,10 @@ export function parseTier0(input: TriageInput): Tier0Parse {
 export function routeTier1(tier0: Tier0Parse, options?: { userAuthored?: boolean; assistantAuthored?: boolean }): { route: Tier1Route; reason: RoutingReason } {
   const scanned = [tier0.subject ?? '', tier0.newText].join('\n');
   const positive: Tier1Signal[] = [], negative: Tier1Signal[] = [];
-  const userAuthored = options?.userAuthored === true;
+  // ADR 0041 D4: OWNER is the parser's attribution, never the item's actorRef.
+  const ownerSegmentCount = tier0.structuredFields.ownerSegmentCount;
+  const userAuthored = tier0.sourceType === 'OMI'
+    ? typeof ownerSegmentCount === 'number' && ownerSegmentCount > 0 : options?.userAuthored === true;
 
   // PRD §24.1: an AI statement cannot serve as evidence that its own content is
   // true. An assistant's message is kept as conversation evidence and never
@@ -216,13 +256,24 @@ export function routeTier1(tier0: Tier0Parse, options?: { userAuthored?: boolean
   if (tier0.quotedTextLength > 0) negative.push('REPEATED_QUOTED_HISTORY');
   if (tier0.newText.trim() === '') negative.push(tier0.quotedTextLength > 0 ? 'SIGNATURE_ONLY' : 'NO_EXTRACTABLE_TEXT');
 
-  const decide = (route: Tier1Route, code: RoutingReason['code']) => ({
-    route: tier1RouteSchema.parse(route),
-    reason: routingReasonSchema.parse({
-      code, routerVersion: TIER1_ROUTER_VERSION,
-      positiveSignals: positive, negativeSignals: negative, newContentLength: tier0.newText.length,
-    }),
-  });
+  const decide = (route: Tier1Route, code: RoutingReason['code']) => {
+    // Avoid scheduling an OMI run that openRun will refuse before any spend.
+    // Its exact pre-call check remains authoritative: re-runs add claim anchors,
+    // and unusually long ids/names or JSON escapes can exceed this estimate.
+    if (tier0.sourceType === 'OMI' && (route === 'ENTITY_EXTRACTION' || route === 'FULL_EXTRACTION')
+      && omiInputEstimateBytes(tier0) > ROUTE_EXTRACTION_LIMITS[route].maxInputBytes) {
+      negative.push('OVER_INPUT_BOUND');
+      route = 'DEFER_UNTIL_RELEVANT';
+      code = 'EXTRACTION_INPUT_OVER_BOUND';
+    }
+    return {
+      route: tier1RouteSchema.parse(route),
+      reason: routingReasonSchema.parse({
+        code, routerVersion: TIER1_ROUTER_VERSION,
+        positiveSignals: positive, negativeSignals: negative, newContentLength: tier0.newText.length,
+      }),
+    };
+  };
 
   // Nothing new to read. A message that is only quoted history or only a
   // signature is kept as evidence and never extracted again -- this is what

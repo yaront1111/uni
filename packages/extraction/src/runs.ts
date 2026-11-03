@@ -114,12 +114,20 @@ export function buildExtractionInput(tier0: Tier0Parse, anchors: readonly Stored
   const citable = anchors
     .filter(anchor => anchor.normalizedText !== null && anchor.normalizedText !== '')
     .map(anchor => ({ anchorKind: anchor.anchorKind, parentAnchor: anchor.anchor, text: anchor.normalizedText }));
+  const omi = tier0.sourceType === 'OMI';
+  if (omi) {
+    // ADR 0041 D4: loadAnchors' UUID order is not speech order. Narrowed claim
+    // anchors retain segmentIndex and follow their parent by character start.
+    const order = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+    citable.sort((left, right) => order(left.parentAnchor.segmentIndex) - order(right.parentAnchor.segmentIndex)
+      || order(left.parentAnchor.start) - order(right.parentAnchor.start));
+  }
   return JSON.stringify({
     sourceType: tier0.sourceType,
     subject: tier0.subject,
     occurredAt: tier0.occurredAt,
     participants: tier0.participants,
-    newText: tier0.newText,
+    newText: omi ? null : tier0.newText,
     structuredFields: tier0.structuredFields,
     anchors: citable,
   });

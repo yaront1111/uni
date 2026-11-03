@@ -37,6 +37,7 @@ export const tier1SignalSchema = z.enum([
   'STATE_TRANSITION', 'SCHEDULED_EVENT', 'KNOWN_PARTICIPANT', 'FUTURE_ACTIONABILITY',
   'NEWSLETTER', 'ROUTINE_AUTOMATED_NOTIFICATION', 'LOW_VALUE_CI_NOISE', 'REPEATED_QUOTED_HISTORY',
   'SIGNATURE_ONLY', 'NO_EXTRACTABLE_TEXT', 'LAZY_DOCUMENT',
+  'OVER_INPUT_BOUND',
 ]);
 export type Tier1Signal = z.infer<typeof tier1SignalSchema>;
 
@@ -50,6 +51,8 @@ export const routingReasonSchema = z.strictObject({
     // PRD §24.1-24.2: an assistant's own message is conversation evidence only and
     // is never extracted into claims about the owner (CRT-AI-01-A, ADR 0026 §4).
     'ASSISTANT_AUTHORED',
+    // ADR 0041 D4: an OMI transcript whose input estimate exceeds its deep route's bound is deferred rather than refused at run time.
+    'EXTRACTION_INPUT_OVER_BOUND',
   ]),
   routerVersion: version,
   positiveSignals: z.array(tier1SignalSchema).max(32),
