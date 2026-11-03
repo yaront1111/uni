@@ -47,8 +47,10 @@ const appPool = new Pool({ connectionString: url.href });
 const ZONE = 'Asia/Tokyo';
 const ASSISTANCE = 'PERSONAL_ASSISTANCE';
 const HOUR = 3_600_000;
-/** 20:00 UTC, two days out: every fixture row is recorded before it, and in Tokyo
- * it is already the next calendar day. */
+/** Today reads at 20:00 UTC, two days out (the next calendar day in Tokyo), but
+ * Why? / Sources reads at wall time. Journaled recording instants must precede
+ * wall time: explicit ones stay at or before RECORDED (wall clock minus 2 h).
+ * Only valid, due and occurrence times may follow the future NOW. */
 const NOW = (() => { const day = new Date(Date.now() + 2 * 24 * HOUR); day.setUTCHours(20, 0, 0, 0); return day; })();
 const TOMORROW = new Date(NOW.getTime() + 24 * HOUR);
 const at = (hours: number) => new Date(NOW.getTime() + hours * HOUR);
@@ -207,7 +209,7 @@ beforeAll(async () => {
     origin: 'MODEL_INFERENCE' });
   f.inferred = inferred.id; p.inferredAction = inferred.action.propositionId;
   f.restricted = (await commitment({ action: 'collect the biopsy results', due: at(8), createdAt: at(-80), anchorId: clinic.anchorId })).id;
-  f.repeat = (await commitment({ action: 'order printer paper', due: at(44), createdAt: at(-2), anchorId: paper.anchorId,
+  f.repeat = (await commitment({ action: 'order printer paper', due: at(44), createdAt: RECORDED, anchorId: paper.anchorId,
     priority: 'low', origin: 'EXTERNAL_PERSON_ASSERTION', promisee: dana })).id;
 
   // The inferred commitment's derivation: read by a model from Dana's email.
@@ -228,7 +230,7 @@ beforeAll(async () => {
     [resolution, owner, f.resolved, RECORDED, maya, paid.claimId, transactionId, RECORDED]);
 
   // A loan whose principal two sources disagree about.
-  f.loan = await frame('shared.obligation', at(-60));
+  f.loan = await frame('shared.obligation', new Date(RECORDED.getTime() - HOUR));
   await role(f.loan, 'debtor', maya); await role(f.loan, 'creditor', daniel);
   await value(f.loan, 'shared.obligation.description', 'ACTUAL', { text: 'loan for the car repair' }, loanChat.anchorId, 'ACCEPTED');
   p.principal450 = (await value(f.loan, 'shared.obligation.principal_amount', 'ACTUAL', { amount: '450.00', currency: 'ILS' }, loanChat.anchorId, 'CONTESTED')).propositionId;
@@ -238,7 +240,7 @@ beforeAll(async () => {
 
   // Two calendar events: one tomorrow morning, one whose time passed an hour ago
   // with nothing recorded about whether it took place.
-  f.dentist = (await event('Dentist appointment', at(20), calendar.anchorId, at(-50))).id;
+  f.dentist = (await event('Dentist appointment', at(20), calendar.anchorId, new Date(RECORDED.getTime() - HOUR))).id;
   const call = await event('Planning call with the design team', at(-5), planning.anchorId, RECORDED);
   f.planning = call.id; p.planningTime = call.time.propositionId;
 
@@ -302,6 +304,14 @@ const HAPPENED = /\b(happened|took place|occurred|attended|was held|went ahead)\
 const NEGATED = /not yet happened|nothing recorded says whether it took place/gi;
 
 let first: TodayBriefing;
+
+// today.ts reads Why? at `readAt: new Date()`; migration 0030's object_state_at
+// hides future-recorded frames (the loan used to disappear before 08:00 UTC).
+it('records every fixture object no later than the wall clock, because Why? / Sources reads at wall time', async () => {
+  const future = (await admin.query(`SELECT object_type,count(*)::int AS n FROM memory_object_state_history
+    WHERE owner_scope_id=$1 AND recorded_at>now() GROUP BY object_type ORDER BY object_type`, [owner])).rows;
+  expect(future).toEqual([]);
+});
 
 it('CRT-UX-01-A: builds the briefing on the owner\'s local date and timezone, not the UTC date', async () => {
   const app = api();
