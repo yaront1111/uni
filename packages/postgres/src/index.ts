@@ -19,6 +19,15 @@ export interface OwnerTransaction {
   audit(event:AuditEvent):Promise<string>;
 }
 
+export async function assertDatabaseRoleSafe(db:{query(sql:string):Promise<{rows:unknown[]}>}):Promise<void>{
+  const row=(await db.query(`SELECT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname IN (current_user,session_user) AND (rolsuper OR rolbypassrls)
+        UNION ALL
+        SELECT 1 FROM pg_class WHERE relkind IN ('r','p') AND relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
+      ) AS unsafe`)).rows[0];
+  if(!row||typeof row!=='object'||!('unsafe' in row)||row.unsafe!==false) throw new Error('DATABASE_ROLE_UNSAFE');
+}
+
 /** actorId must originate from the authenticated session, never a request body.
  * The caller's successful material work and its audit receipt commit atomically.
  * Refused/failed operations require a separate audit transaction after rollback.
@@ -34,12 +43,7 @@ export async function withOwnerTransaction<T>(pool:Pool, input:RequestContext, r
     span.setAttributes({'unai.owner_scope_id':context.ownerScopeId,'unai.correlation_id':context.correlationId,'unai.purpose':context.purpose,'unai.code_version':'0.1.0'});
     try{
       client=await pool.connect();
-      const unsafe=(await client.query(`SELECT EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname IN (current_user,session_user) AND (rolsuper OR rolbypassrls)
-        UNION ALL
-        SELECT 1 FROM pg_class WHERE relkind IN ('r','p') AND relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
-      ) AS unsafe`)).rows[0]?.unsafe;
-      if(unsafe!==false) throw new Error('DATABASE_ROLE_UNSAFE');
+      await assertDatabaseRoleSafe(client);
       await client.query('BEGIN');
       inTransaction=true;
       await client.query(`SELECT set_config('unai.owner_scope_id',$1,true),

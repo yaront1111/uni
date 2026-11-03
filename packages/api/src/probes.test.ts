@@ -1,12 +1,11 @@
-import { X509Certificate, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { Agent, request, type IncomingHttpHeaders } from 'node:http';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { Pool } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '@unai/postgres';
-import { cachedCheck, certificateCheck, createLoopHeartbeat, createProbeServer,
+import { cachedCheck, loggedWarnings, createLoopHeartbeat, createProbeServer,
   databaseCheck, probeConfiguration, registryReleaseCheck } from './probes.js';
 
 const servers: Awaited<ReturnType<typeof createProbeServer>>[] = [];
@@ -135,22 +134,19 @@ it('sanitizes a port collision', async () => {
 it.each([-1, 65536, 1.5, NaN])('rejects invalid programmatic port %s', async port => {
   await expect(start({ port })).rejects.toThrow(/^PROBE_PORT_INVALID$/);
 });
-it('checks the leaf certificate expiry and throttles warnings to once per day', async () => {
-  const { createSelfSignedCertificate } = await import(pathToFileURL(resolve('scripts/tls-certificate.mjs')).href) as {
-    createSelfSignedCertificate(): { certificate: string };
-  };
-  const cert = createSelfSignedCertificate().certificate, day = 86400000;
-  const expiry = new X509Certificate(cert).validToDate.getTime(); let now = expiry - 8 * day;
-  const time = vi.spyOn(Date, 'now').mockReturnValue(expiry + 8 * day);
-  const laterCertificate = createSelfSignedCertificate().certificate; time.mockRestore();
-  const log = vi.fn(), check = certificateCheck(cert + '\n' + laterCertificate, { clock: () => now, log });
-  await check(); expect(log).not.toHaveBeenCalled();
-  now = expiry - 3 * day; await check(); expect(log).toHaveBeenCalledTimes(1);
-  now = expiry - 2.5 * day; await check(); expect(log).toHaveBeenCalledTimes(1);
-  now = expiry - 1.9 * day; await check(); expect(log).toHaveBeenCalledTimes(2);
+it('treats warnings as ready, logs once per day, and propagates failure without logging', async () => {
+  let now = 0, warning = false, failed = false;
+  const log = vi.fn(), check = loggedWarnings(async () => {
+    if (failed) throw new Error('TLS_CERT_EXPIRED');
+    return warning ? 'TLS_CERT_EXPIRING' : undefined;
+  }, { clock: () => now, log });
+  await check(); expect(log).not.toHaveBeenCalled(); warning = true;
+  await expect(check()).resolves.toBeUndefined(); expect(log).toHaveBeenCalledTimes(1);
+  now = 86400000 - 1; await check(); expect(log).toHaveBeenCalledTimes(1);
+  now++; await check(); expect(log).toHaveBeenCalledTimes(2);
   expect(log.mock.calls).toEqual(Array.from({ length: 2 }, () => ['{"event":"probes","status":"TLS_CERT_EXPIRING"}']));
-  now = expiry; await expect(check()).rejects.toThrow(/^TLS_CERTIFICATE_INVALID$/);
-  expect(() => certificateCheck('not a cert')).toThrow(/^TLS_CERTIFICATE_INVALID$/);
+  failed = true; await expect(check()).rejects.toThrow(/^TLS_CERT_EXPIRED$/);
+  expect(log).toHaveBeenCalledTimes(2);
 });
 it('uses the idle limit before the first beat and the lease sum while busy', async () => {
   let now = 0; const heartbeat = createLoopHeartbeat({ pollMs: 100, busyLimitMs: 1200000, clock: () => now });

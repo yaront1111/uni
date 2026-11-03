@@ -105,7 +105,7 @@ host. Existing telemetry, probe-status and runtime log lines remain unchanged.
 
 ## API (pnpm start:api)
 
-Startup order (`packages/api/src/server.ts:8-57`): startTelemetry → rate-limit validation → secrets manager → CA and the two
+Startup order (`packages/api/src/server.ts:8-94`): startTelemetry → rate-limit validation → secrets manager → CA and the two
 resolved database URLs → database encryption-at-rest declaration → S3 bucket check →
 registry pin, connector runtime and listener TLS → probe configuration → API listen → probe listener. `unai.encryption_at_rest`
 is a **database setting**, not an environment variable; absence or an invalid
@@ -116,10 +116,37 @@ Startup failures print the `startup_failed` line with `API_STARTUP_FAILED`; the
 table's last column is the printed cause. Missing `required()` configuration/handles
 uses `CONFIG_REQUIRED:<NAME>`; registry configuration uses the distinct codes below.
 File-open failures print their errno, without the file path.
+
+`pnpm start:api -- --check` runs `rate_limits`, `secrets`, `database`,
+`auth_database`, `database_role`, `encryption_at_rest`, `object_store`,
+`registry_release`, `tls_certificate` and `probe_port`, in that order. Each check
+writes one stdout JSON line `{"check":"<name>","status":"ok|warn|fail","code":"<CODE>"}`.
+Existing telemetry and probe-status events remain; consumers select lines with a
+`check` member. `ok` carries `OK`; `warn` carries `TLS_CERT_EXPIRING` when fewer
+than 30 days remain. Exit is 0 with no `fail` line, otherwise 1. A failed input
+repeats its code for every check that depends on it; independent checks continue.
+
+Failures retain only classified codes: `CONFIG_REQUIRED:<VAR>`, errno, `SECRET_*`,
+`DATABASE_ROLE_UNSAFE`, `DATABASE_TLS_CONFIG_INVALID`,
+`DATABASE_ENCRYPTION_AT_REST_REQUIRED`, `DATABASE_ENCRYPTION_AT_REST_UNVERIFIED`,
+`STORAGE_ENCRYPTION_REQUIRED`, `PROCESSING_CONFIGURATION_*`,
+`PROBE_RELEASE_UNAVAILABLE`, `TLS_CERTIFICATE_INVALID`, `TLS_KEY_INVALID`,
+`TLS_KEY_MISMATCH`, `TLS_CERT_EXPIRED`, `PROBE_LISTEN_FAILED`,
+`PREFLIGHT_CHECK_TIMEOUT` (10 seconds) or `UNCLASSIFIED`. Invalid rate limits and
+probe configuration retain their documented codes. A failure before the checks
+start (for example telemetry configuration) prints `startup_failed` instead.
+
+The check never listens on `UNAI_API_PORT`, serves, migrates, publishes or writes
+an object. It binds the configured probe port only briefly, then closes it; run
+it with the API stopped (`ExecStartPre`, ADR 0043 D12 step 7). Created pools and
+telemetry are closed; shutdown is bounded to another 10 seconds if a dependency
+remains hung.
+
 Probe startup failures are `PROBE_LISTEN_FAILED` and `TLS_CERTIFICATE_INVALID`.
 The separate loopback-only HTTP `/healthz` and `/readyz` return status words only.
 Readiness is cached for 10 seconds with a 2-second check deadline; bucket verification
-is rechecked at most every 5 minutes. A certificate inside 7 days of expiry remains
+is rechecked at most every 5 minutes. Readiness uses the same check functions as
+`--check`. A certificate with under 30 days left remains
 ready and logs `TLS_CERT_EXPIRING` at most once per day; an expired certificate fails.
 
 Probe binds reject hostnames, IPv4-mapped IPv6, IPv6 zones and padded IPv4 octets
@@ -130,26 +157,26 @@ Probe binds reject hostnames, IPv4-mapped IPv6, IPv6 zones and padded IPv4 octet
 | --- | --- | --- | --- | --- | --- |
 | `UNAI_PROBE_PORT` | optional; unset or empty disables probes with one PROBES_DISABLED line; decimal integer 1–65535; ADR 0043 D3 uses 9101 | literal | startup | `packages/api/src/probes.ts:21` | PROBE_PORT_INVALID |
 | `UNAI_PROBE_BIND` | optional; 127.0.0.1; loopback IP literal only (127.0.0.0/8 or ::1, including expanded IPv6); no remote override (ADR 0043 D10) | literal | startup when port is set | `packages/api/src/probes.ts:24` | PROBE_BIND_NOT_LOOPBACK |
-| `UNAI_API_RATE_LIMIT_PER_MINUTE` | optional; 600 | literal | startup, before database connections | `packages/api/src/server.ts:21` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_API_RATE_LIMIT_PER_MINUTE` |
-| `UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` | optional; 30 | literal | startup, before database connections | `packages/api/src/server.ts:22` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` |
-| `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `packages/api/src/server.ts:8` | `packages/observability/src/telemetry.ts:70` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
-| `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:77` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
-| `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:74` | TELEMETRY_METRIC_INTERVAL_INVALID |
-| `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:75` | TELEMETRY_ENVIRONMENT_INVALID |
-| `UNAI_SECRETS_MOUNT` | required; mounted provider directory | file path | startup | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/server.ts:25` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
-| `UNAI_APP_DATABASE_URL` | required; low-privilege application URL handle | secret handle | startup | `packages/api/src/server.ts:26` | `CONFIG_REQUIRED:UNAI_APP_DATABASE_URL` |
-| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle | secret handle | startup | `packages/api/src/server.ts:27` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
-| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/server.ts:31` | `CONFIG_REQUIRED:UNAI_S3_ENDPOINT` |
-| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/server.ts:31` | `CONFIG_REQUIRED:UNAI_S3_REGION` |
-| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/server.ts:31` | `CONFIG_REQUIRED:UNAI_S3_BUCKET` |
-| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/server.ts:31` | `CONFIG_REQUIRED:UNAI_S3_KMS_KEY_ID` |
+| `UNAI_API_RATE_LIMIT_PER_MINUTE` | optional; 600 | literal | startup, before database connections | `packages/api/src/server.ts:27` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_API_RATE_LIMIT_PER_MINUTE` |
+| `UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` | optional; 30 | literal | startup, before database connections | `packages/api/src/server.ts:28` | none; default applies; invalid value gives `CONFIG_INVALID:UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE` |
+| `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `packages/api/src/server.ts:8` | `packages/observability/src/telemetry.ts:95` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
+| `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:102` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
+| `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:99` | TELEMETRY_METRIC_INTERVAL_INVALID |
+| `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:100` | TELEMETRY_ENVIRONMENT_INVALID |
+| `UNAI_SECRETS_MOUNT` | required; mounted provider directory | file path | startup | `packages/secrets/src/index.ts:107`, `packages/api/src/server.ts:45` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/server.ts:31` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
+| `UNAI_APP_DATABASE_URL` | required; low-privilege application URL handle | secret handle | startup | `packages/api/src/server.ts:34` | `CONFIG_REQUIRED:UNAI_APP_DATABASE_URL` |
+| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle | secret handle | startup | `packages/api/src/server.ts:38` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
+| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/server.ts:40` | `CONFIG_REQUIRED:UNAI_S3_ENDPOINT` |
+| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/server.ts:40` | `CONFIG_REQUIRED:UNAI_S3_REGION` |
+| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/server.ts:40` | `CONFIG_REQUIRED:UNAI_S3_BUCKET` |
+| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/server.ts:40` | `CONFIG_REQUIRED:UNAI_S3_KMS_KEY_ID` |
 | `UNAI_REGISTRY_RELEASE_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:10` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_REGISTRY_RELEASE_ID` |
 | `UNAI_REGISTRY_RELEASE` | required x.y.z release | literal | startup | `packages/api/src/processing-config.ts:11` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_REGISTRY_RELEASE` |
-| `UNAI_API_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `packages/api/src/server.ts:40` | `CONFIG_REQUIRED:UNAI_API_TLS_KEY_FILE` |
-| `UNAI_API_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `packages/api/src/server.ts:40` | `CONFIG_REQUIRED:UNAI_API_TLS_CERT_FILE` |
-| `UNAI_API_PORT` | optional; 3443 | literal | startup | `packages/api/src/server.ts:43` | none; default |
-| `UNAI_API_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `packages/api/src/server.ts:43` | none; default |
+| `UNAI_API_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `packages/api/src/server.ts:41` | `CONFIG_REQUIRED:UNAI_API_TLS_KEY_FILE` |
+| `UNAI_API_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `packages/api/src/server.ts:41` | `CONFIG_REQUIRED:UNAI_API_TLS_CERT_FILE` |
+| `UNAI_API_PORT` | optional; 3443 | literal | startup | `packages/api/src/server.ts:80` | none; default |
+| `UNAI_API_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `packages/api/src/server.ts:80` | none; default |
 
 Rate limits are per API process and per aligned one-minute window; a single-owner
 deployment runs one API process. A refused request answers 429 `RATE_LIMITED` with
@@ -174,25 +201,40 @@ as the Google OAuth callback. OAuth client ID is plain configuration; its secret
 is a handle. The **resolved** session secret must be at least 32 characters
 (`AUTH_CONFIG_REQUIRED`, `packages/auth/src/index.ts:70`).
 
+`pnpm start:web -- --check` runs `origin`, `tls_certificate`, `auth` and `api`
+in order, using the API preflight JSON line and exit-status contract above. It
+validates the bare HTTPS origin, parses and matches the listener TLS key/cert
+(`WEB_TLS_CONFIG_INVALID`), resolves mounted auth secrets and validates the
+auth-pool configuration without connecting to the auth database. Next.js never
+loads and the web service port is never bound.
+
+The `api` check verifies a TLS handshake against `UNAI_API_CA_FILE` without any
+HTTP request. Unreachable before TCP connects (including a 5-second timeout) is
+`warn` / `API_UNREACHABLE`: maintenance mode deliberately stops the API while
+keeping the web up. Verification/protocol failure or timeout after TCP connects
+is `fail` / `API_TLS_HANDSHAKE_FAILED`. Independent checks still run after a
+failure; secrets, URLs and raw error text never appear in output.
+
+
 | Variable | Required / default | Kind | When read | Consumer | Failure when missing |
 | --- | --- | --- | --- | --- | --- |
-| `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `apps/web/server.ts:8` | `packages/observability/src/telemetry.ts:70` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
-| `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:77` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
-| `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:74` | TELEMETRY_METRIC_INTERVAL_INVALID |
-| `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:75` | TELEMETRY_ENVIRONMENT_INVALID |
-| `NEXTAUTH_URL` | required; canonical HTTPS origin | URL | startup | `apps/web/server.ts:12` | `CONFIG_REQUIRED:NEXTAUTH_URL` |
+| `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `apps/web/server.ts:30` | `packages/observability/src/telemetry.ts:95` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
+| `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:102` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
+| `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:99` | TELEMETRY_METRIC_INTERVAL_INVALID |
+| `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:100` | TELEMETRY_ENVIRONMENT_INVALID |
+| `NEXTAUTH_URL` | required; canonical HTTPS origin | URL | startup | `apps/web/server.ts:54` | `CONFIG_REQUIRED:NEXTAUTH_URL` |
 | `NEXTAUTH_URL` | required; compared against Origin on proxied writes | URL | per use | `apps/web/pages/api/platform/[...path].ts:18` | `CONFIG_REQUIRED:NEXTAUTH_URL` (proxy catches as `SERVICE_UNAVAILABLE`) |
-| `UNAI_WEB_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `apps/web/server.ts:14` | `CONFIG_REQUIRED:UNAI_WEB_TLS_KEY_FILE` |
-| `UNAI_WEB_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `apps/web/server.ts:14` | `CONFIG_REQUIRED:UNAI_WEB_TLS_CERT_FILE` |
-| `UNAI_WEB_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `apps/web/server.ts:22` | none; default |
-| `UNAI_SECRETS_MOUNT` | required when auth or telemetry headers are first needed | file path | first request; at startup when endpoint and UNAI_OTEL_EXPORTER_OTLP_HEADERS are set | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
-| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle; pool cached | secret handle | first request | `apps/web/lib/server.ts:16` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA; pool cached | file path | first request | `apps/web/lib/server.ts:17` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
-| `GOOGLE_CLIENT_SECRET` | required for auth options; resolved each call | secret handle | per use | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:GOOGLE_CLIENT_SECRET` |
-| `NEXTAUTH_SECRET` | required; resolved secret at least 32 characters | secret handle | per use | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:NEXTAUTH_SECRET` |
-| `GOOGLE_CLIENT_ID` | required; plain OAuth client identifier | literal | per use | `apps/web/lib/server.ts:22` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID` |
-| `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use | `apps/web/lib/server.ts:34` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
-| `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use | `apps/web/lib/server.ts:38` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
+| `UNAI_WEB_TLS_KEY_FILE` | required; listener private-key path | file path | startup | `apps/web/server.ts:37` | `CONFIG_REQUIRED:UNAI_WEB_TLS_KEY_FILE` |
+| `UNAI_WEB_TLS_CERT_FILE` | required; listener certificate path | file path | startup | `apps/web/server.ts:37` | `CONFIG_REQUIRED:UNAI_WEB_TLS_CERT_FILE` |
+| `UNAI_WEB_BIND` | optional; 127.0.0.1 (loopback) | literal | startup | `apps/web/server.ts:63` | none; default |
+| `UNAI_SECRETS_MOUNT` | required when auth or telemetry headers are first needed | file path | first request; at startup when endpoint and UNAI_OTEL_EXPORTER_OTLP_HEADERS are set; startup under --check | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
+| `UNAI_AUTH_DATABASE_URL` | required; auth-role URL handle; pool cached | secret handle | first request; startup under --check | `apps/web/lib/server.ts:16` | `CONFIG_REQUIRED:UNAI_AUTH_DATABASE_URL` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA; pool cached | file path | first request; startup under --check | `apps/web/lib/server.ts:17` | `CONFIG_REQUIRED:UNAI_DATABASE_CA_FILE` |
+| `GOOGLE_CLIENT_SECRET` | required for auth options; resolved each call | secret handle | per use; startup under --check | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:GOOGLE_CLIENT_SECRET` |
+| `NEXTAUTH_SECRET` | required; resolved secret at least 32 characters | secret handle | per use; startup under --check | `apps/web/lib/server.ts:21` | `CONFIG_REQUIRED:NEXTAUTH_SECRET` |
+| `GOOGLE_CLIENT_ID` | required; plain OAuth client identifier | literal | per use; startup under --check | `apps/web/lib/server.ts:22` | `CONFIG_REQUIRED:GOOGLE_CLIENT_ID` |
+| `UNAI_API_ORIGIN` | required; bare HTTPS API origin; no default | URL | per use; startup under --check | `apps/web/lib/server.ts:34`, `apps/web/server.ts:46` | `CONFIG_REQUIRED:UNAI_API_ORIGIN` |
+| `UNAI_API_CA_FILE` | required; verifies API TLS certificate | file path | per use; startup under --check | `apps/web/lib/server.ts:38`, `apps/web/server.ts:46` | `CONFIG_REQUIRED:UNAI_API_CA_FILE` |
 | `UNAI_OPERATIONS_REPORT_FILE` | optional; no report if absent | file path | per use | `apps/web/lib/operations-status.ts:6` | none; null report |
 | `UNAI_REGISTRY_LINT_REPORT_FILE` | optional; no lint report if absent | file path | per use | `apps/web/pages/ops/registry.tsx:13` | none; null report |
 | `UNAI_CORPUS_STATUS_FILE` | optional; no corpus status if absent | file path | per use | `apps/web/lib/corpus-status.ts:26` | none; null status |
@@ -204,16 +246,23 @@ replace them with `SERVICE_UNAVAILABLE` or a generic error. Reports never expose
 
 ## Processing worker (pnpm start:worker)
 
-Startup (`packages/api/src/processing-worker.ts:13-74`): startTelemetry → release/owner/purpose/sensitivity/
-poll configuration → probe configuration → secrets → model provider → database CA and resolved application
+Startup (`packages/api/src/processing-worker.ts:13-80`): startTelemetry → connector-sync interval/release/owner/
+purpose/sensitivity/poll configuration → probe configuration → secrets → model provider → database CA and resolved application
 URL → encryption-at-rest check → runtime validation and release comparison → evidence
 bucket check. `--check` performs these checks then exits; it does not skip required
 model credentials or the bucket check, which prints the API's `STORAGE_ENCRYPTION_REQUIRED`
-or `STORAGE_CONFIGURATION_INVALID`. The probe listener starts after the `--check`
-return and before the loop; a listen failure gives `PROBE_LISTEN_FAILED`. Its
+or `STORAGE_CONFIGURATION_INVALID`. `--once` runs the same checks, then one connector-sync
+scheduling pass (a `connector.read` listing, and one INCREMENTAL `connector.sync` job per
+due connector under `jobs.enqueue`), and exits 0 without probes or job turns; it is meant
+for timer-driven deployments, whose long-running worker sets the interval to 0. The probe
+listener starts after the `--check` return and before the loop; a listen failure gives `PROBE_LISTEN_FAILED`. Its
 loopback-only HTTP `/healthz` and `/readyz` carry status words only. The loop check
 allows 3× pollMs while idle and 1,200,000 ms while busy (the sum of the extraction,
 initiative and connector-sync leases), so a healthy long sync stays ready.
+Each turn ends with a connector-sync scheduler tick at the next window boundary, where
+window = floor(now / max(interval, per-type minimum)); it skips connectors that are not
+ACTIVE or SYNC_FAILED, hold no granted capability, or are of a type without a sync client.
+A failed tick prints `CONNECTOR_SCHEDULER_TICK_FAILED` and waits for the next boundary.
 A single process handles one owner scope and data purpose. Invalid UUIDs, release,
 purpose, sensitivity or poll bounds give `PROCESSING_CONFIGURATION_INVALID`.
 The table records the **printed** missing-configuration code (exit 1). The
@@ -229,17 +278,18 @@ Probe binds reject hostnames, IPv4-mapped IPv6, IPv6 zones and padded IPv4 octet
 | --- | --- | --- | --- | --- | --- |
 | `UNAI_PROBE_PORT` | optional; unset or empty disables probes with one PROBES_DISABLED line; decimal integer 1–65535; ADR 0043 D3 uses 9102 | literal | startup | `packages/api/src/probes.ts:21` | PROBE_PORT_INVALID |
 | `UNAI_PROBE_BIND` | optional; 127.0.0.1; loopback IP literal only (127.0.0.0/8 or ::1, including expanded IPv6); no remote override (ADR 0043 D10) | literal | startup when port is set | `packages/api/src/probes.ts:24` | PROBE_BIND_NOT_LOOPBACK |
-| `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `packages/api/src/processing-worker.ts:13` | `packages/observability/src/telemetry.ts:70` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
-| `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:77` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
-| `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:74` | TELEMETRY_METRIC_INTERVAL_INVALID |
-| `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:75` | TELEMETRY_ENVIRONMENT_INVALID |
+| `UNAI_OTEL_EXPORTER_OTLP_ENDPOINT` | optional; unset or empty disables export and logs TELEMETRY_DISABLED | URL; HTTPS or loopback HTTP (localhost, 127.0.0.0/8 or [::1]); no credentials, query or fragment | startup via startTelemetry at `packages/api/src/processing-worker.ts:13` | `packages/observability/src/telemetry.ts:95` | TELEMETRY_ENDPOINT_INVALID, TELEMETRY_ENDPOINT_INSECURE, TELEMETRY_OTEL_VARIABLES_REFUSED, TELEMETRY_START_FAILED |
+| `UNAI_OTEL_EXPORTER_OTLP_HEADERS` | optional; read only with endpoint | secret handle; secret holds OTLP header list name=value,… with percent-encoded values | startup with endpoint | `packages/observability/src/telemetry.ts:102` | SECRET_HANDLE_REQUIRED:UNAI_OTEL_EXPORTER_OTLP_HEADERS, SECRET_* resolution codes, TELEMETRY_HEADERS_INVALID |
+| `UNAI_OTEL_METRIC_EXPORT_MS` | optional; 60000; range 1000–3600000 | literal | startup with endpoint | `packages/observability/src/telemetry.ts:99` | TELEMETRY_METRIC_INTERVAL_INVALID |
+| `UNAI_DEPLOYMENT_ENVIRONMENT` | optional; production; lowercase token | literal | startup with endpoint | `packages/observability/src/telemetry.ts:100` | TELEMETRY_ENVIRONMENT_INVALID |
 | `UNAI_REGISTRY_RELEASE_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:10` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_REGISTRY_RELEASE_ID` |
 | `UNAI_REGISTRY_RELEASE` | required x.y.z release | literal | startup | `packages/api/src/processing-config.ts:11` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_REGISTRY_RELEASE` |
-| `UNAI_PROCESSING_OWNER_SCOPE_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:17` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_OWNER_SCOPE_ID` |
-| `UNAI_PROCESSING_ACTOR_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:18` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_ACTOR_ID` |
-| `UNAI_PROCESSING_DATA_PURPOSE` | required; uppercase identifier, at most 64 characters | literal | startup | `packages/api/src/processing-config.ts:20` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_DATA_PURPOSE` |
-| `UNAI_PROCESSING_MAXIMUM_SENSITIVITY` | required; NORMAL, PRIVATE or RESTRICTED | literal | startup | `packages/api/src/processing-config.ts:21` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_MAXIMUM_SENSITIVITY` |
-| `UNAI_PROCESSING_POLL_MS` | optional; 1000; integer 100–60000 | literal | startup | `packages/api/src/processing-config.ts:22` | none; default |
+| `UNAI_PROCESSING_OWNER_SCOPE_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:18` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_OWNER_SCOPE_ID` |
+| `UNAI_PROCESSING_ACTOR_ID` | required UUID | literal | startup | `packages/api/src/processing-config.ts:19` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_ACTOR_ID` |
+| `UNAI_PROCESSING_DATA_PURPOSE` | required; uppercase identifier, at most 64 characters | literal | startup | `packages/api/src/processing-config.ts:21` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_DATA_PURPOSE` |
+| `UNAI_PROCESSING_MAXIMUM_SENSITIVITY` | required; NORMAL, PRIVATE or RESTRICTED | literal | startup | `packages/api/src/processing-config.ts:22` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_PROCESSING_MAXIMUM_SENSITIVITY` |
+| `UNAI_PROCESSING_POLL_MS` | optional; 1000; integer 100–60000 | literal | startup | `packages/api/src/processing-config.ts:23` | none; default |
+| `UNAI_CONNECTOR_SYNC_INTERVAL_MS` | optional; 900000 when unset or empty; integer 60000–86400000, or 0 to disable connector-sync scheduling (one CONNECTOR_SCHEDULER_DISABLED line; the loop never ticks and --once does nothing); GMAIL, GOOGLE_CALENDAR and GITHUB never faster than 300000, OMI never faster than 900000 | literal | startup | `packages/api/src/processing-config.ts:31` | none; default. Out of range or not an integer: `CONFIG_INVALID:UNAI_CONNECTOR_SYNC_INTERVAL_MS` |
 | `UNAI_SECRETS_MOUNT` | required | file path | startup | `packages/secrets/src/index.ts:107` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT` |
 | `UNAI_MODEL_PROVIDER` | required; registered provider (anthropic or openai bundled) | literal | startup | `packages/model/src/providers.ts:173` | `MODEL_CONFIG_REQUIRED` |
 | `UNAI_MODEL_ENDPOINT` | required; HTTPS provider endpoint | URL | startup | `packages/model/src/providers.ts:177` | `MODEL_CONFIG_REQUIRED` |
@@ -248,12 +298,12 @@ Probe binds reject hostnames, IPv4-mapped IPv6, IPv6 zones and padded IPv4 octet
 | `UNAI_MODEL_INPUT_MICROUNITS_PER_1K` | required; finite nonnegative input cost per 1000 tokens | literal | startup | `packages/model/src/providers.ts:183` | `MODEL_CONFIG_REQUIRED` |
 | `UNAI_MODEL_OUTPUT_MICROUNITS_PER_1K` | required; finite nonnegative output cost per 1000 tokens | literal | startup | `packages/model/src/providers.ts:184` | `MODEL_CONFIG_REQUIRED` |
 | `UNAI_MODEL_API_VERSION` | optional; anthropic defaults to 2023-06-01; unused by openai | literal | startup | `packages/model/src/providers.ts:186` | none; provider default |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/processing-worker.ts:36` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_DATABASE_CA_FILE` |
-| `UNAI_APP_DATABASE_URL` | required; application-role URL handle | secret handle | startup | `packages/api/src/processing-worker.ts:37` | `CONFIG_REQUIRED:UNAI_APP_DATABASE_URL` |
-| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/processing-worker.ts:50` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_ENDPOINT` |
-| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/processing-worker.ts:50` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_REGION` |
-| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/processing-worker.ts:51` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_BUCKET` |
-| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/processing-worker.ts:51` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_KMS_KEY_ID` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA | file path | startup | `packages/api/src/processing-worker.ts:37` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_DATABASE_CA_FILE` |
+| `UNAI_APP_DATABASE_URL` | required; application-role URL handle | secret handle | startup | `packages/api/src/processing-worker.ts:38` | `CONFIG_REQUIRED:UNAI_APP_DATABASE_URL` |
+| `UNAI_S3_ENDPOINT` | required; HTTPS endpoint | URL | startup | `packages/api/src/processing-worker.ts:51` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_ENDPOINT` |
+| `UNAI_S3_REGION` | required | literal | startup | `packages/api/src/processing-worker.ts:51` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_REGION` |
+| `UNAI_S3_BUCKET` | required; private encrypted bucket | literal | startup | `packages/api/src/processing-worker.ts:52` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_BUCKET` |
+| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier | literal | startup | `packages/api/src/processing-worker.ts:52` | `PROCESSING_CONFIGURATION_REQUIRED:UNAI_S3_KMS_KEY_ID` |
 
 Unknown providers give `MODEL_PROVIDER_UNKNOWN`; bad/non-HTTPS endpoints give
 `MODEL_ENDPOINT_INVALID`/`MODEL_ENDPOINT_INSECURE`. Empty numeric strings currently
@@ -311,30 +361,37 @@ corpus directory; the synthetic corpus needs neither credential nor private path
 ### pnpm backup
 
 `scripts/backup.mjs` reads every row below in this order before any network or database
-work, and `--help` reads none of them. Every failure is one stderr JSON line
+work, and `--help` reads none of them; a local-directory destination reads none of the
+four rows marked `s3://` only. Every failure is one stderr JSON line
 `{"event":"backup.failed","code":…}`; only `BACKUP_CONFIGURATION_REQUIRED` and
 `BACKUP_CONFIGURATION_INVALID` add a `variable` naming the row. An empty optional value
 counts as unset. Procedure: `docs/operations/backup.md`.
 
 | Variable | Required / default | Kind | When read | Consumer | Failure when missing |
 | --- | --- | --- | --- | --- | --- |
-| `UNAI_BACKUP_DESTINATION` | required; existing writable absolute directory; `s3://` refused until task-e08becdf | file path | startup | `scripts/backup.mjs:107` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_DESTINATION_INVALID`; `BACKUP_DESTINATION_UNSUPPORTED` |
-| `UNAI_BACKUP_KEY_FILE` | required; exactly 32 bytes, mode 0600 on POSIX, a regular file outside the destination | file path | startup | `scripts/backup.mjs:109` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_KEY_LOCATION_INVALID`; `BACKUP_KEY_INVALID` |
-| `UNAI_BACKUP_RETENTION_DAYS` | optional; unset keeps every archive; 1–3650 | literal | startup | `scripts/backup.mjs:110` | none; no pruning; bad value `BACKUP_RETENTION_INVALID` |
-| `UNAI_BACKUP_DATABASE_URL` | required; literal `postgres(ql)://user@host[:port]/database` URL with no password, query or fragment; the role must be superuser or BYPASSRLS; password from PGPASSFILE | URL | startup | `scripts/backup.mjs:111` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_DATABASE_URL_INVALID` |
-| `PGPASSWORD` | refused when set, even empty: the password belongs in PGPASSFILE | literal | startup | `scripts/backup.mjs:112` | none; set gives `BACKUP_CONFIGURATION_INVALID` |
-| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA, also pg_dump's PGSSLROOTCERT | file path | startup | `scripts/backup.mjs:113` | `BACKUP_CONFIGURATION_REQUIRED`; unreadable or empty `BACKUP_CONFIGURATION_INVALID` |
-| `UNAI_S3_ENDPOINT` | required; evidence bucket endpoint | URL | startup | `scripts/backup.mjs:116` | `BACKUP_CONFIGURATION_REQUIRED` |
-| `UNAI_S3_REGION` | required | literal | startup | `scripts/backup.mjs:116` | `BACKUP_CONFIGURATION_REQUIRED` |
-| `UNAI_S3_BUCKET` | required; private encrypted evidence bucket, read only | literal | startup | `scripts/backup.mjs:117` | `BACKUP_CONFIGURATION_REQUIRED`; bucket check `BACKUP_EVIDENCE_STORE_UNAVAILABLE` |
-| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier; live evidence rows must name `kms:<this id>` | literal | startup | `scripts/backup.mjs:117` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_EVIDENCE_PROVIDER_UNKNOWN` |
-| `UNAI_BACKUP_PG_DUMP` | optional; `pg_dump` on PATH; one executable path or a JSON array command prefix; its major must equal the server's | literal | startup | `scripts/backup.mjs:118` | none; default; bad value `BACKUP_CONFIGURATION_INVALID` |
+| `UNAI_BACKUP_DESTINATION` | required; an existing writable absolute directory, or `s3://<bucket>/<prefix>/` for the ADR 0043 D9 backup bucket: a lowercase bucket name, then zero or more `[A-Za-z0-9._-]` segments each ending in `/`, none `.` or `..`, at most 512 bytes of prefix | file path or URL | startup | `scripts/backup.mjs:155` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_DESTINATION_INVALID`, which also covers an `s3://` bucket equal to `UNAI_S3_BUCKET` or a backup key equal to `UNAI_S3_KMS_KEY_ID` |
+| `UNAI_BACKUP_STAGING_DIR` | `s3://` only: required with an `s3://` destination, not read otherwise; an existing, writable, empty absolute directory on the data volume, never tmpfs (ADR 0043 D9), where the archive and both sidecars are written and verified before upload; its free space must exceed the last run's `bytes`; the run removes its own files on success and on failure | file path | startup | `scripts/backup.mjs:158` | `BACKUP_CONFIGURATION_REQUIRED`; missing, relative, unwritable or non-empty `BACKUP_CONFIGURATION_INVALID` |
+| `UNAI_BACKUP_KEY_FILE` | required; exactly 32 bytes, mode 0600 on POSIX, a regular file outside the destination and the staging directory | file path | startup | `scripts/backup.mjs:161` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_KEY_LOCATION_INVALID`; `BACKUP_KEY_INVALID` |
+| `UNAI_BACKUP_RETENTION_DAYS` | optional, local directory only; unset keeps every archive; 1–3650 | literal | startup | `scripts/backup.mjs:162` | none; no pruning; bad value `BACKUP_RETENTION_INVALID`; any value with an `s3://` destination `BACKUP_CONFIGURATION_INVALID`, because the bucket's lifecycle rule owns retention and the principal cannot delete |
+| `UNAI_BACKUP_DATABASE_URL` | required; literal `postgres(ql)://user@host[:port]/database` URL with no password, query or fragment; the role must be superuser or BYPASSRLS; password from PGPASSFILE | URL | startup | `scripts/backup.mjs:163` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_DATABASE_URL_INVALID` |
+| `PGPASSWORD` | refused when set, even empty: the password belongs in PGPASSFILE | literal | startup | `scripts/backup.mjs:164` | none; set gives `BACKUP_CONFIGURATION_INVALID` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA, also pg_dump's PGSSLROOTCERT | file path | startup | `scripts/backup.mjs:165` | `BACKUP_CONFIGURATION_REQUIRED`; unreadable or empty `BACKUP_CONFIGURATION_INVALID` |
+| `UNAI_S3_ENDPOINT` | required; evidence bucket endpoint | URL | startup | `scripts/backup.mjs:168` | `BACKUP_CONFIGURATION_REQUIRED` |
+| `UNAI_S3_REGION` | required | literal | startup | `scripts/backup.mjs:168` | `BACKUP_CONFIGURATION_REQUIRED` |
+| `UNAI_S3_BUCKET` | required; private encrypted evidence bucket, read only; never the backup bucket | literal | startup | `scripts/backup.mjs:169` | `BACKUP_CONFIGURATION_REQUIRED`; bucket check `BACKUP_EVIDENCE_STORE_UNAVAILABLE`; an `s3://` destination naming it `BACKUP_DESTINATION_INVALID` |
+| `UNAI_S3_KMS_KEY_ID` | required; exact bucket/receipt key identifier; live evidence rows must name `kms:<this id>`; never the backup key | literal | startup | `scripts/backup.mjs:169` | `BACKUP_CONFIGURATION_REQUIRED`; `BACKUP_EVIDENCE_PROVIDER_UNKNOWN`; equal to `UNAI_BACKUP_S3_KMS_KEY_ID` `BACKUP_DESTINATION_INVALID` |
+| `UNAI_BACKUP_S3_ENDPOINT` | `s3://` only: required with an `s3://` destination, not read otherwise; the backup bucket's HTTPS endpoint in its own region, with no userinfo, query or fragment | URL | startup | `scripts/backup.mjs:120` | `BACKUP_CONFIGURATION_REQUIRED`; not such an https URL `BACKUP_CONFIGURATION_INVALID` |
+| `UNAI_BACKUP_S3_REGION` | `s3://` only: required with an `s3://` destination, not read otherwise; the backup bucket's region | literal | startup | `scripts/backup.mjs:124` | `BACKUP_CONFIGURATION_REQUIRED` |
+| `UNAI_BACKUP_S3_KMS_KEY_ID` | `s3://` only: required with an `s3://` destination, not read otherwise; the full key ARN behind `alias/unai-backup`, which every upload receipt must echo; never an alias | literal | startup | `scripts/backup.mjs:125` | `BACKUP_CONFIGURATION_REQUIRED`; `alias/…` or an ARN with `:alias/` `BACKUP_CONFIGURATION_INVALID`; a receipt naming another key `BACKUP_DESTINATION_ENCRYPTION_INVALID` |
+| `UNAI_BACKUP_PG_DUMP` | optional; `pg_dump` on PATH; one executable path or a JSON array command prefix; its major must equal the server's | literal | startup | `scripts/backup.mjs:171` | none; default; bad value `BACKUP_CONFIGURATION_INVALID` |
 
 The pg_dump child inherits the environment without any variable starting with `PG`
-except `PGPASSFILE` (`scripts/backup.mjs:147`), then gets `PGHOST`, `PGPORT`, `PGUSER`,
+except `PGPASSFILE` (`scripts/backup.mjs:200`), then gets `PGHOST`, `PGPORT`, `PGUSER`,
 `PGDATABASE` from the URL, `PGSSLMODE=verify-full`, `PGSSLROOTCERT`,
-`PGCONNECT_TIMEOUT=10` and `PGAPPNAME=unai-backup`. S3 credentials come from the SDK
-chain below, as for the API.
+`PGCONNECT_TIMEOUT=10` and `PGAPPNAME=unai-backup`. Both S3 clients, the evidence read
+and the backup-bucket write, take credentials only from the SDK default chain below, as
+the API does; under ADR 0043 D9 the chain reads the `unai-backup` IAM user's
+`/etc/unai/backup/aws-credentials` through `AWS_SHARED_CREDENTIALS_FILE`.
 
 ## Test and development harness
 

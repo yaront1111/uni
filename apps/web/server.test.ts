@@ -1,10 +1,11 @@
 import {spawn,spawnSync,type ChildProcess} from 'node:child_process';
 import {existsSync,readdirSync,readFileSync,statSync} from 'node:fs';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {createServer,request,type IncomingHttpHeaders,type IncomingMessage,type Server} from 'node:http';
 import {request as secureRequest} from 'node:https';
 import {createServer as createNetServer,type AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
+import {createServer as createTlsServer,type Server as TlsServer} from 'node:tls';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
@@ -138,6 +139,67 @@ describe('the policy',()=>{
 });
 
 const WEB=fileURLToPath(new URL('.',import.meta.url));
+type CheckRun={status:number|null;stdout:string;stderr:string};
+function webCheck(env:NodeJS.ProcessEnv):Promise<CheckRun>{
+  return new Promise((done,reject)=>{
+    const child=spawn(process.execPath,[join(WEB,'../../node_modules/tsx/dist/cli.mjs'),'server.ts','--','--check'],{cwd:WEB,env});
+    let stdout='',stderr='';const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('WEB_CHECK_TIMEOUT'));},120000);
+    child.stdout.on('data',chunk=>{stdout+=chunk;});child.stderr.on('data',chunk=>{stderr+=chunk;});child.once('error',reject);
+    child.once('close',status=>{clearTimeout(timer);done({status,stdout,stderr});});
+  });
+}
+describe('web --check (no Next build or database needed)',()=>{
+  let root='',api:TlsServer,held:ReturnType<typeof createNetServer>,handshakes=0,bytes=0;
+  let runs:CheckRun[]=[];
+  const lines=(run:CheckRun):{check:string;status:string;code:string}[]=>run.stdout.trim().split('\n').map(line=>JSON.parse(line)).filter(line=>'check' in line);
+  beforeAll(async()=>{
+    const {createSelfSignedCertificate}=await import(pathToFileURL(join(WEB,'../../scripts/tls-certificate.mjs')).href) as {
+      createSelfSignedCertificate():{key:string;certificate:string};
+    };
+    root=await mkdtemp(join(tmpdir(),'unai-web-check-'));const material=createSelfSignedCertificate();
+    const key=join(root,'key.pem'),cert=join(root,'cert.pem'),wrong=join(root,'wrong.pem'),mount=join(root,'secrets');
+    await writeFile(key,material.key,{mode:0o600});await writeFile(cert,material.certificate);
+    await writeFile(wrong,createSelfSignedCertificate().certificate);await mkdir(mount,{mode:0o700});
+    for(const [name,value] of Object.entries({session:'SENTINEL_session_secret_at_least_32_characters',short:'SENTINEL_short',
+      google:'SENTINEL_google',auth:'postgresql://u:SENTINEL_password@127.0.0.1:9/auth'}))await writeFile(join(mount,name),value,{mode:0o600});
+    api=createTlsServer({key:material.key,cert:material.certificate},socket=>{
+      handshakes++;socket.on('data',chunk=>{bytes+=chunk.length;});socket.on('error',()=>socket.destroy());
+    });
+    await new Promise<void>(done=>api.listen(0,'127.0.0.1',done));
+    held=createNetServer();await new Promise<void>(done=>held.listen(0,'127.0.0.1',done));
+    const down=createNetServer();await new Promise<void>(done=>down.listen(0,'127.0.0.1',done));
+    const downPort=(down.address() as AddressInfo).port;await new Promise<void>(done=>down.close(()=>done()));
+    const env:NodeJS.ProcessEnv={PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,NODE_ENV:'test',
+      NEXTAUTH_URL:`https://127.0.0.1:${(held.address() as AddressInfo).port}`,UNAI_WEB_TLS_KEY_FILE:key,UNAI_WEB_TLS_CERT_FILE:cert,
+      UNAI_SECRETS_MOUNT:mount,NEXTAUTH_SECRET:'secret://mounted/session',GOOGLE_CLIENT_SECRET:'secret://mounted/google',GOOGLE_CLIENT_ID:'test-client',
+      UNAI_AUTH_DATABASE_URL:'secret://mounted/auth',UNAI_DATABASE_CA_FILE:cert,
+      UNAI_API_ORIGIN:`https://127.0.0.1:${(api.address() as AddressInfo).port}`,UNAI_API_CA_FILE:cert};
+    runs=await Promise.all([webCheck(env),webCheck({...env,UNAI_API_ORIGIN:`https://127.0.0.1:${downPort}`}),
+      webCheck({...env,NEXTAUTH_URL:'http://x'}),webCheck({...env,NEXTAUTH_SECRET:'secret://mounted/short'}),webCheck({...env,UNAI_API_CA_FILE:wrong})]);
+  },180000);
+  afterAll(async()=>{
+    await Promise.all([api,held].filter(Boolean).map(server=>new Promise<void>(done=>server.close(()=>done()))));
+    if(root)await rm(root,{recursive:true,force:true});
+  });
+  it('reports four successful checks while its service port is held, without connecting to the auth DB',()=>{
+    expect(runs[0]!.status,runs[0]!.stderr).toBe(0);
+    expect(lines(runs[0]!)).toEqual(['origin','tls_certificate','auth','api'].map(check=>({check,status:'ok',code:'OK'})));
+    expect(JSON.parse(readFileSync(join(WEB,'package.json'),'utf8')).scripts.start).toBe('tsx server.ts');
+    expect(JSON.parse(readFileSync(join(WEB,'../../package.json'),'utf8')).scripts['start:web']).toBe('pnpm --filter @unai/web start');
+  });
+  it('completes the API handshake without sending application bytes',()=>{expect(handshakes).toBeGreaterThan(0);expect(bytes).toBe(0);});
+  it.each([[1,'api','warn','API_UNREACHABLE',0],[2,'origin','fail','WEB_TLS_CONFIG_INVALID',1],
+    [3,'auth','fail','AUTH_CONFIG_REQUIRED',1],[4,'api','fail','API_TLS_HANDSHAKE_FAILED',1]] as const)(
+    'classifies case %s and continues the remaining checks',(index,check,status,code,exit)=>{
+      expect(runs[index]!.status).toBe(exit);expect(lines(runs[index]!).filter(line=>line.status!=='ok')).toEqual([{check,status,code}]);
+    });
+  it('prints only JSON status words and codes without any sensitive material',()=>{
+    for(const run of runs){
+      expect(run.stderr).toBe('');expect(lines(run).map(line=>line.check)).toEqual(['origin','tls_certificate','auth','api']);
+      for(const secret of ['SENTINEL','://','BEGIN',root,'startup_failed'])expect(run.stdout+run.stderr).not.toContain(secret);
+    }
+  });
+});
 /** Every page must render per request: a statically optimised page is
  * prerendered at build time without a nonce, so 'strict-dynamic' blocks all of
  * its scripts. */

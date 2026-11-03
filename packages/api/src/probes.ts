@@ -1,11 +1,11 @@
-import { X509Certificate } from 'node:crypto';
+import type { PreflightCheck } from '@unai/observability/telemetry';
+export { databaseCheck, registryReleaseCheck } from './preflight.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { isIPv4, isIPv6 } from 'node:net';
 
 export type ProbeCheck = () => Promise<unknown>;
 type Log = (line: string) => void;
 type ClockOptions = { clock?: () => number };
-type Database = { query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }> };
 type Results = Record<string, 'ok' | 'fail'>;
 const logLine: Log = line => console.info(line);
 const logStatus = (log: Log, status: 'PROBES_DISABLED' | 'TLS_CERT_EXPIRING') => log(JSON.stringify({ event: 'probes', status }));
@@ -91,28 +91,14 @@ export async function createProbeServer({ bind, port, checks, cacheMs = 10000, t
   }) };
 }
 
-export function databaseCheck(db: Database): ProbeCheck {
-  return () => db.query('SELECT 1');
-}
-
-export function registryReleaseCheck(db: Database, releaseId: string): ProbeCheck {
-  return async () => {
-    const row = (await db.query('SELECT unai_private.registry_release_published($1) AS ok', [releaseId])).rows[0];
-    if (!row || typeof row !== 'object' || !('ok' in row) || row.ok !== true) throw new Error('PROBE_RELEASE_UNAVAILABLE');
-  };
-}
-
-export function certificateCheck(certificate: string | Buffer, { clock = Date.now, log = logLine }: ClockOptions & { log?: Log } = {}): ProbeCheck {
-  let expires: number;
-  try { expires = new X509Certificate(certificate).validToDate.getTime(); }
-  catch { throw new Error('TLS_CERTIFICATE_INVALID'); }
-  if (!Number.isFinite(expires)) throw new Error('TLS_CERTIFICATE_INVALID');
+export function loggedWarnings(check: PreflightCheck, { clock = Date.now, log = logLine }: ClockOptions & { log?: Log } = {}): ProbeCheck {
   let lastWarning = -Infinity;
   return async () => {
+    const warning = await check();
     const now = clock();
-    if (now >= expires) throw new Error('TLS_CERTIFICATE_INVALID');
-    if (expires - now < 7 * 86400000 && now - lastWarning >= 86400000) {
-      lastWarning = now; logStatus(log, 'TLS_CERT_EXPIRING');
+    if (typeof warning === 'string' && now - lastWarning >= 86400000) {
+      lastWarning = now;
+      log(JSON.stringify({ event: 'probes', status: /^[A-Z][A-Z0-9_]{0,63}$/.test(warning) ? warning : 'UNCLASSIFIED' }));
     }
   };
 }

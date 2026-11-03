@@ -28,6 +28,31 @@ export function startupFailureCode(error:unknown):{code:string;variable:string|n
   return null;
 }
 
+export type PreflightCheck=()=>unknown|Promise<unknown>;
+
+/** Sequential, bounded checks with the same safe output contract in every entry. */
+export async function runPreflight(checks:Readonly<Record<string,PreflightCheck>>,{
+  write=(line:string)=>process.stdout.write(line+'\n'),timeoutMs=10_000,
+}:{write?:(line:string)=>void;timeoutMs?:number}={}):Promise<boolean>{
+  let passed=true;
+  for(const [check,run] of Object.entries(checks)){
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    let status:'ok'|'warn'|'fail'='ok',code='OK';
+    try{
+      const result=await Promise.race([
+        Promise.resolve().then(run),
+        new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('PREFLIGHT_CHECK_TIMEOUT')),timeoutMs);}),
+      ]);
+      if(typeof result==='string'){
+        status='warn';code=/^[A-Z][A-Z0-9_]{0,63}$/.test(result)?result:'UNCLASSIFIED';
+      }
+    }catch(error){passed=false;status='fail';code=startupFailureCode(error)?.code??'UNCLASSIFIED';}
+    finally{clearTimeout(timer);}
+    write(JSON.stringify({check,status,code}));
+  }
+  return passed;
+}
+
 function endpointUrl(value:string):string{
   let url:URL;
   try{url=new URL(value);}catch{throw new Error('TELEMETRY_ENDPOINT_INVALID');}
