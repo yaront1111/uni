@@ -1,7 +1,8 @@
 /**
  * `pnpm backup`: one encrypted uai-backup/1 archive (scripts/lib/backup-archive.mjs)
  * of the database and every live evidence object, for a timer to run under
- * ADR 0043 D11 maintenance mode (docs/operations/backup.md). Unlike the harness,
+ * ADR 0043 D11 maintenance mode (docs/operations/backup.md), into a local
+ * directory or, staged locally first, the D9 backup bucket. Unlike the harness,
  * this tool runs against real infrastructure, so it follows the product error
  * rules: it prints exactly one JSON line, stdout on success and stderr on
  * failure, and never an error message, URL, path, key or object key.
@@ -9,7 +10,8 @@
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
-import {access,readFile,realpath,rename,rm,stat,writeFile} from 'node:fs/promises';
+import {access,open,readFile,readdir,realpath,rename,rm,stat,writeFile} from 'node:fs/promises';
+import {createRequire} from 'node:module';
 import {isAbsolute,join,resolve} from 'node:path';
 import {DUMP_PART_BYTES,archiveName,createArchiveWriter,pruneArchives,readBackupKey,tableDigests,verifyArchive} from './lib/backup-archive.mjs';
 
@@ -18,7 +20,10 @@ const USAGE=`Usage: pnpm backup [--assume-quiescent]
 
 Writes one encrypted uai-backup/1 archive of the database and every live evidence
 object to UNAI_BACKUP_DESTINATION as uai-backup-<UTC>.tar.enc, with .sha256 and
-.manifest.json sidecars, verifies it with the key, then applies retention.
+.manifest.json sidecars, and verifies it with the key. A local directory then
+applies retention. An s3:// destination is written to UNAI_BACKUP_STAGING_DIR
+first, uploaded with SSE-KMS under the backup key (the manifest last), and the
+staged files are removed; retention there belongs to the bucket's lifecycle rule.
 
   --assume-quiescent  skip the systemd unit check (hosts without systemd only);
                       the database backend check always runs
@@ -31,9 +36,18 @@ Variables:
   UNAI_S3_ENDPOINT, UNAI_S3_REGION, UNAI_S3_BUCKET, UNAI_S3_KMS_KEY_ID
                               the evidence bucket, as the API reads them
   UNAI_BACKUP_KEY_FILE        32-byte key file, mode 0600, outside the destination
-  UNAI_BACKUP_DESTINATION     absolute local directory (s3:// is not supported yet)
-  UNAI_BACKUP_RETENTION_DAYS  optional, 1-3650: prune older archives after success
+                              and the staging directory
+  UNAI_BACKUP_DESTINATION     absolute local directory, or s3://<bucket>/<prefix>/
+  UNAI_BACKUP_STAGING_DIR     s3:// only: an existing, empty absolute directory on
+                              the data volume (never tmpfs)
+  UNAI_BACKUP_RETENTION_DAYS  optional, 1-3650, local directory only: prune older
+                              archives after success; refused with s3://
+  UNAI_BACKUP_S3_ENDPOINT, UNAI_BACKUP_S3_REGION
+                              s3:// only: the backup bucket's https endpoint and region
+  UNAI_BACKUP_S3_KMS_KEY_ID   s3:// only: the backup key's full ARN, never an alias
   UNAI_BACKUP_PG_DUMP         optional pg_dump path or JSON argv prefix; default pg_dump
+
+AWS credentials come only from the SDK default chain, for both buckets.
 
 Output: {"event":"backup.completed",...} on stdout, or
 {"event":"backup.failed","code":"BACKUP_..."} on stderr.
@@ -41,6 +55,8 @@ Exit status: 0 success; 1 failure, for example BACKUP_PRECONDITION_FAILED or
 BACKUP_KEY_LOCATION_INVALID; 2 BACKUP_ARGUMENTS_INVALID.
 `;
 const UNITS=['unai-api','unai-worker'];
+/** S3's part floor is 5 MiB; 8 MiB × 10,000 parts covers uai-backup/1's 2^36-byte ceiling. */
+const UPLOAD_PART_BYTES=8*1024*1024;
 const MAPPED={STORAGE_ENCRYPTION_REQUIRED:'BACKUP_EVIDENCE_STORE_UNAVAILABLE',STORAGE_CONFIGURATION_INVALID:'BACKUP_EVIDENCE_STORE_UNAVAILABLE',
   STORAGE_OPERATION_FAILED:'BACKUP_EVIDENCE_OBJECT_UNREADABLE',STORAGE_ACCESS_DENIED:'BACKUP_EVIDENCE_OBJECT_UNREADABLE',
   DATABASE_TLS_CONFIG_INVALID:'BACKUP_DATABASE_URL_INVALID'};
@@ -72,18 +88,50 @@ function parseArguments(argv){
 }
 
 const need=(name,value)=>{if(value===undefined||!value.trim())throw refuse('BACKUP_CONFIGURATION_REQUIRED',name);return value;};
-async function destinationOf(value){
-  if(/^s3:\/\//i.test(value))throw refuse('BACKUP_DESTINATION_UNSUPPORTED');
-  try{
-    if(!isAbsolute(value))throw new Error();
-    const real=await realpath(value);
-    if(!(await stat(real)).isDirectory())throw new Error();
-    await access(real,constants.W_OK);
-    return real;
-  }catch{throw refuse('BACKUP_DESTINATION_INVALID');}
+/** The realpath of an existing, writable directory named by an absolute path; throws a bare Error otherwise. */
+async function directoryOf(value){
+  if(!isAbsolute(value))throw new Error();
+  const real=await realpath(value);
+  if(!(await stat(real)).isDirectory())throw new Error();
+  await access(real,constants.W_OK);
+  return real;
 }
-function retentionOf(value){
+async function destinationOf(value){
+  try{return await directoryOf(value);}catch{throw refuse('BACKUP_DESTINATION_INVALID');}
+}
+/** Empty at the start, so cleanup() only ever removes files this run created; leftovers are refused, never cleaned. */
+async function stagingOf(value){
+  try{
+    const real=await directoryOf(value);
+    if((await readdir(real)).length)throw new Error();
+    return real;
+  }catch{throw refuse('BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_STAGING_DIR');}
+}
+const S3_DESTINATION=/^s3:\/\/([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\/((?:[A-Za-z0-9._-]+\/)*)$/;
+/** null for a local path; otherwise s3://<bucket>/(<segment>/)* with no . or .. segment and a prefix of at most 512 bytes. */
+function s3DestinationOf(value){
+  if(!/^s3:\/\//i.test(value))return null;
+  const [,bucket,prefix]=S3_DESTINATION.exec(value)??[];
+  if(bucket===undefined||prefix.length>512||prefix.split('/').some(segment=>segment==='.'||segment==='..'))throw refuse('BACKUP_DESTINATION_INVALID');
+  return {bucket,prefix};
+}
+/** ADR 0043 D9: the backup bucket has its own endpoint, region and key, and is never the evidence bucket. */
+function backupBucketOf(target,storage){
+  const endpoint=need('UNAI_BACKUP_S3_ENDPOINT',process.env.UNAI_BACKUP_S3_ENDPOINT);
+  let url=null;
+  try{url=new URL(endpoint);}catch{}
+  if(url?.protocol!=='https:'||url.username||url.password||url.search||url.hash)throw refuse('BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_S3_ENDPOINT');
+  const region=need('UNAI_BACKUP_S3_REGION',process.env.UNAI_BACKUP_S3_REGION);
+  const keyId=need('UNAI_BACKUP_S3_KMS_KEY_ID',process.env.UNAI_BACKUP_S3_KMS_KEY_ID);
+  // Receipts echo the key ARN, never an alias, so an alias would fail only after a whole backup.
+  if(/^alias\/|:alias\//.test(keyId))throw refuse('BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_S3_KMS_KEY_ID');
+  if(target.bucket===storage.bucket.toLowerCase()||keyId===storage.kmsKeyId)throw refuse('BACKUP_DESTINATION_INVALID');
+  return {...target,endpoint:url.href,region,keyId};
+}
+function retentionOf(value,s3){
   if(value===undefined||value==='')return null;
+  // The backup principal cannot delete there: the lifecycle rule owns retention (ADR 0043 D9).
+  if(s3)throw refuse('BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_RETENTION_DAYS');
   if(!/^[1-9][0-9]{0,3}$/.test(value)||Number(value)>3650)throw refuse('BACKUP_RETENTION_INVALID');
   return Number(value);
 }
@@ -105,9 +153,13 @@ function pgDumpOf(value){
 /** Every variable, in the documented order, before any network or database work. */
 async function configuration(state){
   const given=need('UNAI_BACKUP_DESTINATION',process.env.UNAI_BACKUP_DESTINATION);
-  const destination=await destinationOf(given);
-  state.key=await readBackupKey(need('UNAI_BACKUP_KEY_FILE',process.env.UNAI_BACKUP_KEY_FILE),{outside:[given,destination]});
-  const retentionDays=retentionOf(process.env.UNAI_BACKUP_RETENTION_DAYS);
+  let target=s3DestinationOf(given),directory,outside;
+  if(target){
+    const staging=need('UNAI_BACKUP_STAGING_DIR',process.env.UNAI_BACKUP_STAGING_DIR);
+    directory=await stagingOf(staging);outside=[staging,directory];
+  }else{directory=await destinationOf(given);outside=[given,directory];}
+  state.key=await readBackupKey(need('UNAI_BACKUP_KEY_FILE',process.env.UNAI_BACKUP_KEY_FILE),{outside});
+  const retentionDays=retentionOf(process.env.UNAI_BACKUP_RETENTION_DAYS,target!==null);
   const url=databaseUrlOf(need('UNAI_BACKUP_DATABASE_URL',process.env.UNAI_BACKUP_DATABASE_URL));
   if(process.env.PGPASSWORD!==undefined)throw refuse('BACKUP_CONFIGURATION_INVALID','PGPASSWORD');
   const caFile=resolve(need('UNAI_DATABASE_CA_FILE',process.env.UNAI_DATABASE_CA_FILE));
@@ -115,8 +167,9 @@ async function configuration(state){
   if(!ca.trim())throw refuse('BACKUP_CONFIGURATION_INVALID','UNAI_DATABASE_CA_FILE');
   const storage={endpoint:need('UNAI_S3_ENDPOINT',process.env.UNAI_S3_ENDPOINT),region:need('UNAI_S3_REGION',process.env.UNAI_S3_REGION),
     bucket:need('UNAI_S3_BUCKET',process.env.UNAI_S3_BUCKET),kmsKeyId:need('UNAI_S3_KMS_KEY_ID',process.env.UNAI_S3_KMS_KEY_ID)};
+  if(target)target=backupBucketOf(target,storage);
   const pgDump=pgDumpOf(process.env.UNAI_BACKUP_PG_DUMP);
-  return {destination,retentionDays,url,caFile,ca,storage,pgDump};
+  return {directory,target,retentionDays,url,caFile,ca,storage,pgDump};
 }
 /** ADR 0043 D11: both units report inactive or failed. No systemd counts as unknown, never as stopped. */
 function unitsStopped(){
@@ -220,6 +273,58 @@ async function sidecar(path,text,state){
   catch{throw refuse('BACKUP_ARCHIVE_WRITE_FAILED');}
 }
 
+/** Above one part: 8 MiB slices read from the staged file one at a time. state.upload is recorded before any
+ * receipt check and cleared once Complete returns, so cleanup() aborts every unfinished upload. */
+async function putParts(request,path,size,s3,state){
+  const created=await s3.send(new s3.sdk.CreateMultipartUploadCommand(request));
+  state.upload={Bucket:request.Bucket,Key:request.Key,UploadId:created.UploadId};
+  s3.sealed(created);
+  const file=await open(path,'r'),Parts=[];
+  try{
+    for(let offset=0;offset<size;offset+=UPLOAD_PART_BYTES){
+      const Body=Buffer.alloc(Math.min(UPLOAD_PART_BYTES,size-offset));
+      for(let filled=0;filled<Body.length;){
+        const {bytesRead}=await file.read(Body,filled,Body.length-filled,offset+filled);
+        if(!bytesRead)throw refuse('BACKUP_DESTINATION_UPLOAD_FAILED');
+        filled+=bytesRead;
+      }
+      const PartNumber=Parts.length+1;
+      Parts.push({ETag:s3.sealed(await s3.send(new s3.sdk.UploadPartCommand({...state.upload,PartNumber,Body}))).ETag,PartNumber});
+    }
+  }finally{await file.close().catch(()=>{});}
+  const completed=await s3.send(new s3.sdk.CompleteMultipartUploadCommand({...state.upload,MultipartUpload:{Parts},IfNoneMatch:'*'}));
+  state.upload=null;
+  s3.sealed(completed);
+}
+/** One staged file to <prefix><name> under the backup key, never overwriting, then a HeadObject size check. */
+async function putFile(target,path,name,s3,state){
+  const request={Bucket:target.bucket,Key:target.prefix+name,ServerSideEncryption:'aws:kms',SSEKMSKeyId:target.keyId};
+  try{
+    const size=(await stat(path)).size;
+    if(size>UPLOAD_PART_BYTES)await putParts(request,path,size,s3,state);
+    else s3.sealed(await s3.send(new s3.sdk.PutObjectCommand({...request,Body:await readFile(path),IfNoneMatch:'*'})));
+    const head=s3.sealed(await s3.send(new s3.sdk.HeadObjectCommand({Bucket:request.Bucket,Key:request.Key})));
+    if(head.ContentLength!==size)throw refuse('BACKUP_DESTINATION_UPLOAD_FAILED');
+  }catch(error){throw own(error)?error:refuse('BACKUP_DESTINATION_UPLOAD_FAILED');}
+}
+/** ADR 0043 D9: the archive, .sha256, then .manifest.json last, so an archive without its manifest marks an
+ * incomplete run. Credentials come only from the SDK default chain. Never a delete and never a list. */
+async function upload(target,directory,name,state){
+  const sdk=createRequire(new URL('../packages/storage/package.json',import.meta.url))('@aws-sdk/client-s3');
+  const client=new sdk.S3Client({endpoint:target.endpoint,region:target.region,forcePathStyle:true,maxAttempts:3,
+    requestHandler:{connectionTimeout:5000,requestTimeout:30000}});
+  state.backup={sdk,client};
+  const s3={sdk,
+    send:command=>client.send(command).catch(error=>{
+      throw refuse(error?.$metadata?.httpStatusCode===412?'BACKUP_ARCHIVE_EXISTS':'BACKUP_DESTINATION_UPLOAD_FAILED');
+    }),
+    sealed:result=>{
+      if(result?.ServerSideEncryption!=='aws:kms'||result.SSEKMSKeyId!==target.keyId)throw refuse('BACKUP_DESTINATION_ENCRYPTION_INVALID');
+      return result;
+    }};
+  for(const file of [name,name+'.sha256',name+'.manifest.json'])await putFile(target,join(directory,file),file,s3,state);
+}
+
 async function backup(options,state){
   const started=Date.now(),config=await configuration(state);
   if(!options.assumeQuiescent)unitsStopped();
@@ -230,7 +335,7 @@ async function backup(options,state){
   const environment=dumpEnvironment(config),pgDumpVersion=pgDumpMajor(config.pgDump,environment,serverVersion);
   const objectKeys=new Map();
   state.store=await createEncryptedS3Store(config.storage,async(_context,id)=>objectKeys.get(id)??null);
-  const now=new Date(),name=archiveName(now),path=join(config.destination,name);
+  const now=new Date(),name=archiveName(now),path=join(config.directory,name);
   const taken=await snapshot(state.client,config.storage.kmsKeyId);
   for(const row of taken.live)objectKeys.set(row.id,row.object_store_key);
   const manifest={format:'uai-backup/1',createdAt:now.toISOString(),serverVersionNum:serverVersion,pgDumpMajor:pgDumpVersion,
@@ -250,18 +355,24 @@ async function backup(options,state){
   await sidecar(path+'.sha256',written.sha256+'  '+name+'\n',state);
   await sidecar(path+'.manifest.json',JSON.stringify({format:'uai-backup/1',archive:name,createdAt:manifest.createdAt,sha256:written.sha256,
     bytes:written.bytes,counts,migrationHead:taken.migrations.head,registryReleases:versions},null,2)+'\n',state);
-  state.archive=null;state.sidecars=[];
+  // Staged files stay in state, so cleanup() empties the staging directory on success and on every failure.
+  if(config.target)await upload(config.target,config.directory,name,state);
+  else{state.archive=null;state.sidecars=[];}
   await cleanup(state);
-  const removed=config.retentionDays?await pruneArchives(config.destination,config.retentionDays,new Date()):[];
+  const removed=config.retentionDays?await pruneArchives(config.directory,config.retentionDays,new Date()):[];
   return {event:'backup.completed',format:'uai-backup/1',archive:name,bytes:written.bytes,sha256:written.sha256,
     quiescence:options.assumeQuiescent?'assumed':'systemd',...counts,migrationHead:taken.migrations.head,registryReleases:versions,
     retentionRemoved:removed.length,durationMs:Date.now()-started};
 }
-/** Every exit path: stop pg_dump, drop the partial or the unfinished archive and sidecars, roll back, zero the key. */
+/** Every exit path: stop pg_dump, drop the partial or the unfinished archive and sidecars, abort an unfinished
+ * multipart upload, roll back, zero the key. */
 async function cleanup(state){
   state.child?.kill('SIGKILL');state.child=null;
   await state.writer?.abort().catch(()=>{});state.writer=null;
   state.store?.close();state.store=null;
+  if(state.upload)await state.backup.client.send(new state.backup.sdk.AbortMultipartUploadCommand(state.upload)).catch(()=>{});
+  state.upload=null;
+  state.backup?.client.destroy();state.backup=null;
   state.client?.release(true);state.client=null;
   await state.pool?.end().catch(()=>{});state.pool=null;
   for(const path of [...state.sidecars,state.archive])if(path)await rm(path,{force:true}).catch(()=>{});
@@ -269,7 +380,7 @@ async function cleanup(state){
   state.key?.fill(0);
 }
 
-const state={key:null,writer:null,child:null,store:null,pool:null,client:null,archive:null,sidecars:[]};
+const state={key:null,writer:null,child:null,store:null,pool:null,client:null,archive:null,sidecars:[],backup:null,upload:null};
 let stopping=false;
 async function stop(error,status=1){
   if(stopping)return;

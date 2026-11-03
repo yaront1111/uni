@@ -1,10 +1,11 @@
-import {afterAll,beforeAll,expect,it} from 'vitest';
+import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {chmod,mkdir,mkdtemp,readdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {createServer,connect,type AddressInfo,type Server} from 'node:net';
 import {createRequire} from 'node:module';
+import {Agent} from 'node:https';
 import {tmpdir} from 'node:os';
 import {delimiter,join,resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -17,6 +18,8 @@ import * as archiveLibrary from '../scripts/lib/backup-archive.mjs';
 import {POSTGRES_IMAGE} from '../scripts/postgres-harness.mjs';
 // @ts-expect-error JavaScript harness helper.
 import {createSelfSignedCertificate} from '../scripts/tls-certificate.mjs';
+// @ts-expect-error JavaScript harness helper.
+import {startS3ObjectServer} from '../scripts/s3-object-server.mjs';
 
 /**
  * `pnpm backup` (scripts/backup.mjs) as the operator's timer runs it: a spawned
@@ -53,8 +56,8 @@ const objectBytes=Buffer.concat([Buffer.from('backup fixture '),randomBytes(4096
 const sha256=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const script=resolve('scripts/backup.mjs');
 let root='',key=Buffer.alloc(0),keyFile='',caFile='',passFile='',passLine='',inactiveBin='',systemctlLog='',backupUrl='',firstArchive='';
-let proxy:Server|undefined,proxyPort=0,pgDump:string[]=[];
-const outputs:string[]=[];
+let proxy:Server|undefined,proxyPort=0,pgDump:string[]=[],connector='',caBundle='';
+const outputs:string[]=[],s3Sentinels:string[]=[];
 
 /** A TLS terminator for the PostgreSQL wire protocol in front of the plain harness server. */
 async function startPostgresTlsProxy(cert:string,tlsKey:string):Promise<{server:Server;port:number}>{
@@ -91,22 +94,23 @@ async function fakeSystemctl(name:string,body:string){
   await writeFile(join(bin,'systemctl'),'#!/bin/sh\n'+body+'\n',{mode:0o755});
   return bin;
 }
+/** One source item of the seeded connector and its evidence key row; `deleted` erases both. */
+async function item(keyId:string,storeKey:string,hash:string,deleted:boolean){
+  const id=randomUUID(),erased=deleted?'clock_timestamp()':'NULL';
+  await scratch.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,
+    raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key,deleted_at) VALUES($1,$2,$3,'CONVERSATION',$4,$5,$6,$7,$8,
+    'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$9,${erased})`,
+    [id,owner,connector,'backup-'+keyId,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),hash,randomUUID()]);
+  await scratch.query(`INSERT INTO evidence_object_keys(id,owner_scope_id,source_item_id,object_store_key,encryption_key_ref,deleted_at)
+    VALUES($1,$2,$3,$4,$5,${erased})`,[keyId,owner,id,storeKey,'kms:'+storage.kmsKeyId]);
+}
 async function seed(){
   await scratch.query('INSERT INTO users(id,display_name) VALUES($1,$2)',[actor,'Backup owner']);
   await scratch.query("INSERT INTO owner_scopes(id,scope_kind,display_name,created_by_user_id) VALUES($1,'PERSONAL','Backup',$2)",[owner,actor]);
   await scratch.query("INSERT INTO owner_scope_members(owner_scope_id,user_id,role) VALUES($1,$2,'OWNER')",[owner,actor]);
-  const connector=randomUUID();
+  connector=randomUUID();
   await scratch.query("INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,permission_manifest,status) VALUES($1,$2,'CONVERSATION',$3,'{}','ACTIVE')",
     [connector,owner,'backup-'+owner]);
-  const item=async(keyId:string,storeKey:string,hash:string,deleted:boolean)=>{
-    const id=randomUUID(),erased=deleted?'clock_timestamp()':'NULL';
-    await scratch.query(`INSERT INTO source_items(id,owner_scope_id,connector_id,source_type,external_id,actor_ref,submitted_by_user_id,
-      raw_object_ref,content_hash,sensitivity,allowed_purposes,ingestion_version,idempotency_key,deleted_at) VALUES($1,$2,$3,'CONVERSATION',$4,$5,$6,$7,$8,
-      'PRIVATE',ARRAY['PERSONAL_ASSISTANCE'],'evidence-json-v1',$9,${erased})`,
-      [id,owner,connector,'backup-'+keyId,JSON.stringify({type:'USER',id:actor}),actor,randomUUID(),hash,randomUUID()]);
-    await scratch.query(`INSERT INTO evidence_object_keys(id,owner_scope_id,source_item_id,object_store_key,encryption_key_ref,deleted_at)
-      VALUES($1,$2,$3,$4,$5,${erased})`,[keyId,owner,id,storeKey,'kms:'+storage.kmsKeyId]);
-  };
   await item(liveKey,objectKey,sha256(objectBytes),false);
   await item(erasedKey,'evidence/erased/'+erasedKey,sha256(Buffer.from('erased')),true);
   const store=await createEncryptedS3Store(storage,async(_context,id)=>id===liveKey?objectKey:null);
@@ -167,6 +171,8 @@ function run(args:string[],overrides:Record<string,string|undefined>={}):Promise
   Object.assign(env,{UNAI_BACKUP_DATABASE_URL:backupUrl,UNAI_DATABASE_CA_FILE:caFile,UNAI_S3_ENDPOINT:storage.endpoint,
     UNAI_S3_REGION:storage.region,UNAI_S3_BUCKET:storage.bucket,UNAI_S3_KMS_KEY_ID:storage.kmsKeyId,UNAI_BACKUP_KEY_FILE:keyFile,
     UNAI_BACKUP_PG_DUMP:JSON.stringify(pgDump),PGPASSFILE:passFile,PATH:posix?inactiveBin+delimiter+(process.env.PATH??''):(process.env.PATH??'')});
+  // The harness CA plus the backup server's certificate, once the s3 block has started it.
+  if(caBundle)env.NODE_EXTRA_CA_CERTS=caBundle;
   for(const [name,value] of Object.entries(overrides)){if(value===undefined)delete env[name];else env[name]=value;}
   return new Promise((done,reject)=>{
     const child=spawn(process.execPath,[script,...(posix?[]:['--assume-quiescent']),...args],{env});
@@ -311,7 +317,7 @@ it('retention removes only the script\'s own archives older than the window',asy
 it('refuses unsupported or unsafe configuration before any side effect',async()=>{
   const target=await destination('refusals');
   const withPassword=new URL(backupUrl);withPassword.password='URLPASS-SENTINEL';
-  refused(await run([],{UNAI_BACKUP_DESTINATION:'s3://uai-backup/host/'}),'BACKUP_DESTINATION_UNSUPPORTED');
+  refused(await run([],{UNAI_BACKUP_DESTINATION:'s3://uai-backup/host/'}),'BACKUP_CONFIGURATION_REQUIRED','UNAI_BACKUP_STAGING_DIR');
   refused(await run([],{UNAI_BACKUP_DESTINATION:'relative/backups'}),'BACKUP_DESTINATION_INVALID');
   refused(await run([],{UNAI_BACKUP_DESTINATION:target,UNAI_BACKUP_DATABASE_URL:withPassword.href}),'BACKUP_DATABASE_URL_INVALID');
   for(const malformed of ['postgresql://us%zzer@127.0.0.1:1/db','postgresql://user@127.0.0.1:1/d%zzb'])
@@ -336,14 +342,230 @@ it('prints usage for --help without reading the environment',async()=>{
     child.once('close',status=>done({status,stdout,stderr}));
   });
   expect(result).toMatchObject({status:0,stderr:''});
-  for(const word of ['pnpm backup','--assume-quiescent','UNAI_BACKUP_KEY_FILE','UNAI_BACKUP_DESTINATION','BACKUP_PRECONDITION_FAILED'])
+  for(const word of ['pnpm backup','--assume-quiescent','UNAI_BACKUP_KEY_FILE','UNAI_BACKUP_DESTINATION','BACKUP_PRECONDITION_FAILED',
+    'UNAI_BACKUP_STAGING_DIR','UNAI_BACKUP_S3_ENDPOINT','UNAI_BACKUP_S3_REGION','UNAI_BACKUP_S3_KMS_KEY_ID'])
     expect(result.stdout).toContain(word);
+});
+
+interface S3Server{endpoint:string;certificate:string;operations:string[];receiptOverrides:Record<string,string>;readonly pendingUploads:number;close():Promise<void>}
+interface S3Client{send(command:object):Promise<Record<string,unknown>&{Body?:{transformToByteArray():Promise<Uint8Array>}}>;destroy():void}
+const sdk=createRequire(new URL('../packages/storage/package.json',import.meta.url))('@aws-sdk/client-s3') as
+  {S3Client:new(config:object)=>S3Client;GetObjectCommand:new(input:object)=>object;ListObjectsV2Command:new(input:object)=>object};
+const shared=process.env.AWS_ACCESS_KEY_ID&&process.env.AWS_SECRET_ACCESS_KEY?
+  {accessKeyId:process.env.AWS_ACCESS_KEY_ID,secretAccessKey:process.env.AWS_SECRET_ACCESS_KEY}:undefined;
+
+/**
+ * ADR 0043 D9's backup bucket: a second in-process S3 server with its own bucket and
+ * key. It accepts the credential the harness exported, so the script reaches it
+ * through the SDK default chain exactly as in production. Only delivered storage on
+ * another credential chain lacks that pair; MinIO and the in-process server export it.
+ */
+describe.skipIf(!shared)('s3:// destination',()=>{
+  const hex=randomBytes(6).toString('hex'),region='us-west-2',partBytes=8*1024*1024;
+  const bucket='bkt-sentinel-'+hex,keyArn='arn:aws:kms:'+region+':111122223333:key/KMSSENTINEL-'+hex;
+  const otherArn='arn:aws:kms:'+region+':111122223333:key/OTHERSENTINEL-'+hex;
+  const largeKey=randomUUID(),largeObjectKey='evidence/OBJKEY-SENTINEL-'+hex+'/'+largeKey;
+  let server:S3Server|undefined,client:S3Client|undefined,largeDigest='';
+  const backupServer=()=>server as S3Server,backupClient=()=>client as S3Client;
+  const largeStore=()=>createEncryptedS3Store(storage,async(_context,id)=>id===largeKey?largeObjectKey:null);
+  const context=()=>({actorId:actor,ownerScopeId:owner,purpose:'evidence.ingest',correlationId:randomUUID()});
+  const prefixOf=(name:string)=>'HOSTSENTINEL-'+hex+'-'+name+'/';
+  const s3Env=(name:string,staging:string):Record<string,string>=>({UNAI_BACKUP_DESTINATION:'s3://'+bucket+'/'+prefixOf(name),
+    UNAI_BACKUP_STAGING_DIR:staging,UNAI_BACKUP_S3_ENDPOINT:backupServer().endpoint,UNAI_BACKUP_S3_REGION:region,UNAI_BACKUP_S3_KMS_KEY_ID:keyArn});
+
+  beforeAll(async()=>{
+    // Its own subject: the bundle also holds the harness CA, which is CN=localhost.
+    server=await (startS3ObjectServer as (options:object)=>Promise<S3Server>)({bucket,kmsKeyId:keyArn,credentials:shared,
+      commonName:'unai-backup-bucket-'+hex,logOperations:true});
+    const harness=process.env.NODE_EXTRA_CA_CERTS?await readFile(process.env.NODE_EXTRA_CA_CERTS,'utf8'):'';
+    caBundle=join(root,'s3-ca-bundle.pem');
+    await writeFile(caBundle,harness+'\n'+server.certificate);
+    client=new sdk.S3Client({endpoint:server.endpoint,region,forcePathStyle:true,credentials:shared,
+      requestHandler:{httpsAgent:new Agent({ca:server.certificate,rejectUnauthorized:true})}});
+    s3Sentinels.push(bucket,keyArn,otherArn,'HOSTSENTINEL-'+hex,'KMSSENTINEL-'+hex,'OTHERSENTINEL-'+hex,server.endpoint,caBundle);
+  });
+  afterAll(async()=>{
+    caBundle='';
+    client?.destroy();
+    await server?.close();
+    // Best effort: the recovery rehearsal copies the whole harness evidence bucket.
+    if(largeDigest){
+      const store=await largeStore().catch(()=>null);
+      await store?.delete(context(),largeKey).catch(()=>{});
+      store?.close();
+    }
+  });
+
+  /** A 9 MiB live evidence object, so the next archive is larger than one upload part. */
+  async function ensureLargeObject(){
+    if(largeDigest)return;
+    const bytes=randomBytes(9*1024*1024),digest=sha256(bytes);
+    await item(largeKey,largeObjectKey,digest,false);
+    const store=await largeStore();
+    try{await store.put(context(),largeKey,bytes);largeDigest=digest;}finally{store.close();}
+  }
+  async function keysUnder(prefix:string){
+    const listed=await backupClient().send(new sdk.ListObjectsV2Command({Bucket:bucket,Prefix:prefix}));
+    return ((listed.Contents??[]) as {Key:string}[]).map(entry=>entry.Key).filter(key=>key.startsWith(prefix)).sort();
+  }
+  /** One run into its own prefix and staging directory: the operations it caused and the keys it left. */
+  async function backupTo(name:string){
+    const stage=await destination('staging-'+name),before=backupServer().operations.length;
+    const result=await run([],s3Env(name,stage));
+    const operations=backupServer().operations.slice(before);
+    return {result,operations,stage,keys:await keysUnder(prefixOf(name))};
+  }
+  async function download(key:string){
+    const object=await backupClient().send(new sdk.GetObjectCommand({Bucket:bucket,Key:key}));
+    expect([object.ServerSideEncryption,object.SSEKMSKeyId]).toEqual(['aws:kms',keyArn]);
+    return Buffer.from(await (object.Body as {transformToByteArray():Promise<Uint8Array>}).transformToByteArray());
+  }
+  interface Inner{tables:Digest[];objects:{entry:string;evidenceObjectKeyId:string;sha256:string}[]}
+  /** The three objects are this run's: SSE-KMS receipts, both sidecars, and the archive verified with the key file. */
+  async function verifyUploaded(name:string,summary:Record<string,unknown>){
+    const prefix=prefixOf(name),file=String(summary.archive);
+    expect(await keysUnder(prefix)).toEqual([file,file+'.manifest.json',file+'.sha256'].map(entry=>prefix+entry));
+    const bytes=await download(prefix+file),local=join(root,'downloaded-'+name+'.tar.enc');
+    await writeFile(local,bytes);
+    expect([bytes.length,sha256(bytes)]).toEqual([summary.bytes,summary.sha256]);
+    expect((await download(prefix+file+'.sha256')).toString('utf8')).toBe(summary.sha256+'  '+file+'\n');
+    expect(JSON.parse((await download(prefix+file+'.manifest.json')).toString('utf8'))).toEqual({format:'uai-backup/1',archive:file,
+      createdAt:expect.any(String),sha256:summary.sha256,bytes:summary.bytes,migrationHead:summary.migrationHead,registryReleases:summary.registryReleases,
+      counts:{tables:summary.tables,rows:summary.rows,objects:summary.objects,deletedObjects:summary.deletedObjects,dumpParts:summary.dumpParts}});
+    const inner:Inner[]=[],objects:{name:string;sha256:string}[]=[];
+    const read=await archive.readArchive(local,await readFile(keyFile),entry=>{
+      if(entry.name==='manifest.json')inner.push(JSON.parse(entry.bytes.toString('utf8')) as Inner);
+      if(entry.name.startsWith('objects/'))objects.push({name:entry.name,sha256:sha256(entry.bytes)});
+    });
+    expect(read.sha256).toBe(summary.sha256);
+    expect(inner).toHaveLength(1);
+    const manifest=inner[0] as Inner;
+    expect(manifest.tables).toEqual(await freshDigests());
+    // Digests, never a multi-MiB Buffer toEqual (vitest compares those byte by byte).
+    expect(objects).toEqual(manifest.objects.map(object=>({name:object.entry,sha256:object.sha256})));
+    return manifest.objects.map(object=>({id:object.evidenceObjectKeyId,sha256:object.sha256})).sort((a,b)=>a.id.localeCompare(b.id));
+  }
+
+  it('refuses unsafe s3 destinations before any database or object read',async()=>{
+    const stage=await destination('staging-refusals'),occupied=await destination('staging-occupied');
+    await writeFile(join(occupied,'operator-file'),'kept');
+    const closed=`postgresql://${encodeURIComponent(decodeURIComponent(serverUrl.username))}@127.0.0.1:1/${database}`;
+    const base={...s3Env('refusals',stage),UNAI_BACKUP_DATABASE_URL:closed};
+    // The equality refusals must not pass because the harness bucket fails the grammar.
+    expect(storage.bucket).toMatch(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/);
+    const before=backupServer().operations.length;
+    const cases:[Record<string,string|undefined>,string,string?][]=[
+      [{UNAI_BACKUP_DESTINATION:'s3://'+storage.bucket+'/h/'},'BACKUP_DESTINATION_INVALID'],
+      [{UNAI_BACKUP_S3_KMS_KEY_ID:storage.kmsKeyId},'BACKUP_DESTINATION_INVALID'],
+      [{UNAI_BACKUP_RETENTION_DAYS:'7'},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_RETENTION_DAYS'],
+      [{UNAI_BACKUP_STAGING_DIR:undefined},'BACKUP_CONFIGURATION_REQUIRED','UNAI_BACKUP_STAGING_DIR'],
+      [{UNAI_BACKUP_STAGING_DIR:join(root,'staging-absent')},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_STAGING_DIR'],
+      [{UNAI_BACKUP_STAGING_DIR:'relative/staging'},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_STAGING_DIR'],
+      [{UNAI_BACKUP_STAGING_DIR:occupied},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_STAGING_DIR'],
+      ...['s3://Bad_Bucket/h/','s3://bkt-x/h','s3://bkt-x/a/../','s3://bkt-x/./','s3://bkt-x//','s3://bkt-x/'+'p/'.repeat(257)]
+        .map((value):[Record<string,string>,string]=>[{UNAI_BACKUP_DESTINATION:value},'BACKUP_DESTINATION_INVALID']),
+      [{UNAI_BACKUP_S3_KMS_KEY_ID:'alias/unai-backup'},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_S3_KMS_KEY_ID'],
+      [{UNAI_BACKUP_S3_KMS_KEY_ID:'arn:aws:kms:'+region+':111122223333:alias/unai-backup'},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_S3_KMS_KEY_ID'],
+      [{UNAI_BACKUP_S3_ENDPOINT:backupServer().endpoint.replace('https:','http:')},'BACKUP_CONFIGURATION_INVALID','UNAI_BACKUP_S3_ENDPOINT'],
+      [{UNAI_BACKUP_S3_ENDPOINT:undefined},'BACKUP_CONFIGURATION_REQUIRED','UNAI_BACKUP_S3_ENDPOINT'],
+      [{UNAI_BACKUP_S3_REGION:undefined},'BACKUP_CONFIGURATION_REQUIRED','UNAI_BACKUP_S3_REGION'],
+      [{UNAI_BACKUP_S3_KMS_KEY_ID:undefined},'BACKUP_CONFIGURATION_REQUIRED','UNAI_BACKUP_S3_KMS_KEY_ID'],
+    ];
+    for(const [overrides,code,variable] of cases)refused(await run([],{...base,...overrides}),code,variable);
+    // Control: with nothing wrong, the same configuration gets as far as the closed database port.
+    refused(await run([],base),'BACKUP_DATABASE_FAILED');
+    expect(await listing(stage)).toEqual([]);
+    expect(await listing(occupied)).toEqual(['operator-file']);
+    expect(backupServer().operations.slice(before)).toEqual([]);
+  },300000);
+
+  it('uploads the archive, then .sha256, then .manifest.json under the backup key and empties the staging directory',async()=>{
+    const {result,operations,stage}=await backupTo('small');
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    const summary=line(result.stdout);
+    expect(String(summary.archive)).toMatch(archive.ARCHIVE_NAME);
+    expect(summary).toMatchObject({event:'backup.completed',format:'uai-backup/1',objects:1,deletedObjects:1,retentionRemoved:0});
+    expect(Number(summary.bytes)).toBeLessThanOrEqual(partBytes);
+    expect(operations).toEqual(['PutObject','HeadObject','PutObject','HeadObject','PutObject','HeadObject']);
+    expect(await verifyUploaded('small',summary)).toEqual([{id:liveKey,sha256:sha256(objectBytes)}]);
+    expect(await listing(stage)).toEqual([]);
+  },300000);
+
+  it('stops after a PutObject receipt under another key with BACKUP_DESTINATION_ENCRYPTION_INVALID',async()=>{
+    backupServer().receiptOverrides.PutObject=otherArn;
+    try{
+      const {result,operations,stage,keys}=await backupTo('put-receipt');
+      refused(result,'BACKUP_DESTINATION_ENCRYPTION_INVALID');
+      expect(operations).toEqual(['PutObject']);
+      // The completed PUT stays (the principal cannot delete); no sidecar follows it.
+      expect(keys).toHaveLength(1);
+      expect(keys[0]).toMatch(/\.tar\.enc$/);
+      expect(await listing(stage)).toEqual([]);
+    }finally{delete backupServer().receiptOverrides.PutObject;}
+  },300000);
+
+  it('uploads an archive larger than one 8 MiB part through a multipart upload',async()=>{
+    await ensureLargeObject();
+    const {result,operations,stage}=await backupTo('multipart');
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    const summary=line(result.stdout),parts=Math.ceil(Number(summary.bytes)/partBytes);
+    expect(parts).toBeGreaterThanOrEqual(2);
+    expect(summary).toMatchObject({event:'backup.completed',objects:2,retentionRemoved:0});
+    expect(operations).toEqual(['CreateMultipartUpload',...Array<string>(parts).fill('UploadPart'),'CompleteMultipartUpload','HeadObject',
+      'PutObject','HeadObject','PutObject','HeadObject']);
+    expect(backupServer().pendingUploads).toBe(0);
+    expect(await verifyUploaded('multipart',summary)).toEqual([{id:liveKey,sha256:sha256(objectBytes)},{id:largeKey,sha256:largeDigest}]
+      .sort((a,b)=>a.id.localeCompare(b.id)));
+    expect(await listing(stage)).toEqual([]);
+  },300000);
+
+  it('aborts the multipart upload when a part receipt names another key',async()=>{
+    await ensureLargeObject();
+    backupServer().receiptOverrides.UploadPart=otherArn;
+    try{
+      const {result,operations,stage,keys}=await backupTo('part-receipt');
+      refused(result,'BACKUP_DESTINATION_ENCRYPTION_INVALID');
+      expect(operations).toEqual(['CreateMultipartUpload','UploadPart','AbortMultipartUpload']);
+      expect(backupServer().pendingUploads).toBe(0);
+      expect(keys).toEqual([]);
+      expect(await listing(stage)).toEqual([]);
+    }finally{delete backupServer().receiptOverrides.UploadPart;}
+  },300000);
+
+  it('checks the Create, Complete and HeadObject receipts too, aborting only an unfinished upload',async()=>{
+    await ensureLargeObject();
+    const cases:[string,(parts:string[])=>string[],number][]=[
+      ['CreateMultipartUpload',()=>['CreateMultipartUpload','AbortMultipartUpload'],0],
+      // A completed upload is an object the principal cannot delete: nothing to abort, the lifecycle rule keeps it.
+      ['CompleteMultipartUpload',parts=>['CreateMultipartUpload',...parts,'CompleteMultipartUpload'],1],
+      ['HeadObject',parts=>['CreateMultipartUpload',...parts,'CompleteMultipartUpload','HeadObject'],1],
+    ];
+    for(const [operation,expected,objects] of cases){
+      backupServer().receiptOverrides[operation]=otherArn;
+      try{
+        const {result,operations,stage,keys}=await backupTo('receipt-'+operation);
+        refused(result,'BACKUP_DESTINATION_ENCRYPTION_INVALID');
+        const parts=operations.filter(name=>name==='UploadPart');
+        if(objects)expect(parts.length).toBeGreaterThanOrEqual(2);
+        expect(operations).toEqual(expected(parts));
+        expect(backupServer().pendingUploads).toBe(0);
+        expect(keys).toHaveLength(objects);
+        expect(await listing(stage)).toEqual([]);
+      }finally{delete backupServer().receiptOverrides[operation];}
+    }
+  },300000);
+});
+
+it('never names a delete or list command, so the backup principal never deletes or lists (ADR 0043 D9)',async()=>{
+  expect(await readFile(script,'utf8')).not.toMatch(/Delete\w*Command|List\w*Command/);
 });
 
 it('never prints a password, URL, key, key path or object key',()=>{
   expect(outputs.length).toBeGreaterThan(10);
   const sentinels=[serverUrl.href,scratchUrl.href,backupUrl,'127.0.0.1:'+proxyPort,passLine,key.toString('hex'),key.toString('base64'),
-    keyFile,passFile,root,'OBJKEY-SENTINEL','URLPASS-SENTINEL','PGPASS-SENTINEL'];
+    keyFile,passFile,root,'OBJKEY-SENTINEL','URLPASS-SENTINEL','PGPASS-SENTINEL',...s3Sentinels];
   const password=decodeURIComponent(serverUrl.password);
   if(password)sentinels.push(password);
   for(const output of outputs)for(const sentinel of sentinels)expect(output).not.toContain(sentinel);

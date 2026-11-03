@@ -82,14 +82,15 @@ function readBody(request) {
 }
 
 /** `credentials` replaces the random pair, so a second server can accept the
- * credential the SDK default chain already holds. `logOperations` records every
+ * credential the SDK default chain already holds; `commonName` gives its certificate
+ * a subject of its own, so one CA bundle can trust both servers. `logOperations` records every
  * request's operation name in `operations`. `receiptOverrides[operation]`
  * replaces the key id a receipt names, modelling a store that encrypts under
  * another key; it is for tests only and empty by default. */
-export async function startS3ObjectServer({bucket, kmsKeyId, own, credentials, logOperations = false}) {
+export async function startS3ObjectServer({bucket, kmsKeyId, own, credentials, commonName, logOperations = false}) {
   if (credentials !== undefined && !(typeof credentials?.accessKeyId === 'string' && credentials.accessKeyId
     && typeof credentials.secretAccessKey === 'string' && credentials.secretAccessKey)) throw new Error('S3_SERVER_CREDENTIALS_INVALID');
-  const {key, certificate} = createSelfSignedCertificate();
+  const {key, certificate} = createSelfSignedCertificate({commonName});
   const accessKeyId = credentials?.accessKeyId ?? 'unai-test-' + randomBytes(8).toString('hex');
   const secretAccessKey = credentials?.secretAccessKey ?? randomBytes(32).toString('hex');
   const rootKey = randomBytes(32);

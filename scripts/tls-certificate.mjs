@@ -48,10 +48,13 @@ function extension(notation, critical, value) {
   return sequence(objectIdentifier(notation), ...(critical ? [boolean(true)] : []), octetString(value));
 }
 
-export function createSelfSignedCertificate() {
+/** `commonName` only distinguishes two harness CAs trusted together: OpenSSL picks a
+ * trust anchor by subject, so two `CN=localhost` certificates in one bundle cannot
+ * both verify. Host names are still matched against the loopback SAN alone. */
+export function createSelfSignedCertificate({commonName = 'localhost'} = {}) {
   const {privateKey, publicKey} = generateKeyPairSync('ec', {namedCurve: 'prime256v1'});
   const algorithm = sequence(objectIdentifier('1.2.840.10045.4.3.2')); // ecdsa-with-SHA256
-  const name = sequence(set(sequence(objectIdentifier('2.5.4.3'), utf8String('localhost'))));
+  const name = sequence(set(sequence(objectIdentifier('2.5.4.3'), utf8String(commonName))));
   const serial = positiveInteger(Buffer.concat([Buffer.from([0x00]), randomBytes(16)]));
   const now = Date.now();
   const tbs = sequence(
