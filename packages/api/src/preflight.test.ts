@@ -198,6 +198,12 @@ describe.runIf(Boolean(process.env.UNAI_TEST_DATABASE_URL&&process.env.UNAI_TEST
   },180000);
 });
 
+it('prints the listening line only after installing its SIGTERM handler',async()=>{
+  // A supervisor may stop the API on that line; without a handler SIGTERM's default action kills it unclosed.
+  const source=await readFile(resolve('packages/api/src/server.ts'),'utf8'),handler=source.indexOf("process.on('SIGTERM',close)");
+  expect(handler).toBeGreaterThan(source.indexOf('app.listen('));expect(source.search(/event:\s*['"]listening['"]/)).toBeGreaterThan(handler);
+});
+
 it('accepts only an explicit safe-role result',async()=>{
   await expect(assertDatabaseRoleSafe({query:async()=>({rows:[{unsafe:false}]})})).resolves.toBeUndefined();
   for(const row of [{unsafe:true},{unsafe:null},{},null]){

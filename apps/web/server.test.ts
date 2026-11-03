@@ -175,7 +175,8 @@ describe('web --check (no Next build or database needed)',()=>{
       UNAI_AUTH_DATABASE_URL:'secret://mounted/auth',UNAI_DATABASE_CA_FILE:cert,
       UNAI_API_ORIGIN:`https://127.0.0.1:${(api.address() as AddressInfo).port}`,UNAI_API_CA_FILE:cert};
     runs=await Promise.all([webCheck(env),webCheck({...env,UNAI_API_ORIGIN:`https://127.0.0.1:${downPort}`}),
-      webCheck({...env,NEXTAUTH_URL:'http://x'}),webCheck({...env,NEXTAUTH_SECRET:'secret://mounted/short'}),webCheck({...env,UNAI_API_CA_FILE:wrong})]);
+      webCheck({...env,NEXTAUTH_URL:'http://x'}),webCheck({...env,NEXTAUTH_SECRET:'secret://mounted/short'}),webCheck({...env,UNAI_API_CA_FILE:wrong}),
+      webCheck({...env,UNAI_SECRETS_MOUNT:undefined})]);
   },180000);
   afterAll(async()=>{
     await Promise.all([api,held].filter(Boolean).map(server=>new Promise<void>(done=>server.close(()=>done()))));
@@ -189,7 +190,8 @@ describe('web --check (no Next build or database needed)',()=>{
   });
   it('completes the API handshake without sending application bytes',()=>{expect(handshakes).toBeGreaterThan(0);expect(bytes).toBe(0);});
   it.each([[1,'api','warn','API_UNREACHABLE',0],[2,'origin','fail','WEB_TLS_CONFIG_INVALID',1],
-    [3,'auth','fail','AUTH_CONFIG_REQUIRED',1],[4,'api','fail','API_TLS_HANDSHAKE_FAILED',1]] as const)(
+    [3,'auth','fail','AUTH_CONFIG_REQUIRED',1],[4,'api','fail','API_TLS_HANDSHAKE_FAILED',1],
+    [5,'auth','fail','CONFIG_REQUIRED:UNAI_SECRETS_MOUNT',1]] as const)(
     'classifies case %s and continues the remaining checks',(index,check,status,code,exit)=>{
       expect(runs[index]!.status).toBe(exit);expect(lines(runs[index]!).filter(line=>line.status!=='ok')).toEqual([{check,status,code}]);
     });

@@ -47,7 +47,7 @@ try {
     });
     process.exitCode=passed?0:1;
     const exit=()=>process.stdout.write('',()=>process.exit()),deadline=setTimeout(exit,10_000);
-    await authPool().then(pool=>pool.end(),()=>undefined);await telemetry.shutdown();clearTimeout(deadline);exit();
+    await Promise.resolve().then(authPool).then(pool=>pool.end(),()=>undefined);await telemetry.shutdown();clearTimeout(deadline);exit();
   }else{
   const {default:next}=await import('next');
   const {createRequestListener}=await import('./lib/security-headers');

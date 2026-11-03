@@ -78,7 +78,6 @@ try {
   const app=createPlatformApi({appPool,authPool,evidenceObjects,rateLimit,...release,connectors,tls});
   const probeConfig=probeConfiguration(process.env);
   await app.listen({port:Number(process.env.UNAI_API_PORT??3443),host:process.env.UNAI_API_BIND??'127.0.0.1'});
-  console.info(JSON.stringify({event:'listening',port:(app.server.address() as AddressInfo).port}));
   const probes=probeConfig && await createProbeServer({...probeConfig,checks:{
     database:databaseCheck(appPool),
     encryption_at_rest:encryptionAtRestCheck(appPool),
@@ -92,6 +91,8 @@ try {
     void Promise.all([probes?.close(),app.close()]).then(()=>{evidenceObjects.close();return Promise.all([appPool.end(),authPool.end()]);}).finally(()=>telemetry.shutdown());
   };
   process.on('SIGTERM',close);process.on('SIGINT',close);
+  // Last: a supervisor may stop the API on this line, so its handlers must already exist.
+  console.info(JSON.stringify({event:'listening',port:(app.server.address() as AddressInfo).port}));
   }
 } catch (error) {
   process.exitCode=1;
