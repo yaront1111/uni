@@ -566,15 +566,32 @@ supplies the OpenTelemetry exporter").
   objects after 30 days and noncurrent versions after 5 days. No Object Lock.
 - The backup principal holds no `s3:DeleteObject*`, so a compromised host
   cannot destroy archives; retention is the lifecycle's job.
+- Archives above 8 MiB go up as a multipart upload in 8 MiB parts. The
+  principal also holds `s3:AbortMultipartUpload`. That permission discards only
+  an unfinished upload's parts and cannot remove a completed object, so the
+  no-delete property stands. The lifecycle rule also aborts incomplete
+  multipart uploads after 1 day, which covers parts that a killed run or a
+  failed abort left behind.
 
 **Archives** (`scripts/backup.mjs`, implemented by
-task-cd57e1f0e42442ac938e936b95171097):
+task-cd57e1f0e42442ac938e936b95171097; the S3 destination by
+task-e08becdf95444043bd0eb97a1cc5183b):
 
 - One AES-256-GCM archive per run: `uai-backup-<utc>.tar.enc` plus `.sha256`
   plus `.manifest.json`.
 - `UNAI_BACKUP_DESTINATION=s3://<bucket-prefix>-uai-backup/<host-name>/`
 - `UNAI_BACKUP_KEY_FILE=/etc/unai/backup/backup.key`
 - `UNAI_BACKUP_RETENTION_DAYS` applies only to a local-directory destination.
+- `UNAI_BACKUP_STAGING_DIR=/var/lib/postgresql/unai-backup-staging`: created by
+  root, owned by `unai-backup`, mode 0700, on the D4 data volume and never on a
+  tmpfs. It must be empty when a run starts. The staged archive holds the dump
+  AND every live evidence object, so its free space must exceed the last
+  summary's `bytes`.
+- `UNAI_BACKUP_S3_ENDPOINT=https://s3.<backup-region>.amazonaws.com` and
+  `UNAI_BACKUP_S3_REGION=<backup-region>`.
+- `UNAI_BACKUP_S3_KMS_KEY_ID=arn:aws:kms:<backup-region>:<aws-account-id>:key/<backup-key-id>`:
+  the key ARN behind `alias/unai-backup`. S3 receipts echo the key ARN, never an
+  alias.
 
 **Schedule.**
 
@@ -595,8 +612,9 @@ task-cd57e1f0e42442ac938e936b95171097):
   - `pgpass`: 0600, used through `PGPASSFILE`, role `unai_backup` (D4).
   - `aws-credentials`: 0600, IAM user `unai-backup`: `s3:GetObject` and
     `s3:GetEncryptionConfiguration` on the evidence bucket; `kms:Decrypt` on the
-    evidence key; `s3:PutObject`, `s3:GetObject` and `s3:ListBucket` on the
-    backup bucket; `kms:GenerateDataKey` and `kms:Decrypt` on the backup key.
+    evidence key; `s3:PutObject`, `s3:GetObject`, `s3:ListBucket` and
+    `s3:AbortMultipartUpload` on the backup bucket; `kms:GenerateDataKey` and
+    `kms:Decrypt` on the backup key.
 - The drill uses IAM user `unai-restore-drill`, limited to the drill bucket and
   the evidence key. Production restores use credentials the operator supplies
   at restore time.
