@@ -51,5 +51,6 @@ See [historical inventory](0035-historical-deviation-inventory.md) for the revie
 | [0042-omi-webhook-intake.md](0042-omi-webhook-intake.md) | 2026-11-02 |
 | [0043-production-deployment-target.md](0043-production-deployment-target.md) | 2026-11-02 |
 | [0044-release-records-after-certified-run.md](0044-release-records-after-certified-run.md) | 2026-11-02 |
+| [0045-session-liveness-at-commit.md](0045-session-liveness-at-commit.md) | 2026-11-05 |
 
 The two existing 0033 records retain their qualified filenames so historical references remain valid. New work uses 0036 onward.
