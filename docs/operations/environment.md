@@ -418,6 +418,41 @@ and the backup-bucket write, take credentials only from the SDK default chain be
 the API does; under ADR 0043 D9 the chain reads the `unai-backup` IAM user's
 `/etc/unai/backup/aws-credentials` through `AWS_SHARED_CREDENTIALS_FILE`.
 
+### pnpm restore
+
+`scripts/restore.mjs` reads every row below in this order before any network or database
+work, and `--help` reads none of them; a local archive reads none of the three rows marked
+`s3://` only. Every failure is one stderr JSON line `{"event":"restore.failed","code":…}`;
+only `RESTORE_CONFIGURATION_REQUIRED` and `RESTORE_CONFIGURATION_INVALID` add a `variable`
+naming the row. A blank required value and an empty optional value count as unset. It reads
+no `UNAI_S3_*` variable: the target is named only by the `UNAI_RESTORE_S3_*` rows.
+Procedure: `docs/operations/restore.md`.
+
+| Variable | Required / default | Kind | When read | Consumer | Failure when missing |
+| --- | --- | --- | --- | --- | --- |
+| `UNAI_RESTORE_ARCHIVE` | required; an absolute path of a `uai-backup-<UTC>.tar.enc` archive with both sidecars beside it; an absolute directory ending in `/`, whose newest archive with both sidecars is used; or `s3://<bucket>/<prefix>/` with an optional archive name, for the ADR 0043 D9 backup bucket: a lowercase bucket name, then zero or more `[A-Za-z0-9._-]` segments each ending in `/`, none `.` or `..`, at most 512 bytes of prefix | file path or URL | startup | `scripts/restore.mjs:163` | `RESTORE_CONFIGURATION_REQUIRED`; bad form `RESTORE_CONFIGURATION_INVALID`; a local directory that does not exist `RESTORE_ARCHIVE_NOT_FOUND` |
+| `UNAI_RESTORE_STAGING_DIR` | `s3://` only: required with an `s3://` archive, not read otherwise; an existing, writable, empty absolute directory on the data volume, never tmpfs, whose free space must exceed the archive's `bytes`; the archive and both sidecars are downloaded into it, and the run removes them on success and on failure | file path | startup | `scripts/restore.mjs:166` | `RESTORE_CONFIGURATION_REQUIRED`; missing, relative, unwritable or non-empty `RESTORE_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_ARCHIVE_S3_ENDPOINT` | `s3://` only: required with an `s3://` archive, not read otherwise; the backup bucket's HTTPS endpoint, with no userinfo, query or fragment | URL | startup | `scripts/restore.mjs:168` | `RESTORE_CONFIGURATION_REQUIRED`; not such an https URL `RESTORE_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_ARCHIVE_S3_REGION` | `s3://` only: required with an `s3://` archive, not read otherwise; the backup bucket's region | literal | startup | `scripts/restore.mjs:169` | `RESTORE_CONFIGURATION_REQUIRED` |
+| `UNAI_RESTORE_KEY_FILE` | required; the backup's key: exactly 32 bytes, mode 0600 on POSIX, a regular file (no symlink) outside the archive's directory and the staging directory; read once, zeroed on exit, never copied | file path | startup | `scripts/restore.mjs:171` | `RESTORE_CONFIGURATION_REQUIRED`; `RESTORE_KEY_LOCATION_INVALID`; `RESTORE_KEY_INVALID`, also for a 32-byte key the archive was not written with |
+| `UNAI_RESTORE_DATABASE_URL` | required; literal `postgres(ql)://user@host[:port]/database` URL of the empty target database, with no password, query or fragment; the database name matches `[A-Za-z0-9_][A-Za-z0-9_$.-]{0,62}`; the role must be superuser (`unai_migrator`); password from PGPASSFILE | URL | startup | `scripts/restore.mjs:172` | `RESTORE_CONFIGURATION_REQUIRED`; `RESTORE_DATABASE_URL_INVALID`; not a superuser `RESTORE_DATABASE_ROLE_INVALID` |
+| `PGPASSWORD` | refused when set, even empty: the password belongs in PGPASSFILE | literal | startup | `scripts/restore.mjs:173` | none; set gives `RESTORE_CONFIGURATION_INVALID` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA, also pg_restore's PGSSLROOTCERT | file path | startup | `scripts/restore.mjs:174` | `RESTORE_CONFIGURATION_REQUIRED`; unreadable or empty `RESTORE_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_S3_ENDPOINT` | required; the target evidence bucket's HTTPS endpoint, with no userinfo, query or fragment | URL | startup | `scripts/restore.mjs:151` | `RESTORE_CONFIGURATION_REQUIRED`; not such an https URL `RESTORE_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_S3_REGION` | required; the target bucket's region | literal | startup | `scripts/restore.mjs:152` | `RESTORE_CONFIGURATION_REQUIRED` |
+| `UNAI_RESTORE_S3_BUCKET` | required; the target evidence bucket, a lowercase bucket name that is never the `s3://` archive's bucket; its single `aws:kms` rule names `UNAI_RESTORE_S3_KMS_KEY_ID`, and no object may exist under the prefix | literal | startup | `scripts/restore.mjs:153` | `RESTORE_CONFIGURATION_REQUIRED`; bad name or the archive's bucket `RESTORE_CONFIGURATION_INVALID`; bucket check `RESTORE_TARGET_STORE_UNAVAILABLE`; an object under the prefix `RESTORE_TARGET_NOT_EMPTY` |
+| `UNAI_RESTORE_S3_KMS_KEY_ID` | required; the full key ARN of that rule, which every write and read receipt must echo; never an alias; for a production restore the source evidence key, which restored rows name as `kms:<key>` | literal | startup | `scripts/restore.mjs:155` | `RESTORE_CONFIGURATION_REQUIRED`; not an `arn:` value, or an ARN with `:alias/`, `RESTORE_CONFIGURATION_INVALID`; a rule naming another key `RESTORE_TARGET_STORE_UNAVAILABLE`; a receipt naming another key `RESTORE_OBJECT_WRITE_FAILED` or `RESTORE_OBJECT_UNREADABLE` |
+| `UNAI_RESTORE_S3_PREFIX` | optional; unset means the whole bucket, which a production restore uses because the API reads objects at their recorded keys; a drill sets zero or more `[A-Za-z0-9._-]` segments each ending in `/`, none `.` or `..`, at most 512 bytes; each object is written at `<prefix><key>`, at most 1024 bytes | literal | startup | `scripts/restore.mjs:157` | none; whole bucket; bad value, or an over-long `<prefix><key>` after pass 1, `RESTORE_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_PG_RESTORE` | optional; `pg_restore` on PATH; one executable path or a JSON array command prefix; its major must equal the server's | literal | startup | `scripts/restore.mjs:178` | none; default; bad value `RESTORE_CONFIGURATION_INVALID`; not runnable `RESTORE_PG_RESTORE_UNAVAILABLE`; another major `RESTORE_PG_RESTORE_VERSION_MISMATCH` |
+
+The pg_restore child inherits the environment without any variable starting with `PG` (in
+any case) except `PGPASSFILE` (`scripts/restore.mjs:289`), then gets `PGHOST`, `PGPORT`,
+`PGUSER`, `PGDATABASE` from the URL, `PGSSLMODE=verify-full`, `PGSSLROOTCERT`,
+`PGCONNECT_TIMEOUT=10` and `PGAPPNAME=unai-restore`. Both S3 clients, the archive read and
+the target bucket's encrypted-store adapter, take credentials only from the SDK default chain
+below, as the API does, and `NODE_EXTRA_CA_CERTS` adds a private S3 CA. ADR 0043 D9 leaves a
+production restore's credentials to the operator at restore time.
+
 ## Test and development harness
 
 Never deliver an owner's production database or bucket. Tests create/drop databases,
@@ -487,7 +522,7 @@ source is the deployment ADR 0043 decision, not a choice made by this contract.
 | `AUTH_TRUST_HOST`, `VERCEL` | optional; dependency forwarded-host fallback only without NEXTAUTH_URL; do not enable proxy trust | literal | per use | next-auth 4.24.15 `utils/detect-origin.js:10`; `jwt/index.js:65` also reads VERCEL | none; canonical URL path used |
 | `VERCEL_URL` | optional dependency URL fallback; not deployment configuration for this app | URL | per use | next-auth 4.24.15 `react/index.js:53-56` | none; parser default |
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | URL omissions: host localhost, port 5432, user USER/USERNAME, password null, database user; prefer complete URLs | literal | per use | pg 8.23.0 `lib/connection-parameters.js:9-22,59-68`; `lib/defaults.js:5-28` | no single missing-variable code; connection/auth may fail |
-| `PGPASSFILE` | optional; ~/.pgpass (%APPDATA%\postgresql\pgpass.conf on Windows); the `pnpm backup` password source, mode 0600 | file path | per use | libpq for pg_dump; pg 8.23.0 `lib/client.js:299` through pgpass 1.0.5 `lib/helper.js:58-61` when the URL has no password | no password: authentication fails, `BACKUP_DATABASE_FAILED` |
+| `PGPASSFILE` | optional; ~/.pgpass (%APPDATA%\postgresql\pgpass.conf on Windows); the `pnpm backup` and `pnpm restore` password source, mode 0600 | file path | per use | libpq for pg_dump and pg_restore; pg 8.23.0 `lib/client.js:299` through pgpass 1.0.5 `lib/helper.js:58-61` when the URL has no password | no password: authentication fails, `BACKUP_DATABASE_FAILED` or `RESTORE_DATABASE_FAILED` |
 | `PGSSLMODE` | pg fallback only when ssl is unspecified; overridden by application explicit ssl | literal | per use | pg 8.23.0 `lib/connection-parameters.js:25-37,85` | none; application TLS remains verified |
 | `PGCONNECT_TIMEOUT` | pg fallback only without connectionTimeoutMillis; app explicitly supplies 5000 ms | literal | per use | pg 8.23.0 `lib/connection-parameters.js:126-129` | none; application timeout remains 5 s |
 

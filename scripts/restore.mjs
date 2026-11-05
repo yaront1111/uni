@@ -335,9 +335,9 @@ async function apply(found,pass,plan,config,store,state){
     {env:restoreEnvironment(config),stdio:['pipe','ignore','ignore']});
   state.child=child;child.stdin.on('error',()=>{});
   const exited=new Promise(done=>{child.once('error',()=>done(null));child.once('close',code=>done(code));});
-  const write=bytes=>new Promise((done,fail)=>child.stdin.write(bytes,error=>error?fail(refuse('RESTORE_APPLY_FAILED')):done()));
+  const write=bytes=>new Promise((done,fail)=>child.stdin.write(bytes,error=>error?fail(refuse('RESTORE_DATABASE_APPLY_FAILED')):done()));
   let index=0,open=true;
-  const finish=async()=>{open=false;child.stdin.end();const code=await exited;state.child=null;if(code!==0)throw refuse('RESTORE_APPLY_FAILED');};
+  const finish=async()=>{open=false;child.stdin.end();const code=await exited;state.child=null;if(code!==0)throw refuse('RESTORE_DATABASE_APPLY_FAILED');};
   const objects=new Map(plan.manifest.objects.map(object=>[object.entry,object])),run=randomUUID();
   try{
     const read=await readArchive(found.path,state.key,async entry=>{

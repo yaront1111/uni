@@ -542,6 +542,18 @@ it('fails the restore when a PutObject or GetObject receipt names another key',a
   }finally{delete targetServer.receiptOverrides.GetObject;}
 },600000);
 
+it('stops at a failing pg_restore with RESTORE_DATABASE_APPLY_FAILED: no object is written and its transaction leaves nothing',async()=>{
+  const target=await freshTarget('apply');
+  // A function is no relation, so the target still counts as empty. Its event trigger fails pg_restore at the first
+  // CREATE INDEX, which comes after every table has been created and loaded: the single transaction must undo them.
+  await target.pool.query("CREATE FUNCTION public.refuse_index() RETURNS event_trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'refused'; END$$");
+  await target.pool.query("CREATE EVENT TRIGGER refuse_index ON ddl_command_start WHEN TAG IN ('CREATE INDEX') EXECUTE FUNCTION public.refuse_index()");
+  const {result,targetOperations}=await restoreTo(target);
+  refused(result,'RESTORE_DATABASE_APPLY_FAILED');
+  expect(targetOperations).toEqual(['GetBucketEncryption','ListObjectsV2']);
+  await untouched(target);
+},600000);
+
 it('verifies table digests, the migration ledger and registry releases against the manifest',async()=>{
   const cases:[string,(inner:Manifest)=>void,string][]=[
     ['digest',inner=>{(inner.tables[0] as Digest).digest=sha256('another table');},'RESTORE_TABLE_DIGEST_MISMATCH'],
