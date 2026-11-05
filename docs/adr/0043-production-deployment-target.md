@@ -235,8 +235,12 @@ Cites ADR 0008 (Host check, own TLS listeners) and PRD §30.5.
   runs `aws kms decrypt` and pipes the plaintext into
   `cryptsetup open --key-file=-`.
 - Unlock credentials: IAM user `unai-host-unlock`, allowed only `kms:Decrypt`
-  on that key, with the key-policy condition `aws:SourceIp = <host-ipv4>`. File:
-  `/etc/unai/pgdata/aws-credentials` (root:root 0400).
+  on that key and only from `aws:SourceIp = <host-ipv4>/32`. The condition sits
+  in the user's IAM policy, written by `deploy/aws/provision.sh`. The key keeps
+  its default key policy, which lets IAM policies grant its use; no script
+  changes a key policy. File: `/etc/unai/pgdata/aws-credentials` (root:root
+  0400). (Amended 2026-11-05, task-530c916c959a407bbc47eafa344c8857: first
+  written as a key-policy condition.)
 - LUKS keyslot 1 holds a random recovery passphrase that the owner keeps offline
   with the backup key (D9).
 
@@ -631,9 +635,26 @@ task-e08becdf95444043bd0eb97a1cc5183b):
     evidence key; `s3:PutObject`, `s3:GetObject`, `s3:ListBucket` and
     `s3:AbortMultipartUpload` on the backup bucket; `kms:GenerateDataKey` and
     `kms:Decrypt` on the backup key.
-- The drill uses IAM user `unai-restore-drill`, limited to the drill bucket and
-  the evidence key. Production restores use credentials the operator supplies
-  at restore time.
+- The drill uses IAM user `unai-restore-drill`. It reads the newest archive
+  from the backup bucket and restores it into the drill bucket
+  `<bucket-prefix>-uai-restore-drill` in `<aws-region>`, whose single `aws:kms`
+  rule names the evidence key:
+  - backup bucket: `s3:ListBucket` and `s3:GetObject`, plus `kms:Decrypt` on
+    the backup key;
+  - drill bucket: `s3:GetEncryptionConfiguration`, `s3:ListBucket`,
+    `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject`, plus
+    `kms:GenerateDataKey` and `kms:Decrypt` on the evidence key;
+  - nothing on the evidence bucket, and never `s3:DeleteObjectVersion`.
+- The drill bucket is permanent and unversioned. `deploy/aws/provision.sh`
+  creates it with Block Public Access, the one `aws:kms` rule and the 2-day
+  expiry, and a drill removes only what it restored.
+- Production restores use credentials the operator supplies at restore time.
+
+Amended 2026-11-05 (task-530c916c959a407bbc47eafa344c8857, landing the
+permission set planned by task-0029882ff3c84cef89ffa6b150c03bb0): the drill
+principal reads the backup bucket, because an `s3://` backup removes its staged
+copy after the upload (scripts/backup.mjs), so a drill can only restore from
+the bucket.
 
 **Key custody.**
 
