@@ -226,11 +226,13 @@ and `raw` cannot be used when accessing the API with the `gmail.metadata` scope,
 and says nothing about a token that carries both scopes. A 2020 field report
 shows a token carrying `gmail.metadata` beside `gmail.readonly` refused with 403
 "Metadata scope doesn't allow format FULL". `requestedScopes` for
-`gmail.read_metadata` plus `gmail.read_content` lists both scopes, and `getJson`
-reports every 403 as `CONNECTOR_TOKEN_REVOKED`. Whoever mints the token should
-therefore request `gmail.readonly` without `gmail.metadata` when content is
-granted. The manifests are unchanged, and no live account has confirmed the
-behaviour.
+`gmail.read_metadata` plus `gmail.read_content` listed both scopes, and `getJson`
+reports every 403 as `CONNECTOR_TOKEN_REVOKED`. Since 2026-11-05
+(task-a814e89c), `requestedScopes` drops `gmail.metadata` whenever
+`gmail.readonly` is in the set, so a content or search grant asks only for
+`gmail.readonly`, which also reads metadata, and `pnpm connect:google` mints that
+token. A metadata-only grant still asks for `gmail.metadata`. No live account has
+confirmed the 403.
 
 **A payload that does not parse.** During a sync of any connector type, a payload
 the parser refuses is listed in the result's `refusals` as
@@ -294,7 +296,20 @@ The real-PostgreSQL proof is `packages/api/src/connector-sync-race.test.ts`.
   bounded to 50 hits, with no ranking and no embeddings.
 - **No OAuth ceremony.** The consent handoff is drawn and the scopes are computed,
   but obtaining the token and writing the `secret://` handle is deployment work;
-  the routes accept a handle and never a credential.
+  the routes accept a handle and never a credential. Update 2026-11-05
+  (task-a814e89c): `pnpm connect:google --capabilities <ids>` (options
+  `--secret-name connectors/google`, `--port <n>`, `--open`, `--replace`) runs
+  Google's loopback + PKCE flow with the Uai connectors client named by
+  `UNAI_GOOGLE_CONNECTOR_CLIENT` (ADR 0043 D6). That client must be a Desktop app
+  OAuth client. The command refuses write capabilities by name and refuses a token
+  whose granted scopes differ from the requested ones. It writes only the refresh
+  token to `<UNAI_SECRETS_MOUNT>/<name>` (mode 0600, never overwritten without
+  `--replace`) and prints the handle and the granted scopes.
+  `pnpm secret:put <name>` stores a value piped on stdin, such as a GitHub PAT,
+  the same way. On a remote host, forward the port first
+  (`ssh -L <n>:127.0.0.1:<n>`). On the ADR 0043 host, install the file into the
+  api and worker mounts as `root:unai-<process>` 0640 (`deploy/README.md`,
+  task-a620d2e8). The web app still has no consent flow.
 - **No draft, and no external write of any kind.** The draft capability is drawn as
   refused through a connector grant; `CRT-CON-08-A` and the action path belong to
   `drafts-actions-permissions-export-and-deletion-workflow`.

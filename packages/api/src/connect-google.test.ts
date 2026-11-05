@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -247,3 +250,246 @@ it.each([
   expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_USAGE_INVALID' });
   expect(run.out).toEqual([]);
 });
+
+const GMAIL_READONLY = 'https://www.googleapis.com/auth/gmail.readonly';
+const GMAIL_METADATA = 'https://www.googleapis.com/auth/gmail.metadata';
+const CALENDAR_READONLY = 'https://www.googleapis.com/auth/calendar.readonly';
+const REFRESH = '1//refresh-token-SENTINEL-0123';
+const ACCESS = 'ya29.access-token-SENTINEL-4567';
+const CODE = '4/0authorization-code-SENTINEL';
+
+function tokenResponse(fields: Record<string, unknown> = {}, status = 200): () => Promise<Response> {
+  const body = { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3599, token_type: 'Bearer',
+    scope: `${GMAIL_READONLY} ${CALENDAR_READONLY}`, ...fields };
+  return async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+interface Ceremony { readonly exit: Promise<number>; readonly url: URL; readonly redirectUri: string }
+
+/** Starts the ceremony and waits for the consent URL, as an owner reading the terminal would. */
+async function begin(run: Harness, args: readonly string[] = ['--capabilities', READ_IDS]): Promise<Ceremony> {
+  const exit = runConnectCli(['google', ...args], run.io);
+  const url = await Promise.race([run.consent, exit.then(code => { throw new Error(`exited ${code}: ${run.err.join(' ')}`); })]);
+  return { exit, url, redirectUri: url.searchParams.get('redirect_uri') ?? '' };
+}
+
+/** Plays Google's redirect back to the loopback listener, as the browser would. */
+async function redirect(ceremony: Ceremony, query: Record<string, string>): Promise<Response> {
+  return fetch(`${ceremony.redirectUri}?${new URLSearchParams(query)}`);
+}
+
+function sha256(value: string): string { return createHash('sha256').update(value).digest('base64url'); }
+
+/** Every credential the run held, none of which may reach stdout or stderr. */
+function assertNoSecretPrinted(run: Harness): void {
+  const printed = [...run.out, ...run.err].join('\n');
+  for (const secret of ['SENTINEL', REFRESH, ACCESS, CODE, CLIENT_SECRET]) expect(printed).not.toContain(secret);
+  for (const request of run.requests) expect(printed).not.toContain(request.body.get('code_verifier'));
+}
+
+async function filesUnderMount(): Promise<string[]> {
+  const entries = await readdir(mount, { recursive: true, withFileTypes: true });
+  return Promise.all(entries.filter(entry => entry.isFile())
+    .map(entry => readFile(join(entry.parentPath, entry.name), 'utf8')));
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  return port;
+}
+
+it.skipIf(!POSIX)('google runs the loopback PKCE flow and stores only the refresh token at 0600', async () => {
+  await writeClient();
+  const run = harness({ respond: tokenResponse() });
+  const ceremony = await begin(run);
+  const { url } = ceremony;
+  expect(`${url.origin}${url.pathname}`).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+  expect(url.searchParams.get('scope')).toBe(`${CALENDAR_READONLY} ${GMAIL_READONLY}`);
+  for (const [key, value] of Object.entries({ access_type: 'offline', prompt: 'consent',
+    include_granted_scopes: 'false', response_type: 'code', code_challenge_method: 'S256', client_id: CLIENT_ID })) {
+    expect(url.searchParams.get(key)).toBe(value);
+  }
+  expect(ceremony.redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:[0-9]+\/callback$/);
+  expect(run.opened).toEqual([]);
+
+  // Bound to 127.0.0.1 alone: the wildcard address would also answer on [::1].
+  await expect(fetch(new URL('/favicon.ico', ceremony.redirectUri.replace('127.0.0.1', '[::1]')))).rejects.toThrow();
+  expect((await fetch(new URL('/favicon.ico', ceremony.redirectUri))).status).toBe(404);
+  const reply = await redirect(ceremony, { code: CODE, state: url.searchParams.get('state') ?? '', scope: 'x' });
+  expect(reply.status).toBe(200);
+  expect(reply.headers.get('cache-control')).toBe('no-store');
+  expect(await reply.text()).not.toContain(CODE);
+  expect(await ceremony.exit).toBe(0);
+
+  expect(run.requests).toHaveLength(1);
+  const [request] = run.requests;
+  expect(request!.url).toBe('https://oauth2.googleapis.com/token');
+  expect(request!.init?.method).toBe('POST');
+  expect(Object.fromEntries(request!.body)).toEqual({ grant_type: 'authorization_code', code: CODE,
+    redirect_uri: ceremony.redirectUri, client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+    code_verifier: request!.body.get('code_verifier') });
+  expect(sha256(request!.body.get('code_verifier') ?? '')).toBe(url.searchParams.get('code_challenge'));
+
+  const path = join(mount, 'connectors', 'google');
+  expect(await readFile(path, 'utf8')).toBe(REFRESH);
+  expect(await mode(path)).toBe(0o600);
+  expect(JSON.parse(run.out.at(-1)!)).toEqual({ event: 'connect.stored', handle: 'secret://mounted/connectors/google',
+    scopes: [CALENDAR_READONLY, GMAIL_READONLY] });
+  const secrets = createSecretsManager({ mounted: createMountedSecretsProvider(mount) });
+  expect(await secrets.resolve('secret://mounted/connectors/google')).toBe(REFRESH);
+  expect(run.err).toEqual([]);
+  assertNoSecretPrinted(run);
+  for (const content of await filesUnderMount()) expect(content).not.toContain(ACCESS);
+});
+
+it('google asks for gmail.metadata alone for a metadata-only grant and stops when consent is denied', async () => {
+  await writeClient();
+  const run = harness();
+  const ceremony = await begin(run, ['--capabilities', 'gmail.read_metadata']);
+  expect(ceremony.url.searchParams.get('scope')).toBe(GMAIL_METADATA);
+  const reply = await redirect(ceremony, { error: 'access_denied', state: ceremony.url.searchParams.get('state') ?? '' });
+  expect(reply.status).toBe(400);
+  expect(await ceremony.exit).toBe(1);
+  expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_CONSENT_DENIED' });
+  expect(run.requests).toEqual([]);
+  expect(await listing()).toEqual(['google-connector-client']);
+});
+
+it.each([
+  { label: 'a refused exchange', respond: tokenResponse({ error: 'invalid_grant',
+    error_description: `${REFRESH} ${ACCESS} ${CODE} ${CLIENT_SECRET}` }, 400),
+    failed: { code: 'CONNECT_TOKEN_EXCHANGE_FAILED', status: 400, error: 'invalid_grant' } },
+  { label: 'an unlisted provider error', respond: tokenResponse({ error: `odd ${ACCESS}` }, 401),
+    failed: { code: 'CONNECT_TOKEN_EXCHANGE_FAILED', status: 401, error: null } },
+  { label: 'a server error page', respond: async () => new Response(`<html>${ACCESS}</html>`, { status: 503 }),
+    failed: { code: 'CONNECT_TOKEN_EXCHANGE_FAILED', status: 503, error: null } },
+  { label: 'a transport failure', respond: async () => { throw new TypeError(`fetch failed ${CLIENT_SECRET} ${CODE}`); },
+    failed: { code: 'CONNECT_PROVIDER_UNAVAILABLE', status: null } },
+  { label: 'no refresh token', respond: tokenResponse({ refresh_token: undefined }),
+    failed: { code: 'CONNECT_REFRESH_TOKEN_MISSING' } },
+  { label: 'a malformed refresh token', respond: tokenResponse({ refresh_token: `bad token\n${REFRESH}` }),
+    failed: { code: 'CONNECT_PROVIDER_RESPONSE_INVALID' } },
+  { label: 'no granted scope', respond: tokenResponse({ scope: undefined }),
+    failed: { code: 'CONNECT_PROVIDER_RESPONSE_INVALID' } },
+  { label: 'a body that is not JSON', respond: async () => new Response(`${REFRESH}`, { status: 200 }),
+    failed: { code: 'CONNECT_PROVIDER_RESPONSE_INVALID' } },
+  { label: 'an unticked scope', respond: tokenResponse({ scope: GMAIL_READONLY }),
+    failed: { code: 'CONNECT_SCOPES_NOT_GRANTED', missing: [CALENDAR_READONLY], unexpected: [] } },
+  { label: 'an extra metadata scope', respond: tokenResponse({ scope: `${GMAIL_METADATA} ${GMAIL_READONLY} ${CALENDAR_READONLY}` }),
+    failed: { code: 'CONNECT_SCOPES_NOT_GRANTED', missing: [], unexpected: [GMAIL_METADATA] } },
+])('google fails closed on $label, writes no token and prints no credential', async ({ respond, failed }) => {
+  await writeClient();
+  const run = harness({ respond });
+  const ceremony = await begin(run);
+  await redirect(ceremony, { code: CODE, state: ceremony.url.searchParams.get('state') ?? '' });
+  expect(await ceremony.exit).toBe(1);
+  expect(failure(run)).toEqual({ event: 'connect.failed', ...failed });
+  expect(run.requests).toHaveLength(1);
+  expect(await listing()).toEqual(['google-connector-client']);
+  assertNoSecretPrinted(run);
+});
+
+it('google refuses a callback whose state differs and never exchanges its code', async () => {
+  await writeClient();
+  const run = harness({ respond: tokenResponse() });
+  const ceremony = await begin(run);
+  const reply = await redirect(ceremony, { code: CODE, state: 'forged-state' });
+  expect(reply.status).toBe(400);
+  expect(await reply.text()).not.toContain(CODE);
+  expect(await ceremony.exit).toBe(1);
+  expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_STATE_MISMATCH' });
+  expect(run.requests).toEqual([]);
+  expect(await listing()).toEqual(['google-connector-client']);
+});
+
+it.each([
+  { label: 'no code', query: {} }, { label: 'a provider error', query: { error: 'server_error', code: CODE } },
+  { label: 'an empty code', query: { code: '' } },
+])('google treats a callback with $label as an authorization failure', async ({ query }) => {
+  await writeClient();
+  const run = harness({ respond: tokenResponse() });
+  const ceremony = await begin(run);
+  const reply = await redirect(ceremony, { state: ceremony.url.searchParams.get('state') ?? '', ...query });
+  expect(reply.status).toBe(400);
+  expect(await ceremony.exit).toBe(1);
+  expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_AUTHORIZATION_FAILED' });
+  expect(run.requests).toEqual([]);
+});
+
+it('google times out when no redirect arrives and closes its listener', async () => {
+  await writeClient();
+  const run = harness({ respond: tokenResponse(), timeoutMs: 100 });
+  const ceremony = await begin(run);
+  expect(await ceremony.exit).toBe(1);
+  expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_TIMEOUT' });
+  await expect(fetch(ceremony.redirectUri)).rejects.toThrow();
+  expect(run.requests).toEqual([]);
+});
+
+it('google refuses a port already in use before printing any URL', async () => {
+  await writeClient();
+  const blocker = createServer();
+  await new Promise<void>(resolve => blocker.listen(0, '127.0.0.1', resolve));
+  try {
+    const run = harness();
+    const port = String((blocker.address() as AddressInfo).port);
+    expect(await runConnectCli(['google', '--capabilities', READ_IDS, '--port', port, '--open'], run.io)).toBe(1);
+    expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_PORT_UNAVAILABLE' });
+    expect(run.out).toEqual([]);
+    expect(run.opened).toEqual([]);
+  } finally {
+    await new Promise<void>(resolve => blocker.close(() => resolve()));
+  }
+});
+
+it.skipIf(!POSIX)('google --open --replace --port opens the URL once and replaces the secret at 0600', async () => {
+  await writeClient();
+  await mkdir(join(mount, 'connectors'));
+  await writeFile(join(mount, 'connectors', 'gmail'), 'previous-refresh-token', { mode: 0o644 });
+  const port = await freePort();
+  const run = harness({ respond: tokenResponse({ scope: GMAIL_READONLY }) });
+  const ceremony = await begin(run, ['--capabilities', 'gmail.read_content', '--secret-name', 'connectors/gmail',
+    '--port', String(port), '--open', '--replace']);
+  expect(ceremony.redirectUri).toBe(`http://127.0.0.1:${port}/callback`);
+  expect(run.opened).toEqual([ceremony.url.href]);
+  expect(run.out).toContain(ceremony.url.href);
+  await redirect(ceremony, { code: CODE, state: ceremony.url.searchParams.get('state') ?? '' });
+  expect(await ceremony.exit).toBe(0);
+  const path = join(mount, 'connectors', 'gmail');
+  expect(await readFile(path, 'utf8')).toBe(REFRESH);
+  expect(await mode(path)).toBe(0o600);
+  expect(await listing()).toEqual(['connectors', join('connectors', 'gmail'), 'google-connector-client']);
+  expect(run.opened).toHaveLength(1);
+  assertNoSecretPrinted(run);
+});
+
+it('the root scripts run the CLI entry, which no API or worker module references', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../../../package.json', import.meta.url), 'utf8')) as
+    { scripts: Record<string, string> };
+  expect(manifest.scripts['connect:google']).toBe('tsx packages/api/src/connect-google-cli.ts google');
+  expect(manifest.scripts['secret:put']).toBe('tsx packages/api/src/connect-google-cli.ts secret:put');
+  const entry = await readFile(new URL('./connect-google-cli.ts', import.meta.url), 'utf8');
+  expect(entry).toContain("from './connect-google.js'");
+  for (const file of ['index.ts', 'server.ts', 'platform.ts', 'processing-worker.ts']) {
+    expect(await readFile(new URL(`./${file}`, import.meta.url), 'utf8')).not.toContain('connect-google');
+  }
+});
+
+it.skipIf(!POSIX || process.getuid?.() === 0)(
+  'google refuses a target directory it cannot write before any URL, so no consent is wasted', async () => {
+    await writeClient();
+    await mkdir(join(mount, 'connectors'), { mode: 0o500 });
+    try {
+      const run = harness({ respond: tokenResponse() });
+      expect(await runConnectCli(['google', '--capabilities', READ_IDS, '--open'], run.io)).toBe(1);
+      expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_SECRET_WRITE_FAILED' });
+      expect(run.out).toEqual([]);
+      expect(run.opened).toEqual([]);
+      expect(run.requests).toEqual([]);
+    } finally {
+      await chmod(join(mount, 'connectors'), 0o700);
+    }
+  });

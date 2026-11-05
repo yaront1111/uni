@@ -1,5 +1,8 @@
-import { randomBytes } from 'node:crypto';
-import { lstat, mkdir, open, rename, stat, unlink } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import { access, constants, lstat, mkdir, open, rename, stat, unlink } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { dirname, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { ConnectorError, capabilityOf, isWriteScope, manifestFor, requestedScopes } from '@unai/connectors';
@@ -32,8 +35,17 @@ const INPUT_LIMIT = 64 * 1024;
 /** A stable code, optionally suffixed with a variable name or handle parts. */
 const CODE = /^[A-Z][A-Z0-9_]*(?::[A-Za-z0-9_./#-]+)?$/;
 const DETAIL_KEYS = ['capabilityId', 'status', 'error', 'missing', 'unexpected'] as const;
+const AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const CALLBACK_TIMEOUT_MS = 5 * 60_000;
+/** RFC 6749 section 5.2 codes; any other provider text is reported as null. */
+const OAUTH_ERRORS = new Set(['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
+  'unsupported_grant_type', 'invalid_scope']);
 
 interface Target { readonly handle: string; readonly path: string }
+interface Client { readonly id: string; readonly secret: string }
+interface Authorization { readonly code: string; readonly redirectUri: string; readonly verifier: string }
+interface Settle { resolve(code: string): void; reject(error: Error): void }
 
 export async function runConnectCli(argv: readonly string[], io: ConnectCliIo): Promise<number> {
   const [command, ...args] = argv;
@@ -45,6 +57,16 @@ export async function runConnectCli(argv: readonly string[], io: ConnectCliIo): 
     io.stderr(failureLine(command === 'secret:put' ? 'secret.failed' : 'connect.failed', error));
     return error instanceof Error && error.message === USAGE_INVALID ? 2 : 1;
   }
+}
+
+/** `--open`: the platform's URL handler, spawned without a shell so the URL stays one
+ * argument. Without a handler the run continues: the URL is already printed. */
+export function openBrowser(url: string): void {
+  const [command, args]: [string, string[]] = process.platform === 'darwin' ? ['open', [url]]
+    : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]] : ['xdg-open', [url]];
+  const child = spawn(command, args, { stdio: 'ignore', detached: true });
+  child.on('error', () => { process.stdout.write('Could not start a browser: open the URL above in a browser.\n'); });
+  child.unref();
 }
 
 /** The one failure line: a stable code and allowlisted detail, never a foreign
@@ -88,7 +110,7 @@ async function secretPut(args: readonly string[], io: ConnectCliIo): Promise<num
   if (positionals.length !== 1 || name === undefined) throw new ConnectorError(USAGE_INVALID);
   const replace = values.replace === true;
   const target = targetOf(await mountOf(io.env), name);
-  await assertAbsent(target.path, replace);
+  await assertWritable(target.path, replace);
   await writeSecret(target.path, await readPiped(io.stdin()), replace);
   io.stdout(JSON.stringify({ event: 'secret.stored', handle: target.handle }));
   return 0;
@@ -107,12 +129,118 @@ async function connectGoogle(args: readonly string[], io: ConnectCliIo): Promise
   const target = targetOf(mount, values['secret-name'] ?? 'connectors/google');
   if (target.handle === clientHandle) throw new ConnectorError('CONNECT_SECRET_NAME_RESERVED');
   const replace = values.replace === true;
-  await assertAbsent(target.path, replace);
+  await assertWritable(target.path, replace);
   const secrets = createSecretsManager({ mounted: createMountedSecretsProvider(mount) });
-  const client = { id: await secrets.resolve(clientHandle + '#client_id'),
+  const client: Client = { id: await secrets.resolve(clientHandle + '#client_id'),
     secret: await secrets.resolve(clientHandle + '#client_secret') };
-  void port; void client; void target;
-  throw new ConnectorError('CONNECT_FAILED');
+  const authorization = await authorize(io, port, client.id, scopes, values.open === true);
+  const refreshToken = await exchange(io, client, authorization, scopes);
+  await writeSecret(target.path, refreshToken, replace);
+  io.stdout(JSON.stringify({ event: 'connect.stored', handle: target.handle, scopes }));
+  return 0;
+}
+
+/** Google's installed-app flow: PKCE S256 and `state`, one listener on 127.0.0.1
+ * only, closed with its timer on every exit path so the command never hangs. */
+async function authorize(io: ConnectCliIo, port: number, clientId: string, scopes: readonly string[],
+  open: boolean): Promise<Authorization> {
+  const verifier = randomBytes(32).toString('base64url');
+  const state = randomBytes(16).toString('base64url');
+  let settle: Settle = { resolve: () => undefined, reject: () => undefined };
+  const code = new Promise<string>((resolve, reject) => { settle = { resolve, reject }; });
+  const server = createServer((request, response) => { answerCallback(request, response, state, settle); });
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const redirectUri = `http://127.0.0.1:${await listen(server, port)}/callback`;
+    const url = `${AUTHORIZE_URL}?${new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri,
+      response_type: 'code', scope: scopes.join(' '), state, access_type: 'offline', prompt: 'consent',
+      include_granted_scopes: 'false', code_challenge_method: 'S256',
+      code_challenge: createHash('sha256').update(verifier).digest('base64url') })}`;
+    const timeoutMs = io.callbackTimeoutMs ?? CALLBACK_TIMEOUT_MS;
+    io.stdout('Open this URL in a browser signed in to the Google account to connect:');
+    io.stdout(url);
+    io.stdout(`Waiting ${Math.ceil(timeoutMs / 1000)} s for Google to redirect to ${redirectUri}`);
+    if (open) io.openBrowser(url);
+    timer = setTimeout(() => { settle.reject(new ConnectorError('CONNECT_TIMEOUT')); }, timeoutMs);
+    return { code: await code, redirectUri, verifier };
+  } finally {
+    clearTimeout(timer);
+    server.close();
+    server.closeAllConnections();
+  }
+}
+
+function listen(server: Server, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.on('error', () => { reject(new ConnectorError('CONNECT_PORT_UNAVAILABLE')); });
+    server.listen(port, '127.0.0.1', () => { resolve((server.address() as AddressInfo).port); });
+  });
+}
+
+/** Fixed text that never echoes a query value. Any other path (a favicon request)
+ * is a 404 and the listener keeps waiting; the run settles once the reply is sent. */
+function answerCallback(request: IncomingMessage, response: ServerResponse, state: string, settle: Settle): void {
+  const url = URL.parse(request.url ?? '/', 'http://127.0.0.1');
+  const outcome = url?.pathname === '/callback' ? callbackOutcome(url.searchParams, state) : null;
+  const status = outcome === null ? 404 : typeof outcome === 'string' ? 200 : 400;
+  response.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store',
+    connection: 'close' });
+  response.end(status === 404 ? 'Not found.' : status === 200
+    ? 'Uai received the authorization. Return to the terminal.'
+    : 'Uai could not complete the connection. Return to the terminal.', () => {
+    if (typeof outcome === 'string') settle.resolve(outcome); else if (outcome !== null) settle.reject(outcome);
+  });
+}
+
+function callbackOutcome(query: URLSearchParams, state: string): string | ConnectorError {
+  if (query.get('state') !== state) return new ConnectorError('CONNECT_STATE_MISMATCH');
+  if (query.get('error') === 'access_denied') return new ConnectorError('CONNECT_CONSENT_DENIED');
+  const code = query.get('code');
+  return query.has('error') || !code ? new ConnectorError('CONNECT_AUTHORIZATION_FAILED') : code;
+}
+
+/** Returns only a refresh token whose granted scope set equals the requested one
+ * (an owner may untick a scope); the access token is never read. */
+async function exchange(io: ConnectCliIo, client: Client, authorization: Authorization,
+  scopes: readonly string[]): Promise<string> {
+  const body = await tokenResponse(io, new URLSearchParams({ grant_type: 'authorization_code',
+    code: authorization.code, redirect_uri: authorization.redirectUri, client_id: client.id,
+    client_secret: client.secret, code_verifier: authorization.verifier }));
+  const { refresh_token: refreshToken, scope } = body;
+  if (refreshToken === undefined) throw new ConnectorError('CONNECT_REFRESH_TOKEN_MISSING');
+  if (typeof refreshToken !== 'string' || !/^[\x21-\x7e]+$/.test(refreshToken)
+    || typeof scope !== 'string' || scope.trim() === '') {
+    throw new ConnectorError('CONNECT_PROVIDER_RESPONSE_INVALID');
+  }
+  const granted = new Set(scope.trim().split(/\s+/));
+  const missing = scopes.filter(entry => !granted.has(entry));
+  const unexpected = [...granted].filter(entry => !scopes.includes(entry)).sort();
+  if (missing.length + unexpected.length > 0) {
+    throw new ConnectorError('CONNECT_SCOPES_NOT_GRANTED', { missing, unexpected });
+  }
+  return refreshToken;
+}
+
+/** The token endpoint's JSON object. A transport failure binds nothing and passes no
+ * cause: its text can quote the request, which carries the code and client secret. */
+async function tokenResponse(io: ConnectCliIo, body: URLSearchParams): Promise<Record<string, unknown>> {
+  let response: Response;
+  try {
+    response = await io.fetch(TOKEN_URL, { method: 'POST', redirect: 'error', body,
+      signal: AbortSignal.timeout(30_000),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' } });
+  } catch {
+    throw new ConnectorError('CONNECT_PROVIDER_UNAVAILABLE', { status: null });
+  }
+  const json: unknown = await response.json().catch(() => null);
+  const fields = typeof json === 'object' && json !== null && !Array.isArray(json)
+    ? json as Record<string, unknown> : null;
+  if (!response.ok) {
+    const error = typeof fields?.error === 'string' && OAUTH_ERRORS.has(fields.error) ? fields.error : null;
+    throw new ConnectorError('CONNECT_TOKEN_EXCHANGE_FAILED', { status: response.status, error });
+  }
+  if (fields === null) throw new ConnectorError('CONNECT_PROVIDER_RESPONSE_INVALID');
+  return fields;
 }
 
 function capabilityIds(value: string | undefined): string[] {
@@ -175,13 +303,19 @@ function targetOf(mount: string, name: string): Target {
   return { handle, path };
 }
 
-async function assertAbsent(path: string, replace: boolean): Promise<void> {
-  if (replace) return;
-  try { await lstat(path); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw new ConnectorError('CONNECT_SECRET_WRITE_FAILED');
+/** Refuses up front what the writer would refuse after consent: an existing target
+ * without --replace, or a nearest existing directory this user cannot write. */
+async function assertWritable(path: string, replace: boolean): Promise<void> {
+  if (!replace) {
+    const absent = await lstat(path).then(() => false, (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return true;
+      throw new ConnectorError('CONNECT_SECRET_WRITE_FAILED');
+    });
+    if (!absent) throw new ConnectorError('CONNECT_SECRET_EXISTS');
   }
-  throw new ConnectorError('CONNECT_SECRET_EXISTS');
+  let directory = dirname(path);
+  while (!(await stat(directory).catch(() => null))?.isDirectory()) directory = dirname(directory);
+  await access(directory, constants.W_OK).catch(() => { throw new ConnectorError('CONNECT_SECRET_WRITE_FAILED'); });
 }
 
 /** Creates the file exclusively at 0600 (or a temporary file renamed over the

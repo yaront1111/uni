@@ -18,6 +18,8 @@
     "start:api": "tsx packages/api/src/server.ts",
     "start:worker": "tsx packages/api/src/processing-worker.ts",
     "db:migrate": "tsx packages/postgres/src/migrate-cli.ts",
+    "connect:google": "tsx packages/api/src/connect-google-cli.ts google",
+    "secret:put": "tsx packages/api/src/connect-google-cli.ts secret:put",
     "backup": "node scripts/backup.mjs",
     "uai": "tsx packages/registry/src/cli.ts",
     "validate:registry": "tsx packages/registry/src/cli.ts registry lint",
