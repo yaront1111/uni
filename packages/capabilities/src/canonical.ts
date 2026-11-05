@@ -350,25 +350,35 @@ export interface OwnerDelta {
  * (CRT-RYW-04-A).
  */
 export async function readOwnerDeltas(tx: MemoryTransaction, ownerScopeId: string): Promise<OwnerDelta[]> {
+  // A fresh owner can be estimated at one row by shared multi-owner statistics.
+  // Read each RLS table once: nested joins must rescan materialized rows, not
+  // re-run the per-row SECURITY DEFINER membership policies quadratically.
   const rows = (await tx.query(
-    `SELECT d.id, d.owner_sequence, d.delta_kind, d.lifecycle, d.raw_text, d.created_at,
+    `WITH d AS MATERIALIZED (SELECT id,owner_sequence,delta_kind,lifecycle,raw_text,created_at,attached_frame_instance_id,
+         attached_belief_slot_id,target_object_type,target_object_id
+       FROM owner_overlay_deltas WHERE owner_scope_id=$1
+     ), c AS MATERIALIZED (SELECT id,proposition_id FROM claims WHERE owner_scope_id=$1
+         AND id IN (SELECT target_object_id FROM d WHERE target_object_type='claim')
+     ), p AS MATERIALIZED (SELECT id,belief_slot_id FROM propositions WHERE owner_scope_id=$1
+         AND id IN (SELECT target_object_id FROM d WHERE target_object_type='proposition'
+           UNION ALL SELECT proposition_id FROM c)
+     ), sl AS MATERIALIZED (SELECT id,frame_instance_id,predicate_id FROM belief_slots WHERE owner_scope_id=$1
+         AND id IN (SELECT attached_belief_slot_id FROM d
+           UNION ALL SELECT target_object_id FROM d WHERE target_object_type='belief_slot'
+           UNION ALL SELECT belief_slot_id FROM p)
+     ) SELECT d.id, d.owner_sequence, d.delta_kind, d.lifecycle, d.raw_text, d.created_at,
        coalesce(d.attached_frame_instance_id, a.frame_instance_id, s.frame_instance_id, ps.frame_instance_id,
          cs.frame_instance_id,
          CASE WHEN d.target_object_type='frame_instance' THEN d.target_object_id END) AS frame_instance_id,
        coalesce(d.attached_belief_slot_id, s.id, ps.id, cs.id) AS belief_slot_id,
        coalesce(a.predicate_id, s.predicate_id, ps.predicate_id, cs.predicate_id) AS predicate_id
-     FROM owner_overlay_deltas d
-     LEFT JOIN belief_slots a ON a.owner_scope_id=d.owner_scope_id AND a.id=d.attached_belief_slot_id
-     LEFT JOIN belief_slots s ON s.owner_scope_id=d.owner_scope_id
-       AND d.target_object_type='belief_slot' AND s.id=d.target_object_id
-     LEFT JOIN propositions p ON p.owner_scope_id=d.owner_scope_id
-       AND d.target_object_type='proposition' AND p.id=d.target_object_id
-     LEFT JOIN belief_slots ps ON ps.owner_scope_id=p.owner_scope_id AND ps.id=p.belief_slot_id
-     LEFT JOIN claims c ON c.owner_scope_id=d.owner_scope_id
-       AND d.target_object_type='claim' AND c.id=d.target_object_id
-     LEFT JOIN propositions cp ON cp.owner_scope_id=c.owner_scope_id AND cp.id=c.proposition_id
-     LEFT JOIN belief_slots cs ON cs.owner_scope_id=cp.owner_scope_id AND cs.id=cp.belief_slot_id
-     WHERE d.owner_scope_id=$1
+     FROM d LEFT JOIN sl a ON a.id=d.attached_belief_slot_id
+     LEFT JOIN sl s ON d.target_object_type='belief_slot' AND s.id=d.target_object_id
+     LEFT JOIN p ON d.target_object_type='proposition' AND p.id=d.target_object_id
+     LEFT JOIN sl ps ON ps.id=p.belief_slot_id
+     LEFT JOIN c ON d.target_object_type='claim' AND c.id=d.target_object_id
+     LEFT JOIN p cp ON cp.id=c.proposition_id
+     LEFT JOIN sl cs ON cs.id=cp.belief_slot_id
      ORDER BY d.owner_sequence`, [ownerScopeId])).rows;
   // A delta about a merged frame speaks about its survivor. One about a split
   // frame resolves to no frame and is reported as unattached, never re-attached

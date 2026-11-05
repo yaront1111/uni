@@ -520,13 +520,20 @@ async function assemble(
   // the version live at the knowledge time -- recorded by then and not yet
   // superseded then -- which is what "what did Uai believe then" means (PRD
   // §12.3); the live row alone would answer "now" for every knowledge time.
+  // Shared statistics can estimate a fresh owner at one row. Materialize each
+  // RLS table separately so nested joins cannot repeat per-row SECURITY DEFINER
+  // membership checks over an entire owner partition.
   const beliefRows = frameIds.length === 0 ? [] : (await tx.query(
-    `WITH known_claims AS MATERIALIZED (
+    `WITH frame_slots AS MATERIALIZED (
+       SELECT id,frame_instance_id,predicate_id,modality FROM belief_slots
+       WHERE owner_scope_id=$1 AND frame_instance_id=ANY($2::uuid[])
+     ), frame_propositions AS MATERIALIZED (
+       SELECT id,owner_scope_id,belief_slot_id,normalized_value,polarity FROM propositions
+       WHERE owner_scope_id=$1 AND belief_slot_id IN (SELECT id FROM frame_slots)
+     ), known_claims AS MATERIALIZED (
        SELECT c.*,(unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3)->>'proposition_id')::uuid AS historical_proposition_id
        FROM claims c WHERE c.owner_scope_id=$1 AND c.recorded_at<=$3
-         AND c.proposition_id IN (SELECT p.id FROM propositions p JOIN belief_slots s
-           ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-           WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[]))
+         AND c.proposition_id IN (SELECT id FROM frame_propositions)
      )
      SELECT p.id AS proposition_id,p.belief_slot_id,p.normalized_value,p.polarity,
        unai_private.object_state_at(p.owner_scope_id,'propositions',p.id,$3)->>'lifecycle' AS proposition_lifecycle,
@@ -560,10 +567,8 @@ async function assemble(
           WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id AND c.recorded_at<=$3),'{}') AS evidence_ids,
        coalesce((SELECT array_agg(DISTINCT c.claim_origin) FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id
           AND c.historical_proposition_id=p.id AND c.recorded_at<=$3),'{}') AS claim_origins
-     FROM propositions p
-     JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-     WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[])
-       AND (EXISTS(SELECT 1 FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id AND c.recorded_at<=$3)
+     FROM frame_propositions p JOIN frame_slots s ON s.id=p.belief_slot_id
+     WHERE (EXISTS(SELECT 1 FROM known_claims c WHERE c.owner_scope_id=p.owner_scope_id AND c.historical_proposition_id=p.id AND c.recorded_at<=$3)
          OR EXISTS(SELECT 1 FROM belief_assessments b WHERE b.owner_scope_id=p.owner_scope_id
            AND b.proposition_id=p.id AND b.recorded_at<=$3))
      ORDER BY s.frame_instance_id,s.id,p.id`,
