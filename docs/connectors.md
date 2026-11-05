@@ -253,6 +253,19 @@ A sync holds no connector-row lock during provider I/O. The exception is a retry
 from `SYNC_FAILED`: its initial flip to `ACTIVE` already holds that lock for the
 run, so lifecycle changes wait for it.
 
+Every lifecycle writer (`setCapabilityGrants`, `markTokenRevoked`,
+`disconnectConnector`) takes the connector row with `FOR NO KEY UPDATE` as its
+first read, before its status check, and only then touches grant rows: the lock
+order is the connector row first, then grant rows, everywhere. A writer's status
+check is therefore never stale when its write lands, and a writer waiting on a
+concurrent disconnect refuses `CONNECTOR_DISCONNECTED` once that disconnect
+commits instead of overwriting it or re-granting its revoked capabilities.
+Disconnect holds this lock across its provider revocation call (the second
+accepted lock across provider I/O), so a run's commit point and grant changes
+wait for it. `FOR UPDATE` would be wrong here: it conflicts with the `KEY SHARE`
+locks evidence inserts hold through their foreign key, so a writer would wait for
+a whole in-flight multi-page run and could deadlock with its commit point.
+
 The sync's commit point is a final re-read of the connector under
 `FOR NO KEY UPDATE`, even when the provider returns no cursor. It serializes with
 lifecycle updates without conflicting with the `KEY SHARE` locks evidence inserts
@@ -263,6 +276,18 @@ deadlock between two syncs that both inserted evidence and then reach this guard
   this point wins. The run refuses with 409 `CONNECTOR_INGESTION_STOPPED` and
   `{connectorId, status}`; its transactional effects (evidence rows, cursor and
   cleared error) roll back, preserving the stop's cursor and error.
+- After the status check the commit point re-reads the grants. A partial
+  revocation of a capability the run read under, committed before this point or
+  in progress when the run reaches it (the commit point then waits for it),
+  makes the run refuse with 403 `CONNECTOR_CAPABILITY_NOT_GRANTED` and
+  `{connectorId, capabilityId}`. All of the run's evidence and its cursor roll
+  back. A capability granted mid-run changes nothing the run read.
+- That refusal is not recorded as `SYNC_FAILED`: the owner's consent change
+  decided the run, which did not fail. The connector stays `ACTIVE` with its old
+  cursor, and the next sync, or the job path's retry, reads under the narrowed
+  grant. `recordSyncFailure` records neither that code nor
+  `CONNECTOR_INGESTION_STOPPED`, so a stop's status, or a concurrent run's
+  `SYNC_FAILED` reason, stands.
 - A stop committed before an evidence insert can instead be refused by the
   importer (`CONNECTOR_REFUSED`) or migration 0018's ingestion trigger (SQLSTATE
   `55000`, `CONNECTOR_INGESTION_STOPPED`). Both yield the same 409 code with only
@@ -275,10 +300,6 @@ deadlock between two syncs that both inserted evidence and then reach this guard
 - Two syncs of one connector serialize at this point. The later commit's cursor
   wins; redelivered items deduplicate by identity (ADR 0010).
 
-Two races are deliberately not serialized here, tracked by
-`task-53f1a1c18c5944b6850c5f55c1c83008`: revoking one of several capabilities during
-a provider read (the run still uses the grants loaded at its start), and
-`setCapabilityGrants`' check-then-write against a concurrent disconnect.
 The real-PostgreSQL proof is `packages/api/src/connector-sync-race.test.ts`.
 
 ## What this node does not claim

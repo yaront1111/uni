@@ -7,7 +7,9 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
-import { ConnectorError, markTokenRevoked, type ConnectorPage } from '@unai/connectors';
+import {
+  ConnectorError, markTokenRevoked, recordSyncFailure, setCapabilityGrants, type ConnectorFetch, type ConnectorPage,
+} from '@unai/connectors';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
 
@@ -21,6 +23,10 @@ const C1 = { position: 'race:c1', providerToken: null };
 const fixture: unknown = JSON.parse(await readFile(resolve('fixtures/sources/omi-conversation.json'), 'utf8'));
 const emptyPage: ConnectorPage = { payloads: [], nextCursor: C1 };
 const contentPage: ConnectorPage = { payloads: [fixture], nextCursor: C1 };
+// The internal Gmail thread shape (body.text): 3 messages, one item each.
+const gmailThread: unknown = JSON.parse(await readFile(resolve('fixtures/sources/gmail-thread.json'), 'utf8'));
+const gmailPage: ConnectorPage = { payloads: [gmailThread], nextCursor: C1 };
+const GMAIL_HANDLE = 'secret://mounted/gmail#refresh';
 
 beforeAll(async () => {
   await runMigrations(admin, resolve('migrations'));
@@ -28,17 +34,26 @@ beforeAll(async () => {
 });
 afterAll(async () => { await appPool.end(); await admin.end(); });
 
+/** Serves queued pages first, then pauses on the gate (or answers an empty C0
+ * page when none is set), recording the capabilities of every fetch. */
 function pausedClient() {
   let gate: { enter: () => void; page: Promise<ConnectorPage>; release: (page: ConnectorPage) => void } | null = null;
+  const queued: ConnectorPage[] = [], seen: string[][] = [];
   return {
-    pause() {
+    seen,
+    serve(...pages: ConnectorPage[]) { queued.push(...pages); },
+    pause(before: ConnectorPage[] = []) {
       let enter!: () => void, release!: (page: ConnectorPage) => void;
       const entered = new Promise<void>(resolve => { enter = resolve; });
       const page = new Promise<ConnectorPage>(resolve => { release = resolve; });
+      queued.push(...before);
       gate = { enter, page, release };
       return { entered, release };
     },
-    async fetchPage(): Promise<ConnectorPage> {
+    async fetchPage(request: ConnectorFetch): Promise<ConnectorPage> {
+      seen.push([...request.capabilities]);
+      const next = queued.shift();
+      if (next) return next;
       if (!gate) return { payloads: [], nextCursor: C0 };
       gate.enter();
       return gate.page;
@@ -77,7 +92,16 @@ async function identity() {
   } };
 }
 
-async function harness() {
+interface ConnectorSetup {
+  readonly connectorType: string; readonly externalAccountRef: string; readonly secretRef: string;
+  readonly capabilities: readonly string[];
+}
+const omiSetup: ConnectorSetup = { connectorType: 'OMI', externalAccountRef: 'owner@example.test',
+  secretRef: 'secret://test/omi-key', capabilities: ['omi.read_conversations'] };
+const gmailSetup: ConnectorSetup = { connectorType: 'GMAIL', externalAccountRef: 'owner@example.test',
+  secretRef: GMAIL_HANDLE, capabilities: ['gmail.read_metadata', 'gmail.read_content'] };
+
+async function harness(setup: ConnectorSetup = omiSetup) {
   const who = await identity(), client = pausedClient();
   const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects: objectsDouble(), connectors: {
     connectorClient: () => client, revokeTokens: async () => ({ revoked: true }),
@@ -87,8 +111,9 @@ async function harness() {
   });
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: who.headers('connector.manage'),
-      payload: { connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: 'secret://test/omi-key',
-        requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }] } });
+      payload: { connectorType: setup.connectorType, externalAccountRef: setup.externalAccountRef,
+        secretRef: setup.secretRef,
+        requestedCapabilities: setup.capabilities.map(capabilityId => ({ capabilityId, granted: true })) } });
     expect(connected.statusCode).toBe(201);
     const connectorId = connected.json<{ connectorId: string }>().connectorId;
     const h = { ...who, app, client, connectorId,
@@ -100,10 +125,10 @@ async function harness() {
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
 
-async function sync(h: Pick<Harness, 'app' | 'headers' | 'connectorId'>) {
+async function sync(h: Pick<Harness, 'app' | 'headers' | 'connectorId'>, maxPages?: number) {
   const headers = h.headers('connector.sync');
   const response = await h.app.inject({ method: 'POST', url: '/v1/connectors/' + h.connectorId + '/sync', headers,
-    payload: { mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE'] } });
+    payload: { mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE'], ...(maxPages ? { maxPages } : {}) } });
   return { response, correlationId: headers['x-correlation-id'] };
 }
 async function disconnect(h: Harness) {
@@ -112,12 +137,28 @@ async function disconnect(h: Harness) {
     headers: h.headers('connector.manage', 1), payload: {} });
   expect(result.statusCode).toBe(200);
 }
+function owner(h: Harness, purpose: string) {
+  return { ownerScopeId: h.ownerScopeId, actorId: h.user.id, purpose, correlationId: randomUUID() };
+}
+function audited(result: 'SUCCESS' | 'FAILURE' = 'SUCCESS') {
+  return { policyDecision: 'ALLOW' as const, codeVersion: '0.1.0', result, objects: [] };
+}
 async function revoke(h: Harness) {
-  return withOwnerTransaction(appPool, { ownerScopeId: h.ownerScopeId, actorId: h.user.id,
-    purpose: 'connector.manage', correlationId: randomUUID() }, async tx => {
+  return withOwnerTransaction(appPool, owner(h, 'connector.manage'), async tx => {
     await markTokenRevoked(tx, h.connectorId);
-    await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [] });
+    await tx.audit(audited());
   });
+}
+type GrantChange = { capabilityId: string; granted: boolean };
+async function changeGrants(h: Harness, capabilities: GrantChange[]) {
+  return withOwnerTransaction(appPool, owner(h, 'connector.manage'), async tx => {
+    await setCapabilityGrants(tx, h.connectorId, capabilities);
+    await tx.audit(audited());
+  });
+}
+async function grants(connectorId: string) {
+  return (await admin.query(`SELECT capability_id,granted,revoked_at IS NOT NULL AS revoked
+    FROM connector_capability_grants WHERE connector_id=$1 ORDER BY capability_id`, [connectorId])).rows as unknown;
 }
 async function state(connectorId: string) {
   return (await admin.query('SELECT status,secret_ref,last_cursor,last_sync_error FROM connectors WHERE id=$1',
@@ -133,6 +174,11 @@ function stopped(h: Harness, result: Awaited<ReturnType<typeof sync>>, status?: 
   expect(result.response.statusCode).toBe(409);
   expect(result.response.json()).toEqual({ code: 'CONNECTOR_INGESTION_STOPPED', correlationId: result.correlationId,
     connectorId: h.connectorId, ...(status === undefined ? {} : { status }) });
+}
+function notGranted(h: Harness, result: Awaited<ReturnType<typeof sync>>, capabilityId: string) {
+  expect(result.response.statusCode).toBe(403);
+  expect(result.response.json()).toEqual({ code: 'CONNECTOR_CAPABILITY_NOT_GRANTED',
+    correlationId: result.correlationId, connectorId: h.connectorId, capabilityId });
 }
 
 async function waitBlockedBy(pid: number) {
@@ -150,6 +196,8 @@ async function holdingDisconnect(h: Harness, run: (pid: number, commit: () => Pr
   try {
     await client.query('BEGIN');
     const pid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+    await client.query(`UPDATE connector_capability_grants SET granted=false,revoked_at=coalesce(revoked_at,now())
+      WHERE connector_id=$1 AND granted`, [h.connectorId]);
     await client.query(`UPDATE connectors SET status='DISCONNECTED',disconnected_at=now(),secret_ref=NULL,
       last_cursor=NULL,last_sync_error=NULL WHERE id=$1`, [h.connectorId]);
     await run(pid, async () => { await client.query('COMMIT'); });
@@ -237,5 +285,88 @@ it('never revives a disconnect that commits while token revocation waits', async
       expect(error).toMatchObject({ message: 'CONNECTOR_DISCONNECTED', detail: { connectorId: h.connectorId } });
     });
     expect(await state(h.connectorId)).toEqual(disconnected);
+  } finally { await h.close(); }
+}, 30_000);
+
+it('refuses a run whose capability was revoked while it was paused, and the next run reads narrowed', async () => {
+  const h = await harness(gmailSetup);
+  try {
+    const gate = h.client.pause([gmailPage]), pending = sync(h, 2);
+    await gate.entered;
+    // Page 1 is stored (KEY SHARE on the connector row); the revocation must not wait for the run.
+    const changed = changeGrants(h, [{ capabilityId: 'gmail.read_content', granted: false }])
+      .then(() => 'CHANGED', (error: unknown) => error);
+    const winner = await Promise.race([changed, delay(5_000, 'WAITED')]);
+    if (winner !== 'CHANGED') throw winner instanceof Error ? winner : new Error('GRANT_CHANGE_WAITED_FOR_RUN');
+    gate.release(emptyPage);
+    notGranted(h, await pending, 'gmail.read_content');
+    expect(await evidenceCount(h)).toBe(0);
+    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: GMAIL_HANDLE,
+      last_cursor: C0, last_sync_error: null });
+    h.client.serve(gmailPage);
+    const next = await sync(h);
+    expect(next.response.statusCode).toBe(200);
+    expect(next.response.json()).toMatchObject({ itemsIngested: 3, newCursor: C1 });
+    expect(h.client.seen.at(-1)).toEqual(['gmail.read_metadata']);
+  } finally { await h.close(); }
+}, 30_000);
+
+it('waits at the commit point for an in-progress partial revocation, then refuses by name', async () => {
+  const h = await harness(gmailSetup);
+  let open!: () => void;
+  const opened = new Promise<void>(resolve => { open = resolve; });
+  try {
+    const gate = h.client.pause(), pending = sync(h);
+    await gate.entered;
+    let signal!: (pid: number) => void;
+    const changed = new Promise<number>(resolve => { signal = resolve; });
+    const writer = withOwnerTransaction(appPool, owner(h, 'connector.manage'), async tx => {
+      const pid = (await tx.query('SELECT pg_backend_pid() AS pid')).rows[0]!['pid'] as number;
+      await setCapabilityGrants(tx, h.connectorId, [{ capabilityId: 'gmail.read_content', granted: false }]);
+      await tx.audit(audited());
+      signal(pid);
+      await opened;
+    });
+    const pid = await Promise.race([changed, writer.then(() => { throw new Error('WRITER_ENDED_EARLY'); })]);
+    gate.release(gmailPage);
+    await waitBlockedBy(pid);
+    open();
+    await writer;
+    notGranted(h, await pending, 'gmail.read_content');
+    expect(await evidenceCount(h)).toBe(0);
+  } finally { open(); await h.close(); }
+}, 30_000);
+
+it('refuses a grant change that waited on a disconnect, and leaves the disconnect whole', async () => {
+  const h = await harness();
+  try {
+    await holdingDisconnect(h, async (pid, commit) => {
+      // Attach a rejection handler immediately, before releasing the blocking transaction.
+      const pending = changeGrants(h, [{ capabilityId: 'omi.read_conversations', granted: true }])
+        .then(() => null, (error: unknown) => error);
+      await waitBlockedBy(pid);
+      await commit();
+      const error = await pending;
+      expect(error).toBeInstanceOf(ConnectorError);
+      expect(error).toMatchObject({ message: 'CONNECTOR_DISCONNECTED', detail: { connectorId: h.connectorId } });
+    });
+    expect(await state(h.connectorId)).toEqual(disconnected);
+    expect(await grants(h.connectorId)).toEqual([{ capability_id: 'omi.read_conversations', granted: false, revoked: true }]);
+  } finally { await h.close(); }
+}, 30_000);
+
+it('keeps a concurrent run\'s failure reason when a paused run is refused', async () => {
+  const h = await harness();
+  try {
+    const gate = h.client.pause(), pending = sync(h);
+    await gate.entered;
+    await withOwnerTransaction(appPool, owner(h, 'connector.sync'), async tx => {
+      await recordSyncFailure(tx, h.connectorId, 'CONNECTOR_PROVIDER_UNAVAILABLE');
+      await tx.audit(audited('FAILURE'));
+    });
+    gate.release(emptyPage);
+    stopped(h, await pending, 'SYNC_FAILED');
+    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: 'secret://test/omi-key',
+      last_cursor: C0, last_sync_error: 'CONNECTOR_PROVIDER_UNAVAILABLE' });
   } finally { await h.close(); }
 }, 30_000);

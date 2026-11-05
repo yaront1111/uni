@@ -263,10 +263,12 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
     if (answer.exhausted === true || answer.nextCursor === null || answer.payloads.length === 0) break;
   }
 
-  // Commit point, even without a cursor: a stop committed during provider I/O
-  // wins and rolls back this run's evidence, cursor and cleared error. A later
-  // stop waits for our commit. NO KEY UPDATE avoids conflicting with the KEY
-  // SHARE locks evidence inserts hold, so two syncs cannot deadlock here.
+  // Commit point, even without a cursor: a stop or a consent change committed
+  // during provider I/O wins and rolls back this run's evidence, cursor and
+  // cleared error; one still in progress is waited for, because every lifecycle
+  // writer holds this row lock until it commits (grants.ts lockConnector). A
+  // later change waits for our commit. NO KEY UPDATE avoids conflicting with the
+  // KEY SHARE locks evidence inserts hold, so two syncs cannot deadlock here.
   // Only a SYNC_FAILED retry already holds this row while calling the provider.
   const live = (await tx.query(
     'SELECT status FROM connectors WHERE id=$1 AND owner_scope_id=$2 FOR NO KEY UPDATE',
@@ -274,6 +276,13 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
   const status = (live?.['status'] as string | undefined) ?? null;
   if (status !== 'ACTIVE') {
     throw new ConnectorError('CONNECTOR_INGESTION_STOPPED', { connectorId: input.connectorId, status });
+  }
+  // A capability this run read under, revoked since it started, refuses the
+  // whole run by name. A capability granted meanwhile changes nothing read.
+  const stillGranted = await grantedCapabilities(tx, input.connectorId);
+  const revoked = granted.find(capabilityId => !stillGranted.includes(capabilityId));
+  if (revoked !== undefined) {
+    throw new ConnectorError('CONNECTOR_CAPABILITY_NOT_GRANTED', { connectorId: input.connectorId, capabilityId: revoked });
   }
   if (cursor !== null) {
     await tx.query(
@@ -290,17 +299,27 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
   });
 }
 
+/** Lifecycle and consent refusals: another transaction's committed change
+ * decided the run's outcome, so the run did not fail and nothing is recorded. */
+const LIFECYCLE_REFUSALS: readonly string[] = ['CONNECTOR_INGESTION_STOPPED', 'CONNECTOR_CAPABILITY_NOT_GRANTED'];
+
 /** Record a failed run on the connector, under the sync's own purpose. The
  * status the screen shows is "sync failed with a named reason"; the consent
  * state and the credential are untouched, because a failure is not a revocation.
  * A connector already in `SYNC_FAILED` is updated too, so the reason shown is
- * the reason of the latest attempt rather than of the first one. */
+ * the reason of the latest attempt rather than of the first one.
+ *
+ * A lifecycle refusal (LIFECYCLE_REFUSALS) records nothing: the stop's status,
+ * or a concurrent run's SYNC_FAILED reason, stands, and a run refused because
+ * the owner narrowed its consent mid-run leaves the connector ACTIVE with its
+ * old cursor, so the next sync reads under the narrowed grant. */
 export async function recordSyncFailure(
   tx: ConnectorTransaction, connectorId: string, code: string,
 ): Promise<void> {
   if (tx.context.purpose !== CONNECTOR_SYNC_PURPOSE) {
     throw new ConnectorError('CONNECTOR_PURPOSE_REFUSED', { purpose: tx.context.purpose });
   }
+  if (LIFECYCLE_REFUSALS.includes(code)) return;
   await tx.query(
     `UPDATE connectors SET status='SYNC_FAILED',last_sync_error=$3,updated_at=now()
      WHERE id=$1 AND owner_scope_id=$2 AND status IN ('ACTIVE','SYNC_FAILED')`,

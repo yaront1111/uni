@@ -118,10 +118,34 @@ interface ConnectorRow {
   readonly manifest: ConnectorManifest;
 }
 
-/** The stored row plus the manifest it was provisioned against. */
+/** The stored row plus the manifest it was provisioned against. A plain read:
+ * it neither takes nor waits for a row lock. */
 export async function loadConnector(tx: ConnectorTransaction, connectorId: string): Promise<ConnectorRow> {
+  return selectConnector(tx, connectorId, '');
+}
+
+/**
+ * The lifecycle writers' first read: the same row, locked until the caller's
+ * transaction ends. Every writer takes it before its status check and before it
+ * touches a grant row (lock order: connector row, then grant rows), so a status
+ * check is never stale by the time the write lands, and a sync's commit point,
+ * which locks the same row, sees either all of a consent change or none of it.
+ *
+ * `FOR NO KEY UPDATE`, never `FOR UPDATE`: every evidence insert holds FOR KEY
+ * SHARE on this row through its foreign key until commit. FOR UPDATE conflicts
+ * with that, so a writer would wait out a whole multi-page run and could deadlock
+ * with its commit point. NO KEY UPDATE conflicts only with the commit point's
+ * lock and with other lifecycle writes, which is the serialization wanted.
+ */
+async function lockConnector(tx: ConnectorTransaction, connectorId: string): Promise<ConnectorRow> {
+  return selectConnector(tx, connectorId, ' FOR NO KEY UPDATE');
+}
+
+async function selectConnector(
+  tx: ConnectorTransaction, connectorId: string, lock: '' | ' FOR NO KEY UPDATE',
+): Promise<ConnectorRow> {
   const row = (await tx.query(
-    `SELECT ${CONNECTOR_COLUMNS} FROM connectors WHERE id=$1 AND owner_scope_id=$2`,
+    `SELECT ${CONNECTOR_COLUMNS} FROM connectors WHERE id=$1 AND owner_scope_id=$2${lock}`,
     [connectorId, tx.context.ownerScopeId])).rows[0];
   if (!row) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId });
   return {
@@ -213,13 +237,19 @@ export async function hasCapability(
  * that says nothing about `gmail.read_content` leaves the second row exactly as
  * it was, and a request naming a write capability is refused with the reason
  * rather than partially applied.
+ *
+ * It locks the connector row first (`lockConnector`), even when only grant rows
+ * change. So a disconnect committed while it waited is seen and refused
+ * (CONNECTOR_DISCONNECTED) instead of overwritten, and a sync reaching its
+ * commit point meanwhile waits for this change and then refuses a run that read
+ * under a capability revoked here.
  */
 export async function setCapabilityGrants(
   tx: ConnectorTransaction, connectorId: string,
   requested: readonly { readonly capabilityId: string; readonly granted: boolean }[],
 ): Promise<PublicCapabilityGrant[]> {
   requirePurpose(tx, CONNECTOR_MANAGE_PURPOSE);
-  const connector = await loadConnector(tx, connectorId);
+  const connector = await lockConnector(tx, connectorId);
   if (connector.status === 'DISCONNECTED') {
     throw new ConnectorError('CONNECTOR_DISCONNECTED', { connectorId });
   }
@@ -294,11 +324,12 @@ export async function listConnectors(tx: ConnectorTransaction): Promise<PublicCo
  * trigger refuses one from a sync. Both sync paths call it in a separate manage
  * transaction when credentialRevoked() reports a refused credential (provider
  * 401 or Google invalid_grant 400). Other failures, including 403, record
- * SYNC_FAILED through recordSyncFailure. It never moves a DISCONNECTED row,
- * even one disconnected after its initial read. */
+ * SYNC_FAILED through recordSyncFailure. It never moves a DISCONNECTED row: it
+ * reads the status under the row lock (`lockConnector`), and its UPDATE keeps
+ * the status condition as defence in depth. */
 export async function markTokenRevoked(tx: ConnectorTransaction, connectorId: string): Promise<PublicConnector> {
   requirePurpose(tx, CONNECTOR_MANAGE_PURPOSE);
-  const connector = await loadConnector(tx, connectorId);
+  const connector = await lockConnector(tx, connectorId);
   if (connector.status === 'DISCONNECTED') throw new ConnectorError('CONNECTOR_DISCONNECTED', { connectorId });
   const changed = await tx.query(
     `UPDATE connectors SET status='TOKEN_REVOKED',secret_ref=NULL,last_sync_error='CONNECTOR_TOKEN_REVOKED',
@@ -324,12 +355,18 @@ export type TokenRevoker = (input: { readonly connectorType: string; readonly se
  * trigger reads to refuse any further evidence row naming this connector. The
  * evidence already stored stays exactly where it is, and the owner is offered
  * the deletion path rather than having it taken.
+ *
+ * The connector row is locked (`lockConnector`) before the status check, and the
+ * lock is held across the provider revocation call: one of the two accepted
+ * cases of a connector-row lock held across provider I/O (the other is a
+ * SYNC_FAILED connector's retry flip). Concurrent disconnects therefore call the
+ * provider once, and grant changes and a sync's commit point wait for it.
  */
 export async function disconnectConnector(
   tx: ConnectorTransaction, connectorId: string, revoke?: TokenRevoker,
 ): Promise<DisconnectResult> {
   requirePurpose(tx, CONNECTOR_MANAGE_PURPOSE);
-  const connector = await loadConnector(tx, connectorId);
+  const connector = await lockConnector(tx, connectorId);
   if (connector.status === 'DISCONNECTED') throw new ConnectorError('CONNECTOR_DISCONNECTED', { connectorId });
   let revoked = false, manual = false;
   if (connector.secretRef !== null) {
