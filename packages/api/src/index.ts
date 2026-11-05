@@ -87,8 +87,10 @@ export function createApiBoundary(options: ApiBoundaryOptions): FastifyInstance 
     }
     return payload;
   });
-  app.setErrorHandler((_error, request, reply) => {
-    reply.code(500).send({ code: 'INTERNAL_ERROR', correlationId: request.ownerContext?.correlationId ?? request.id });
+  app.setErrorHandler((error, request, reply) => {
+    // A session revoked or expired while the request ran (ADR 0045) is the client's to renew, not a server fault.
+    const expired = error instanceof Error && error.message === 'SESSION_EXPIRED';
+    reply.code(expired ? 401 : 500).send({ code: expired ? 'SESSION_EXPIRED' : 'INTERNAL_ERROR', correlationId: request.ownerContext?.correlationId ?? request.id });
   });
   app.addHook('onResponse', async (request, reply) => {
     const correlationId = request.ownerContext?.correlationId ?? request.id;

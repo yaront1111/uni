@@ -181,22 +181,37 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
     const expected=routePurpose(request.method,request.routeOptions.url);
     if(!expected||request.ownerContext?.purpose!==expected)return reply.code(403).send({code:'PURPOSE_REFUSED'});
   });
-  /** `purpose` lets a route open one transaction under a purpose its server code
+  /** Session liveness (ADR 0045): the live session row is read plainly as the first
+   * statement and FOR SHARE as the last before COMMIT, so a session's requests run
+   * concurrently, a revocation never waits for them, and one that reaches its commit
+   * point after a revocation rolls back with SESSION_EXPIRED. FOR SHARE, never FOR
+   * KEY SHARE: only it conflicts with the revoking UPDATE's FOR NO KEY UPDATE, so a
+   * check that meets an uncommitted revocation waits for it and then sees it.
+   * Nothing may run after the check. The two routes that write their own session row
+   * take that UPDATE's lock up front (`ownSessionWork`): a share lock upgraded later
+   * deadlocks against a same-session retry.
+   *
+   * `purpose` lets a route open one transaction under a purpose its server code
    * names -- the projection rebuild after a merge runs under `memory.project`
    * (ADR 0025 §4), and an Ask answer is recorded under `answer.record` (ADR 0026).
    * It is never read from a header, and the session, owner scope and actor stay
    * the request's: the session is re-verified exactly as for every other transaction. */
-  async function deviceWork(request:import('fastify').FastifyRequest,run:(tx:import('@unai/postgres').OwnerTransaction,sessionId:string)=>Promise<unknown>,purpose?:string){
+  const LIVE_SESSION='SELECT id FROM auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp()';
+  type Run=(tx:OwnerTransaction,sessionId:string)=>Promise<unknown>;
+  async function sessionWork(request:import('fastify').FastifyRequest,run:Run,purpose:string|undefined,ownRow:boolean){
     const token=sessionToken(request.headers.cookie);
     const session=token?await resolveSession(options.authPool,token):null;
     if(!session||session.ownerScopeId!==request.ownerContext!.ownerScopeId)throw new Error('SESSION_EXPIRED');
     const context=purpose===undefined?request.ownerContext!:{...request.ownerContext!,purpose};
     return withOwnerTransaction(options.appPool,context,async tx=>{
-      const live=await tx.query('SELECT id FROM auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp() FOR UPDATE',[session.id]);
-      if(live.rowCount!==1)throw new Error('SESSION_EXPIRED');
-      return run(withRequestEventKind(tx,request.method),session.id);
+      if((await tx.query(LIVE_SESSION+(ownRow?' FOR NO KEY UPDATE':''),[session.id])).rowCount!==1)throw new Error('SESSION_EXPIRED');
+      const value=await run(withRequestEventKind(tx,request.method),session.id);
+      if(!ownRow&&(await tx.query(LIVE_SESSION+' FOR SHARE',[session.id])).rowCount!==1)throw new Error('SESSION_EXPIRED');
+      return value;
     });
   }
+  const deviceWork=(request:import('fastify').FastifyRequest,run:Run,purpose?:string)=>sessionWork(request,run,purpose,false);
+  const ownSessionWork=(request:import('fastify').FastifyRequest,run:Run)=>sessionWork(request,run,undefined,true);
   registerVoiceSettingsRoutes(app,deviceWork);
   registerConversationRoutes(app,deviceWork);
   app.get('/v1/devices',async request=>deviceWork(request,async(tx)=>{
@@ -208,7 +223,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   app.post('/v1/devices',async(request,reply)=>{
     const parsed=registerDeviceSchema.safeParse(request.body);
     if(!parsed.success)return reply.code(400).send({code:'DEVICE_INPUT_INVALID'});
-    return deviceWork(request,async(tx,sessionId)=>{
+    return ownSessionWork(request,async(tx,sessionId)=>{
       const row=(await tx.query('SELECT device_id FROM auth_sessions WHERE id=$1',[sessionId])).rows[0];
       let device;
       if(row.device_id){
@@ -226,7 +241,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   });
   app.post<{Params:{id:string}}>('/v1/devices/:id/revoke',async(request,reply)=>{
     if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.params.id))return reply.code(400).send({code:'DEVICE_INPUT_INVALID'});
-    return deviceWork(request,async tx=>{
+    return ownSessionWork(request,async tx=>{
       const changed=await tx.query('UPDATE devices SET removed_at=coalesce(removed_at,now()) WHERE id=$1 AND owner_scope_id=$2 AND user_id=$3 RETURNING id',[request.params.id,tx.context.ownerScopeId,tx.context.actorId]);
       if(changed.rowCount!==1)return reply.code(404).send({code:'DEVICE_NOT_FOUND'});
       await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'devices',id:request.params.id,fields:['removed_at']}]});
