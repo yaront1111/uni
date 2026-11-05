@@ -120,7 +120,11 @@ async function seed(){
 
 beforeAll(async()=>{
   await admin.query('CREATE DATABASE '+database);
-  await runMigrations(scratch,resolve('migrations'));
+  // Migration 0001 alters cluster-global roles and runMigrations serializes only within one database:
+  // take the lock every scratch-database suite takes on the shared database (restore.test.ts runs beside this file).
+  const lock=await admin.connect();
+  try{await lock.query('SELECT pg_advisory_lock(1970170217,3)');await runMigrations(scratch,resolve('migrations'));}
+  finally{await lock.query('SELECT pg_advisory_unlock(1970170217,3)').catch(()=>{});lock.release(true);}
   root=await mkdtemp(join(tmpdir(),'unai-backup-test-'));
   key=randomBytes(32);keyFile=join(root,'backup.key');
   await writeFile(keyFile,key,{mode:0o600});

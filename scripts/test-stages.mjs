@@ -7,7 +7,7 @@ export function stageFilters(stage){
     'connector-integration':['packages/connectors/','packages/api/src/connectors.test.ts','packages/api/src/connectors.live.test.ts'],
     security:['packages/api/src/security.test.ts','packages/api/src/transport.test.ts','packages/api/src/audit.test.ts','packages/api/src/control.test.ts','packages/storage/','packages/auth/'],
     'end-to-end':['apps/web/e2e/','packages/api/src/answers.test.ts','packages/api/src/today.test.ts'],
-    operations:['src/backup.test.ts','src/backup-archive.test.ts','src/recovery-output.test.ts','src/recovery-storage.test.ts'],
+    operations:['src/backup.test.ts','src/backup-archive.test.ts','src/recovery-output.test.ts','src/recovery-storage.test.ts','src/restore.test.ts'],
   };
   if(!Object.hasOwn(stages,stage))throw new Error('UNKNOWN_TEST_STAGE');
   return stages[stage];

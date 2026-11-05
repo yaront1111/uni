@@ -21,6 +21,7 @@
     "connect:google": "tsx packages/api/src/connect-google-cli.ts google",
     "secret:put": "tsx packages/api/src/connect-google-cli.ts secret:put",
     "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
     "uai": "tsx packages/registry/src/cli.ts",
     "validate:registry": "tsx packages/registry/src/cli.ts registry lint",
     "check:phase-exit": "pnpm typecheck && pnpm test && pnpm validate:registry && pnpm uai registry test && pnpm uai corpus run --corpus synthetic && pnpm uai corpus verify",
