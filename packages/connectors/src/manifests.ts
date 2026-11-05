@@ -285,5 +285,8 @@ export function requestedScopes(manifest: ConnectorManifest, granted: readonly s
   for (const entry of manifest.capabilities) {
     if (granted.includes(entry.capabilityId)) for (const scope of entry.scopes) scopes.add(scope);
   }
+  // gmail.readonly already reads metadata, and a token that also holds gmail.metadata
+  // is reported refused format=full (docs/connectors.md, "Scopes and format=full").
+  if (scopes.has(GMAIL_READONLY_SCOPE)) scopes.delete(GMAIL_METADATA_SCOPE);
   return [...scopes].sort();
 }

@@ -31,6 +31,22 @@ it('CRT-CON-07-A: every required connector ships a manifest of discrete capabili
     .not.toContain('https://www.googleapis.com/auth/gmail.readonly');
 });
 
+it('requestedScopes asks for gmail.readonly alone once it is in the set, never beside gmail.metadata', () => {
+  const gmail = manifestFor('GMAIL');
+  const readonly = ['https://www.googleapis.com/auth/gmail.readonly'];
+  // gmail.readonly already reads metadata, and a token that also holds gmail.metadata
+  // is reported refused format=full (docs/connectors.md, "Scopes and format=full").
+  expect(requestedScopes(gmail, ['gmail.read_metadata', 'gmail.read_content'])).toEqual(readonly);
+  expect(requestedScopes(gmail, ['gmail.read_metadata', 'gmail.search'])).toEqual(readonly);
+  expect(requestedScopes(gmail, ['gmail.read_content', 'gmail.search'])).toEqual(readonly);
+  expect(requestedScopes(gmail, ['gmail.read_metadata', 'gmail.read_content', 'gmail.search'])).toEqual(readonly);
+  // A metadata-only grant still asks for the narrower scope.
+  expect(requestedScopes(gmail, ['gmail.read_metadata']))
+    .toEqual(['https://www.googleapis.com/auth/gmail.metadata']);
+  expect(requestedScopes(manifestFor('GOOGLE_CALENDAR'), ['calendar.read']))
+    .toEqual(['https://www.googleapis.com/auth/calendar.readonly']);
+});
+
 it('CRT-CON-02-A/03-A/04-A: no V0 manifest offers a write capability or a write scope', () => {
   for (const connectorType of REQUIRED) {
     const manifest = manifestFor(connectorType);
