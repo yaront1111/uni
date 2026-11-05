@@ -144,6 +144,7 @@ it('limits session request N+1 before authentication until the next minute', asy
   expect(refused.statusCode).toBe(429);
   expect(refused.json()).toEqual({ code: 'RATE_LIMITED', correlationId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
   expect(refused.headers['retry-after']).toBe('59');
+  expect(refused.headers['x-rate-limit-bucket']).toBe('session');
   expect(limit.calls()).toBe(3);
   limit.advance(180_000);
   expect((await limit.send()).statusCode).toBe(200);
@@ -165,6 +166,7 @@ it('blocks unknown credentials at a limited socket address without blocking know
   const refused = await limit.send('bad3');
   expect(refused.statusCode).toBe(429);
   expect(refused.headers['retry-after']).toBe('59');
+  expect(refused.headers['x-rate-limit-bucket']).toBe('authentication');
   expect((await limit.send(null)).statusCode).toBe(429);
   expect(limit.calls()).toBe(3);
   expect((await limit.send()).statusCode).toBe(200);

@@ -57,6 +57,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
     const patch=settings||initiativeWatch||conversation||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path);
     const scopedBody=path==='ask'?{question:req.body?.question,...(req.body?.conversationId?{conversationId:req.body.conversationId}:{}),ownerScopeId:session.ownerScopeId,
       purpose:'PERSONAL_ASSISTANCE',maximumSensitivity:'RESTRICTED',worldTime:'NOW',knowledgeTime:'LATEST'}:body;
+    const sent=Date.now();
     const response=await apiRequest('/v1/'+path,patch?'PATCH':'POST',{cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':purpose,'x-correlation-id':correlation,'idempotency-key':key,
       // A merge or split (whose governed commit reads the evidence behind the
       // claims it reassigns) passes the evidence gate with the same pinned context,
@@ -69,7 +70,15 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       // An export is the owner's own, bounded by the owner's widest ceiling.
       ...(purpose==='data.export'?{'x-maximum-sensitivity':'RESTRICTED'}:{})},scopedBody,
       purpose==='data.export'?EXPORT_RESPONSE_BYTES:undefined);
-    if(response.status===429&&typeof response.retryAfter==='string')res.setHeader('Retry-After',response.retryAfter);
+    if(response.status===429&&typeof response.retryAfter==='string'){
+      res.setHeader('Retry-After',response.retryAfter);
+      const token=sessionToken(req.headers.cookie),until=sent+(Math.min(Number(response.retryAfter),60)-1)*1000;
+      // Leave rounding and network latency out of the hold; address refusals can be transient.
+      if(response.rateLimitBucket==='session'&&token!==null&&until>sent)holdSession(token,until);
+    }
     return res.status(response.status).json(response.body);
   }catch{return res.status(503).json({code:'SERVICE_UNAVAILABLE'});}
 }
+
+import {sessionToken} from '@unai/auth';
+import {holdSession} from '../../../lib/server';

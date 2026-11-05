@@ -3,11 +3,14 @@ import {isIPv6} from 'node:net';
 import type {IncomingMessage} from 'node:http';
 import {SESSION_COOKIE,sessionToken} from '@unai/auth';
 import {createRateLimiter} from '@unai/auth/rate-limit';
+import {heldSeconds} from './server';
 
 /** The web process's pre-auth gate (PRD §31, §41): the listener in
  * `lib/security-headers.ts` runs it before Next's handle(), so a session token
- * is looked up on the auth pool once per request, here, and a failed one never
- * reaches `identity()` or next-auth. Only `server.ts` and the listener import
+ * is looked up on the auth pool once per request, except a proxy token held
+ * after the API's session-bucket 429. A held token never reaches the pool or
+ * Next; a failed lookup never reaches `identity()` or next-auth.
+ * Only `server.ts` and the listener import
  * this file, never a page, so Next never bundles a second copy of its state.
  * apps/web/CLAUDE.md has the rules and the known limits. */
 export type SessionGateVerdict={refused:false}|{refused:true;retryAfterSeconds:number};
@@ -62,6 +65,10 @@ export function createSessionGate({lookup,authFailuresPerMinute,clock=Date.now}:
   return async function gate(req:IncomingMessage):Promise<SessionGateVerdict>{
     const token=sessionToken(req.headers.cookie);
     if(token===null){keepSession(req,null);return {refused:false};}
+    if(isPlatformProxy(req.url)){
+      const retryAfterSeconds=heldSeconds(token,clock());
+      if(retryAfterSeconds!==null)return {refused:true,retryAfterSeconds};
+    }
     const hash=createHash('sha256').update(token).digest('hex'),key=addressKey(req.socket.remoteAddress);
     const verdict=limiter.admit(hash,key);
     if(verdict.kind==='refused')return {refused:true,retryAfterSeconds:verdict.retryAfterSeconds};
@@ -73,4 +80,11 @@ export function createSessionGate({lookup,authFailuresPerMinute,clock=Date.now}:
     finally{if(verdict.kind==='unknown')limiter.release(key);}
     return {refused:false};
   };
+}
+
+function isPlatformProxy(url:string|undefined):boolean{
+  const raw=new URL(url??'/','https://web.invalid').pathname;
+  let path=raw;
+  try{path=decodeURIComponent(raw);}catch{ /* Use the raw path when percent decoding fails. */ }
+  return path.startsWith('/api/platform/');
 }

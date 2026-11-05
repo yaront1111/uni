@@ -58,6 +58,7 @@ export function createApiBoundary(options: ApiBoundaryOptions): FastifyInstance 
     const verdict = limiter.admit(hash, address);
     if (verdict.kind === 'refused') {
       reply.header('retry-after', String(verdict.retryAfterSeconds));
+      reply.header('x-rate-limit-bucket', verdict.bucket);
       rateLimited.add(1, { bucket: verdict.bucket });
       try { options.log?.(Object.freeze({ event: 'api.rate_limited', correlationId: request.id, statusCode: 429, bucket: verdict.bucket })); }
       catch { /* A logging failure must not bypass the limit. */ }

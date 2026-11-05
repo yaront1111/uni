@@ -34,7 +34,7 @@ export function retryAfterHeader(value:string|string[]|undefined):string|null{
 }
 /** `maxResponseBytes` stays 1 MiB for every screen read; only the owner's export,
  * whose bundle carries raw evidence, is allowed a larger answer (ADR 0030 §9). */
-export async function apiRequest(path:string,method:string,headers:Record<string,string>,body?:unknown,maxResponseBytes=1024*1024):Promise<{status:number;body:unknown;retryAfter:string|null}>{
+export async function apiRequest(path:string,method:string,headers:Record<string,string>,body?:unknown,maxResponseBytes=1024*1024):Promise<{status:number;body:unknown;retryAfter:string|null;rateLimitBucket:'session'|'authentication'|null}>{
   const base=new URL(required('UNAI_API_ORIGIN'));
   if(base.protocol!=='https:'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw new Error('API_TLS_CONFIG_INVALID');
   return new Promise((resolve,reject)=>{
@@ -44,7 +44,7 @@ export async function apiRequest(path:string,method:string,headers:Record<string
       const chunks:Buffer[]=[];let bytes=0;
       res.on('data',(chunk:Buffer)=>{bytes+=chunk.length;if(bytes>maxResponseBytes){res.destroy();reject(new Error('API_RESPONSE_INVALID'));}else chunks.push(chunk);});
       res.on('error',()=>reject(new Error('API_UNAVAILABLE')));
-      res.on('end',()=>{try{resolve({status:res.statusCode??502,body:JSON.parse(Buffer.concat(chunks).toString()),retryAfter:retryAfterHeader(res.headers['retry-after'])});}catch{reject(new Error('API_RESPONSE_INVALID'));}});
+      res.on('end',()=>{try{resolve({status:res.statusCode??502,body:JSON.parse(Buffer.concat(chunks).toString()),retryAfter:retryAfterHeader(res.headers['retry-after']),rateLimitBucket:rateLimitBucketHeader(res.headers['x-rate-limit-bucket'])});}catch{reject(new Error('API_RESPONSE_INVALID'));}});
     });
     req.setTimeout(15000,()=>req.destroy());req.on('error',()=>reject(new Error('API_UNAVAILABLE')));req.end(encoded);
   });
@@ -59,4 +59,25 @@ export async function apiRequest(path:string,method:string,headers:Record<string
 export function googleClientId(value:string):string{
   if(!/^[0-9]+(?:-[0-9a-z]+)?\.apps\.googleusercontent\.com$/.test(value))throw new Error('CONFIG_INVALID:GOOGLE_CLIENT_ID');
   return value;
+}
+
+import {createHash} from 'node:crypto';
+function rateLimitBucketHeader(value:string|string[]|undefined):'session'|'authentication'|null{
+  return value==='session'||value==='authentication'?value:null;
+}
+/** Shared by the tsx listener and Next's proxy bundle, just like the auth pool.
+ * Only digests are retained; clearing at the cap fails open for earlier holds. */
+const HOLDS=Symbol.for('unai.web.sessionHolds');
+const sharedHolds=globalThis as unknown as Record<symbol,Map<string,number>|undefined>;
+function sessionHolds():Map<string,number>{return sharedHolds[HOLDS]??=new Map<string,number>();}
+export function holdSession(token:string,until:number):void{
+  const holds=sessionHolds(),hash=createHash('sha256').update(token).digest('hex');
+  if(!holds.has(hash)&&holds.size>=10_000)holds.clear();
+  holds.set(hash,until);
+}
+export function heldSeconds(token:string,now:number):number|null{
+  const holds=sessionHolds(),hash=createHash('sha256').update(token).digest('hex');
+  const until=holds.get(hash);
+  if(until!==undefined&&until>now)return Math.ceil((until-now)/1000);
+  holds.delete(hash);return null;
 }

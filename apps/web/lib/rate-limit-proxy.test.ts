@@ -12,15 +12,22 @@ vi.mock('./server',async importOriginal=>({
 import handler from '../pages/api/platform/[...path].js';
 import {retryAfterHeader} from './server';
 const actual=await vi.importActual<typeof import('./server')>('./server');
+const TOKEN='t'.repeat(43),COOKIE=`__Host-unai.session=${TOKEN}`;
 
 beforeEach(()=>{vi.clearAllMocks();server.identity.mockResolvedValue({ownerScopeId:'owner',userId:'actor'});});
-afterEach(()=>vi.unstubAllEnvs());
+afterEach(()=>{
+  delete (globalThis as unknown as Record<symbol,unknown>)[Symbol.for('unai.web.sessionHolds')];
+  vi.unstubAllEnvs();vi.useRealTimers();
+});
 
-async function proxy(status:number,retryAfter:string|null|undefined){
+async function proxy(status:number,retryAfter:string|null|undefined,rateLimitBucket?:string|null,elapsed=0,cookie=COOKIE){
   const body=status===429?{code:'RATE_LIMITED',correlationId:'c'}:{};
-  server.apiRequest.mockResolvedValue({status,body,retryAfter});
+  server.apiRequest.mockImplementation(async()=>{
+    if(elapsed)vi.setSystemTime(Date.now()+elapsed);
+    return {status,body,retryAfter,rateLimitBucket};
+  });
   const response={setHeader:vi.fn(),status:vi.fn(),json:vi.fn()};response.status.mockReturnValue(response);
-  await handler({query:{path:['ask']},method:'POST',headers:{origin:'https://uai.test',cookie:'session',
+  await handler({query:{path:['ask']},method:'POST',headers:{origin:'https://uai.test',cookie,
     'x-purpose':'memory.read','x-correlation-id':'correlation','idempotency-key':'key'},body:{question:'What is next?'}} as unknown as NextApiRequest,
   response as unknown as NextApiResponse);
   return response;
@@ -54,12 +61,57 @@ it.each(['17','Wed, 21 Oct 2026 07:28:00 GMT',undefined])('apiRequest exposes on
   upstream.request.mockImplementation((_url:URL,_options:unknown,callback:(res:IncomingMessage)=>void)=>{
     const response=Object.assign(new EventEmitter(),{statusCode:429,headers:{'retry-after':value}});
     const request=Object.assign(new EventEmitter(),{setTimeout:vi.fn(),destroy:vi.fn(),end:()=>{
-      callback(response as IncomingMessage);
+      callback(response as unknown as IncomingMessage);
       response.emit('data',Buffer.from('{"code":"RATE_LIMITED","correlationId":"c"}'));response.emit('end');
     }});
     return request;
   });
   expect(await actual.apiRequest('/v1/ask','POST',{},{})).toEqual({
-    status:429,body:{code:'RATE_LIMITED',correlationId:'c'},retryAfter:value==='17'?'17':null,
+    status:429,body:{code:'RATE_LIMITED',correlationId:'c'},retryAfter:value==='17'?'17':null,rateLimitBucket:null,
   });
+});
+
+it.each(['session','authentication',undefined,['session'],'SESSION','session ','session,authentication'])('apiRequest exposes only exact bucket headers (%s)',async value=>{
+  vi.stubEnv('UNAI_API_ORIGIN','https://api.test');vi.stubEnv('UNAI_API_CA_FILE','package.json');
+  upstream.request.mockImplementation((_url:URL,_options:unknown,callback:(res:IncomingMessage)=>void)=>{
+    const response=Object.assign(new EventEmitter(),{statusCode:429,headers:{'x-rate-limit-bucket':value}});
+    return Object.assign(new EventEmitter(),{setTimeout:vi.fn(),destroy:vi.fn(),end:()=>{
+      callback(response as unknown as IncomingMessage);response.emit('data',Buffer.from('{}'));response.emit('end');
+    }});
+  });
+  expect(await actual.apiRequest('/v1/ask','POST',{},{})).toEqual({
+    status:429,body:{},retryAfter:null,rateLimitBucket:value==='session'||value==='authentication'?value:null,
+  });
+});
+
+it.each([['42',41_000],['60',59_000],['99999',59_000]] as const)('holds a session only until sent + capped Retry-After - 1 s (%s)',async(retryAfter,duration)=>{
+  expect(actual.heldSeconds).toBeTypeOf('function');
+  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(15_250);
+  const response=await proxy(429,retryAfter,'session',2_250);
+  expect(response.status).toHaveBeenCalledWith(429);
+  expect(response.setHeader).toHaveBeenCalledWith('Retry-After',retryAfter);
+  const until=15_250+duration;
+  expect(actual.heldSeconds(TOKEN,Date.now())).toBe(Math.ceil((until-Date.now())/1000));
+  expect(actual.heldSeconds(TOKEN,until-1)).toBe(1);
+  expect(actual.heldSeconds(TOKEN,until)).toBeNull();
+});
+
+it.each([
+  [429,'42','authentication'],[429,'42',null],[429,'42',undefined],
+  [429,null,'session'],[429,undefined,'session'],[429,'0','session'],[429,'1','session'],[200,'42','session'],
+] as const)('does not hold for status %s / Retry-After %s / bucket %s',async(status,retryAfter,bucket)=>{
+  expect(actual.heldSeconds).toBeTypeOf('function');
+  await proxy(status,retryAfter,bucket);
+  expect(actual.heldSeconds(TOKEN,Date.now())).toBeNull();
+});
+
+it('cannot hold an unresolved or malformed token',async()=>{
+  expect(actual.heldSeconds).toBeTypeOf('function');
+  server.identity.mockResolvedValue(null);
+  expect((await proxy(429,'42','session')).status).toHaveBeenCalledWith(401);
+  expect(server.apiRequest).not.toHaveBeenCalled();
+  expect(actual.heldSeconds(TOKEN,Date.now())).toBeNull();
+  server.identity.mockResolvedValue({ownerScopeId:'owner',userId:'actor'});
+  await proxy(429,'42','session',0,'__Host-unai.session=short');
+  expect(actual.heldSeconds('short',Date.now())).toBeNull();
 });
