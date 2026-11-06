@@ -77,11 +77,13 @@ They come from the owner's own mailbox and are labelled by a person.
     accepted. Import parses JSON against `gmailThreadSchema`
     (`packages/domain/src/sources.ts`) and refuses anything else with
     `CORPUS_SOURCE_INVALID`.
-- Precondition check: import one thread first. If a file saved straight from
-  `users.threads.get` is refused with `CORPUS_SOURCE_INVALID`, the checkout
-  predates Gmail API body decoding (its Gmail parser expects a decoded
-  `payload.body.text` that the API never sends). Update to a commit that decodes
-  API bodies before continuing.
+- Precondition: a `users.threads.get?format=full` response body saved as JSON
+  imports directly, with no conversion. The Gmail parser decodes the API's
+  base64url part bodies itself (`gmailBody` in `packages/domain/src/sources.ts`,
+  which `pnpm uai corpus import` runs through `parseSourcePayload`). Import one
+  thread first. If that file is refused with `CORPUS_SOURCE_INVALID`, it is not
+  the unmodified response body, or the checkout predates Gmail API body decoding
+  (task-7804f60b); fix that before continuing.
 - Storage: keep the exports and the private corpus on an encrypted volume
   (BitLocker, FileVault, LUKS), never in a synced folder, issue, chat or CI
   artifact. Optionally set `UNAI_PRIVATE_CORPUS_DIR` to a directory on that
@@ -183,13 +185,20 @@ never holds.
   - The suite refuses a literal credential in a `UNAI_LIVE_*_SECRET` variable
     (`SECRET_HANDLE_REQUIRED:UNAI_LIVE_*_SECRET`).
 - What each secret file holds:
-  - Gmail and Calendar: what the Google clients send as `Bearer <value>`
-    (`packages/connectors/src/providers.ts`). At this writing that is an OAuth
-    access token, which Google expires after about an hour, so mint it right
-    before the run. Once the clients exchange a refresh token before each sync,
-    the file holds that refresh token instead. Mint Gmail with
-    `https://www.googleapis.com/auth/gmail.readonly` only and Calendar with
-    `https://www.googleapis.com/auth/calendar.readonly` only.
+  - Gmail and Calendar: a Google OAuth REFRESH token minted by the "Uai
+    connectors" client (ADR 0043 D6), never an access token. Before each sync the
+    runtime exchanges it for an access token with that same client
+    (`createConnectorRuntime`, `packages/api/src/connectors.ts`), so a refresh
+    token minted by any other client fails. Mint each with `pnpm connect:google`
+    (commands step 2): Gmail with `https://www.googleapis.com/auth/gmail.readonly`
+    only and Calendar with `https://www.googleapis.com/auth/calendar.readonly`
+    only. No token is printed.
+  - The connectors client: `google-connector-client`, a JSON file
+    `{"client_id": "...", "client_secret": "..."}` of the Desktop app client,
+    named by `UNAI_GOOGLE_CONNECTOR_CLIENT`. Store it with
+    `pnpm secret:put google-connector-client`, piping the file to stdin. Without
+    the variable the Gmail and Calendar cases refuse with
+    `CONNECTOR_OAUTH_CLIENT_MISSING`.
   - GitHub: a token limited to the one test repository, with read-only access to
     metadata, issues, pull requests and checks, and never one that can write.
   - Omi: an Omi developer key created at app.omi.me/developers with only the
@@ -207,6 +216,7 @@ never holds.
   | Variable | Value |
   | --- | --- |
   | `UNAI_SECRETS_MOUNT` | absolute path of the secrets directory |
+  | `UNAI_GOOGLE_CONNECTOR_CLIENT` | `secret://mounted/google-connector-client` (Gmail and Calendar) |
   | `UNAI_LIVE_GMAIL_ACCOUNT` | test mailbox address |
   | `UNAI_LIVE_GMAIL_SECRET` | `secret://mounted/<name>` |
   | `UNAI_LIVE_CALENDAR_ACCOUNT` | calendar id |
@@ -220,7 +230,8 @@ never holds.
   plus its account/repository variable where listed (Omi needs none);
   otherwise `pnpm test` reports it skipped.
 - Revocation is destructive: with `UNAI_LIVE_CONNECTOR_ALLOW_REVOCATION=true`,
-  CRT-CON-06-A revokes the Gmail token at Google and a new one must be minted.
+  CRT-CON-06-A revokes the Gmail token at Google and a new one must be minted
+  with `pnpm connect:google`.
   Leave it unset for the regular run.
 - Precondition check (Gmail): if the Gmail case fails at its first sync with
   HTTP 500 while Calendar and GitHub pass, the checkout predates Gmail API body
@@ -237,6 +248,12 @@ git status --porcelain
 
 # 2. Export every variable from the table above.
 export UNAI_SECRETS_MOUNT='<absolute path outside the checkout>'
+export UNAI_GOOGLE_CONNECTOR_CLIENT='secret://mounted/google-connector-client'
+# First run only: store the client JSON, then mint the two Google refresh tokens.
+# Each command writes one 0600 file under the mount and prints only its handle.
+pnpm secret:put google-connector-client < '<path of the client JSON>'
+pnpm connect:google --capabilities gmail.read_metadata,gmail.read_content --secret-name live-gmail
+pnpm connect:google --capabilities calendar.read --secret-name live-calendar
 export UNAI_LIVE_GMAIL_ACCOUNT='<test mailbox>'
 export UNAI_LIVE_GMAIL_SECRET='secret://mounted/<name>'
 export UNAI_LIVE_CALENDAR_ACCOUNT='<calendar id>'

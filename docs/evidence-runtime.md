@@ -79,7 +79,7 @@ authenticated owner transaction is still available. Existing append-only audit
 and OpenTelemetry API/owner-transaction spans provide correlated primitives for
 later pipeline consumers, without payloads, cookies or private keys.
 
-In addition to docs/foundation.md's PostgreSQL/Auth.js/TLS configuration, set:
+In addition to the PostgreSQL/Auth.js/TLS configuration in docs/operations/environment.md, set:
 UNAI_S3_ENDPOINT (HTTPS), UNAI_S3_REGION, UNAI_S3_BUCKET and UNAI_S3_KMS_KEY_ID.
 The KMS value must exactly match both bucket settings and returned encryption
 receipts (use the provider's canonical key ARN). SDK credentials come from the

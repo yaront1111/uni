@@ -183,8 +183,26 @@ Cites PRD §28, PRD §41 Portability and Reliability, ADR 0038 and ADR 0008.
   ADR 0008 already requires "trusted database and API CA certificates".
 - The leaf is renewed at least 30 days before expiry through the rotation
   runbook, then `unai-api` is restarted, because the API reads its TLS files
-  once (packages/api/src/server.ts:24). The D10 readiness check
-  `tls_certificate` reports `fail` within 7 days of expiry.
+  once (packages/api/src/server.ts:41, `listenerTls`). The API's
+  `tls_certificate` check warns when fewer than 30 days remain and fails at
+  expiry:
+  - `pnpm start:api -- --check` prints `warn` `TLS_CERT_EXPIRING`, and `fail`
+    `TLS_CERT_EXPIRED` once the leaf has expired.
+  - The D10 readiness check stays `ok`, so the warning never makes `/readyz`
+    answer `not-ready`, and logs `{"event":"probes","status":"TLS_CERT_EXPIRING"}`
+    at most once every 24 hours. At expiry it reports `fail`, and `/readyz`
+    answers `not-ready`.
+
+Amended 2026-11-07 (task-9f62693c4c874e10a23c755c1be4903b): the last API
+bullet said the readiness check "reports `fail` within 7 days of expiry", and
+cited server.ts:24 for the TLS read. The landed code is the authority: `--check`
+and the probe share `tlsCertificateCheck` (packages/api/src/preflight.ts),
+which returns `TLS_CERT_EXPIRING` under 30 days and throws `TLS_CERT_EXPIRED`
+at expiry. The probe wraps it in `loggedWarnings` (packages/api/src/probes.ts),
+which logs a warning at most once per 86,400,000 ms; the `--check` output comes
+from `runPreflight` (packages/observability/src/telemetry.ts). The web's own
+`tls_certificate` check only loads the key and certificate
+(`createSecureContext`, apps/web/server.ts) and has no expiry threshold.
 
 **PostgreSQL.**
 
@@ -466,7 +484,7 @@ the file is `<mount>/<name>`.
 | api | `UNAI_APP_DATABASE_URL` | `secret://mounted/api-database-url` | provisioning (login `unai_api_login`, D4) |
 | api | `UNAI_AUTH_DATABASE_URL` | `secret://mounted/auth-database-url` | provisioning (login `unai_auth_login`) |
 | api, worker | connector `secret_ref` stored on the connector row | `secret://mounted/connectors/<name>` | the OAuth ceremony CLI (task-a814e89c582143b19660af695d824a24), or a GitHub PAT |
-| api, worker | Google connector OAuth client | `secret://mounted/google-connector-client` (JSON with `client_id` and `client_secret`) | Google Cloud console; the variable naming it is added by task-c7b1ad4dbf9545148bd0a5c6624ef318 |
+| api, worker | `UNAI_GOOGLE_CONNECTOR_CLIENT` (the "Uai connectors" OAuth client; also read by `pnpm connect:google`) | `secret://mounted/google-connector-client` (JSON with `client_id` and `client_secret`) | Google Cloud console (a Desktop app client, see **Google OAuth**) |
 | web | `UNAI_AUTH_DATABASE_URL` | `secret://mounted/auth-database-url` | provisioning (login `unai_auth_login`) |
 | web | `NEXTAUTH_SECRET` | `secret://mounted/nextauth-secret` | at least 32 random bytes, generated on the host |
 | web | `GOOGLE_CLIENT_SECRET` | `secret://mounted/google-signin-client-secret` | Google Cloud console ("Uai sign-in" client) |
@@ -508,7 +526,9 @@ comment-2fb66f2b58344dffa1ef91d4685e9771, folded in here; the owner answered
     (packages/auth/src/index.ts:74; ADR 0008).
   - "Uai connectors": `gmail.readonly`, `gmail.metadata` and
     `calendar.readonly` (packages/connectors/src/manifests.ts:27-29). Its client
-    type is chosen by the ceremony task (task-a814e89c582143b19660af695d824a24).
+    type is Desktop app: `pnpm connect:google` runs Google's installed-app flow
+    with a loopback redirect `http://127.0.0.1:<port>/callback` and PKCE
+    (`code_challenge_method` `S256`) plus `state`.
 - Consent-screen audience: Internal if the owner's account belongs to a Google
   Workspace organisation the owner administers. Otherwise External with
   publishing status In production, left unverified under Google's personal-use
@@ -552,6 +572,16 @@ comment-2fb66f2b58344dffa1ef91d4685e9771, folded in here; the owner answered
   token with the operator message "re-run connect:google". Causes include
   revocation, six months unused, a password change for Gmail scopes and Testing
   expiry.
+
+Amended 2026-11-07 (task-9f62693c4c874e10a23c755c1be4903b): the handles table
+now names the variable `UNAI_GOOGLE_CONNECTOR_CLIENT`, which the API and the
+worker read in `createConnectorRuntime` (packages/api/src/connectors.ts,
+`googleOAuthClient`: optional, resolved on each exchange, a literal refused
+with `SECRET_HANDLE_REQUIRED:UNAI_GOOGLE_CONNECTOR_CLIENT`) and
+`pnpm connect:google` requires (packages/api/src/connect-google.ts,
+`clientHandleOf`). The "Uai connectors" client type, left to the ceremony task,
+is recorded as landed: a Desktop app OAuth client used through the loopback +
+PKCE flow in `authorize` (packages/api/src/connect-google.ts).
 
 **GitHub.** A read-only fine-grained personal access token (Metadata, Issues
 and Pull requests: read) on selected repositories, expiring within one year,

@@ -22,7 +22,7 @@ The database declaration is `managed:disposable-tmpfs-no-persistent-volume`: its
 
 ## Assigned acceptance checks (retained in full)
 
-- [verify-f1-reuse] Provisioning reuses scripts/test.mjs, scripts/tls-certificate.mjs, scripts/storage-harness.mjs and scripts/s3-object-server.mjs without introducing a competing pinned-image source.
+- [verify-f1-reuse] Provisioning reuses the test harness's sources (scripts/postgres-harness.mjs, which scripts/harness.mjs also provisions with), scripts/tls-certificate.mjs, scripts/storage-harness.mjs and scripts/s3-object-server.mjs without introducing a competing pinned-image source. (Updated 2026-11-07: the test runner's provisioning moved from scripts/test.mjs to scripts/harness.mjs.)
 - [verify-f1-secrets] Runtime secret configuration uses mounted handles, with credential contents confined to protected temporary runtime artifacts allowed by the recorded clarification.
 - [verify-f1-stack] A fresh stack run starts its own TLS PostgreSQL/pgvector instance with an explicit encryption-at-rest declaration.
 - [verify-f1-storage] A fresh stack run starts and uses the encrypted object-store service.
@@ -30,6 +30,6 @@ The database declaration is `managed:disposable-tmpfs-no-persistent-volume`: its
 
 `src/dev-stack.test.ts` verifies these checks against real disposable services. The ownership lifecycle driver exercises normal exit, Ctrl+C, API/web crashes, failure at seven startup boundaries, and two interrupted-start boundaries. It inspects resource removal and preserves an unrelated container and directory sentinel. Tests also check mounted handle resolution, private file permissions/ACLs, container configuration without credentials, plaintext PostgreSQL refusal, TLS sessions, pgvector and the declaration, and the encrypted object roundtrip.
 
-Both the full test runner and development runtime reuse `postgresRunArguments` extracted from `scripts/test.mjs`. The PostgreSQL digest has one source in `scripts/postgres-harness.mjs`, also consumed by recovery; the existing MinIO digest remains solely in `scripts/storage-harness.mjs`. No required repository checks were removed or weakened.
+Both the full test runner (through `provisionHarness` in `scripts/harness.mjs`) and the development runtime (`scripts/dev-stack.mjs`) reuse `postgresRunArguments` from `scripts/postgres-harness.mjs`. The PostgreSQL digest has one source in `scripts/postgres-harness.mjs`, also consumed by recovery; the existing MinIO digest remains solely in `scripts/storage-harness.mjs`. No required repository checks were removed or weakened.
 
 The assigned acceptance gate is these five checks plus **`pnpm test`**. Full assembled-product cleanup/replay (`verify-f4-cleanup`), launch timing/disclosure, migrations/roles, web/API behavior, sign-in and fixtures retain their sealed-plan downstream owners. The local lifecycle harness is this node's foundation evidence, not a claim that those downstream checks passed.

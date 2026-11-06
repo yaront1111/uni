@@ -3,7 +3,7 @@
 This is the environment contract for the delivered processes, not a proposed deployment
 configuration. `pnpm check:env-contract` and `src/env-contract.test.ts` (included in
 `pnpm test`) enforce the repository-read inventory. Consumer line numbers were checked
-on 2026-11-02; the guard checks that the file reads the variable and that the line is
+on 2026-11-07; the guard checks that the file reads the variable and that the line is
 in range, not that the read remains on exactly that line. No secret values belong here.
 
 ## How the guard works
@@ -101,7 +101,9 @@ for the worker or `UNCLASSIFIED` as the API/web cause.
 
 The API writes one `{"event":"listening","port":N}` line to stdout after binding,
 using the actual bound port (including when the configured port is zero), never the
-host. Existing telemetry, probe-status and runtime log lines remain unchanged.
+host. It is the last line a successful startup prints: the probe listener and the
+signal handlers are set up before it (`packages/api/src/server.ts:95`), so a
+supervisor may treat it as ready. Existing telemetry, probe-status and runtime log lines remain unchanged.
 
 ## API (pnpm start:api)
 
@@ -184,6 +186,12 @@ deployment runs one API process. A refused request answers 429 `RATE_LIMITED` wi
 a whole-second `Retry-After`. Both settings accept integers 1–999999; unset or
 empty uses the default. Sessions that already authenticated in this process bypass
 the address-failure bucket, but still count against their own session budget.
+A request without a known session holds a slot in its address budget while
+authentication runs, so completed failures plus in-flight unknown requests never
+exceed `UNAI_API_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE`. A failure keeps its slot until
+the window ends; a success, or an error thrown by authentication, frees it
+(`admit` and `release` in `packages/auth/src/rate-limit.ts`, released in a `finally`
+around `authenticate` in `packages/api/src/index.ts`). No variable controls this.
 
 Malformed registry UUID/version gives `PROCESSING_CONFIGURATION_INVALID`. TLS is
 in-process, not terminated at a trusted proxy; these settings do not enable proxy trust.
@@ -390,6 +398,18 @@ corpus directory; the synthetic corpus needs neither credential nor private path
 | --- | --- | --- | --- | --- | --- |
 | `UNAI_PRIVATE_CORPUS_DIR` | optional; corpus/private-local; used for private corpus operations | file path | per use | `packages/registry/src/corpus.ts:59` | none; default |
 
+### pnpm connect:google and pnpm secret:put
+
+Both scripts run `packages/api/src/connect-google-cli.ts`. `pnpm secret:put <name>`
+reads only `UNAI_SECRETS_MOUNT`; `pnpm connect:google` reads both rows. A refusal
+prints one stderr line `{"event":"connect.failed"|"secret.failed","code":"<CODE>"}`
+and exits 1 (2 for `CONNECT_USAGE_INVALID`); no secret value is printed.
+
+| Variable | Required / default | Kind | When read | Consumer | Failure when missing |
+| --- | --- | --- | --- | --- | --- |
+| `UNAI_SECRETS_MOUNT` | required by both commands; must be an existing directory; the secret is written under it | file path | startup | `packages/api/src/connect-google.ts:287` | `CONFIG_REQUIRED:UNAI_SECRETS_MOUNT`; not a directory: `CONFIG_INVALID:UNAI_SECRETS_MOUNT` |
+| `UNAI_GOOGLE_CONNECTOR_CLIENT` | required by `connect:google` only; handle of the "Uai connectors" Desktop app client JSON `{client_id, client_secret}`, ADR 0043 D6: `secret://mounted/google-connector-client` | secret handle | startup | `packages/api/src/connect-google.ts:278` | `CONFIG_REQUIRED:UNAI_GOOGLE_CONNECTOR_CLIENT`; a literal: `SECRET_HANDLE_REQUIRED:UNAI_GOOGLE_CONNECTOR_CLIENT`; a `#field` handle: `CONFIG_INVALID:UNAI_GOOGLE_CONNECTOR_CLIENT` |
+
 ### pnpm backup
 
 `scripts/backup.mjs` reads every row below in this order before any network or database
@@ -498,12 +518,12 @@ pgvector; storage uses delivered S3, else MinIO, else the in-process encrypted s
 
 | Variable | Required / default | Kind | When read | Consumer | Failure when missing |
 | --- | --- | --- | --- | --- | --- |
-| `UNAI_TEST_DATABASE_URL` | optional; takes precedence over DATABASE_URL; else disposable container | URL | startup | `scripts/test.mjs:33` | none; provisions database; provisioning failure `DATABASE_PROVISIONING_FAILED` |
-| `DATABASE_URL` | optional; fallback delivered disposable-server URL | URL | startup | `scripts/test.mjs:33` | none; provisions database |
+| `UNAI_TEST_DATABASE_URL` | optional; takes precedence over DATABASE_URL; else disposable container | URL | startup | `scripts/test.mjs:33`, `scripts/with-harness.mjs:67` | none; provisions database; provisioning failure `DATABASE_PROVISIONING_FAILED` |
+| `DATABASE_URL` | optional; fallback delivered disposable-server URL | URL | startup | `scripts/test.mjs:33`, `scripts/with-harness.mjs:67` | none; provisions database |
 | `UNAI_TEST_MAX_WORKERS` | optional; 4; decimal 1 to 64 | literal | startup | `scripts/test-stages.mjs:19` | none; default 4. Any other value: `TEST_MAX_WORKERS_INVALID` before provisioning |
-| `UNAI_TEST_S3_ENDPOINT` | optional all-or-none trio; HTTPS endpoint | URL | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:8` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
-| `UNAI_TEST_S3_BUCKET` | optional all-or-none trio | literal | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:26` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
-| `UNAI_TEST_S3_KMS_KEY_ID` | optional all-or-none trio; exact key ID | literal | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:31`, `scripts/database-roundtrip.mjs:84` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
+| `UNAI_TEST_S3_ENDPOINT` | optional all-or-none trio; HTTPS endpoint | URL | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:8`, `scripts/deployment-environment.mjs:168` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
+| `UNAI_TEST_S3_BUCKET` | optional all-or-none trio | literal | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:26`, `scripts/deployment-environment.mjs:168` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
+| `UNAI_TEST_S3_KMS_KEY_ID` | optional all-or-none trio; exact key ID | literal | per use | `scripts/storage-harness.mjs:20`, `scripts/recovery-objects.mjs:31`, `scripts/database-roundtrip.mjs:84`, `scripts/deployment-environment.mjs:168` | partial trio: `STORAGE_PROVISIONING_FAILED` with incomplete-storage diagnostic |
 | `AWS_ACCESS_KEY_ID` | optional; explicit recovery credentials only with secret key, else SDK chain | literal | per use | `scripts/recovery-objects.mjs:9` | none at read; chain/storage operation may fail |
 | `AWS_SECRET_ACCESS_KEY` | optional; literal SDK credential, not SecretsManager handle | literal | per use | `scripts/recovery-objects.mjs:9` | none at read; chain/storage operation may fail |
 | `AWS_SESSION_TOKEN` | optional; temporary credential token | literal | per use | `scripts/recovery-objects.mjs:9` | none; omitted |
@@ -544,7 +564,7 @@ source is the deployment ADR 0043 decision, not a choice made by this contract.
 | --- | --- | --- | --- | --- | --- |
 | Any variable starting with OTEL_ | refused when UNAI_OTEL_EXPORTER_OTLP_ENDPOINT is set; exporter configuration comes only from UNAI_OTEL_* rows | dependency configuration | startup | @opentelemetry/sdk-node 0.223.0 and OTLP exporters | TELEMETRY_OTEL_VARIABLES_REFUSED when present with endpoint; no requirement otherwise |
 | `NODE_EXTRA_CA_CERTS` | optional; extra trust file; no default | file path | startup | Node 24 TLS (`node --help`) | none; system/bundled trust only |
-| `NODE_ENV` | dependency mode; use production for production | literal | per use | next 16.3.5 `dist/server/next.js:460`; next-auth 4.24.15 `core/lib/assert.js:28` | no app missing-variable code |
+| `NODE_ENV` | dependency mode; use production for production | literal | per use | next 16.4.5 `dist/server/next.js:448`; next-auth 4.24.15 `core/lib/assert.js:28` | no app missing-variable code |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | optional environment provider; token for temporary credentials | literal | per use | @aws-sdk/credential-provider-env 3.972.71 `dist-cjs/index.js:12-14` | chain tries alternatives; API maps bucket-check failure to `STORAGE_ENCRYPTION_REQUIRED` |
 | `AWS_PROFILE` | optional; default profile; explicit profile takes precedence over static env pair | literal | per use | @smithy/core 3.34.1 `dist-cjs/submodules/config/index.js:165-167`; @aws-sdk/credential-provider-node 3.972.83 `dist-cjs/index.js:98-118` | none; default profile |
 | `AWS_SHARED_CREDENTIALS_FILE` | optional; ~/.aws/credentials | file path | per use | @smithy/core 3.34.1 `dist-cjs/submodules/config/index.js:207-208` | chain tries alternatives |

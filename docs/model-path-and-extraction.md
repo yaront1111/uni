@@ -161,8 +161,14 @@ that ratio is not a guarantee for every language or input.
 An input over its bound is refused with `EXTRACTION_INPUT_TOO_LARGE` before any
 run row or model call: nothing is spent and stored evidence is unchanged.
 Nothing in the extraction input is truncated to make it fit; spans still refer
-to stored anchor text. The queue currently retries that refusal and then
-dead-letters it; terminal refusal handling belongs to task-2c05639a7dc14766a22f3bc09108c371.
+to stored anchor text. The refusal is terminal: it dead-letters on the attempt
+that raised it, with the attempt budget closed (`max_attempts = attempt_count`),
+so it is never retried automatically and a manual retry gets that closed budget.
+The terminal codes are `TERMINAL_EXTRACTION_ERROR_CODES` in
+`packages/extraction/src/worker.ts`: `EXTRACTION_INPUT_TOO_LARGE`,
+`MODEL_COST_BUDGET_EXCEEDED` and `EXTRACTION_ROUTE_REFUSED`. The processing worker
+passes them as `runJobAttempt`'s `terminalErrorCodes`
+(`packages/api/src/processing-runtime.ts`, `runOnce`).
 The gateway still records an overspend and then refuses it with
 `MODEL_COST_BUDGET_EXCEEDED`.
 
