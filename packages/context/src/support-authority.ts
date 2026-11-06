@@ -66,11 +66,17 @@ export async function readPropositionAuthority(tx: MemoryTransaction, input: {
     for (const id of propIds) visited.add(id);
     if (visited.size + claims.size > MAX_GRAPH_NODES) return denied();
 
+    // One read per RLS table, joined only as CTEs: a direct join can rescan the owner's partition per row.
     const propositionRows = propIds.length === 0 ? [] : (await tx.query(
-      `WITH proposition_slots AS MATERIALIZED (
-         SELECT p.owner_scope_id,p.id,p.belief_slot_id,s.frame_instance_id FROM propositions p
-         JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-         WHERE p.owner_scope_id=$1 AND p.id=ANY($2::uuid[])
+      `WITH root_propositions AS MATERIALIZED (
+         SELECT owner_scope_id,id,belief_slot_id FROM propositions
+         WHERE owner_scope_id=$1 AND id=ANY($2::uuid[])
+       ), root_slots AS MATERIALIZED (
+         SELECT id,frame_instance_id FROM belief_slots
+         WHERE owner_scope_id=$1 AND id IN (SELECT belief_slot_id FROM root_propositions)
+       ), proposition_slots AS MATERIALIZED (
+         SELECT p.owner_scope_id,p.id,p.belief_slot_id,s.frame_instance_id
+         FROM root_propositions p JOIN root_slots s ON s.id=p.belief_slot_id
        )
        SELECT p.id,p.belief_slot_id,p.frame_instance_id FROM proposition_slots p
        WHERE unai_private.object_state_at(p.owner_scope_id,'propositions',p.id,$3) IS NOT NULL

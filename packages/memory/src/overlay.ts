@@ -239,17 +239,28 @@ async function independentVerification(
   if (!target) return empty;
   const propositionId = await propositionOfTarget(tx, ownerScopeId, target, bounds.knowledgeTime);
   if (!propositionId) return empty;
+  // Runs once per overlay delta: read each RLS table once and join only the CTEs,
+  // or a one-row owner estimate rescans the owner's claims for every claim.
   const rows = (await tx.query(
-    `SELECT DISTINCT s.id AS evidence_id,c.claim_origin FROM claims c
-     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
-     JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
-     WHERE c.owner_scope_id=$1 AND c.proposition_id=$2 AND s.id<>$3
-       AND ($5::timestamptz IS NULL OR (unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$5)->>'proposition_id')::uuid=$2)
-       AND c.claim_origin=ANY($4::text[])
-       AND (CASE WHEN $5::timestamptz IS NULL THEN c.lifecycle
-         ELSE unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$5)->>'lifecycle' END) NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
-       AND ($5::timestamptz IS NULL OR c.recorded_at<=$5)
-       AND ($6::uuid[] IS NULL OR s.id=ANY($6::uuid[]))`,
+    `WITH verifying_claims AS MATERIALIZED (
+       SELECT id,source_anchor_id,claim_origin FROM claims
+       WHERE owner_scope_id=$1 AND proposition_id=$2 AND claim_origin=ANY($4::text[])
+         AND ($5::timestamptz IS NULL OR recorded_at<=$5)
+         AND ($5::timestamptz IS NULL OR (unai_private.object_state_at(owner_scope_id,'claims',id,$5)->>'proposition_id')::uuid=$2)
+         AND (CASE WHEN $5::timestamptz IS NULL THEN lifecycle
+           ELSE unai_private.object_state_at(owner_scope_id,'claims',id,$5)->>'lifecycle' END) NOT IN ('REJECTED','SUPPRESSED','SUPERSEDED')
+     ), verifying_anchors AS MATERIALIZED (
+       SELECT id,source_item_id FROM source_anchors
+       WHERE owner_scope_id=$1 AND id IN (SELECT source_anchor_id FROM verifying_claims)
+     ), verifying_sources AS MATERIALIZED (
+       SELECT id FROM source_items
+       WHERE owner_scope_id=$1 AND id IN (SELECT source_item_id FROM verifying_anchors) AND id<>$3
+         AND ($6::uuid[] IS NULL OR id=ANY($6::uuid[]))
+     )
+     SELECT DISTINCT s.id AS evidence_id,c.claim_origin FROM verifying_claims c
+     JOIN verifying_anchors a ON a.id=c.source_anchor_id
+     JOIN verifying_sources s ON s.id=a.source_item_id
+     ORDER BY 1,2`,
     [ownerScopeId, propositionId, sourceEvidenceId, [...INDEPENDENT_CLAIM_ORIGINS],
       bounds.knowledgeTime ?? null, bounds.readableEvidenceIds ?? null])).rows;
   return {

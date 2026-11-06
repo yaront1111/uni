@@ -127,6 +127,15 @@ Report: `docs/today-and-ask.md`; decisions:
   through the evidence policies, so the route must declare `unai.data_purpose`
   and `unai.maximum_sensitivity` first; without them every excerpt reads as
   withheld.
+- **Read each RLS-protected table once per statement.** A fresh owner in a
+  shared database can be estimated at one row, and a direct join of two RLS
+  tables then becomes a nested loop that rescans the owner's whole partition for
+  every outer row. ADR 0046 made the membership check run once per statement;
+  the rescans remain. Read each table in its own `MATERIALIZED` CTE, filtered by
+  owner plus keys from an earlier CTE, and join only CTEs (broker `beliefRows`,
+  `readableFrameCandidates`, `readPropositionAuthority`'s `proposition_slots`).
+  `owner-statistics.test.ts` case (b) asserts `linear()` per statement: add any
+  new hot statement there.
 - **A thread owns nothing.** `memory_thread_members` carries no evidence column.
   Attaching an object to a second thread writes one row naming a row that already
   exists; if a change here starts creating evidence, claims or propositions,

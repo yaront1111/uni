@@ -193,6 +193,12 @@ do not cap that pool at one.
   order. `recomputeCanonicalFingerprints` closes every `normalization-1` index row
   for that owner, so a test added after the CRT-MEM-04-A case cannot assume the
   default normalization version still has live index rows.
+- Never join two RLS-protected tables directly in a hot read: a fresh owner
+  estimated at one row turns the join into a rescan of the owner's partition per
+  outer row. `independentVerification` (`overlay.ts`) runs once per overlay
+  delta, so it reads `claims`, `source_anchors` and `source_items` in separate
+  `MATERIALIZED` CTEs; `packages/context/src/owner-statistics.test.ts` case (b)
+  measures it.
 - Adding a table here means the full checklist in `migrations/CLAUDE.md` and
   `packages/postgres/CLAUDE.md`: classification in `ownership.ts`, a cross-owner
   fixture in `isolation.test.ts`, and the literal table count in "forces RLS on

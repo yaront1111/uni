@@ -243,4 +243,14 @@ it('reads the fresh owner beliefs with linear hot-statement RLS work', async () 
     console.info('OWNER_STATISTICS_' + name, executions.map(m => m.cost));
     for (const m of executions) expect(m.cost.evaluations, name).toBeLessThanOrEqual(evaluationBound(f));
   }
+  // task-7d2ca414: each statement reads every RLS table once, so its tuple fetches are linear too.
+  const linearStatements = [['readableFrameCandidates', 'LIMIT 2049'],
+    ['proposition_slots', 'proposition_slots AS MATERIALIZED'],
+    ['independentVerification', 'AS evidence_id,c.claim_origin']] as const;
+  const runs = linearStatements.map(([name, filter]) => [name, measurements.filter(m => m.sql.includes(filter))] as const);
+  for (const [name, executions] of runs) console.info('OWNER_STATISTICS_LINEAR_' + name, executions.length, executions.map(m => m.cost));
+  for (const [name, executions] of runs) {
+    expect(executions.length, name).toBeGreaterThan(0);
+    for (const m of executions) linear(m.cost, f);
+  }
 }, 60_000);

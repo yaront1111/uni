@@ -13,10 +13,16 @@ export async function readableFrameCandidates(tx: MemoryTransaction, input: {
   let incomplete = false;
   for (let offset = 0; offset < input.frameIds.length; offset += 32) {
     const batch = input.frameIds.slice(offset, offset + 32);
-    const rows = (await tx.query(`SELECT p.id,s.frame_instance_id FROM propositions p
-      JOIN belief_slots s ON s.owner_scope_id=p.owner_scope_id AND s.id=p.belief_slot_id
-      WHERE p.owner_scope_id=$1 AND s.frame_instance_id=ANY($2::uuid[])
-        AND p.created_at<=$3 AND s.created_at<=$3
+    // One read per RLS table: a fresh owner estimated at one row would otherwise
+    // rescan its whole slot partition for every proposition of a direct join.
+    const rows = (await tx.query(`WITH candidate_slots AS MATERIALIZED (
+        SELECT id,frame_instance_id FROM belief_slots
+        WHERE owner_scope_id=$1 AND frame_instance_id=ANY($2::uuid[]) AND created_at<=$3
+      ), candidate_propositions AS MATERIALIZED (
+        SELECT id,belief_slot_id FROM propositions
+        WHERE owner_scope_id=$1 AND belief_slot_id IN (SELECT id FROM candidate_slots) AND created_at<=$3
+      )
+      SELECT p.id,s.frame_instance_id FROM candidate_propositions p JOIN candidate_slots s ON s.id=p.belief_slot_id
       ORDER BY array_position($2::uuid[],s.frame_instance_id),p.id LIMIT 2049`,
     [input.ownerScopeId, batch, input.knowledgeTime])).rows;
     if (rows.length > 2048) incomplete = true;
