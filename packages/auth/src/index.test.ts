@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, expect, it } from 'vitest';
+import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { runMigrations } from '@unai/postgres';
@@ -11,12 +11,33 @@ beforeAll(async()=>{await runMigrations(admin,resolve('migrations'));await admin
 afterAll(async()=>{await pool.end();await admin.end();});
 it('configures only Google identity scopes and protected database session cookies',()=>{
   expect(auth).toHaveProperty('createAuthOptions');
-  const options=auth.createAuthOptions(pool,{clientId:'test-only',clientSecret:'test-only',secret:'test-only-secret-at-least-thirty-two-characters'});
+  const config={clientId:'test-only',clientSecret:'test-only',secret:'test-only-secret-at-least-thirty-two-characters',ownerSubject:'110169484474386276334'};
+  const options=auth.createAuthOptions(pool,config);
   expect(options.providers).toHaveLength(1);
   expect(options.providers[0]?.id).toBe('google');
   expect((options.providers[0] as {options?:{authorization?:unknown}}).options?.authorization).toEqual({params:{scope:'openid email profile'}});
   expect(options.session).toMatchObject({strategy:'database',maxAge:604800});
   expect(options.cookies?.sessionToken).toEqual({name:'__Host-unai.session',options:{httpOnly:true,secure:true,sameSite:'lax',path:'/'}});
+  expect(()=>auth.createAuthOptions(pool,{...config,ownerSubject:''})).toThrow(/^AUTH_CONFIG_REQUIRED$/);
+});
+it('admits only the configured owner subject at sign-in and logs a fixed refusal line',async()=>{
+  const OWNER='110169484474386276334',OTHER='110169484474386276335';
+  const signIn=auth.createAuthOptions(pool,{clientId:'test-only',clientSecret:'test-only',secret:'test-only-secret-at-least-thirty-two-characters',ownerSubject:OWNER}).callbacks!.signIn!;
+  const attempt=(provider:string,subject:string,iss:string)=>signIn({account:{provider,providerAccountId:subject,type:'oauth'},profile:{sub:subject,iss,email:'someone@example.test'},user:{id:subject}} as never);
+  const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+  try{
+    expect(await attempt('google',OWNER,'https://accounts.google.com')).toBe(true);
+    expect(await attempt('google',OWNER,'accounts.google.com')).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+    expect(await attempt('google',OWNER,'https://evil.test')).toBe(false);
+    expect(await attempt('github',OWNER,'https://accounts.google.com')).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+    for(const subject of [OTHER,' '+OWNER,OWNER+'\n']){
+      expect(await attempt('google',subject,'https://accounts.google.com')).toBe(false);
+      expect(warn.mock.calls).toEqual([['{"event":"auth.refused","code":"AUTH_ACCOUNT_NOT_ALLOWED"}']]);
+      warn.mockClear();
+    }
+  }finally{warn.mockRestore();}
 });
 it('gives the auth login no direct access to application or session tables',async()=>{
   for(const table of ['users','devices','auth_sessions','auth_identities','audit_events']){

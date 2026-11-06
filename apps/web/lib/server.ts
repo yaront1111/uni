@@ -23,7 +23,7 @@ export function authPool(){
 }
 export async function authOptions(){
   const [clientSecret,sessionSecret]=await Promise.all([secret('GOOGLE_CLIENT_SECRET'),secret('NEXTAUTH_SECRET')]);
-  return createAuthOptions(await authPool(),{clientId:googleClientId(required('GOOGLE_CLIENT_ID')),clientSecret,secret:sessionSecret});
+  return createAuthOptions(await authPool(),{clientId:googleClientId(required('GOOGLE_CLIENT_ID')),clientSecret,secret:sessionSecret,ownerSubject:ownerGoogleSubject(required('UNAI_WEB_OWNER_GOOGLE_SUBJECT'))});
 }
 export async function identity(req:IncomingMessage){
   if((req.socket as TLSSocket).encrypted!==true)throw new Error('TLS_REQUIRED');
@@ -58,6 +58,17 @@ export async function apiRequest(path:string,method:string,headers:Record<string
  * local pattern match, never a request to Google, and the value is never echoed. */
 export function googleClientId(value:string):string{
   if(!/^[0-9]+(?:-[0-9a-z]+)?\.apps\.googleusercontent\.com$/.test(value))throw new Error('CONFIG_INVALID:GOOGLE_CLIENT_ID');
+  return value;
+}
+/** Refuses an owner subject that is not Google's `sub` shape: the account's decimal
+ * id, e.g. `110169484474386276334` in Google's OpenID Connect reference. It is unique,
+ * never reused and unchanged when the email changes (ADR 0008: issuer plus subject is
+ * the identity); 255 is the OIDC bound and the auth_identities CHECK. The unreplaced
+ * `<owner-google-subject>` placeholder, an email or stray whitespace fails here, in
+ * `--check`'s auth check and on every sign-in. It is a local pattern match, never a
+ * request to Google, and the value is never echoed. */
+export function ownerGoogleSubject(value:string):string{
+  if(!/^[0-9]{1,255}$/.test(value))throw new Error('CONFIG_INVALID:UNAI_WEB_OWNER_GOOGLE_SUBJECT');
   return value;
 }
 

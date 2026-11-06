@@ -244,6 +244,48 @@ Cites ADR 0008 (Host check, own TLS listeners) and PRD §30.5.
 - LUKS keyslot 1 holds a random recovery passphrase that the owner keeps offline
   with the backup key (D9).
 
+Amended 2026-11-06 (task-de7ba9e0ace64e0bb153aee772a2a017): the data volume is
+automated as follows.
+
+- **Setup.** `deploy/pgdata/setup.sh --device <block-device> --key-arn
+  <pgdata-key-arn>`, run once on the host as root.
+  - The operator supplies AWS credentials for that one run through
+    `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (optionally
+    `AWS_SESSION_TOKEN`), because `unai-host-unlock` may only Decrypt.
+  - It refuses a device that is mounted, has a partition, mapping, filesystem,
+    partition table or LUKS header, before any AWS call or write.
+  - It takes the 64 bytes from `aws kms generate-data-key --number-of-bytes 64`
+    and writes only `volume-key.enc`.
+  - It formats LUKS2 with label `unai-pgdata`, opens it, makes ext4 and mounts it
+    at `/var/lib/postgresql` (`nodev,nosuid`).
+  - Adding the keyslot-1 recovery passphrase stays a manual step.
+- **Unlock.** `unai-pgdata-unlock.service` (`Type=oneshot`, `RemainAfterExit=yes`)
+  runs `deploy/pgdata/unlock.sh` from `/opt/unai/current`. The script:
+  - waits for `/dev/disk/by-label/unai-pgdata`;
+  - runs `aws kms decrypt` and pipes the plaintext into `cryptsetup open
+    --key-file=-`;
+  - mounts `/dev/mapper/unai-pgdata` at `/var/lib/postgresql` (`nodev,nosuid`).
+  The mount is the script's, not an fstab line or a mount unit: setup writes no
+  file except the key, and `install.sh` copies only `unai-*` units.
+- **Ordering and fail-closed.** The unit is ordered
+  `Before=postgresql@17-main.service`, and its `[Install]` section has
+  `RequiredBy=` that unit. Once it is enabled, a failed unlock therefore keeps
+  the cluster stopped instead of starting it on the bare mount point. The unit has
+  no mount-namespace sandboxing, because the mount must be visible to the whole
+  host.
+- **Region.** The unit sets `AWS_CONFIG_FILE=/etc/unai/pgdata/aws-config`
+  (root:root 0400; `[default]` and `region = <aws-region>`), next to
+  `AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials` and
+  `AWS_EC2_METADATA_DISABLED=true`. The dedicated config file also keeps root's own
+  AWS configuration out of the unlock.
+- **Host packages.** `deploy/install.sh` installs `cryptsetup` and `unzip` from the
+  Ubuntu 24.04 archive, and AWS CLI v2 2.36.7 from the official zip into
+  `/usr/local/aws-cli` with `/usr/local/bin/aws`. Ubuntu 24.04 has no `awscli`
+  package. AWS publishes a PGP signature, not a checksum, for that zip: the
+  SHA-256 pinned in `install.sh` was taken from the zip whose signature verified
+  against the AWS CLI public key. `install.sh` also creates `/etc/unai/pgdata`
+  (root:root 0700) and writes no file in it.
+
 **Exact declaration.** Provisioning sets it as the `postgres` superuser:
 
 ```sql
@@ -431,7 +473,8 @@ the file is `<mount>/<name>`.
 | worker | `UNAI_APP_DATABASE_URL` | `secret://mounted/worker-database-url` | provisioning (login `unai_worker_login`) |
 | worker | `UNAI_MODEL_API_KEY` | `secret://mounted/anthropic-api-key` | Anthropic Console (D7) |
 
-- `GOOGLE_CLIENT_ID` stays plain configuration (apps/web/lib/server.ts:22).
+- `GOOGLE_CLIENT_ID` and `UNAI_WEB_OWNER_GOOGLE_SUBJECT` stay plain
+  configuration (apps/web/lib/server.ts:26).
 - AWS keys are not handles, because the storage adapter has no credentials
   field and uses the SDK default chain (packages/storage/CLAUDE.md). The unit
   sets `AWS_SHARED_CREDENTIALS_FILE=<mount>/aws/credentials` and
@@ -477,6 +520,33 @@ comment-2fb66f2b58344dffa1ef91d4685e9771, folded in here; the owner answered
   expiration), https://support.google.com/cloud/answer/7454865 (Unverified
   apps) and https://support.google.com/cloud/answer/13464323 (When is
   verification not needed).
+- Sign-in allowlist (the owner's decision of 2026-11-06, option (a) of
+  task-42bc6eb3ab194132b00c0e765394c37b):
+  - Why: the consent-screen settings above let any Google account reach the
+    "Uai sign-in" consent screen. For every new subject the adapter would
+    create a user, a PERSONAL owner scope and an OWNER membership
+    (unai_private.auth_create_user, migrations/0002_authentication.sql). A
+    stranger could then upload into the owner's bucket and spend the owner's
+    rate limits.
+  - What: `UNAI_WEB_OWNER_GOOGLE_SUBJECT`, plain configuration in
+    /etc/unai/web.env, names the owner's Google subject (`sub`). The `signIn`
+    callback of createAuthOptions (packages/auth/src/index.ts) admits only that
+    subject. It refuses every other account before the adapter can write a row
+    and logs one fixed `{"event":"auth.refused","code":"AUTH_ACCOUNT_NOT_ALLOWED"}`
+    line, without the subject or the email.
+  - Why `sub`, not the email: Google documents `sub` as unique, never reused
+    and unchanged when the email changes. ADR 0008 makes issuer plus subject
+    the identity.
+  - Fail closed: an unset or empty value fails the web `--check` `auth` check
+    with `CONFIG_REQUIRED:UNAI_WEB_OWNER_GOOGLE_SUBJECT`, and anything but 1–255
+    digits with `CONFIG_INVALID:UNAI_WEB_OWNER_GOOGLE_SUBJECT`, so the unit's
+    ExecStartPre refuses to start. A web started by hand fails every sign-in
+    with the same codes.
+  - Not chosen: (b) a separate Testing-status sign-in project, and (c)
+    accepting the exposure.
+  - Limits: the allowlist gates sign-in, not sessions that already exist; a
+    fresh deployment has none. Pointing the variable at another account gives
+    that account a new, empty owner scope and moves no data.
 - The refresh-token exchange, implemented by
   task-c7b1ad4dbf9545148bd0a5c6624ef318, treats `invalid_grant` as a revoked
   token with the operator message "re-run connect:google". Causes include
@@ -849,7 +919,8 @@ Decisions map to the tasks that implement them; none of this exists yet:
 - D10: task-e9dd2f5215e9486fb09f60d18ee6e5ae. D8:
   task-fc564767f0e9492cadad015259a53817.
 - Google OAuth (D6): task-c7b1ad4dbf9545148bd0a5c6624ef318 and
-  task-a814e89c582143b19660af695d824a24.
+  task-a814e89c582143b19660af695d824a24; the sign-in allowlist:
+  task-42bc6eb3ab194132b00c0e765394c37b.
 - D7: task-9436f4840ca04fc0afbe2bdc2be6fd42.
 
 Variables named here that no code reads yet (`UNAI_PROBE_*`, `UNAI_OTEL_*`,

@@ -10,7 +10,7 @@ import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
 import {createRequestListener,securityHeaders} from './lib/security-headers';
-import {googleClientId} from './lib/server';
+import {googleClientId,ownerGoogleSubject} from './lib/server';
 
 /** The headers every response of the web process carries besides the policy. */
 const FIXED_HEADERS={
@@ -155,6 +155,17 @@ describe('googleClientId',()=>{
     }finally{connect.mockRestore();fetch.mockRestore();}
   });
 });
+/** Google's example `sub` (OpenID Connect reference); the shipped placeholder, CRLF-normalised. */
+const OWNER_SUBJECT='110169484474386276334';
+const SUBJECT_PLACEHOLDER=/^UNAI_WEB_OWNER_GOOGLE_SUBJECT=(.+)$/m.exec(readFileSync(join(WEB,'../../deploy/env/web.env.example'),'utf8').replaceAll('\r',''))?.[1]??'';
+describe('ownerGoogleSubject',()=>{
+  it('accepts only a 1-255 digit Google subject and refuses the deploy placeholder, an email and stray whitespace',()=>{
+    expect(SUBJECT_PLACEHOLDER).toContain('<');
+    for(const subject of [OWNER_SUBJECT,'1','9'.repeat(255)])expect(ownerGoogleSubject(subject)).toBe(subject);
+    for(const subject of [SUBJECT_PLACEHOLDER,'',' '+OWNER_SUBJECT,OWNER_SUBJECT+'\n','owner@example.test','1101694844743862763a4','9'.repeat(256),'-1','1e5'])
+      expect(()=>ownerGoogleSubject(subject)).toThrow(/^CONFIG_INVALID:UNAI_WEB_OWNER_GOOGLE_SUBJECT$/);
+  });
+});
 type CheckRun={status:number|null;stdout:string;stderr:string};
 function webCheck(env:NodeJS.ProcessEnv):Promise<CheckRun>{
   return new Promise((done,reject)=>{
@@ -189,12 +200,13 @@ describe('web --check (no Next build or database needed)',()=>{
     const env:NodeJS.ProcessEnv={PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,NODE_ENV:'test',
       NEXTAUTH_URL:`https://127.0.0.1:${(held.address() as AddressInfo).port}`,UNAI_WEB_TLS_KEY_FILE:key,UNAI_WEB_TLS_CERT_FILE:cert,
       UNAI_SECRETS_MOUNT:mount,NEXTAUTH_SECRET:'secret://mounted/session',GOOGLE_CLIENT_SECRET:'secret://mounted/google',GOOGLE_CLIENT_ID:CLIENT_ID,
-      UNAI_AUTH_DATABASE_URL:'secret://mounted/auth',UNAI_DATABASE_CA_FILE:cert,
+      UNAI_WEB_OWNER_GOOGLE_SUBJECT:OWNER_SUBJECT,UNAI_AUTH_DATABASE_URL:'secret://mounted/auth',UNAI_DATABASE_CA_FILE:cert,
       UNAI_API_ORIGIN:`https://127.0.0.1:${(api.address() as AddressInfo).port}`,UNAI_API_CA_FILE:cert};
     runs=await Promise.all([webCheck(env),webCheck({...env,UNAI_API_ORIGIN:`https://127.0.0.1:${downPort}`}),
       webCheck({...env,NEXTAUTH_URL:'http://x'}),webCheck({...env,NEXTAUTH_SECRET:'secret://mounted/short'}),webCheck({...env,UNAI_API_CA_FILE:wrong}),
       webCheck({...env,UNAI_SECRETS_MOUNT:undefined}),webCheck({...env,UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE:'0'}),
-      webCheck({...env,GOOGLE_CLIENT_ID:PLACEHOLDER})]);
+      webCheck({...env,GOOGLE_CLIENT_ID:PLACEHOLDER}),webCheck({...env,UNAI_WEB_OWNER_GOOGLE_SUBJECT:undefined}),
+      webCheck({...env,UNAI_WEB_OWNER_GOOGLE_SUBJECT:''}),webCheck({...env,UNAI_WEB_OWNER_GOOGLE_SUBJECT:SUBJECT_PLACEHOLDER})]);
   },180000);
   afterAll(async()=>{
     await Promise.all([api,held].filter(Boolean).map(server=>new Promise<void>(done=>server.close(()=>done()))));
@@ -210,14 +222,15 @@ describe('web --check (no Next build or database needed)',()=>{
   it.each([[1,'api','warn','API_UNREACHABLE',0],[2,'origin','fail','WEB_TLS_CONFIG_INVALID',1],
     [3,'auth','fail','AUTH_CONFIG_REQUIRED',1],[4,'api','fail','API_TLS_HANDSHAKE_FAILED',1],
     [5,'auth','fail','CONFIG_REQUIRED:UNAI_SECRETS_MOUNT',1],[6,'rate_limits','fail','CONFIG_INVALID:UNAI_WEB_AUTH_FAILURE_RATE_LIMIT_PER_MINUTE',1],
-    [7,'auth','fail','CONFIG_INVALID:GOOGLE_CLIENT_ID',1]] as const)(
+    [7,'auth','fail','CONFIG_INVALID:GOOGLE_CLIENT_ID',1],[8,'auth','fail','CONFIG_REQUIRED:UNAI_WEB_OWNER_GOOGLE_SUBJECT',1],
+    [9,'auth','fail','CONFIG_REQUIRED:UNAI_WEB_OWNER_GOOGLE_SUBJECT',1],[10,'auth','fail','CONFIG_INVALID:UNAI_WEB_OWNER_GOOGLE_SUBJECT',1]] as const)(
     'classifies case %s and continues the remaining checks',(index,check,status,code,exit)=>{
       expect(runs[index]!.status).toBe(exit);expect(lines(runs[index]!).filter(line=>line.status!=='ok')).toEqual([{check,status,code}]);
     });
   it('prints only JSON status words and codes without any sensitive material',()=>{
     for(const run of runs){
       expect(run.stderr).toBe('');expect(lines(run).map(line=>line.check)).toEqual(CHECKS);
-      for(const secret of ['SENTINEL','://','BEGIN','googleusercontent',root,'startup_failed'])expect(run.stdout+run.stderr).not.toContain(secret);
+      for(const secret of ['SENTINEL','://','BEGIN','googleusercontent',OWNER_SUBJECT,root,'startup_failed'])expect(run.stdout+run.stderr).not.toContain(secret);
     }
   });
 });

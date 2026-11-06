@@ -204,6 +204,8 @@ async function setup(state,databaseUrl,env){
     GOOGLE_CLIENT_SECRET:'secret://mounted/google-client-secret',
     // Google's documented client-ID shape (googleClientId); a client ID is public.
     GOOGLE_CLIENT_ID:'123456789012-0123456789abcdefghijklmnopqrstuv.apps.googleusercontent.com',
+    // Google's example `sub` (ownerGoogleSubject); no sign-in happens under --check.
+    UNAI_WEB_OWNER_GOOGLE_SUBJECT:'110169484474386276334',
     UNAI_API_ORIGIN:'https://127.0.0.1:'+apiPort,
     UNAI_API_CA_FILE:path('api.pem'),
   };

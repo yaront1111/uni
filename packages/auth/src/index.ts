@@ -66,8 +66,8 @@ export function postgresAdapter(pool:Pool):Adapter {
   };
 }
 
-export function createAuthOptions(pool:Pool,config:{clientId:string;clientSecret:string;secret:string}):NextAuthOptions{
-  if(!config.clientId||!config.clientSecret||config.secret.length<32)throw new Error('AUTH_CONFIG_REQUIRED');
+export function createAuthOptions(pool:Pool,config:{clientId:string;clientSecret:string;secret:string;ownerSubject:string}):NextAuthOptions{
+  if(!config.clientId||!config.clientSecret||config.secret.length<32||!config.ownerSubject)throw new Error('AUTH_CONFIG_REQUIRED');
   return {
     secret:config.secret,adapter:postgresAdapter(pool),
     providers:[Google({clientId:config.clientId,clientSecret:config.clientSecret,
@@ -79,8 +79,13 @@ export function createAuthOptions(pool:Pool,config:{clientId:string;clientSecret
     pages:{signIn:'/signin',error:'/signin'},
     callbacks:{
       async signIn({account,profile}){
-        return account?.provider==='google' && !!profile &&
-          ['https://accounts.google.com','accounts.google.com'].includes(String((profile as GoogleProfile).iss));
+        if(!(account?.provider==='google' && !!profile &&
+          ['https://accounts.google.com','accounts.google.com'].includes(String((profile as GoogleProfile).iss))))return false;
+        // Single-owner allowlist (ADR 0043 D6): next-auth 4.24.15 runs only the read-only getUserByAccount before this and
+        // createUser/linkAccount/createSession only after true; providerAccountId is String(profile.sub), linkAccount's key.
+        if(account.providerAccountId===config.ownerSubject)return true;
+        console.warn(JSON.stringify({event:'auth.refused',code:'AUTH_ACCOUNT_NOT_ALLOWED'}));
+        return false;
       },
       async session({session,user}){
         return {expires:session.expires,user:{name:user.name??'Uai user'},ownerScopeId:(user as IdentityUser).ownerScopeId};
