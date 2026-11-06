@@ -5,12 +5,12 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api": "^1.10.0",
     "@unai/domain": "workspace:*",
     "@unai/postgres": "workspace:*",
-    "pg": "^8.16.0"
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.15.0"
+    "@types/pg": "^8.23.1"
   }
 }

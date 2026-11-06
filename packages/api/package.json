@@ -5,8 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@unai/observability": "workspace:*",
-    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api": "^1.10.0",
     "@unai/auth": "workspace:*",
     "@unai/belief": "workspace:*",
     "@unai/capabilities": "workspace:*",
@@ -17,15 +16,16 @@
     "@unai/extraction": "workspace:*",
     "@unai/jobs": "workspace:*",
     "@unai/memory": "workspace:*",
-    "@unai/model": "workspace:*",
     "@unai/mentor": "workspace:*",
+    "@unai/model": "workspace:*",
+    "@unai/observability": "workspace:*",
     "@unai/postgres": "workspace:*",
     "@unai/review": "workspace:*",
     "@unai/secrets": "workspace:*",
-    "fastify": "^5.12.4",
-    "pg": "^8.16.0"
+    "fastify": "^5.12.8",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.15.0"
+    "@types/pg": "^8.23.1"
   }
 }

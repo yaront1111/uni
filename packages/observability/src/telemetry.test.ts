@@ -150,27 +150,36 @@ it('exports real spans and pipeline metrics, never foreign scopes or detected re
 import {readFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {resolve} from 'node:path';
-import ts from 'typescript';
+import {SyntaxKind} from 'typescript/unstable/ast';
+import {isImportDeclaration,isStringLiteral} from 'typescript/unstable/ast/is';
+import {API} from 'typescript/unstable/sync';
 const entries=[
   ['packages/api/src/server.ts','CONFIG_REQUIRED:UNAI_SECRETS_MOUNT','.'],
   ['packages/api/src/processing-worker.ts','PROCESSING_CONFIGURATION_REQUIRED','.'],
   ['apps/web/server.ts','CONFIG_REQUIRED:NEXTAUTH_URL','apps/web'],
 ] as const;
 it('starts telemetry before instrument-creating modules in all three entries',()=>{
-  for(const [file] of entries){
-    const source=readFileSync(file,'utf8'),ast=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
-    for(const statement of ast.statements){
-      if(!ts.isImportDeclaration(statement)||statement.importClause?.isTypeOnly)continue;
-      const name=(statement.moduleSpecifier as ts.StringLiteral).text;
-      expect(name.startsWith('node:')||name==='@unai/observability/telemetry',`${file}: static imports capture no-op meters`).toBe(true);
+  // TypeScript 7 parses only through its compiler service; the web entry belongs to the apps/web project.
+  const root=resolve('.').replaceAll('\\','/'),api=new API({cwd:root});
+  try{
+    const snapshot=api.updateSnapshot({openProjects:[root+'/tsconfig.json',root+'/apps/web/tsconfig.json']});
+    for(const [file] of entries){
+      const source=readFileSync(file,'utf8'),path=root+'/'+file;
+      const ast=snapshot.getDefaultProjectForFile(path)?.program.getSourceFile(path);
+      if(!ast)throw new Error('ENTRY_NOT_IN_PROGRAM:'+file);
+      for(const statement of ast.statements){
+        if(!isImportDeclaration(statement)||statement.importClause?.phaseModifier===SyntaxKind.TypeKeyword)continue;
+        const name=isStringLiteral(statement.moduleSpecifier)?statement.moduleSpecifier.text:'';
+        expect(name.startsWith('node:')||name==='@unai/observability/telemetry',`${file}: static imports capture no-op meters`).toBe(true);
+      }
+      expect(source.match(/startTelemetry\(/g),`${file}: start exactly once`).toHaveLength(1);
+      expect(source.indexOf('startTelemetry('),`${file}: start before dynamic imports`).toBeLessThan(source.indexOf('import('));
     }
-    expect(source.match(/startTelemetry\(/g),`${file}: start exactly once`).toHaveLength(1);
-    expect(source.indexOf('startTelemetry('),`${file}: start before dynamic imports`).toBeLessThan(source.indexOf('import('));
-  }
+  }finally{api.close();}
   const source=readFileSync('packages/observability/src/telemetry.ts','utf8');
   expect(source).not.toMatch(/from ['"]\.\/index|import\(['"]\.\/index/);
   expect([...source.matchAll(/['"](@unai\/[^'"]+)['"]/g)].map(m=>m[1])).toEqual(['@unai/secrets']);
-});
+},60000);
 function spawnEntry(file:string,cwd:string,extra:Record<string,string>={}){
   return spawnSync(process.execPath,[resolve('node_modules/tsx/dist/cli.mjs'),resolve(file)],{
     cwd:resolve(cwd),encoding:'utf8',timeout:60000,

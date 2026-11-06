@@ -1,5 +1,7 @@
 import {createDefaultSecretsManager, requireSecret, type SecretsManager} from '@unai/secrets';
-import type {core, metrics, tracing} from '@opentelemetry/sdk-node';
+import type * as core from '@opentelemetry/core';
+import type * as metrics from '@opentelemetry/sdk-metrics';
+import type * as tracing from '@opentelemetry/sdk-trace';
 
 export type Telemetry={readonly enabled:boolean;shutdown():Promise<void>};
 export type TelemetrySdkConfiguration={
@@ -136,8 +138,9 @@ function ownMetrics(delegate:metrics.PushMetricExporter,success:core.ExportResul
   };
 }
 async function createNodeSdk(config:TelemetrySdkConfiguration):Promise<Sdk>{
-  const [{NodeSDK,core,metrics,resources},{OTLPTraceExporter},{OTLPMetricExporter}]=await Promise.all([
-    import('@opentelemetry/sdk-node'),import('@opentelemetry/exporter-trace-otlp-http'),import('@opentelemetry/exporter-metrics-otlp-http'),
+  const [{NodeSDK},core,metrics,resources,{OTLPTraceExporter},{OTLPMetricExporter}]=await Promise.all([
+    import('@opentelemetry/sdk-node'),import('@opentelemetry/core'),import('@opentelemetry/sdk-metrics'),import('@opentelemetry/resources'),
+    import('@opentelemetry/exporter-trace-otlp-http'),import('@opentelemetry/exporter-metrics-otlp-http'),
   ]);
   return new NodeSDK({
     resource:resources.resourceFromAttributes(config.resourceAttributes),autoDetectResources:false,

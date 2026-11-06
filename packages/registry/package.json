@@ -5,17 +5,17 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api": "^1.10.0",
     "@unai/belief": "workspace:*",
     "@unai/capabilities": "workspace:*",
     "@unai/domain": "workspace:*",
     "@unai/memory": "workspace:*",
     "@unai/postgres": "workspace:*",
-    "pg": "^8.16.0",
+    "pg": "^8.23.1",
     "yaml": "^2.9.1",
-    "zod": "^4.6.2"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/pg": "^8.15.0"
+    "@types/pg": "^8.23.1"
   }
 }

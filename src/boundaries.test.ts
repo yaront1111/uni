@@ -1,7 +1,11 @@
 import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
-import ts from 'typescript';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { type Node, type PropertyAccessExpression, SyntaxKind } from 'typescript/unstable/ast';
+import { isElementAccessExpression, isExportDeclaration, isExportSpecifier, isIdentifier, isImportDeclaration, isImportSpecifier,
+  isInterfaceDeclaration, isNoSubstitutionTemplateLiteral, isPropertyAccessExpression, isStringLiteral, isTemplateExpression,
+  isTypeAliasDeclaration, isTypeNode } from 'typescript/unstable/ast/is';
+import { API, type Checker, type Program, SymbolFlags } from 'typescript/unstable/sync';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * Package boundaries (PRD §32 rules, §27, §29.2; CRT-CON-09-A, CRT-NFR-08-A,
@@ -20,6 +24,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
  * Every rule is proven able to fail: the program also holds in-memory probe
  * files that commit the violation each rule forbids, and each rule's own test
  * asserts it reports that probe while reporting nothing in the real packages.
+ * The program is the TypeScript 7 compiler's, reached through its API; the
+ * probes enter it through the API's virtual file system, never through disk.
  */
 
 const ROOT = realpathSync(resolve('.')).replaceAll('\\', '/');
@@ -68,38 +74,42 @@ const PROBES: Record<string, string> = {
 const PROBE_PATHS = new Set(Object.keys(PROBES).map(abs));
 const isProbe = (file: string) => PROBE_PATHS.has(file.replaceAll('\\', '/'));
 
-let program: ts.Program;
-let checker: ts.TypeChecker;
-let options: ts.CompilerOptions;
-let host: ts.CompilerHost;
+let api: API;
+let program: Program;
+let checker: Checker;
 
 beforeAll(() => {
-  const config = ts.readConfigFile(abs('tsconfig.json'), ts.sys.readFile);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT);
-  options = { ...parsed.options, noEmit: true };
-  host = ts.createCompilerHost(options, true);
-  const getSourceFile = host.getSourceFile.bind(host), fileExists = host.fileExists.bind(host), readFile = host.readFile.bind(host);
-  const probe = (file: string) => PROBES[rel(abs(file))];
-  host.getSourceFile = (file, language, ...rest) => {
-    const text = PROBE_PATHS.has(abs(file)) ? probe(file) : undefined;
-    return text !== undefined ? ts.createSourceFile(file, text, language, true) : getSourceFile(file, language, ...rest);
-  };
-  host.fileExists = file => PROBE_PATHS.has(abs(file)) || fileExists(file);
-  host.readFile = file => PROBE_PATHS.has(abs(file)) ? probe(file) : readFile(file);
-  const sources = parsed.fileNames.filter(file => !file.endsWith('.test.ts'));
-  program = ts.createProgram([...sources, ...PROBE_PATHS], options, host);
-  checker = program.getTypeChecker();
+  // A virtual file system over the real one: a directory holding a probe lists
+  // it, a probe path exists and reads, and everything else falls through to disk.
+  const norm = (path: string) => path.replaceAll('\\', '/');
+  api = new API({ cwd: ROOT, fs: {
+    readFile: file => PROBES[rel(norm(file))],
+    fileExists: file => PROBE_PATHS.has(norm(file)) ? true : undefined,
+    getAccessibleEntries: directory => {
+      const probes = [...PROBE_PATHS].filter(path => dirname(path) === norm(directory)).map(path => path.slice(path.lastIndexOf('/') + 1));
+      if (!probes.length) return undefined;
+      const entries = readdirSync(directory, { withFileTypes: true });
+      return { files: [...entries.filter(entry => entry.isFile()).map(entry => entry.name), ...probes],
+        directories: entries.filter(entry => entry.isDirectory()).map(entry => entry.name) };
+    },
+  } });
+  const project = api.updateSnapshot({ openProjects: [abs('tsconfig.json')] }).getDefaultProjectForFile(abs('src/index.ts'));
+  if (!project) throw new Error('WORKSPACE_PROJECT_NOT_LOADED');
+  program = project.program;
+  checker = project.checker;
 }, 120000);
+afterAll(() => api?.close());
 
 /** Non-test source files of a package directory, probes included on request. */
 function filesOf(directory: string, withProbes: boolean): string[] {
-  return program.getSourceFiles().map(file => file.fileName.replaceAll('\\', '/'))
+  return program.getSourceFileNames().map(file => file.replaceAll('\\', '/'))
     .filter(file => file.startsWith(abs(directory) + '/') && !file.endsWith('.test.ts') && !file.endsWith('.d.ts'))
     .filter(file => withProbes ? isProbe(file) : !isProbe(file));
 }
+/** Case-insensitive: a declaration handle carries the canonical (lower-cased) path. */
 const inWorkspace = (file: string) => {
-  const path = file.replaceAll('\\', '/');
-  return path.startsWith(ROOT + '/') && !path.includes('/node_modules/') && !path.endsWith('.d.ts');
+  const path = file.replaceAll('\\', '/').toLowerCase();
+  return path.startsWith(ROOT.toLowerCase() + '/') && !path.includes('/node_modules/') && !path.endsWith('.d.ts');
 };
 
 // ---------------------------------------------------------------------------
@@ -107,7 +117,7 @@ const inWorkspace = (file: string) => {
 // ---------------------------------------------------------------------------
 interface Rule {
   /** Why a declaration may not be reached at all, or null. */
-  readonly forbiddenDeclaration?: (declaration: ts.Declaration, name: string, file: string) => string | null;
+  readonly forbiddenDeclaration?: (declaration: Node, name: string, file: string) => string | null;
   /** Why a string or template literal in reached code is forbidden, or null. */
   readonly forbiddenText?: (text: string) => string | null;
   /** Declarations in these files are permitted and not walked further. */
@@ -115,45 +125,48 @@ interface Rule {
 }
 interface Violation { readonly reason: string; readonly chain: readonly string[] }
 
-const TRAVERSABLE = new Set([ts.SyntaxKind.FunctionDeclaration, ts.SyntaxKind.MethodDeclaration, ts.SyntaxKind.ArrowFunction,
-  ts.SyntaxKind.FunctionExpression, ts.SyntaxKind.VariableDeclaration, ts.SyntaxKind.ClassDeclaration,
-  ts.SyntaxKind.PropertyAssignment, ts.SyntaxKind.PropertyDeclaration, ts.SyntaxKind.GetAccessor, ts.SyntaxKind.SetAccessor,
-  ts.SyntaxKind.Constructor, ts.SyntaxKind.ShorthandPropertyAssignment]);
+const TRAVERSABLE = new Set([SyntaxKind.FunctionDeclaration, SyntaxKind.MethodDeclaration, SyntaxKind.ArrowFunction,
+  SyntaxKind.FunctionExpression, SyntaxKind.VariableDeclaration, SyntaxKind.ClassDeclaration,
+  SyntaxKind.PropertyAssignment, SyntaxKind.PropertyDeclaration, SyntaxKind.GetAccessor, SyntaxKind.SetAccessor,
+  SyntaxKind.Constructor, SyntaxKind.ShorthandPropertyAssignment]);
 
-function describeNode(node: ts.Node, name: string) {
+function describeNode(node: Node, name: string) {
   const source = node.getSourceFile();
   return rel(source.fileName) + ':' + (source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1) + ' ' + name;
 }
 
 function walk(roots: readonly string[], rule: Rule): Violation[] {
   const violations: Violation[] = [];
-  const seen = new Set<ts.Node>();
-  const queue: { node: ts.Node; chain: string[] }[] = roots.map(file => ({ node: program.getSourceFile(file)!, chain: [rel(file)] }));
+  const seen = new Set<Node>();
+  const queue: { node: Node; chain: string[] }[] = roots.map(file => ({ node: program.getSourceFile(file)!, chain: [rel(file)] }));
   while (queue.length) {
     const { node, chain } = queue.shift()!;
-    const visit = (current: ts.Node): void => {
+    const visit = (current: Node): void => {
       // Types are erased at runtime and reach nothing.
-      if (ts.isTypeNode(current) || ts.isInterfaceDeclaration(current) || ts.isTypeAliasDeclaration(current)) return;
-      if (ts.isImportDeclaration(current) && current.importClause?.isTypeOnly) return;
-      if ((ts.isImportSpecifier(current) || ts.isExportSpecifier(current)) && current.isTypeOnly) return;
-      if (rule.forbiddenText && (ts.isStringLiteralLike(current) || ts.isTemplateExpression(current))) {
-        const reason = rule.forbiddenText(ts.isTemplateExpression(current) ? current.getText() : current.text);
+      if (isTypeNode(current) || isInterfaceDeclaration(current) || isTypeAliasDeclaration(current)) return;
+      if (isImportDeclaration(current) && current.importClause?.phaseModifier === SyntaxKind.TypeKeyword) return;
+      if ((isImportSpecifier(current) || isExportSpecifier(current)) && current.isTypeOnly) return;
+      if (rule.forbiddenText && (isStringLiteral(current) || isNoSubstitutionTemplateLiteral(current) || isTemplateExpression(current))) {
+        const reason = rule.forbiddenText(isTemplateExpression(current) ? current.getText() : current.text);
         if (reason) violations.push({ reason, chain: [...chain, describeNode(current, 'literal')] });
       }
-      if (ts.isIdentifier(current)) {
+      if (isIdentifier(current)) {
         let symbol = checker.getSymbolAtLocation(current);
-        if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
-        for (const declaration of symbol?.declarations ?? []) {
-          const file = declaration.getSourceFile().fileName;
-          if (!inWorkspace(file)) continue;
-          const reason = rule.forbiddenDeclaration?.(declaration, current.text, file.replaceAll('\\', '/'));
+        if (symbol && symbol.flags & SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+        for (const handle of symbol?.declarations ?? []) {
+          // The handle's path is enough to skip library declarations before fetching the node.
+          if (!inWorkspace(handle.path)) continue;
+          const declaration = handle.resolve();
+          if (!declaration) continue;
+          const file = declaration.getSourceFile().fileName.replaceAll('\\', '/');
+          const reason = rule.forbiddenDeclaration?.(declaration, current.text, file);
           if (reason) { violations.push({ reason, chain: [...chain, describeNode(declaration, current.text)] }); continue; }
-          if (rule.stopAt?.(file.replaceAll('\\', '/')) || seen.has(declaration) || !TRAVERSABLE.has(declaration.kind)) continue;
+          if (rule.stopAt?.(file) || seen.has(declaration) || !TRAVERSABLE.has(declaration.kind)) continue;
           seen.add(declaration);
           queue.push({ node: declaration, chain: [...chain, describeNode(declaration, current.text)] });
         }
       }
-      ts.forEachChild(current, visit);
+      current.forEachChild(visit);
     };
     visit(node);
   }
@@ -165,15 +178,16 @@ function runtimeImports(file: string): { specifier: string; resolved: string | n
   const source = program.getSourceFile(file)!;
   const out: { specifier: string; resolved: string | null }[] = [];
   for (const statement of source.statements) {
-    const declaration = ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement) ? statement : null;
-    if (!declaration?.moduleSpecifier || !ts.isStringLiteral(declaration.moduleSpecifier)) continue;
-    if (ts.isImportDeclaration(declaration) && declaration.importClause?.isTypeOnly) continue;
-    if (ts.isExportDeclaration(declaration) && declaration.isTypeOnly) continue;
+    const declaration = isImportDeclaration(statement) || isExportDeclaration(statement) ? statement : null;
+    if (!declaration?.moduleSpecifier || !isStringLiteral(declaration.moduleSpecifier)) continue;
+    if (isImportDeclaration(declaration) && declaration.importClause?.phaseModifier === SyntaxKind.TypeKeyword) continue;
+    if (isExportDeclaration(declaration) && declaration.isTypeOnly) continue;
     const specifier = declaration.moduleSpecifier.text;
-    const resolved = ts.resolveModuleName(specifier, file, options, host).resolvedModule?.resolvedFileName;
+    // The module symbol's declaration is the file the specifier resolved to.
+    const resolved = checker.getSymbolAtLocation(declaration.moduleSpecifier)?.declarations[0]?.resolve()?.getSourceFile().fileName;
     // An unresolvable relative specifier still names a path; judge it by that.
     const fallback = specifier.startsWith('.') ? resolve(dirname(file), specifier).replaceAll('\\', '/') : null;
-    out.push({ specifier, resolved: resolved ? realpathSync(resolved).replaceAll('\\', '/') : fallback });
+    out.push({ specifier, resolved: resolved ? (isProbe(resolved) ? resolved : realpathSync(resolved)).replaceAll('\\', '/') : fallback });
   }
   return out;
 }
@@ -261,15 +275,17 @@ function credentialFindings(files: readonly string[]): string[] {
       if (DRIVER_SPECIFIERS.test(entry.specifier)) findings.push('DATABASE_DRIVER_IMPORTED: ' + rel(file) + ' ' + entry.specifier);
     }
     const source = program.getSourceFile(file)!;
-    const visit = (node: ts.Node): void => {
+    const visit = (node: Node): void => {
       // process.env.X, env.X and env['X'] naming a database credential.
-      const name = ts.isPropertyAccessExpression(node) ? node.name.text
-        : ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression) ? node.argumentExpression.text : null;
-      if (name && CREDENTIAL.test(name) && /env$/i.test((node as ts.PropertyAccessExpression).expression.getText(source))) {
+      const name = isPropertyAccessExpression(node) ? node.name.text
+        : isElementAccessExpression(node) && isStringLiteral(node.argumentExpression) ? node.argumentExpression.text : null;
+      if (name && CREDENTIAL.test(name) && /env$/i.test((node as PropertyAccessExpression).expression.getText(source))) {
         findings.push('DATABASE_CREDENTIAL_READ: ' + describeNode(node, name));
       }
-      if (ts.isStringLiteralLike(node) && /\bpostgres(?:ql)?:\/\//i.test(node.text)) findings.push('DATABASE_URL_EMBEDDED: ' + describeNode(node, 'literal'));
-      ts.forEachChild(node, visit);
+      if ((isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) && /\bpostgres(?:ql)?:\/\//i.test(node.text)) {
+        findings.push('DATABASE_URL_EMBEDDED: ' + describeNode(node, 'literal'));
+      }
+      node.forEachChild(visit);
     };
     visit(source);
   }
