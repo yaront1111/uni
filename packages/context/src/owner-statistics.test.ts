@@ -167,7 +167,14 @@ beforeAll(async () => {
   finally { await server.end(); }
   const url = new URL(serverUrl); url.pathname = '/' + database;
   admin = pool(url.href);
-  await runMigrations(admin, resolve('migrations'));
+  // Migration 0001 alters cluster-global roles and runMigrations serializes only within one database:
+  // take the lock every scratch-database suite takes on the shared suite database.
+  const shared = pool(serverUrl);
+  try {
+    const lock = await shared.connect();
+    try { await lock.query('SELECT pg_advisory_lock(1970170217, 3)'); await runMigrations(admin, resolve('migrations')); }
+    finally { await lock.query('SELECT pg_advisory_unlock(1970170217, 3)').catch(() => undefined); lock.release(true); }
+  } finally { await shared.end(); }
   await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD 'test-only'; GRANT unai_app TO ${role}`);
   url.username = role; url.password = 'test-only'; app = pool(url.href);
   registryReleaseId = await pinRelease();

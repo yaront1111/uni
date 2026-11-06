@@ -110,7 +110,12 @@ describe.runIf(Boolean(process.env.UNAI_TEST_DATABASE_URL&&process.env.UNAI_TEST
   async function setupDatabase(){
     const url=new URL(process.env.UNAI_TEST_DATABASE_URL!),scratchUrl=new URL(url);scratchUrl.pathname='/'+database;
     admin=new Pool({connectionString:url.href});await admin.query('CREATE DATABASE '+database);
-    scratch=new Pool({connectionString:scratchUrl.href});await runMigrations(scratch,resolve('migrations'));
+    scratch=new Pool({connectionString:scratchUrl.href});
+    // Migration 0001 alters cluster-global roles and runMigrations serializes only within one database:
+    // take the lock every scratch-database suite takes on the shared suite database (admin's).
+    const lock=await admin.connect();
+    try{await lock.query('SELECT pg_advisory_lock(1970170217,3)');await runMigrations(scratch,resolve('migrations'));}
+    finally{await lock.query('SELECT pg_advisory_unlock(1970170217,3)').catch(()=>{});lock.release(true);}
     await admin.query(`ALTER DATABASE ${database} SET unai.encryption_at_rest='volume-kms:preflight-test'`);
     const id=randomUUID();
     await scratch.query(`INSERT INTO registry_releases(id,semantic_version,git_tag,git_commit,content_hash,lifecycle,released_at,manifest,correlation_id)
