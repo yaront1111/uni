@@ -73,7 +73,7 @@ afterAll(async()=>{
 
 it('runs SQL in a fresh scratch database, preserves argv/storage and exit 7, then drops it',async()=>{
   const extra='$HOME;$(exit 9)';
-  const output=await run(['--',process.execPath,'-e',query.replace('EXIT_CODE','7'),extra]);
+  const [output]=await staggered([[process.execPath,'-e',query.replace('EXIT_CODE','7'),extra]]) as [Run];
   expect(output.status,output.stderr).toBe(7);
   expect(output.signal).toBeNull();
   const name=scratchOf(output.stdout),result=resultOf(output.stdout);
@@ -85,6 +85,8 @@ it('runs SQL in a fresh scratch database, preserves argv/storage and exit 7, the
   await expectDropped(name);
 },180_000);
 
+// Plain run(): no URL is delivered, so its wrapper migrates its own container's cluster and cannot race the suite's
+// roles; holding the suite lock across a container boot would stall the 30 s lock waiters in other files.
 it.skipIf(!docker)('starts and removes the pinned container when no database is delivered',async()=>{
   const env={...process.env};delete env.UNAI_TEST_DATABASE_URL;delete env.DATABASE_URL;
   const output=await run(['--',process.execPath,'-e',query.replace('EXIT_CODE','0')],env);
@@ -99,6 +101,7 @@ it.skipIf(!docker)('starts and removes the pinned container when no database is 
   expect(running.stdout).not.toContain('127.0.0.1:'+result.port+'->5432/tcp');
 },180_000);
 
+// Plain run(): the wrapper exits 2 before provisioning, so nothing migrates and the 5 s testTimeout must not queue.
 it.each([{label:'missing arguments',args:[]},{label:'bare separator',args:['--']},
   {label:'missing separator',args:['node','-e','1']}])('refuses $label before provisioning',async({args})=>{
   const output=await run(args);
@@ -110,7 +113,7 @@ it.each([{label:'missing arguments',args:[]},{label:'bare separator',args:['--']
 it('reports partial delivered storage after migrations and never runs the command',async()=>{
   const env={...process.env};delete env.UNAI_TEST_S3_BUCKET;delete env.UNAI_TEST_S3_KMS_KEY_ID;
   const marker=join(root,'command-ran');
-  const output=await run(['--',process.execPath,'-e',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran')`],env);
+  const [output]=await staggered([[process.execPath,'-e',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran')`]],env) as [Run];
   expect(output.status).toBe(1);
   expect(output.stderr).toBe('STORAGE_PROVISIONING_FAILED: Delivered object storage is incomplete; also set UNAI_TEST_S3_BUCKET, UNAI_TEST_S3_KMS_KEY_ID\n');
   expect(output.stdout).toContain('Migrations: ');
@@ -121,10 +124,10 @@ it('reports partial delivered storage after migrations and never runs the comman
 it.skipIf(process.platform==='win32')('forwards SIGTERM, waits for the child and drops the scratch database',async()=>{
   let pid=0,db='';
   const script=`console.log('READY '+process.pid+' '+new URL(process.env.UNAI_TEST_DATABASE_URL).pathname.slice(1));setTimeout(()=>process.exit(99),120000);`;
-  const output=await run(['--',process.execPath,'-e',script],{...process.env},(stdout,child)=>{
+  const [output]=await staggered([[process.execPath,'-e',script]],{...process.env},(stdout,child)=>{
     const ready=/READY (\d+) (unai_test_[0-9a-f]{32})\n/.exec(stdout);
     if(ready&&!pid){pid=Number(ready[1]);db=ready[2]!;pids.add(pid);child.kill('SIGTERM');}
-  });
+  }) as [Run];
   expect(output.status,output.stderr).toBe(143);
   expect(pid).toBeGreaterThan(0);
   expect(db).toBe(scratchOf(output.stdout));
@@ -134,7 +137,7 @@ it.skipIf(process.platform==='win32')('forwards SIGTERM, waits for the child and
 },180_000);
 
 it('returns 127 for ENOENT and still drops the scratch database',async()=>{
-  const output=await run(['--','unai-with-harness-missing-'+randomUUID()]);
+  const [output]=await staggered([['unai-with-harness-missing-'+randomUUID()]]) as [Run];
   expect(output.status).toBe(127);
   expect(output.stderr).toBe('WITH_HARNESS_COMMAND_FAILED: ENOENT\n');
   await expectDropped(scratchOf(output.stdout));
@@ -185,8 +188,10 @@ const ok=(check:string)=>({check,status:'ok',code:'OK'});
  * (packages/postgres/CLAUDE.md) from each wrapper's start until it has migrated, one
  * wrapper at a time, so other files' scratch migrations can interleave. The rest runs in
  * parallel; a wrapper still running after 300 s is sent SIGTERM, which it forwards and
- * then tears down. */
-async function staggered(commands:string[][]):Promise<Run[]>{
+ * then tears down. env and onStdout apply to every command, and the c003bb24 cases that
+ * migrate on the suite's server use it too. */
+async function staggered(commands:string[][],env:NodeJS.ProcessEnv={...process.env},
+  onStdout?:(text:string,child:ChildProcess)=>void):Promise<Run[]>{
   const runs:Promise<Run>[]=[],lock=await admin.connect();
   try{
     for(const command of commands){
@@ -194,9 +199,10 @@ async function staggered(commands:string[][]):Promise<Run[]>{
       const gate=new Promise<void>(done=>{migrated=done;});
       await lock.query('SELECT pg_advisory_lock(1970170217,3)');
       try{
-        runs.push(run(['--',...command],{...process.env},(stdout,child)=>{
+        runs.push(run(['--',...command],env,(stdout,child)=>{
           timer??=setTimeout(()=>child.kill('SIGTERM'),300_000);
           if(stdout.includes('Migrations: '))migrated();
+          onStdout?.(stdout,child);
         }).finally(()=>{clearTimeout(timer);migrated();}));
         await gate;
       }finally{await lock.query('SELECT pg_advisory_unlock(1970170217,3)');}
