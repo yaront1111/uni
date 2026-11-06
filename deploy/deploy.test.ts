@@ -144,6 +144,17 @@ describe('deployment bundle', () => {
     });
   }
 
+  it('worker: UNAI_PROCESSING_DATA_PURPOSE equals the data purpose the web declares for uploads and Sync now', () => {
+    // The worker dispatches only intents recorded under its own purpose (packages/api/src/processing-runtime.ts),
+    // and the web proxy records uploads and Sync now under this one. Read as text: deploy/ never imports apps/web.
+    const proxy = read('apps/web/pages/api/platform/[...path].ts');
+    const declared = [...proxy.matchAll(/\.\.\.\(evidencePath\b[^\n]*?'x-data-purpose':'([^']*)'/g)].map(match => match[1]);
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).toMatch(/^[A-Z][A-Z0-9_]{0,63}$/);
+    expect(activeValue('worker', 'UNAI_PROCESSING_DATA_PURPOSE')).toBe(declared[0]);
+    expect(read('deploy/README.md')).toContain('UNAI_PROCESSING_DATA_PURPOSE=' + declared[0]);
+  });
+
   it('only web binds a privileged port', () => {
     // URL forbids placeholder brackets in hostnames; replace metadata for parsing only.
     const origin = new URL(activeValue('web', 'NEXTAUTH_URL').replace('<owner-domain>', 'example.invalid'));
@@ -212,7 +223,7 @@ const README_SECTIONS: Sections = [
   ['Start the API and the web', ['systemctl enable --now unai-api.service', 'systemctl enable --now unai-web.service']],
   ['Health and readiness', ['/healthz', '/readyz', '127.0.0.1:9101', '/signin']],
   ['First sign-in, the worker and the timers', ['owner_scope_members', 'UNAI_PROCESSING_OWNER_SCOPE_ID',
-    'systemctl enable --now unai-worker.service', '127.0.0.1:9102', 'systemctl enable --now unai-backup.timer unai-restore-drill.timer']],
+    'UNAI_PROCESSING_DATA_PURPOSE=PERSONAL_ASSISTANCE', 'systemctl enable --now unai-worker.service', '127.0.0.1:9102', 'systemctl enable --now unai-backup.timer unai-restore-drill.timer']],
   ['Connectors', ['pnpm connect:google', 'ssh -L', 'secret://mounted/connectors/google', 'GitHub', 'Omi']],
   ['Upgrade', ['D12', 'unai-backup.timer', 'deploy/upgrade.sh', '--registry-version']],
   ['Backup and restore', ['systemctl start unai-backup.service', 'pnpm backup', 'pnpm restore', 'pnpm restore:drill',

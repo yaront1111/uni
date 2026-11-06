@@ -500,10 +500,18 @@ sudo -u postgres psql -X -d unai -At -c "SELECT m.owner_scope_id, m.user_id FROM
 ```
 
 Require exactly the intended live membership. Put the two ids into worker.env
-as `UNAI_PROCESSING_OWNER_SCOPE_ID` and `UNAI_PROCESSING_ACTOR_ID`. Set
-`UNAI_PROCESSING_DATA_PURPOSE` and `UNAI_PROCESSING_MAXIMUM_SENSITIVITY` explicitly
-per [processing runtime](../docs/processing-runtime.md); do not broaden them
-merely to make a check pass. With the worker still stopped:
+as `UNAI_PROCESSING_OWNER_SCOPE_ID` and `UNAI_PROCESSING_ACTOR_ID`. Keep
+`UNAI_PROCESSING_DATA_PURPOSE=PERSONAL_ASSISTANCE`, as the example ships it: the web
+records every upload and Sync now under that purpose, and the worker extracts only
+intents recorded under its own. Any other value leaves those items PENDING and
+never extracted, with no error or failed check. Set it before the first sync,
+because a scheduled sync stores its items under the worker's purpose of that
+moment, so a later change does not pick them up. Set
+`UNAI_PROCESSING_MAXIMUM_SENSITIVITY` explicitly per
+[processing runtime](../docs/processing-runtime.md). An item stored above it is not
+extracted while the ceiling stays below it; synced items are stored at their
+connector type's floor, PRIVATE unless the owner raises it. Do not broaden either
+setting merely to make a check pass. With the worker still stopped:
 
 ```sh
 systemd-run --wait --pipe --quiet --uid=unai-worker --gid=unai-worker \
