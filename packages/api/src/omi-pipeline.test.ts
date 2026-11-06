@@ -8,12 +8,13 @@
  * doubled. The harness shape is copied from omi-connector.test.ts (frozen by
  * task-9fd2751b) and the extraction plumbing from extraction-pipeline.test.ts.
  *
- * Owner decision, 2026-11-06 (comment-79153fa7): the read surface that names the
- * conversation, the segment index and the speaker is GET /v1/evidence/{id}. No
- * memory read surface shows an unresolved claim's statement and label yet
- * (task-732c9d9a): the inspector's 404 is pinned below, not built. The sync does
- * record the transcript's processing intent (migration 0031's triage trigger), so
- * the read shows it PENDING; this file drives the `evidence.extract` job itself.
+ * Owner decisions, 2026-11-06: GET /v1/evidence/{id} names the conversation, the
+ * segment index and the speaker (comment-79153fa7), and an unresolved claim's
+ * statement and label are read through GET /v1/memory/why/claims/{id} and
+ * GET /v1/memory/evidence/{id}/claims (ADR 0047): REPORTED, worded by code from
+ * the exact quote, with the segment and its speaker. The sync does record the
+ * transcript's processing intent (migration 0031's triage trigger), so the read
+ * shows it PENDING; this file drives the `evidence.extract` job itself.
  */
 import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
@@ -22,7 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
-import type { RequestContext } from '@unai/domain';
+import { candidateStatementsSchema, whySourcesSchema, type RequestContext } from '@unai/domain';
 import type { SecretsManager } from '@unai/secrets';
 import { enqueueJob, runJobAttempt, JOB_PURPOSES } from '@unai/jobs';
 import { createModelGateway, MODEL_PURPOSES, type ModelProvider, type ModelProviderRequest } from '@unai/model';
@@ -287,7 +288,7 @@ it('ADR 0041 D2-D5 end to end: an owner commitment in a synced Omi transcript be
       actorRef: { type: 'EXTERNAL', id: 'omi:transcript' }, sensitivity: 'PRIVATE' });
     expect(evidence.triage.tier1Route).toBe('FULL_EXTRACTION');
     // The narrowest surface naming the conversation, the segment index and the speaker.
-    // The statement-with-label half has no surface yet (task-732c9d9a).
+    // The statement with its label is the ADR 0047 read below.
     expect(evidence.anchors).toContainEqual({ kind: 'TRANSCRIPT_SEGMENT', anchor: claim!.anchor, normalizedText: quote });
     // ADR 0038: migration 0031's triage trigger recorded the transcript's intent in
     // the sync transaction (task-b00c772f's "no intent" premise does not hold);
@@ -298,10 +299,29 @@ it('ADR 0041 D2-D5 end to end: an owner commitment in a synced Omi transcript be
     expect(summary.json()).toMatchObject({ actorRef: { type: 'ASSISTANT', id: 'omi:structured' }, processing: null });
     expect((await rows<{ source_item_id: string }>('SELECT source_item_id FROM evidence_processing WHERE owner_scope_id=$1',
       [h.ownerScopeId])).map(row => row.source_item_id)).toEqual([transcript]);
-    // task-732c9d9a replaces this pin: an unresolved claim has no belief to inspect.
-    const inspected = await h.app.inject({ url: '/v1/memory/inspector/claim/' + claim!.id, headers: h.headers('memory.inspect') });
-    expect(inspected.statusCode, inspected.body).toBe(404);
-    expect(inspected.json()).toMatchObject({ code: 'INSPECTOR_TARGET_NOT_FOUND' });
+    // ADR 0047: the unresolved claim reads REPORTED, worded by code from the exact
+    // quote with Omi's speaker attribution; the model's paraphrase never shows.
+    const statement = 'You said (as Omi identified the speaker): “' + quote + '”';
+    const opened = await h.app.inject({ url: '/v1/memory/why/claims/' + claim!.id, headers: h.headers('memory.inspect') });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const panel = whySourcesSchema.parse(opened.json());
+    expect(panel).toMatchObject({ subject: { objectType: 'claims', objectId: claim!.id }, subjectKind: 'CANDIDATE_CLAIM',
+      label: 'REPORTED', statement, assessmentStatus: null, explainPath: null });
+    expect(panel.sources).toEqual([{ evidenceId: transcript, sourceType: 'OMI', occurredAt: new Date(fixture.started_at).toISOString(),
+      anchorKind: 'TRANSCRIPT_SEGMENT', excerpt: quote, transcriptSegment: { conversationExternalId: fixture.id, segmentIndex: 2,
+        speakerLabel: 'User', speakerRole: 'OWNER', startSeconds: 8.6, endSeconds: 13.1 } }]);
+    expect(panel.claimingActors).toEqual([{ kind: 'MODEL', label: 'Uai (a model reading, not a person)', entityId: null }]);
+    expect(opened.body).not.toContain('Omi pipeline statement');
+    const listed = await h.app.inject({ url: '/v1/memory/evidence/' + transcript + '/claims', headers: h.headers('memory.inspect') });
+    expect(listed.statusCode, listed.body).toBe(200);
+    const candidates = candidateStatementsSchema.parse(listed.json());
+    expect(candidates).toMatchObject({ evidenceId: transcript, truncated: false });
+    expect(candidates.statements.map(entry => [entry.subject.objectId, entry.statement])).toEqual([[claim!.id, statement]]);
+    expect(listed.body).not.toContain('Omi pipeline statement');
+    // PRD §24.2: Omi's own summary is never a statement.
+    const summaryList = await h.app.inject({ url: '/v1/memory/evidence/' + structured + '/claims', headers: h.headers('memory.inspect') });
+    expect(summaryList.statusCode, summaryList.body).toBe(200);
+    expect(candidateStatementsSchema.parse(summaryList.json())).toMatchObject({ evidenceId: structured, statements: [], truncated: false });
   } finally { await h.close(); }
 }, 60_000);
 
@@ -315,6 +335,14 @@ it('ADR 0041 D4 attribution: a bystander claim names Dana, and canonicalization 
     const [dana] = await claims(h.ownerScopeId);
     expect(dana!.anchor).toMatchObject({ segmentIndex: 1, speakerId: '1', speakerName: 'Dana', speakerRole: 'OTHER', start: 19, end: 62 });
     expect(dana).toMatchObject({ asserted_by_entity_id: null, claim_origin: 'MODEL_EXTRACTION', normalized_text: danaQuote });
+    // ADR 0047 D4/D5: a bystander is worded by Omi's label for them, never as the owner.
+    const opened = await h.app.inject({ url: '/v1/memory/why/claims/' + dana!.id, headers: h.headers('memory.inspect') });
+    expect(opened.statusCode, opened.body).toBe(200);
+    const panel = whySourcesSchema.parse(opened.json());
+    expect(panel).toMatchObject({ subjectKind: 'CANDIDATE_CLAIM', label: 'REPORTED', statement: 'Dana said: “' + danaQuote + '”' });
+    expect(panel.sources[0]!.transcriptSegment).toEqual({ conversationExternalId: fixture.id, segmentIndex: 1,
+      speakerLabel: 'Dana', speakerRole: 'OTHER', startSeconds: 3.9, endSeconds: 8.2 });
+    expect(JSON.stringify(panel)).not.toMatch(/\byou\b/i);
 
     // The owner's own first-person commitment reaches the classifier's actor check.
     const sentence = segmentText(2);
@@ -333,6 +361,13 @@ it('ADR 0041 D4 attribution: a bystander claim names Dana, and canonicalization 
     expect(await count('SELECT count(*) AS n FROM claims WHERE owner_scope_id=$1 AND (proposition_id IS NOT NULL OR asserted_by_entity_id IS NOT NULL)',
       [h.ownerScopeId])).toBe(0);
     expect(await count('SELECT count(*) AS n FROM frame_instance_roles WHERE owner_scope_id=$1', [h.ownerScopeId])).toBe(0);
+    // Both stay unresolved candidates, listed in recorded order: Dana's first.
+    const [, owned] = await claims(h.ownerScopeId);
+    const listed = await h.app.inject({ url: '/v1/memory/evidence/' + transcript + '/claims', headers: h.headers('memory.inspect') });
+    expect(listed.statusCode, listed.body).toBe(200);
+    expect(candidateStatementsSchema.parse(listed.json()).statements.map(entry => [entry.subject.objectId, entry.subjectKind, entry.statement]))
+      .toEqual([[dana!.id, 'CANDIDATE_CLAIM', 'Dana said: “' + danaQuote + '”'],
+        [owned!.id, 'CANDIDATE_CLAIM', 'You said (as Omi identified the speaker): “' + sentence + '”']]);
   } finally { await h.close(); }
 }, 60_000);
 

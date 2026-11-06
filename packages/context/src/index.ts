@@ -39,6 +39,6 @@ export { RANKING_VERSION, IMMINENT_HOURS, PAST_TARGET_DAYS, REPEAT_SUPPRESSION_D
   type BriefingCandidate, type ShownBefore, type RankedItem, type RankedBriefing } from './ranking.js';
 export { TODAY_FRAME_TYPES, PENDING_ASSERTION_DAYS, frameLabel, buildTodayBriefing,
   type TodayInput, type TodayOptions } from './today.js';
-export { WHY_PANEL_VERSION, readWhySources } from './why.js';
+export { WHY_PANEL_VERSION, readWhySources, readCandidateStatements } from './why.js';
 export { MANIFEST_VERSION, ANSWER_RECORD_PURPOSE, suppliedContextOf, readPersistedPacket, recordAnswerManifest,
   readAnswerManifest, listReconsiderationCandidates, type RecordAnswerManifestInput } from './manifests.js';

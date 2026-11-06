@@ -48,9 +48,10 @@ export const rankComponentsSchema = z.strictObject({
 });
 export type RankComponents = z.infer<typeof rankComponentsSchema>;
 
-/** What a Why? / Sources action opens: a belief, the owner's own assertion, or
- * the resolution assertion that settled an outcome. */
-export const whyObjectTypeSchema = z.enum(['propositions', 'owner_overlay_deltas', 'resolution_assertions']);
+/** What a Why? / Sources action opens: a belief, the owner's own assertion, the
+ * resolution assertion that settled an outcome, or a claim -- an unresolved
+ * candidate, or the belief that took it up (ADR 0047). */
+export const whyObjectTypeSchema = z.enum(['propositions', 'owner_overlay_deltas', 'resolution_assertions', 'claims']);
 export type WhyObjectType = z.infer<typeof whyObjectTypeSchema>;
 export const whyRefSchema = z.strictObject({ objectType: whyObjectTypeSchema, objectId: z.uuid() });
 export type WhyRef = z.infer<typeof whyRefSchema>;
@@ -179,6 +180,20 @@ export const claimingActorSchema = z.strictObject({
   entityId: z.uuid().nullable(),
 });
 
+/** A TRANSCRIPT_SEGMENT anchor's position in a recorded conversation (ADR 0041
+ * D5, ADR 0047 D5). The role is Omi's voice attribution, not an identity, and
+ * only the role decides whether the owner spoke. `speakerLabel` is null when the
+ * recording names no speaker or when the name would read as the owner. */
+export const transcriptSegmentSchema = z.strictObject({
+  conversationExternalId: z.string().regex(/^[A-Za-z0-9._-]{1,256}$/),
+  segmentIndex: z.number().int().min(0).max(2047),
+  speakerLabel: z.string().min(1).max(80).nullable(),
+  speakerRole: z.enum(['OWNER', 'OTHER', 'UNKNOWN']),
+  startSeconds: z.number().min(0),
+  endSeconds: z.number().min(0),
+});
+export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>;
+
 export const sourceExcerptSchema = z.strictObject({
   evidenceId: z.uuid(),
   sourceType: z.string().max(64),
@@ -187,6 +202,8 @@ export const sourceExcerptSchema = z.strictObject({
   /** The anchored words, bounded. Null when the anchor records a position but no
    * text. */
   excerpt: z.string().max(600).nullable(),
+  /** Present only on a TRANSCRIPT_SEGMENT anchor whose position parses. */
+  transcriptSegment: transcriptSegmentSchema.optional(),
 });
 
 export const whyClaimSchema = z.strictObject({
@@ -203,7 +220,7 @@ export const whyClaimSchema = z.strictObject({
 
 export const whySourcesSchema = z.strictObject({
   subject: whyRefSchema,
-  subjectKind: z.enum(['BELIEF', 'OWNER_ASSERTION', 'RESOLUTION']),
+  subjectKind: z.enum(['BELIEF', 'OWNER_ASSERTION', 'RESOLUTION', 'CANDIDATE_CLAIM']),
   label: memoryLabelSchema,
   /** What is stated, in words. */
   statement: z.string().min(1).max(1000),
@@ -266,3 +283,14 @@ export const whySourcesSchema = z.strictObject({
   readAt: z.iso.datetime(),
 });
 export type WhySources = z.infer<typeof whySourcesSchema>;
+
+/** One evidence item's unresolved candidate claims, each as a Why? / Sources
+ * panel (ADR 0047 D1, D7): at most 50, in recorded then segment order, with
+ * `truncated` set when the item holds more. */
+export const candidateStatementsSchema = z.strictObject({
+  evidenceId: z.uuid(),
+  statements: z.array(whySourcesSchema).max(50),
+  truncated: z.boolean(),
+  readAt: z.iso.datetime(),
+});
+export type CandidateStatements = z.infer<typeof candidateStatementsSchema>;

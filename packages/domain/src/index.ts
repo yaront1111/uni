@@ -148,10 +148,11 @@ export {timeZoneSchema,todayRequestSchema,briefingDomainSchema,briefingPriorityS
   briefingItemKindSchema,rankComponentsSchema,whyObjectTypeSchema,whyRefSchema,briefingItemSchema,
   briefingRecommendationSchema,withheldRecommendationSchema,suppressedRepeatSchema,briefingPacketManifestSchema,
   briefingProjectionCompletenessSchema,todayBriefingSchema,claimingActorSchema,sourceExcerptSchema,whyClaimSchema,
-  whySourcesSchema,
+  whySourcesSchema,transcriptSegmentSchema,candidateStatementsSchema,
   type TodayRequest,type BriefingDomain,type BriefingPriority,type BriefingItemKind,type RankComponents,
   type WhyObjectType,type WhyRef,type BriefingItem,type BriefingRecommendation,type WithheldRecommendation,
-  type BriefingPacketManifest,type TodayBriefing,type WhySources} from './today.js';
+  type BriefingPacketManifest,type TodayBriefing,type WhySources,type TranscriptSegment,
+  type CandidateStatements} from './today.js';
 export {DEFAULT_ATTENTION_BUDGET,attentionBudgetSchema,attentionBudgetPatchSchema,ambiguityKindSchema,
   sensitivityScopeSchema,situationKeySchema,situationKindSchema,ambiguitySchema,cardEffectSchema,cardChoiceSchema,
   errorConsequenceSchema,irreversibilitySchema,urgencySchema,interruptionCostSchema,interruptionPolicyInputsSchema,

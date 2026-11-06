@@ -6,11 +6,12 @@ import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { runMigrations, withOwnerTransaction } from '@unai/postgres';
+import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { applyProjectionDelta } from '@unai/capabilities';
 import { createLocalPolicyAdapters, type PolicyPorts } from '@unai/belief';
-import { todayBriefingSchema, whySourcesSchema, type BriefingItem, type TodayBriefing } from '@unai/domain';
+import { readCandidateStatements, readWhySources } from '@unai/context';
+import { candidateStatementsSchema, todayBriefingSchema, whySourcesSchema, type BriefingItem, type TodayBriefing } from '@unai/domain';
 // The registry library stays out of the API's manifest (registry-boundary.test.ts);
 // only this test publishes the pinned release, through the package's own source.
 import { loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
@@ -548,9 +549,126 @@ it('refuses a Today request that declares no purpose or ceiling, or no timezone,
     // The route holds its own purpose, and the panel holds the inspector's.
     expect((await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE, headers: headers('memory.inspect') })).statusCode).toBe(403);
     expect((await app.inject({ method: 'GET', url: '/v1/memory/why/propositions/' + p.oldAction, headers: headers('memory.read') })).statusCode).toBe(403);
-    expect((await app.inject({ method: 'GET', url: '/v1/memory/why/claims/' + p.oldAction, headers: headers('memory.inspect') })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/v1/memory/why/frame_instances/' + p.oldAction, headers: headers('memory.inspect') })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/v1/memory/why/propositions/' + randomUUID(), headers: headers('memory.inspect') })).statusCode).toBe(404);
+    const unknownClaim = await app.inject({ method: 'GET', url: '/v1/memory/why/claims/' + randomUUID(), headers: headers('memory.inspect') });
+    expect(unknownClaim.statusCode).toBe(404);
+    expect(unknownClaim.json()).toMatchObject({ code: 'WHY_OBJECT_NOT_FOUND' });
   } finally { await app.close(); }
+});
+
+it('opens an unresolved candidate claim as REPORTED, a taken-up claim as its belief, and lists a source\'s candidates (ADR 0047)', async () => {
+  const words = 'Maya will bring the signed lease on Monday.';
+  const MARKER = 'MODEL-PARAPHRASE-MARKER';
+  const claim = async (anchorId: string, lifecycle = 'CANDIDATE') => {
+    const id = uuidV7();
+    await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,recorded_at,extraction_confidence,metadata)
+      VALUES($1,$2,$3,'MODEL_EXTRACTION',$4,$5,0.7,$6)`, [id, owner, anchorId, lifecycle, RECORDED, JSON.stringify({ statement: MARKER })]);
+    return id;
+  };
+  const app = api();
+  const list = (evidenceId: string, purpose = 'memory.inspect', extra: Record<string, string> = {}) =>
+    app.inject({ method: 'GET', url: '/v1/memory/evidence/' + evidenceId + '/claims', headers: headers(purpose, extra) });
+  try {
+    const said = await source('candidate-' + randomUUID(), 'CONVERSATION', words, [ASSISTANCE]);
+    const candidate = await claim(said.anchorId);
+    const rejected = await claim(said.anchorId, 'REJECTED');
+    const takenUp = (await admin.query('SELECT id FROM claims WHERE owner_scope_id=$1 AND proposition_id=$2', [owner, p.oldAction])).rows[0].id as string;
+    const panel = await why(app, 'claims', candidate);
+    expect(panel).toMatchObject({ subject: { objectType: 'claims', objectId: candidate }, subjectKind: 'CANDIDATE_CLAIM', label: 'REPORTED',
+      statement: 'The source says: “' + words + '”', modality: null, assessmentStatus: null, explainPath: null,
+      effectiveTime: { from: null, to: null, recordedAt: RECORDED.toISOString() }, conflict: { status: 'NO_CONFLICT' } });
+    expect(panel.sources).toEqual([{ evidenceId: said.evidenceId, sourceType: 'CONVERSATION', occurredAt: RECORDED.toISOString(),
+      anchorKind: 'MESSAGE_SPAN', excerpt: words }]);
+    expect(panel.claimingActors).toEqual([{ kind: 'MODEL', label: 'Uai (a model reading, not a person)', entityId: null }]);
+    expect(panel.claims.map(entry => [entry.claimId, entry.confidence.extraction])).toEqual([[candidate, 0.7]]);
+    expect(panel.derivation).toEqual({ isInferred: false, steps: [], modelClaims: [
+      { claimId: candidate, claimOrigin: 'MODEL_EXTRACTION', modelId: null, promptVersion: null }] });
+    expect(JSON.stringify(panel)).not.toContain(MARKER);
+    const withheld = await why(app, 'claims', candidate, 'NORMAL');
+    expect(withheld).toMatchObject({ subjectKind: 'CANDIDATE_CLAIM', label: 'UNKNOWN', sources: [],
+      redactions: [{ claimId: null, reason: 'SOURCE_NOT_READABLE_FOR_THIS_REQUEST' }] });
+    expect(JSON.stringify(withheld)).not.toContain(words);
+    // Why opens what a statement rests on: a claim a belief took up opens that belief.
+    expect(await why(app, 'claims', takenUp)).toMatchObject({ subject: { objectType: 'propositions', objectId: p.oldAction }, subjectKind: 'BELIEF' });
+    const gone = await app.inject({ method: 'GET', url: '/v1/memory/why/claims/' + rejected, headers: headers('memory.inspect') });
+    expect(gone.statusCode).toBe(404);
+    expect(gone.json()).toMatchObject({ code: 'WHY_OBJECT_NOT_FOUND' });
+
+    const correlationId = randomUUID();
+    const listed = await list(said.evidenceId, 'memory.inspect', { 'x-correlation-id': correlationId });
+    expect(listed.statusCode, listed.body).toBe(200);
+    const statements = candidateStatementsSchema.parse(listed.json());
+    expect(statements).toMatchObject({ evidenceId: said.evidenceId, truncated: false });
+    expect(statements.statements.map(entry => [entry.subject.objectId, entry.statement])).toEqual([[candidate, 'The source says: “' + words + '”']]);
+    expect(listed.body).not.toContain(MARKER);
+    const audit = (await admin.query('SELECT policy_decision,objects_and_fields_accessed FROM audit_events WHERE correlation_id=$1', [correlationId])).rows;
+    expect(audit.map(row => [row.policy_decision, (row.objects_and_fields_accessed as { type: string; id: string }[]).map(entry => [entry.type, entry.id])]))
+      .toEqual([['ALLOW', [['source_items', said.evidenceId], ['claims', candidate]]]]);
+
+    const undeclared = await list(said.evidenceId, 'memory.inspect', { 'x-data-purpose': '' });
+    expect(undeclared.statusCode).toBe(400);
+    expect(undeclared.json()).toMatchObject({ code: 'CANDIDATE_STATEMENTS_REQUEST_INVALID' });
+    expect((await list('not-a-uuid')).json()).toMatchObject({ code: 'CANDIDATE_STATEMENTS_REQUEST_INVALID' });
+    expect((await list(said.evidenceId, 'memory.read')).statusCode).toBe(403);
+    for (const hidden of [await list(said.evidenceId, 'memory.inspect', { 'x-maximum-sensitivity': 'NORMAL' }), await list(randomUUID())]) {
+      expect(hidden.statusCode).toBe(404);
+      expect(hidden.json()).toMatchObject({ code: 'WHY_OBJECT_NOT_FOUND' });
+    }
+
+    const crowded = await source('candidates-' + randomUUID(), 'CONVERSATION', words, [ASSISTANCE]);
+    const many: string[] = [];
+    for (let index = 0; index < 51; index++) many.push(await claim(crowded.anchorId));
+    const bounded = await list(crowded.evidenceId);
+    expect(bounded.statusCode, bounded.body).toBe(200);
+    const page = candidateStatementsSchema.parse(bounded.json());
+    expect(page.truncated).toBe(true);
+    expect(page.statements.map(entry => entry.subject.objectId)).toEqual([...many].sort().slice(0, 50));
+  } finally { await app.close(); }
+});
+
+// The route reads at wall time, so an earlier knowledge time is read through the
+// context functions, in an owner transaction gated exactly as the route gates it.
+it('reads candidate claims at their knowledge time: a later claim, attachment or rejection never changes an earlier read (ADR 0047 D2)', async () => {
+  const words = 'Noa will return the borrowed ladder on Sunday.';
+  const said = await source('candidate-time-' + randomUUID(), 'CONVERSATION', words, [ASSISTANCE]);
+  const claim = async (recordedAt: Date) => {
+    const id = uuidV7();
+    await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,recorded_at)
+      VALUES($1,$2,$3,'MODEL_EXTRACTION','CANDIDATE',$4)`, [id, owner, said.anchorId, recordedAt]);
+    return id;
+  };
+  const attached = await claim(RECORDED), rejected = await claim(new Date(RECORDED.getTime() + 60_000));
+  const earlier = new Date(RECORDED.getTime() + HOUR);
+  const late = await claim(new Date(RECORDED.getTime() + 90 * 60_000));
+  // Both changes are journaled at the database's wall clock, after `earlier`.
+  await admin.query("UPDATE claims SET proposition_id=$3,lifecycle='ACCEPTED' WHERE owner_scope_id=$1 AND id=$2", [owner, attached, p.oldAction]);
+  await admin.query("UPDATE claims SET lifecycle='REJECTED' WHERE owner_scope_id=$1 AND id=$2", [owner, rejected]);
+  // Read just after both changes, at their journal instant (+1 ms: a JS Date keeps milliseconds only).
+  const now = (await admin.query(`SELECT max(recorded_at)+interval '1 millisecond' AS now FROM memory_object_state_history
+    WHERE owner_scope_id=$1 AND object_type='claims' AND object_id=ANY($2::uuid[]) AND record_kind='CHANGE'`, [owner, [attached, rejected]])).rows[0].now as Date;
+  expect(now).toBeInstanceOf(Date);
+  const read = <T>(run: (tx: OwnerTransaction) => Promise<T>) => withOwnerTransaction(appPool,
+    { actorId: actor, ownerScopeId: owner, purpose: 'memory.inspect', correlationId: randomUUID() }, async tx => {
+      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','PRIVATE',true)", [ASSISTANCE]);
+      return run(tx);
+    });
+  const opened = (id: string, readAt: Date) =>
+    read(tx => readWhySources(tx, { ownerScopeId: owner, ref: { objectType: 'claims', objectId: id }, readAt }));
+  const listed = async (readAt: Date) => (await read(tx => readCandidateStatements(tx, { ownerScopeId: owner, sourceItemId: said.evidenceId, readAt })))
+    .statements.map(panel => [panel.subject.objectId, panel.subjectKind, panel.label]);
+
+  // Earlier: both were unresolved candidates, and the late claim was not yet known.
+  expect(await listed(earlier)).toEqual([[attached, 'CANDIDATE_CLAIM', 'REPORTED'], [rejected, 'CANDIDATE_CLAIM', 'REPORTED']]);
+  for (const id of [attached, rejected]) {
+    expect(await opened(id, earlier)).toMatchObject({ subject: { objectType: 'claims', objectId: id }, subjectKind: 'CANDIDATE_CLAIM',
+      label: 'REPORTED', statement: 'The source says: “' + words + '”' });
+  }
+  await expect(opened(late, earlier)).rejects.toThrow('WHY_OBJECT_NOT_FOUND');
+  // Now: the attached claim answers as its belief, the rejected one opens nothing, and only the late claim is listed.
+  expect(await listed(now)).toEqual([[late, 'CANDIDATE_CLAIM', 'REPORTED']]);
+  expect(await opened(attached, now)).toMatchObject({ subject: { objectType: 'propositions', objectId: p.oldAction }, subjectKind: 'BELIEF' });
+  await expect(opened(rejected, now)).rejects.toThrow('WHY_OBJECT_NOT_FOUND');
 });
 
 it.each(['sensitivity', 'purpose', 'redaction'] as const)('keeps Today projection fields within the packet\'s %s authority', async boundary => {

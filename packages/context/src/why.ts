@@ -1,6 +1,6 @@
 import {
-  whySourcesSchema,
-  type MemoryLabel, type WhyRef, type WhySources,
+  candidateStatementsSchema, transcriptSegmentSchema, whySourcesSchema,
+  type CandidateStatements, type MemoryLabel, type TranscriptSegment, type WhyRef, type WhySources,
 } from '@unai/domain';
 import { readOwnerOverlay, type MemoryTransaction } from '@unai/memory';
 import { ContextBrokerError } from './broker.js';
@@ -18,7 +18,8 @@ import { readPropositionAuthority } from './support-authority.js';
  * the panel answers, in words, who claimed it, what the source says (the
  * anchored excerpt), when it holds, how confident the recorded claims are,
  * whether anything disputes it, and -- for an inferred statement -- how it was
- * derived.
+ * derived. A claim no belief took up opens as an unresolved candidate, worded by
+ * code from its exact quote (ADR 0047).
  *
  * It is a read over rows that already exist, like the explanation it builds on
  * (`explain.ts`): nothing is re-derived and nothing is written. The source
@@ -27,8 +28,12 @@ import { readPropositionAuthority } from './support-authority.js';
  * of being shown.
  */
 
-export const WHY_PANEL_VERSION = 'why-sources-0.4.0';
+export const WHY_PANEL_VERSION = 'why-sources-0.5.0';
 const EXCERPT_LENGTH = 600;
+const LABEL_LENGTH = 80;
+const STATEMENT_LENGTH = 1000;
+const MAX_CANDIDATES = 50;
+const CANDIDATE_LIFECYCLES = new Set(['CANDIDATE', 'AWAITING_INSTANCE_RESOLUTION']);
 const MODEL_ORIGINS = new Set(['MODEL_EXTRACTION', 'MODEL_INFERENCE', 'MODEL_RECOMMENDATION', 'MODEL_PREDICTION']);
 const OWNER_OR_AUTHORITY = new Set(['USER_STATEMENT', 'USER_CONFIRMATION', 'USER_CORRECTION',
   'STRUCTURED_CONNECTOR_OBSERVATION', 'TOOL_EXECUTION_RECEIPT']);
@@ -86,19 +91,59 @@ function claimingActor(row: Row, sourceType: string | null) {
 async function readAnchors(tx: MemoryTransaction, ownerScopeId: string, anchorIds: readonly string[]) {
   if (anchorIds.length === 0) return new Map<string, Row>();
   const rows = (await tx.query(
-    `SELECT a.id,a.anchor_kind,a.normalized_text,a.source_item_id,s.source_type,s.occurred_at
+    `SELECT a.id,a.anchor_kind,a.anchor,a.normalized_text,a.source_item_id,s.source_type,s.occurred_at
      FROM source_anchors a JOIN source_items s ON s.owner_scope_id=a.owner_scope_id AND s.id=a.source_item_id
      WHERE a.owner_scope_id=$1 AND a.id=ANY($2::uuid[]) AND s.deleted_at IS NULL`,
     [ownerScopeId, [...new Set(anchorIds)]])).rows;
   return new Map(rows.map(row => [row['id'] as string, row]));
 }
 
+/** Omi's display name for a speaker, made safe to print. A name that reads as the
+ * owner is dropped: only the anchor's role may say "You" (ADR 0047 D5). */
+function speakerLabelOf(name: unknown): string | null {
+  if (typeof name !== 'string') return null;
+  const label = name.trim().replace(/\s+/g, ' ');
+  if (label === '' || /^you$/i.test(label)) return null;
+  return label.length > LABEL_LENGTH ? label.slice(0, LABEL_LENGTH - 1).replace(/[\uD800-\uDBFF]$/, '') + '…' : label;
+}
+
+/** Where a TRANSCRIPT_SEGMENT anchor sits in its recorded conversation (ADR 0041
+ * D5). Any other kind, or a stored position that does not parse, is null: a
+ * malformed anchor degrades to "the source says", never to a failed read. */
+export function transcriptSegmentOf(anchorKind: string, anchor: unknown): TranscriptSegment | null {
+  if (anchorKind !== 'TRANSCRIPT_SEGMENT' || typeof anchor !== 'object' || anchor === null || Array.isArray(anchor)) return null;
+  const stored = anchor as Row;
+  const parsed = transcriptSegmentSchema.safeParse({
+    conversationExternalId: stored['conversationExternalId'], segmentIndex: stored['segmentIndex'],
+    speakerLabel: speakerLabelOf(stored['speakerName']), speakerRole: stored['speakerRole'],
+    startSeconds: stored['startSeconds'], endSeconds: stored['endSeconds'],
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/** An unresolved candidate's statement, built from the anchor's exact words
+ * (ADR 0047 D4). It takes no model statement on purpose: the extractor's
+ * paraphrase (`claims.metadata.statement`) can never reach a panel. */
+export function candidateStatementOf(input: { sourceType: string; segment: TranscriptSegment | null; quote: string | null }): string {
+  if (!input.quote) return 'This source records a position but no words for this statement.';
+  const { segment } = input;
+  const lead = segment === null ? 'The source says: '
+    : segment.speakerRole === 'OWNER' ? 'You said (as ' + (input.sourceType === 'OMI' ? 'Omi' : 'the transcript') + ' identified the speaker): '
+      : segment.speakerLabel !== null ? segment.speakerLabel + ' said: '
+        : 'An unidentified speaker said: ';
+  const room = STATEMENT_LENGTH - lead.length - 2;
+  const quote = input.quote.length > room ? input.quote.slice(0, room - 1).replace(/[\uD800-\uDBFF]$/, '') + '…' : input.quote;
+  return lead + '“' + quote + '”';
+}
+
 function excerptOf(anchor: Row) {
   const words = (anchor['normalized_text'] as string | null) ?? null;
+  const segment = transcriptSegmentOf(anchor['anchor_kind'] as string, anchor['anchor']);
   return {
     evidenceId: anchor['source_item_id'] as string, sourceType: anchor['source_type'] as string,
     occurredAt: iso(anchor['occurred_at']), anchorKind: anchor['anchor_kind'] as string,
     excerpt: words === null ? null : words.length > EXCERPT_LENGTH ? words.slice(0, EXCERPT_LENGTH - 1) + '…' : words,
+    ...(segment ? { transcriptSegment: segment } : {}),
   };
 }
 
@@ -382,15 +427,91 @@ async function whyResolution(tx: MemoryTransaction, input: { ownerScopeId: strin
   });
 }
 
+/** An unresolved candidate claim as its own panel (ADR 0047 D2-D6): REPORTED,
+ * worded from its exact quote, claimed by whoever the claim row names. A claim
+ * whose source this request may not read is withheld, never quoted. Panels come
+ * back in the caller's order, from one claim read. */
+async function candidatePanels(tx: MemoryTransaction, ownerScopeId: string, claimIds: readonly string[], readAt: Date): Promise<WhySources[]> {
+  if (claimIds.length === 0) return [];
+  const { claims } = await readClaims(tx, ownerScopeId, { claimIds }, readAt);
+  const byId = new Map(claims.map(claim => [claim.value.claimId, claim]));
+  return claimIds.map(objectId => {
+    const claim = byId.get(objectId);
+    if (!claim?.value.source) return withheldPanel({ objectType: 'claims', objectId }, 'CANDIDATE_CLAIM', readAt);
+    const { value, row } = claim;
+    return whySourcesSchema.parse({
+      subject: { objectType: 'claims', objectId }, subjectKind: 'CANDIDATE_CLAIM', label: 'REPORTED',
+      statement: candidateStatementOf({ sourceType: value.source.sourceType, segment: value.source.transcriptSegment ?? null, quote: value.source.excerpt }),
+      modality: null, assessmentStatus: null,
+      effectiveTime: { from: value.validFrom, to: value.validTo, recordedAt: value.recordedAt },
+      confidence: { ...weakest([claim]), assessmentStatus: null },
+      claims: [value], claimingActors: distinctActors([value.claimingActor]), sources: [value.source], redactions: [],
+      conflict: { status: 'NO_CONFLICT', competing: [], relations: [] },
+      derivation: { isInferred: false, steps: [], modelClaims: MODEL_ORIGINS.has(value.claimOrigin) ? [{
+        claimId: value.claimId, claimOrigin: value.claimOrigin,
+        modelId: (row['model_id'] as string | null) ?? null, promptVersion: (row['prompt_version'] as string | null) ?? null,
+      }] : [] },
+      resolutions: [], explainPath: null, panelVersion: WHY_PANEL_VERSION, readAt: readAt.toISOString(),
+    });
+  });
+}
+
+async function whyBelief(tx: MemoryTransaction, input: { ownerScopeId: string; propositionId: string; readAt: Date }): Promise<WhySources> {
+  try { return await whyProposition(tx, input); }
+  catch (error) {
+    if (error instanceof ContextBrokerError && error.message === 'PROPOSITION_NOT_FOUND') throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
+    throw error;
+  }
+}
+
+/** A claim as known at the read time (migration 0030 journals `{lifecycle,
+ * proposition_id}`): the belief that took it up answers for it; otherwise only an
+ * unresolved candidate opens (ADR 0047 D2). */
+async function whyClaim(tx: MemoryTransaction, input: { ownerScopeId: string; claimId: string; readAt: Date }): Promise<WhySources> {
+  const row = (await tx.query(
+    `SELECT c.id,unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3) AS state FROM claims c
+     WHERE c.owner_scope_id=$1 AND c.id=$2 AND c.recorded_at<=$3`, [input.ownerScopeId, input.claimId, input.readAt])).rows[0];
+  const state = (row?.['state'] as Row | null | undefined) ?? null;
+  if (!row || !state) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
+  const propositionId = state['proposition_id'];
+  if (typeof propositionId === 'string') return whyBelief(tx, { ownerScopeId: input.ownerScopeId, propositionId, readAt: input.readAt });
+  if (!CANDIDATE_LIFECYCLES.has(state['lifecycle'] as string)) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
+  const [panel] = await candidatePanels(tx, input.ownerScopeId, [row['id'] as string], input.readAt);
+  return panel!;
+}
+
+/** One evidence item's unresolved candidate claims, each as a Why panel (ADR 0047
+ * D1, D7). The item is read through the evidence policy under the caller's
+ * declared data purpose and ceiling, so an item it may not read is indistinguishable
+ * from one that does not exist. */
+export async function readCandidateStatements(tx: MemoryTransaction,
+  input: { ownerScopeId: string; sourceItemId: string; readAt: Date }): Promise<CandidateStatements> {
+  const item = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1 AND id=$2 AND deleted_at IS NULL',
+    [input.ownerScopeId, input.sourceItemId])).rows[0];
+  if (!item) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
+  const rows = (await tx.query(
+    `SELECT c.id FROM claims c
+     JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+     CROSS JOIN LATERAL (SELECT unai_private.object_state_at(c.owner_scope_id,'claims',c.id,$3) AS state) k
+     WHERE c.owner_scope_id=$1 AND a.source_item_id=$2 AND c.recorded_at<=$3
+       AND k.state->>'proposition_id' IS NULL AND k.state->>'lifecycle' IN ('CANDIDATE','AWAITING_INSTANCE_RESOLUTION')
+     ORDER BY c.recorded_at,
+       CASE WHEN jsonb_typeof(a.anchor->'segmentIndex')='number' THEN (a.anchor->>'segmentIndex')::numeric END NULLS LAST, c.id
+     LIMIT $4`, [input.ownerScopeId, item['id'], input.readAt, MAX_CANDIDATES + 1])).rows;
+  const ids = rows.slice(0, MAX_CANDIDATES).map(row => row['id'] as string);
+  return candidateStatementsSchema.parse({
+    evidenceId: item['id'], statements: await candidatePanels(tx, input.ownerScopeId, ids, input.readAt),
+    truncated: rows.length > MAX_CANDIDATES, readAt: input.readAt.toISOString(),
+  });
+}
+
 /** Open the Why? / Sources panel for one object. */
 export async function readWhySources(tx: MemoryTransaction, input: { ownerScopeId: string; ref: WhyRef; readAt: Date }): Promise<WhySources> {
   switch (input.ref.objectType) {
     case 'propositions':
-      try { return await whyProposition(tx, { ownerScopeId: input.ownerScopeId, propositionId: input.ref.objectId, readAt: input.readAt }); }
-      catch (error) {
-        if (error instanceof ContextBrokerError && error.message === 'PROPOSITION_NOT_FOUND') throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
-        throw error;
-      }
+      return whyBelief(tx, { ownerScopeId: input.ownerScopeId, propositionId: input.ref.objectId, readAt: input.readAt });
+    case 'claims':
+      return whyClaim(tx, { ownerScopeId: input.ownerScopeId, claimId: input.ref.objectId, readAt: input.readAt });
     case 'owner_overlay_deltas':
       return whyOverlayDelta(tx, { ownerScopeId: input.ownerScopeId, overlayDeltaId: input.ref.objectId, readAt: input.readAt });
     case 'resolution_assertions':

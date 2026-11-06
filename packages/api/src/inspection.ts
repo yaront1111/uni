@@ -1,23 +1,32 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { OwnerTransaction } from '@unai/postgres';
-import { dataPurposeSchema, sensitivitySchema, inspectableObjectTypeSchema, memoryInspectorSchema, relatedFramesSchema } from '@unai/domain';
-import { ContextBrokerError, MEMORY_INSPECT_PURPOSE, inspectMemory, readRelatedFrames } from '@unai/context';
+import {
+  candidateStatementsSchema, dataPurposeSchema, sensitivitySchema, inspectableObjectTypeSchema, memoryInspectorSchema,
+  relatedFramesSchema,
+} from '@unai/domain';
+import {
+  ContextBrokerError, MEMORY_INSPECT_PURPOSE, inspectMemory, readCandidateStatements, readRelatedFrames,
+} from '@unai/context';
 
 /**
  * The Memory inspector and the related context of the Commitments and
- * Obligations screens (ADR 0028 §1):
+ * Obligations screens (ADR 0028 §1), and a source's unresolved candidate claims
+ * (ADR 0047 D1, D7):
  *
  *  - GET /v1/memory/inspector/{objectType}/{id}
  *  - GET /v1/memory/frames/related?ids=<uuid>,<uuid>,...
+ *  - GET /v1/memory/evidence/{id}/claims
  *
- * Both run under `memory.inspect` and write nothing but their audit row. The
+ * All run under `memory.inspect` and write nothing but their audit row. The
  * evidence gate is set from the request's declared data purpose and ceiling in
  * the same transaction as the read, exactly as the explain route sets it, so an
  * item the request may not read is withheld by the row policy and counted.
  */
 
 export const INSPECTION_PURPOSE = MEMORY_INSPECT_PURPOSE;
-export const INSPECTION_URLS = Object.freeze(['/v1/memory/inspector/:objectType/:id', '/v1/memory/frames/related']);
+export const INSPECTION_URLS = Object.freeze([
+  '/v1/memory/inspector/:objectType/:id', '/v1/memory/frames/related', '/v1/memory/evidence/:id/claims',
+]);
 
 type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>) => Promise<unknown>;
 
@@ -90,5 +99,27 @@ export function registerInspectionRoutes(app: FastifyInstance, work: Work, optio
           fields: ['roles', 'claims', 'resolution_assertions', 'thread_memberships'] })) });
       return related;
     });
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/memory/evidence/:id/claims', async (request, reply) => {
+    if (!UUID.test(request.params.id) || !declared(request)) return refuse(request, reply, 400, 'CANDIDATE_STATEMENTS_REQUEST_INVALID');
+    try {
+      return await work(request, async tx => {
+        await gate(request, tx);
+        const answer = candidateStatementsSchema.parse(await readCandidateStatements(tx, {
+          ownerScopeId: tx.context.ownerScopeId, sourceItemId: request.params.id.toLowerCase(), readAt: new Date(),
+        }));
+        // Committed with the read: the item and every claim it listed.
+        await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS', objects: [
+          { type: 'source_items', id: answer.evidenceId, fields: ['claims'] },
+          ...answer.statements.slice(0, 99).map(panel => ({ type: 'claims', id: panel.subject.objectId,
+            fields: ['claim_origin', 'extraction_confidence', 'source_anchor_id'] })),
+        ] });
+        return answer;
+      });
+    } catch (error) {
+      if (error instanceof ContextBrokerError && error.message === 'WHY_OBJECT_NOT_FOUND') return refuse(request, reply, 404, error.message);
+      throw error;
+    }
   });
 }
