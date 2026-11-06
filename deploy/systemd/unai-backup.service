@@ -1,0 +1,40 @@
+# ADR 0043 D9/D11 maintenance: stop worker before API; leave the web running.
+# Proxied calls answer 503 SERVICE_UNAVAILABLE while writers are stopped.
+# Only + systemctl commands run as root; unai-backup has no systemctl rights.
+# ExecStopPost runs after success, failure and failed ExecStartPre: API first.
+# The - prefix still starts the worker if the API --check/start fails; inspect
+# systemctl --failed afterwards. It is not a promise that failed units recover.
+# Direct node avoids pnpm's root-owned corepack cache. Never --assume-quiescent:
+# backup.mjs checks systemctl is-active and pg_stat_activity on every run.
+# 4h bounds a hung backup; 7min covers both blocking 180s service starts.
+# Writes: staging and private /tmp only. Missing staging fails before execution.
+# Stop this timer while intentionally holding services down. Never start this
+# service during an upgrade: ExecStopPost starts the current release (D12).
+[Unit]
+Description=Uai backup
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=unai-backup
+Group=unai-backup
+WorkingDirectory=/opt/unai/current
+EnvironmentFile=/etc/unai/backup.env
+Environment=PGPASSFILE=/etc/unai/backup/pgpass
+Environment=AWS_SHARED_CREDENTIALS_FILE=/etc/unai/backup/aws-credentials
+Environment=AWS_EC2_METADATA_DISABLED=true
+ExecStartPre=+/usr/bin/systemctl stop unai-worker.service
+ExecStartPre=+/usr/bin/systemctl stop unai-api.service
+ExecStart=node scripts/backup.mjs
+ExecStopPost=-+/usr/bin/systemctl start unai-api.service
+ExecStopPost=-+/usr/bin/systemctl start unai-worker.service
+TimeoutStartSec=4h
+TimeoutStopSec=7min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/postgresql/unai-backup-staging
+CapabilityBoundingSet=
+MemoryMax=1G

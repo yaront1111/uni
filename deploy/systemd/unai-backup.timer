@@ -1,0 +1,13 @@
+# ADR 0043 D9: daily UTC backup. Persistent catches up after a missed run.
+# Fixed per-host jitter keeps the daily window at the same minute after boot.
+[Unit]
+Description=Daily Uai backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+FixedRandomDelay=true
+
+[Install]
+WantedBy=timers.target

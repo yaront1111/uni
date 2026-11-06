@@ -1,0 +1,13 @@
+# ADR 0043 D9: first Sunday, 05:00 UTC, after the scheduled 03:30 backup.
+# Persistent catches up after downtime; the per-host delay is fixed.
+[Unit]
+Description=Monthly Uai restore drill
+
+[Timer]
+OnCalendar=Sun *-*-01..07 05:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+FixedRandomDelay=true
+
+[Install]
+WantedBy=timers.target

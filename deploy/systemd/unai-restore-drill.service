@@ -1,0 +1,32 @@
+# ADR 0043 D9: restore newest complete archive, probe and remove the scratch
+# database and fresh drill-bucket prefix. No maintenance mode; never --keep.
+# Restores are operator acts: sandboxed root can read backup.key (unai-backup
+# 0600, required by readBackupKey), the migrator superuser pgpass for CREATE
+# DATABASE/ROLE, and the drill IAM key, without making another backup-key copy.
+# CAP_DAC_READ_SEARCH permits reading that key. Hide all unused credentials.
+# Only staging/private /tmp are writable; missing staging fails closed.
+# TimeoutStopSec allows cleanup after SIGTERM; a hard kill may leave resources.
+# MemoryMax covers node, its restore child and pg_restore; tune at rehearsal.
+[Unit]
+Description=Uai restore drill
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/unai/current
+EnvironmentFile=/etc/unai/restore-drill.env
+Environment=PGPASSFILE=/etc/unai/restore-drill/pgpass
+Environment=AWS_SHARED_CREDENTIALS_FILE=/etc/unai/restore-drill/aws-credentials
+Environment=AWS_EC2_METADATA_DISABLED=true
+ExecStart=node scripts/restore-drill.mjs
+TimeoutStartSec=6h
+TimeoutStopSec=10min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/postgresql/unai-restore-drill-staging
+InaccessiblePaths=-/etc/unai/secrets -/etc/unai/pgdata -/etc/unai/backup/pgpass -/etc/unai/backup/aws-credentials -/etc/unai/tls/ca/ca.key -/etc/unai/tls/api -/etc/unai/tls/web -/etc/unai/tls/postgres -/etc/letsencrypt
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+MemoryMax=2G
