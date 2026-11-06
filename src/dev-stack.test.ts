@@ -55,13 +55,13 @@ it('owns cleanup before provisioning, unwinds in reverse, and retries failed cle
 it('verify-f1-reuse: the test runner, recovery and dev runtime share one pinned PostgreSQL source',async()=>{
   await runtime();
   const read=(p:string)=>readFileSync(p,'utf8');
-  expect(read('scripts/test.mjs')).toContain("from './postgres-harness.mjs'");
+  expect(read('scripts/harness.mjs')).toContain("from './postgres-harness.mjs'");
   expect(read('scripts/database-roundtrip.mjs')).toContain("from './postgres-harness.mjs'");
   expect(read('scripts/dev-stack.mjs')).toContain("from './postgres-harness.mjs'");
   expect(read('scripts/dev-stack.mjs')).toContain("from './storage-harness.mjs'");
   expect(read('scripts/dev-stack.mjs')).toContain("from './tls-certificate.mjs'");
   expect(read('scripts/storage-harness.mjs')).toContain("from './s3-object-server.mjs'");
-  expect(['scripts/test.mjs','scripts/database-roundtrip.mjs','scripts/dev-stack.mjs','scripts/postgres-harness.mjs'].map(read).join('\n').match(/pgvector\/pgvector@sha256:/g)).toHaveLength(1);
+  expect(['scripts/test.mjs','scripts/harness.mjs','scripts/database-roundtrip.mjs','scripts/dev-stack.mjs','scripts/postgres-harness.mjs'].map(read).join('\n').match(/pgvector\/pgvector@sha256:/g)).toHaveLength(1);
 });
 
 it('verify-f1-stack, verify-f1-storage, verify-f1-secrets: fresh real services, mounted handles, TLS and cleanup',async()=>{
