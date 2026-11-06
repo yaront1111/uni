@@ -254,6 +254,48 @@ it('retains known sessions across windows but bounds their cache', () => {
   expect(limiter.admit('first', 'blocked')).toEqual({ kind: 'refused', bucket: 'authentication', retryAfterSeconds: 60 });
 });
 
+it("keeps this window's session refusals across a capacity turnover and evicts every other session", () => {
+  let now = 15_000;
+  const limiter = createRateLimiter({ perSessionPerMinute: 2, authFailuresPerAddressPerMinute: 1 }, () => now);
+  limiter.authenticated('held');
+  expect(limiter.admit('held', 'a')).toEqual({ kind: 'counted' });
+  const refusal = { kind: 'refused', bucket: 'session', retryAfterSeconds: 45 };
+  expect(limiter.admit('held', 'a')).toEqual(refusal);
+  limiter.authenticated('busy'); // Known but under budget.
+  limiter.authenticated('revoked');
+  expect(limiter.admit('revoked', 'a')).toEqual({ kind: 'counted' }); // Now at budget.
+  limiter.failed('revoked', 'r'); // Forgotten, as after a revoked session's 401; its count stays.
+  for (let i = 0; i < RATE_LIMIT_MAX_KEYS; i++) limiter.authenticated('other' + i); // Turnover, on sessions.size.
+  expect(limiter.admit('held', 'b')).toEqual(refusal);
+  expect(limiter.admit('busy', 'c')).toEqual({ kind: 'unknown' });
+  limiter.release('c');
+  expect(limiter.admit('revoked', 'd')).toEqual({ kind: 'unknown' }); // A forgotten hash is never resurrected.
+  limiter.release('d');
+  expect(limiter.admit('other0', 'e')).toEqual({ kind: 'unknown' });
+  now = 60_000;
+  expect(limiter.admit('held', 'b')).toEqual({ kind: 'counted' }); // The kept refusal ends with its window.
+});
+
+it("keeps nothing at a turnover under an infinite session budget, the web gate's configuration", () => {
+  const limiter = createRateLimiter({ perSessionPerMinute: Number.POSITIVE_INFINITY, authFailuresPerAddressPerMinute: 1 }, () => 15_000);
+  limiter.authenticated('first');
+  for (let i = 0; i < 1000; i++) expect(limiter.admit('first', 'a')).toEqual({ kind: 'counted' });
+  for (let i = 0; i < RATE_LIMIT_MAX_KEYS; i++) limiter.authenticated('other' + i);
+  expect(limiter.admit('first', 'b')).toEqual({ kind: 'unknown' });
+});
+
+it("fails open when this window's refusals would fill more than half the capacity", () => {
+  function turnover(refused: number) {
+    const limiter = createRateLimiter({ perSessionPerMinute: 2, authFailuresPerAddressPerMinute: 1 }, () => 15_000);
+    for (let i = 0; i < refused; i++) { limiter.authenticated('r' + i); limiter.admit('r' + i, 'a'); } // Count 2 = budget.
+    for (let i = refused; i < RATE_LIMIT_MAX_KEYS; i++) limiter.authenticated('u' + i); // Count 1.
+    limiter.authenticated('new'); // The 10 001st key turns the cache over.
+    return limiter;
+  }
+  expect(turnover(RATE_LIMIT_MAX_KEYS / 2).admit('r0', 'b')).toEqual({ kind: 'refused', bucket: 'session', retryAfterSeconds: 45 });
+  expect(turnover(RATE_LIMIT_MAX_KEYS / 2 + 1).admit('r0', 'b')).toEqual({ kind: 'unknown' });
+});
+
 it('reserves an address slot for each unknown admission until release', () => {
   let now = 121_000;
   const limiter = createRateLimiter({ perSessionPerMinute: 5, authFailuresPerAddressPerMinute: 2 }, () => now);

@@ -12,6 +12,7 @@ import * as first from './server';
 import proxyHandler from '../pages/api/platform/[...path]';
 import {createRequestListener} from './security-headers';
 import {addressKey,createSessionGate,keepSession,type SessionGateVerdict} from './session-gate';
+import {createRateLimiter,DEFAULT_RATE_LIMITS,RATE_LIMIT_MAX_KEYS} from '@unai/auth/rate-limit';
 
 const POOL=Symbol.for('unai.web.authPool');
 const HOLDS=Symbol.for('unai.web.sessionHolds');
@@ -316,6 +317,28 @@ it('fails open for old holds at the 10 000-key cap, without clearing on an updat
   expect(first.heldSeconds(token(0),15_000)).toBeNull();
   expect(first.heldSeconds(token(9999),15_000)).toBeNull();
   expect(first.heldSeconds(token(10_000),15_000)).toBe(41);
+});
+
+it('keeps a held session API-refused through an API capacity turnover until after its hold ends',()=>{
+  let now=15_000;
+  const api=createRateLimiter(DEFAULT_RATE_LIMITS,()=>now),hash=createHash('sha256').update(TOKEN).digest('hex');
+  api.authenticated(hash);
+  for(let n=0;n<599;n++)expect(api.admit(hash,'10.0.0.7')).toEqual({kind:'counted'});
+  const refusal=api.admit(hash,'10.0.0.7');
+  expect(refusal).toEqual({kind:'refused',bucket:'session',retryAfterSeconds:45});
+  first.holdSession(TOKEN,now+(Math.min(45,60)-1)*1000); // The proxy's rule for that 429: pages/api/platform/[...path].ts.
+  for(let n=0;n<RATE_LIMIT_MAX_KEYS;n++)api.authenticated('other'+n); // The API's capacity turnover.
+  expect(api.admit(hash,'10.0.0.7')).toEqual(refusal);
+  expect(first.heldSeconds(TOKEN,now)).toBe(44);
+  expect(slot[HOLDS]).toEqual(new Map([[hash,59_000]]));
+  now=58_999;
+  expect(first.heldSeconds(TOKEN,now)).toBe(1);
+  expect(api.admit(hash,'10.0.0.7')).toEqual({kind:'refused',bucket:'session',retryAfterSeconds:2});
+  now=59_000;
+  expect(first.heldSeconds(TOKEN,now)).toBeNull();
+  expect(api.admit(hash,'10.0.0.7')).toEqual({kind:'refused',bucket:'session',retryAfterSeconds:1});
+  now=60_000;
+  expect(api.admit(hash,'10.0.0.7')).toEqual({kind:'counted'});
 });
 
 /** Next's request/response shape at the real platform route, after the listener. */

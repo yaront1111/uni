@@ -14,7 +14,9 @@
  * requests stay unknown until one authenticates, so they overshoot its session
  * budget by at most the address budget. pending holds only addresses with an
  * authentication in flight, so concurrent requests bound it and it needs no key
- * cap. No credential plaintext is held.
+ * cap. At the key cap a new session's turnover keeps this window's session refusals, so the web's hold on one
+ * (which ends before its window) never refuses what the API would admit; if they fill over half the cap it
+ * clears everything instead. No credential plaintext is held.
  */
 export const RATE_LIMIT_WINDOW_MS = 60_000;
 export const RATE_LIMIT_MAX_KEYS = 10_000;
@@ -68,13 +70,19 @@ export function createRateLimiter(settings: RateLimitSettings, clock: () => numb
     if (inFlight === undefined) return;
     if (inFlight <= 1) pending.delete(address); else pending.set(address, inFlight - 1);
   }
+  /** Capacity turnover. Keeps the known sessions already at their budget this window, with their counts, so a
+   * refusal never ends before its window does (the web's hold on it ends sooner still); evicts the rest. Past
+   * half the cap it clears everything and fails open. Iterates known, so a hash failed() forgot stays forgotten. */
+  function turnover() {
+    for (const key of known) if ((sessions.get(key) ?? 0) < settings.perSessionPerMinute) known.delete(key);
+    if (known.size > RATE_LIMIT_MAX_KEYS / 2) known.clear();
+    for (const key of sessions.keys()) if (!known.has(key)) sessions.delete(key);
+  }
   function authenticated(hash: string | null) {
     refresh();
     if (hash === null) return;
     // Bound session counts too: repeated cache turnover must not accumulate keys.
-    if (!known.has(hash) && (known.size >= RATE_LIMIT_MAX_KEYS || sessions.size >= RATE_LIMIT_MAX_KEYS)) {
-      known.clear(); sessions.clear();
-    }
+    if (!known.has(hash) && (known.size >= RATE_LIMIT_MAX_KEYS || sessions.size >= RATE_LIMIT_MAX_KEYS)) turnover();
     known.add(hash);
     sessions.set(hash, (sessions.get(hash) ?? 0) + 1);
   }
