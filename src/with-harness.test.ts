@@ -1,10 +1,10 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {spawn,spawnSync,type ChildProcess} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {basename,join,resolve} from 'node:path';
 import type {createDatabasePool} from '../packages/postgres/src/index.js';
 
 if(!process.env.UNAI_TEST_DATABASE_URL)throw new Error('Run pnpm test for the required PostgreSQL harness');
@@ -159,4 +159,126 @@ it.each(['UNAI_TEST_DATABASE_URL','DATABASE_URL'])('preserves the cited environm
   expect(match).not.toBeNull();
   const lines=readFileSync('scripts/test.mjs','utf8').split('\n');
   expect(lines[Number(match![1])-1]).toContain('process.env.UNAI_TEST_DATABASE_URL ?? process.env.DATABASE_URL');
+});
+
+interface Probe{root:string;mount:string;rootMode:number;mountMode:number;files:{name:string;mode:number}[];
+  handles:Record<string,string>;roles:string[]}
+const SECRET_FILES=['app-database-url','auth-database-url','google-client-secret','model-api-key','nextauth-secret'];
+// Prints role NAMES only, never a URL or a password.
+const PROBE=`const {readdirSync,readFileSync,statSync}=require('node:fs'),{dirname,join}=require('node:path');
+const env=process.env,mount=env.UNAI_SECRETS_MOUNT,root=dirname(mount),mode=path=>statSync(path).mode&0o777;
+const handles=Object.fromEntries(['UNAI_APP_DATABASE_URL','UNAI_AUTH_DATABASE_URL','UNAI_MODEL_API_KEY','NEXTAUTH_SECRET',
+  'GOOGLE_CLIENT_SECRET'].map(name=>[name,env[name]]));
+console.log(JSON.stringify({probe:{root,mount,rootMode:mode(root),mountMode:mode(mount),handles,
+  files:readdirSync(mount).sort().map(name=>({name,mode:mode(join(mount,name))})),
+  roles:['app-database-url','auth-database-url'].map(file=>new URL(readFileSync(join(mount,file),'utf8')).username)}}));`;
+/** pnpm prints its banners on stderr and the harness prints plain text: parse only JSON lines. */
+function jsonLines(output:Run):Record<string,unknown>[]{
+  return output.stdout.split('\n').filter(line=>line.startsWith('{')).flatMap(line=>{
+    try{return [JSON.parse(line) as Record<string,unknown>];}catch{return [];}
+  });
+}
+const checksOf=(output:Run)=>jsonLines(output).filter(line=>'check' in line);
+const ok=(check:string)=>({check,status:'ok',code:'OK'});
+/** Each nested wrapper migrates a fresh scratch database, and migration 0001 alters the
+ * cluster-global unai_app role: hold the suite's scratch-migration lock (1970170217,3)
+ * (packages/postgres/CLAUDE.md) from each wrapper's start until it has migrated, one
+ * wrapper at a time, so other files' scratch migrations can interleave. The rest runs in
+ * parallel; a wrapper still running after 300 s is sent SIGTERM, which it forwards and
+ * then tears down. */
+async function staggered(commands:string[][]):Promise<Run[]>{
+  const runs:Promise<Run>[]=[],lock=await admin.connect();
+  try{
+    for(const command of commands){
+      let migrated=()=>{},timer:NodeJS.Timeout|undefined;
+      const gate=new Promise<void>(done=>{migrated=done;});
+      await lock.query('SELECT pg_advisory_lock(1970170217,3)');
+      try{
+        runs.push(run(['--',...command],{...process.env},(stdout,child)=>{
+          timer??=setTimeout(()=>child.kill('SIGTERM'),300_000);
+          if(stdout.includes('Migrations: '))migrated();
+        }).finally(()=>{clearTimeout(timer);migrated();}));
+        await gate;
+      }finally{await lock.query('SELECT pg_advisory_unlock(1970170217,3)');}
+    }
+  }finally{lock.release(true);}
+  return Promise.all(runs);
+}
+
+describe.runIf(Boolean(process.env.UNAI_TEST_DATABASE_URL&&process.env.UNAI_TEST_S3_ENDPOINT))('deployment-shaped environment',()=>{
+  let api:Run,worker:Run,web:Run,probe:Run;
+  beforeAll(async()=>{
+    [api,worker,web,probe]=await staggered([['pnpm','start:api','--check'],['pnpm','start:worker','--check'],
+      ['pnpm','start:web','--check'],[process.execPath,'-e',PROBE]]) as [Run,Run,Run,Run];
+  },360_000);
+
+  it('passes API --check: every check ok except the one-day certificate',()=>{
+    expect(api.status,api.stderr).toBe(0);
+    expect(checksOf(api)).toEqual([...['rate_limits','secrets','database','auth_database','database_role',
+      'encryption_at_rest','object_store','registry_release'].map(ok),
+    {check:'tls_certificate',status:'warn',code:'TLS_CERT_EXPIRING'},ok('probe_port')]);
+  });
+
+  it('passes worker --check with no startup failure',()=>{
+    expect(worker.status,worker.stderr).toBe(0);
+    expect(worker.stdout+worker.stderr).not.toContain('startup_failed');
+  });
+
+  it('passes web --check: every check ok except the API that is not listening',()=>{
+    expect(web.status,web.stderr).toBe(0);
+    expect(checksOf(web)).toEqual([...['rate_limits','origin','tls_certificate','auth'].map(ok),
+      {check:'api',status:'warn',code:'API_UNREACHABLE'}]);
+  });
+
+  it('serves credentials as handles to 0600 files in a 0700 mount, then removes it and drops the logins',async()=>{
+    expect(probe.status,probe.stderr).toBe(0);
+    const result=jsonLines(probe).find(line=>'probe' in line)?.probe as Probe|undefined;
+    if(!result)throw new Error('PROBE_NOT_REPORTED');
+    expect(result.files.map(file=>file.name)).toEqual(SECRET_FILES);
+    expect(result.handles).toEqual({UNAI_APP_DATABASE_URL:'secret://mounted/app-database-url',
+      UNAI_AUTH_DATABASE_URL:'secret://mounted/auth-database-url',UNAI_MODEL_API_KEY:'secret://mounted/model-api-key',
+      NEXTAUTH_SECRET:'secret://mounted/nextauth-secret',GOOGLE_CLIENT_SECRET:'secret://mounted/google-client-secret'});
+    expect(basename(result.root)).toMatch(/^unai-deployment-/);
+    expect(result.mount).toBe(join(result.root,'secrets'));
+    if(process.platform!=='win32'){
+      expect([result.rootMode,result.mountMode]).toEqual([0o700,0o700]);
+      expect(result.files.map(file=>file.mode)).toEqual(SECRET_FILES.map(()=>0o600));
+    }
+    expect(result.roles).toEqual([expect.stringMatching(/^unai_harness_app_[0-9a-f]{12}$/),
+      expect.stringMatching(/^unai_harness_auth_[0-9a-f]{12}$/)]);
+    expect(existsSync(result.root)).toBe(false);
+    expect((await admin.query('SELECT rolname FROM pg_roles WHERE rolname = ANY($1)',[result.roles])).rows).toEqual([]);
+  });
+
+  it('prints no connection string, credentialed URL or PEM material',()=>{
+    for(const output of [api,worker,web,probe]){
+      for(const pattern of [/postgres(?:ql)?:\/\//,/-----BEGIN/,/:\/\/[^\s/@:]+:[^\s/@]+@/]){
+        expect(output.stdout+output.stderr).not.toMatch(pattern);
+      }
+    }
+  });
+});
+
+it('publishes a real tagged release and never prints from the deployment environment',()=>{
+  const source=readFileSync('scripts/deployment-environment.mjs','utf8');
+  for(const token of ['loadRegistryRelease(','publishRegistryRelease(','registry-v','core.fileMode=false','postgresAdapter(']){
+    expect(source).toContain(token);
+  }
+  for(const pattern of [/insert\s+into\s+registry_releases/i,/process\.env/,/console\.|process\.std(?:out|err)/]){
+    expect(source).not.toMatch(pattern);
+  }
+  expect(readFileSync('scripts/with-harness.mjs','utf8')).toContain("from './deployment-environment.mjs'");
+});
+
+it('keeps the wrapper and the deployment environment out of deploy/ and every start script',()=>{
+  const forbidden=/deployment-environment|with-harness/;
+  for(const entry of readdirSync('deploy',{recursive:true,withFileTypes:true})){
+    if(entry.isFile())expect(readFileSync(join(entry.parentPath,entry.name),'utf8'),entry.name).not.toMatch(forbidden);
+  }
+  const manifests=['package.json','apps/web/package.json',
+    ...readdirSync('packages').map(name=>join('packages',name,'package.json')).filter(path=>existsSync(path))];
+  const starts=manifests.flatMap(manifest=>Object.entries((JSON.parse(readFileSync(manifest,'utf8')) as
+    {scripts?:Record<string,string>}).scripts??{}).filter(([name])=>name.startsWith('start')).map(([name,script])=>manifest+' '+name+': '+script));
+  expect(starts.length).toBeGreaterThanOrEqual(4);
+  for(const start of starts)expect(start).not.toMatch(forbidden);
 });

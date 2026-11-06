@@ -1,11 +1,17 @@
 import {spawn} from 'node:child_process';
 import {constants} from 'node:os';
 import {provisionHarness} from './harness.mjs';
+import {deploymentEnvironment} from './deployment-environment.mjs';
 
 /** Run `node scripts/with-harness.mjs -- <command> [args...]` on disposable
  * PostgreSQL/pgvector, Git migrations and TLS/KMS storage, then tear it down.
  * Exits with the command's code, or 128 + signal number; usage is 2,
  * provisioning/forcing cleanup failure is 1, and command spawn failure is 127.
+ * The command also gets the deployment-shaped environment of
+ * deployment-environment.mjs (TLS database logins, a secrets mount, a published
+ * registry release, an owner), so `pnpm start:api|start:worker|start:web --check`
+ * run against it; a setup failure prints `DEPLOYMENT_ENVIRONMENT_FAILED: <code>`
+ * and never runs the command. Only step codes are printed, never credentials.
  * Test infrastructure only: it creates and drops databases; never reference it
  * from a package.json start script, a systemd unit or deploy/, and never deliver
  * a real database or bucket.
@@ -56,16 +62,27 @@ async function run(command,args){
   };
   process.on('SIGINT',()=>forward('SIGINT'));
   process.on('SIGTERM',()=>forward('SIGTERM'));
-  let harness,code=1;
+  let harness,deployment,code=1;
   try{
     harness=await provisionHarness({delivered:process.env.UNAI_TEST_DATABASE_URL ?? process.env.DATABASE_URL});
+    const base={...process.env,...harness.env};
+    try{deployment=await deploymentEnvironment({databaseUrl:harness.databaseUrl,env:base});}
+    catch(error){
+      // Bare codes only: setup errors never carry raw text, and nothing else is trusted to.
+      console.error('DEPLOYMENT_ENVIRONMENT_FAILED: '+(/^[A-Z][A-Z0-9_]*(?::[A-Z][A-Z0-9_]*)?$/.test(error?.message)?error.message:'UNCLASSIFIED'));
+      return;
+    }
     code=state.signal?128+constants.signals[state.signal]:
-      await runCommand(command,args,{...process.env,...harness.env},state);
+      await runCommand(command,args,{...base,...deployment.env},state);
   }catch(error){
     console.error(error.step?error.message:'TEST_HARNESS_FAILED: '+error.message);
   }finally{
     state.finished=true;
+    // Deployment first: its roles are cluster-global and its pool must end before
+    // the harness drops the scratch database WITH (FORCE).
+    let deployed=true;
+    if(deployment)await deployment.close().catch(()=>{console.error('DEPLOYMENT_ENVIRONMENT_CLEANUP_FAILED');deployed=false;});
     const ok=harness?await harness.close():true;
-    process.exitCode=ok?code:1;
+    process.exitCode=ok&&deployed?code:1;
   }
 }
