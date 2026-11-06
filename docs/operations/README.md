@@ -76,6 +76,8 @@ provider key custody remain covered by the runbooks.
 
 ## Publishing and release gate
 
+`.github/workflows/release-gate.yml` (**Release gate**, started manually with `workflow_dispatch` or by a `v*` tag) is the hosted certification run. Its `pipeline` job runs the V0 pipeline; its `release` job runs `pnpm test`, `pnpm check:phase-exit`, `pnpm uai registry tags --require` and `pnpm check:v0-release`, and uploads `test-results/operations/status.json` and `test-results/operations/release-check.json`. A green run on `master` closes `hosted-main-pipeline-deferred`; it stays red until the owner gates pass, by design. The V0 pipeline's production-surface job checks the environment contract, all three preflights under `with-harness`, deploy validation, `pnpm audit --prod --audit-level=high` and actionlint; dependency review also runs on public-repository pull requests.
+
 ```text
 node scripts/local-policy-audit.mjs
 pnpm test

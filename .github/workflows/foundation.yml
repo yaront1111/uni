@@ -1,5 +1,9 @@
 name: V0 pipeline
-on: [push, pull_request]
+# release-gate.yml calls this pipeline: its nine stages are CRT-QA-01-A's mapping.
+on:
+  push:
+  pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -99,4 +103,48 @@ jobs:
             test-results/performance/
             test-results/operations/
           if-no-files-found: ignore
+
+  production-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install deploy validation tools
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Environment contract
+        run: pnpm check:env-contract
+      - name: Production preflights under the disposable harness
+        run: node scripts/with-harness.mjs -- bash -euo pipefail -c 'pnpm start:api --check && pnpm start:worker --check && pnpm start:web --check'
+      - name: Deploy bundle validation
+        run: |
+          shellcheck --version
+          systemd-analyze --version
+          find deploy -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          pnpm exec vitest run deploy/deploy.test.ts deploy/scripts.test.ts
+      - name: Production dependency audit
+        run: pnpm audit --prod --audit-level=high
+      - name: Workflow lint
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 -color .github/workflows/foundation.yml .github/workflows/release-gate.yml
+
+  # Private repositories need GitHub Advanced Security for dependency review.
+  # The production dependency audit gates every push regardless of visibility.
+  dependency-review:
+    if: github.event_name == 'pull_request' && !github.event.repository.private
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
 

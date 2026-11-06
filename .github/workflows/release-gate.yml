@@ -1,0 +1,50 @@
+name: Release gate
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+
+# Expected red until the owner's real-data gates pass (docs/operations/real-data-gates.md).
+# Never manufacture a CI record during this run; the owner records certified evidence.
+# No secrets and no deploy: deployment remains an owner-run host operation.
+jobs:
+  pipeline:
+    uses: ./.github/workflows/foundation.yml
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # Registry tags and the ADR 0044 records-only ancestor rule need full history.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      # Deliberately re-runs the suite: this is the owner's single phase-exit command.
+      # Later gates report even when an earlier gate fails, never hiding a red gate.
+      - run: pnpm check:phase-exit
+        if: ${{ !cancelled() }}
+      - run: pnpm uai registry tags --require
+        if: ${{ !cancelled() }}
+      - name: Release checker
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: pnpm check:v0-release | tee test-results/operations/release-check.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-gate-evidence
+          path: |
+            test-results/operations/status.json
+            test-results/operations/release-check.json
+          if-no-files-found: error

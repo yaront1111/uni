@@ -402,9 +402,11 @@ also closes the CI-validated half of PRD §54 item 3. Local stage runs such as
 **Who runs it:** the owner, who pushes to the default branch, reads the hosted
 run and records it.
 
-**Which run closes it:** a green run of the workflow `V0 pipeline`
-(`.github/workflows/foundation.yml`, job `foundation`, on every push) on the
-default branch `master`, with all nine stages passing, at the commit
+**Which run closes it:** a green run of the workflow `Release gate`
+(`.github/workflows/release-gate.yml`, started manually with `workflow_dispatch`
+or by a `v*` tag) on the default branch `master`. Its `pipeline` job calls the
+`V0 pipeline` with the same nine stage names; its `release` job adds phase-exit,
+the registry tags requirement and the release checker. All nine stages must pass at the commit
 `pnpm check:v0-release` runs at (HEAD) or at a records-only ancestor of HEAD
 ([ADR 0044](../adr/0044-release-records-after-certified-run.md)). The stage
 names in `ci.stages[].name` (`V0_CI_STAGES`, `packages/domain/src/operations.ts`)
@@ -425,7 +427,7 @@ map to workflow steps:
 **Inputs:** the run URL (`https://github.com/<owner>/<repo>/actions/runs/<id>`),
 its commit (`headSha`, 40 hex), its branch, and each step's conclusion. With the
 GitHub CLI:
-`gh run list --workflow foundation.yml --branch master --limit 5 --json databaseId,headSha,conclusion,url`,
+`gh run list --workflow release-gate.yml --branch master --limit 5 --json databaseId,headSha,conclusion,url`,
 then `gh run view <id> --json jobs`.
 
 **Commands, in order:**
