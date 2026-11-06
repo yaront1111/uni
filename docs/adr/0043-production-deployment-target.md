@@ -619,9 +619,31 @@ task-e08becdf95444043bd0eb97a1cc5183b):
   maintenance mode.
 - A monthly restore drill on the first Sunday at 05:00 UTC
   (task-0029882ff3c84cef89ffa6b150c03bb0, task-a620d2e856d947f5a2ffd49c1e279ada)
-  into an empty database `unai_restore_drill` and an empty bucket
-  `<bucket-prefix>-uai-restore-drill` (single `aws:kms` rule, objects expire
-  after 2 days). Both are torn down after verification.
+  runs `pnpm restore:drill` (docs/operations/restore.md). Each run draws one
+  `<id>` of 16 random lowercase hex characters and names everything it creates
+  with it:
+  - A scratch database `unai_restore_drill_<id>`, created with
+    `CREATE DATABASE` on the drill server `UNAI_RESTORE_DRILL_SERVER_URL` as
+    the migration-owner superuser, whose password comes only from
+    `PGPASSFILE`.
+  - A fresh prefix `restore-drill-<id>/` in the permanent drill bucket
+    `<bucket-prefix>-uai-restore-drill` (single `aws:kms` rule, objects expire
+    after 2 days; the bucket itself is never created or removed by a drill).
+  - `pnpm restore` runs as a child into those two and must answer PASS.
+  - A temporary login `unai_restore_drill_probe_<id>` runs the read probes
+    (Ask through the Context Broker, Today, the persisted-packet check, Why)
+    for every live owner member and data purpose of the restored database,
+    with the clock frozen at the archive's `createdAt`. Attributes: `LOGIN
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT
+    CONNECTION LIMIT 4`, `VALID UNTIL` one day ahead, membership in `unai_app`
+    only. Its password is 32 random bytes that the server receives only as a
+    SCRAM-SHA-256 verifier, so no statement or log line carries it. The login
+    exists because `withOwnerTransaction` refuses a session whose
+    `current_user` or `session_user` is a superuser or BYPASSRLS
+    (`assertDatabaseRoleSafe`), so the restoring superuser cannot run the
+    probes, not even after `SET ROLE`.
+  - Teardown: the probe login is dropped on every exit path; the database and
+    the prefix's objects are removed after the verdict unless `--keep`.
 - Size the data volume at least 2.5× the database. RPO 24 h, RTO target 4 h.
 
 **Principal.**
@@ -655,6 +677,12 @@ permission set planned by task-0029882ff3c84cef89ffa6b150c03bb0): the drill
 principal reads the backup bucket, because an `s3://` backup removes its staged
 copy after the upload (scripts/backup.mjs), so a drill can only restore from
 the bucket.
+
+Amended 2026-11-06 (task-0029882ff3c84cef89ffa6b150c03bb0): the **Schedule**
+drill bullet replaces the fixed names `unai_restore_drill` and "an empty
+bucket" with per-run names under one random `<id>` (two drills never share a
+database, prefix or login), adds the temporary probe login and states the
+teardown. The **Principal** permission set above is unchanged.
 
 **Key custody.**
 

@@ -1,6 +1,6 @@
 # scripts
 
-This folder owns the `pnpm test` harness (`test.mjs` plus its storage and TLS helpers), the manual `verifier-rehearsal.mjs` diagnostic, `install-git-hooks.mjs`, `pnpm backup` (`backup.mjs`), `pnpm restore` (`restore.mjs`), the other tools that root `package.json` scripts name, and `lib/`, which holds libraries shared by the harness and the operator tools (`lib/backup-archive.mjs`). It must not own product code or test cases. Nothing under `packages/` or `apps/` imports from here. Under `src/`, tests import scripts to unit-test them (`src/recovery-output.test.ts`, `src/recovery-storage.test.ts`, `src/backup-archive.test.ts` and others), behind `// @ts-expect-error`, and `src/operations/report.ts` shares `workspace-evidence.mjs`.
+This folder owns the `pnpm test` harness (`test.mjs` plus its storage and TLS helpers), the manual `verifier-rehearsal.mjs` diagnostic, `install-git-hooks.mjs`, `pnpm backup` (`backup.mjs`), `pnpm restore` (`restore.mjs`), `pnpm restore:drill` (`restore-drill.mjs`), the other tools that root `package.json` scripts name, and `lib/`, which holds libraries shared by the harness and the operator tools (`lib/backup-archive.mjs`). It must not own product code or test cases. Nothing under `packages/` or `apps/` imports from here. Under `src/`, tests import scripts to unit-test them (`src/recovery-output.test.ts`, `src/recovery-storage.test.ts`, `src/backup-archive.test.ts` and others), behind `// @ts-expect-error`, and `src/operations/report.ts` shares `workspace-evidence.mjs`.
 
 `install-git-hooks.mjs` runs on every `pnpm install` (the `prepare` script), so it must never fail an install: it sets `core.hooksPath=.githooks` only inside a Git work tree that has `.githooks/pre-commit` and only when no other hooks path is configured, and otherwise prints why it did nothing and exits 0. The hook it activates refuses commits under `corpus/private-local/` (ADR 0031 §3).
 
@@ -42,7 +42,7 @@ The order in `test.mjs` is fixed: database, readiness probe, migrations, storage
 
 `startStorageHarness()` chooses by `docker version` alone: MinIO when a daemon answers, otherwise `startS3ObjectServer`. There is no variable to force the in-process server, so on a machine with Docker (and in CI) it is never exercised by `pnpm test`.
 
-`s3-object-server.mjs` serves what `packages/storage/src/index.ts`, the recovery rehearsal, `backup.mjs` and `restore.mjs` send: `GetBucketEncryption`, `ListObjectsV2` (unpaged, and it ignores `Prefix`: every key comes back, so a caller filters by prefix itself, as `restore.mjs`'s `keysUnder` does), `PutObject` (400 without the matching SSE-KMS headers, 412 for `If-None-Match: *` on an existing key), `GetObject`, `HeadObject` and `DeleteObject`, plus multipart upload: `CreateMultipartUpload` (the PutObject SSE rule), `UploadPart` (404 `NoSuchUpload`, 400 for a part number outside 1-10000), `CompleteMultipartUpload` (`InvalidPart`, `InvalidPartOrder`, `EntityTooSmall` below 5 MiB for any part but the last, 412 for `If-None-Match: *`) and `AbortMultipartUpload` (204). Every other operation, and any other query parameter besides `x-id`, answers 501 `NotImplemented`. Options: `credentials` replaces the random access key pair, so a second server can accept the pair the SDK default chain already holds; `commonName` gives its certificate a subject of its own, because OpenSSL picks a trust anchor by subject and two `CN=localhost` certificates in one `NODE_EXTRA_CA_CERTS` bundle cannot both verify; `logOperations` records each request's operation name in the returned `operations` (opt-in, so the dev stack's long-lived server keeps no log). It also returns `receiptOverrides`, a mutable map from operation name to the key id its receipt names (tests only, empty by default), and a `pendingUploads` getter. It checks the access key in the SigV4 credential, the presence of `x-amz-date` and, when `x-amz-content-sha256` is a hex digest, that it matches the body, but does not recompute the signature; it decodes `STREAMING-*` aws-chunked bodies and keeps objects AES-256-GCM envelope-encrypted in memory.
+`s3-object-server.mjs` serves what `packages/storage/src/index.ts`, the recovery rehearsal, `backup.mjs`, `restore.mjs` and `restore-drill.mjs` send: `GetBucketEncryption`, `ListObjectsV2` (unpaged, and it ignores `Prefix`: every key comes back, so a caller filters by prefix itself, as `restore.mjs`'s `keysUnder` does), `PutObject` (400 without the matching SSE-KMS headers, 412 for `If-None-Match: *` on an existing key), `GetObject`, `HeadObject` and `DeleteObject`, plus multipart upload: `CreateMultipartUpload` (the PutObject SSE rule), `UploadPart` (404 `NoSuchUpload`, 400 for a part number outside 1-10000), `CompleteMultipartUpload` (`InvalidPart`, `InvalidPartOrder`, `EntityTooSmall` below 5 MiB for any part but the last, 412 for `If-None-Match: *`) and `AbortMultipartUpload` (204). Every other operation, and any other query parameter besides `x-id`, answers 501 `NotImplemented`. Options: `credentials` replaces the random access key pair, so a second server can accept the pair the SDK default chain already holds; `commonName` gives its certificate a subject of its own, because OpenSSL picks a trust anchor by subject and two `CN=localhost` certificates in one `NODE_EXTRA_CA_CERTS` bundle cannot both verify; `logOperations` records each request's operation name in the returned `operations` (opt-in, so the dev stack's long-lived server keeps no log). It also returns `receiptOverrides`, a mutable map from operation name to the key id its receipt names (tests only, empty by default), and a `pendingUploads` getter. It checks the access key in the SigV4 credential, the presence of `x-amz-date` and, when `x-amz-content-sha256` is a hex digest, that it matches the body, but does not recompute the signature; it decodes `STREAMING-*` aws-chunked bodies and keeps objects AES-256-GCM envelope-encrypted in memory.
 
 Checklist when `@unai/storage` starts using another S3 operation: add the route to `s3-object-server.mjs` and return the `x-amz-server-side-encryption` receipt headers the adapter verifies. Otherwise the suite passes on MinIO and fails with 501 only on a runner without Docker.
 
@@ -119,6 +119,8 @@ Changing the format:
 
 Its consumers are `src/operations/evidence.ts` (`recoveryEvidence` accepts only that format) and `src/operations/report.ts` (expects that `archiveRef` and re-hashes the archive). Change all three together.
 
+Its fixture reads come from `recovery-acceptance.mjs`. That module also exports `acceptanceRead(readers, pool, …)` (one owner's Ask, Today, persisted-packet and Why read, as a comparable output), `PROBE_QUESTIONS` and `probeEnvironment(admin, app, {now})`, and `restore-drill.mjs` shares all three. A change to the read pipeline therefore moves both the rehearsal's 20 digest pairs and the drill's probe digest. `compareAcceptanceReads` keeps its own per-environment `0.1.0` release lookup.
+
 ## backup.mjs (pnpm backup)
 
 The production backup of ADR 0043 D9/D11; the operator procedure is `docs/operations/backup.md`, the variables are under `### pnpm backup` in `docs/operations/environment.md`.
@@ -145,6 +147,60 @@ The production restore of ADR 0043 D9: one uai-backup/1 archive into an empty da
 - **Never.** It never deletes, drops, truncates or empties anything and never reads `UNAI_S3_*` (a test scans the source for both), and it never copies the key. `cleanup()` runs on every exit, SIGINT and SIGTERM (`RESTORE_INTERRUPTED`) included: it kills pg_restore with SIGKILL (its transaction rolls back), destroys both S3 clients, closes the store and the pool (releasing the lock), removes every staged file and zeroes the key.
 - **The `--dbname` trap.** libpq reads a `--dbname` value that contains `=` or starts with `postgres://` or `postgresql://` as a connection string whose settings win over the `PG*` environment, so `databaseUrlOf` admits only a database name matching `[A-Za-z0-9_][A-Za-z0-9_$.-]{0,62}`. Host, port, user, TLS mode and CA reach pg_restore only as `PG*` variables; never pass the URL itself.
 - **Test** (`src/restore.test.ts`, stage `operations`). `beforeAll` migrates and seeds a scratch source database and backs it up once with `pnpm backup`, retrying only `BACKUP_PRECONDITION_FAILED` (backup.test.ts's busy case briefly holds `unai_api_login` on the shared cluster), at most 20 times, 3 s apart. Everything above the first `it` is file-scope setup that the drill's `describe('pnpm restore:drill')`, appended at the end of the file, reuses: keep it outside any `describe` under the same names, and never write to the source after the backup. The harness PostgreSQL is plain TCP, so a test TLS terminator fronts it, with a 0600 pgpass whose database field is `*`. Two in-process S3 servers (the target bucket, and an archive bucket for `s3://` locations) accept one test-owned AWS pair, never the harness's, which the child reads through the SDK env chain; each has its own `commonName`, so both certificates verify from one `NODE_EXTRA_CA_CERTS` bundle, and no case is skipped. pg_restore is the host's `/usr/lib/postgresql/<major>/bin/pg_restore`, else one of the server's major on PATH, else `docker run` of `POSTGRES_IMAGE`, which needs `--interactive` because pg_restore reads the dump on stdin. A failing pg_restore needs no double: an event trigger on `CREATE INDEX` (a function in `public` is no relation, so the target still counts as empty) fails it after every table is loaded, and the case proves that the single transaction leaves nothing and no object was written. Every child also gets sentinel `UNAI_S3_*` values, and the last test checks that no output of the file names any sentinel (URL, password, key path, object key, bucket, prefix, ARN or endpoint).
+
+## restore-drill.mjs (pnpm restore:drill)
+
+The restore drill of ADR 0043 D9: `pnpm restore` into a database and prefix created for one run, then read probes as a temporary unai_app login. The operator procedure is `docs/operations/restore.md` (Restore drill); its variables are under `### pnpm restore:drill` in `docs/operations/environment.md`.
+
+**Output contract**
+- Exactly one JSON line: `{"event":"restore.drill.completed","verdict":"PASS","drill","restore","probes","kept","durationMs"}` on stdout (exit 0), or `{"event":"restore.drill.failed","code",…}` on stderr (exit 1; exit 2 for `RESTORE_DRILL_ARGUMENTS_INVALID`).
+- `restore` is the child's success line without `event`.
+- A child failure keeps its `RESTORE_*` code (and `variable`) and adds `"stage":"restore"`.
+- `drill` (the id) appears once it is drawn. `kept` names what this run created and has not removed.
+- `probeCode` is added only for a bare UPPER_SNAKE product error.
+- `process.noDeprecation` is set, and every `console` method is replaced with a no-op, because the product read path logs a `pipeline.stage` line, carrying the owner scope id, through `console.info` (`packages/observability/src/index.ts`). The drill's own line goes through `process.stdout`/`stderr.write`.
+- `--keep` and `--help` are the only flags, and `--help` reads no variable. A test scans the source for any other `--` flag, `UNAI_S3_` and `DeleteObjects`.
+
+**Configuration order** (`configuration()`), before any network work:
+1. `UNAI_RESTORE_DATABASE_URL` and `UNAI_RESTORE_S3_PREFIX` must be unset (`_INVALID`).
+2. `UNAI_RESTORE_DRILL_SERVER_URL`, with restore.mjs's `databaseUrlOf` grammar (`RESTORE_DRILL_DATABASE_URL_INVALID`).
+3. `PGPASSWORD` is refused.
+4. The CA file.
+5. The `UNAI_RESTORE_S3_ENDPOINT`/`_REGION`/`_BUCKET` triple, which the drill uses only to delete its prefix.
+
+Every other restore variable reaches the child through `{...process.env, …}` and is checked there.
+
+**Run order** (`drill()`):
+1. `id = randomBytes(8)` hex, so names match the pg_hba regexes of task-8384c4c9.
+2. tsx register, then the server pool; `rolsuper` is required (`RESTORE_DRILL_ROLE_INVALID`).
+3. `CREATE DATABASE "unai_restore_drill_<id>" TEMPLATE template0`.
+4. `restore.mjs` as a child, with stdout and stderr captured up to 64 KiB each.
+5. `CREATE ROLE "unai_restore_drill_probe_<id>"` with the ADR 0043 D9 attributes and a SCRAM-SHA-256 verifier computed in process. The 32-byte hex password exists only in memory and in the app pool's URL, never in SQL text, the output or the child's environment.
+6. `GRANT unai_app`.
+7. Admin and app pools on the scratch database, then `probeEnvironment` with `now` at the restore's `createdAt`. `reads` of 0 is `RESTORE_DRILL_PROBES_EMPTY`.
+
+`create()` records a name before its CREATE and clears it when the statement fails. `cleanup()` awaits the pending CREATE. Together these make a signal during the round trip still remove what was made, while a name that already existed is never removed.
+
+**Cleanup order** (`cleanup()`, on every exit):
+1. SIGKILL a leftover child, then await the pending CREATE.
+2. End the app and admin pools.
+3. Wait, bounded at 200 × 25 ms, until no client backend remains on the database or as the login. `Pool.end()` resolves before backends exit.
+4. Unless `--keep`, `DROP DATABASE IF EXISTS … WITH (FORCE)`.
+5. Always, `DROP ROLE IF EXISTS`.
+6. Unless `--keep`, a paginated `ListObjectsV2` with a `startsWith` filter (the in-process server ignores `Prefix`), then one `DeleteObject` per key. The in-process server serves no `DeleteObjects`.
+7. End the server pool.
+
+A removal failure after PASS is `RESTORE_DRILL_CLEANUP_FAILED`. On SIGINT or SIGTERM, `stop()` sends SIGTERM to the child and awaits its close (at most 30 s) before cleaning up.
+
+**Why the probe login exists.** `withOwnerTransaction` refuses a session whose `current_user` or `session_user` is a superuser or BYPASSRLS, or whose role owns a table (`assertDatabaseRoleSafe`), so the restoring superuser cannot run the probes, not even after `SET ROLE`.
+
+**Test**: `describe('pnpm restore:drill')`, at the end of `src/restore.test.ts`, stage `operations`. It reuses that file's beforeAll archive, terminator, `*` pgpass and target S3 server. It covers:
+- a PASS with the exact target operations and nothing left behind;
+- `--keep`;
+- a tampered archive, failing at the restore stage;
+- configuration, role and flag refusals;
+- `--help` and the source scan;
+- `probeEnvironment` over the untouched source database, through the file's probe role after `GRANT unai_app`, which must equal both drills' probes. It runs last because the probes write receipts.
 
 ## verifier-rehearsal.mjs
 

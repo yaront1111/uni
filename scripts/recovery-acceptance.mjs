@@ -28,44 +28,99 @@ const fixtures=[
  ['email-injection','PERSONAL_FINANCE','Do I still owe Daniel?'],
  ['Provenance','PERSONAL_FINANCE','Do I still owe Daniel?'],
 ];
-export async function compareAcceptanceReads(sourceUrl,restoredUrl){
+/** The fixture questions that name no fixture entity, so they apply to any owner: the restore drill asks each one. */
+export const PROBE_QUESTIONS=Object.freeze(['What did I promise?','What is on my calendar?','Did my prediction come true?']);
+const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+/** The product read modules, through a temporary tsx registration; the caller awaits `unregister` when done. */
+async function loadReaders(){
   const unregister=(await import('tsx/esm/api')).register();
   const {withOwnerTransaction}=await import('../packages/postgres/src/index.ts');
   const {readOwnerOverlay}=await import('../packages/memory/src/index.ts');
   const {answerQuestion,buildTodayBriefing,readWhySources,readPersistedPacket,suppliedContextOf}=await import('../packages/context/src/index.ts');
+  return {unregister,readers:{withOwnerTransaction,readOwnerOverlay,answerQuestion,buildTodayBriefing,readWhySources,readPersistedPacket,suppliedContextOf}};
+}
+
+/** One owner's public read path through `pool` (a non-bypass unai_app login): Ask through the Context Broker, Today,
+ * the persisted packet and Why for every proposition, overlay delta or resolution either one cites. `registryRelease`
+ * is {id, semanticVersion} (the id may be null) or null. Returns the comparable output, receipt ids stripped. */
+export async function acceptanceRead(readers,pool,{ownerScopeId:owner,actorId:actor,purpose,question,now,worldTime,registryRelease}){
+  const {withOwnerTransaction,answerQuestion,buildTodayBriefing,readWhySources,readPersistedPacket,suppliedContextOf}=readers;
+  const context={ownerScopeId:owner,actorId:actor,purpose:'memory.read',correlationId:randomUUID()};
+  // Every transaction declares the same source boundary as the public read,
+  // including saved packets; a broker's earlier transaction grants no access.
+  const runner=run=>withOwnerTransaction(pool,context,async tx=>{
+    await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
+    return run(tx);
+  });
+  const release=registryRelease?.id??null;
+  const options={now,correlationId:context.correlationId,requestingActorId:actor,registryReleaseId:release,registryRelease:registryRelease?.semanticVersion??null};
+  const ask=await answerQuestion(runner,{ownerScopeId:owner,question,purpose,worldTime,knowledgeTime:'LATEST',maximumSensitivity:'RESTRICTED'},options);
+  const today=await buildTodayBriefing(runner,{ownerScopeId:owner,timeZone:'UTC',date:null,dataPurpose:purpose,maximumSensitivity:'RESTRICTED'},options);
+  const packet=await runner(tx=>readPersistedPacket(tx,{ownerScopeId:owner,packetId:ask.packetId}));
+  const supplied=suppliedContextOf(packet.packet,{registryReleaseId:release});
+  const why=[];
+  for(const statement of [...ask.statements,...today.sections.flatMap(section=>section.items).map(item=>({objectRefs:item.sourceRefs}))]){
+    for(const ref of statement.objectRefs??[]){
+      if(!['propositions','owner_overlay_deltas','resolution_assertions'].includes(ref.objectType))continue;
+      why.push(await withOwnerTransaction(pool,{...context,purpose:'memory.inspect'},async tx=>{
+        await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
+        return readWhySources(tx,{ownerScopeId:owner,ref,readAt:now});
+      }));
+    }
+  }
+  const comparablePacket={...packet.packet,policy:{...packet.packet.policy,policyDecisionId:'GENERATED_READ_RECEIPT'}};
+  return comparableRecoveryOutput({ask,today,supplied,packet:comparablePacket,why});
+}
+
+const counts=output=>({statements:output.ask.statements.length,beliefs:output.supplied.beliefIds.length,explanations:output.why.length,
+  todayItems:output.today.sections.reduce((n,section)=>n+section.items.length,0)});
+
+/** The restore drill's probes: every PROBE_QUESTIONS read for every live owner member (withOwnerTransaction's own
+ * membership predicate) and every data purpose of its scope's live source items, through `app` (a non-bypass unai_app
+ * login) with the clock frozen at `now`. `admin` (a superuser of the same database) reads only the release, the members
+ * and the purposes. A scope with no live source item is counted, not probed. Returns counts and one digest of the
+ * ordered comparable outputs: no id, question or text. */
+export async function probeEnvironment(admin,app,{now}){
+  const {unregister,readers}=await loadReaders();
+  try{
+    const [latest]=(await admin.query("SELECT id,semantic_version FROM registry_releases ORDER BY string_to_array(semantic_version,'.')::int[] DESC LIMIT 1")).rows;
+    const registryRelease=latest?{id:latest.id,semanticVersion:latest.semantic_version}:null;
+    const subjects=(await admin.query(`SELECT m.owner_scope_id,m.user_id FROM owner_scope_members m
+      JOIN users u ON u.id=m.user_id JOIN owner_scopes o ON o.id=m.owner_scope_id
+      WHERE m.valid_from<=statement_timestamp() AND (m.valid_to IS NULL OR m.valid_to>statement_timestamp())
+      AND u.disabled_at IS NULL AND o.deleted_at IS NULL ORDER BY m.owner_scope_id,m.user_id`)).rows;
+    const worldTime=now.toISOString(),owners=new Set(),withoutEvidence=new Set(),outputs=[];
+    const totals={statements:0,beliefs:0,explanations:0,todayItems:0};
+    let members=0;
+    for(const {owner_scope_id:ownerScopeId,user_id:actorId} of subjects){
+      const purposes=(await admin.query(`SELECT DISTINCT purpose FROM source_items s CROSS JOIN LATERAL unnest(s.allowed_purposes) AS purpose
+        WHERE s.owner_scope_id=$1 AND s.deleted_at IS NULL ORDER BY 1`,[ownerScopeId])).rows.map(row=>row.purpose);
+      if(!purposes.length){withoutEvidence.add(ownerScopeId);continue;}
+      owners.add(ownerScopeId);members++;
+      for(const purpose of purposes)for(const question of PROBE_QUESTIONS){
+        const output=await acceptanceRead(readers,app,{ownerScopeId,actorId,purpose,question,now,worldTime,registryRelease});
+        for(const [name,value] of Object.entries(counts(output)))totals[name]+=value;
+        outputs.push(output);
+      }
+    }
+    return {owners:owners.size,members,ownersWithoutEvidence:withoutEvidence.size,reads:outputs.length,...totals,digest:hash(outputs)};
+  }finally{await unregister();}
+}
+
+export async function compareAcceptanceReads(sourceUrl,restoredUrl){
+  const {unregister,readers}=await loadReaders();
+  const {withOwnerTransaction,readOwnerOverlay}=readers;
   const now=new Date(); // Frozen once, after all fixture writes have completed.
   const source=new Pool({connectionString:sourceUrl,max:1});
   const restored=new Pool({connectionString:restoredUrl,max:1});
   const appUrl=url=>{const parsed=new URL(url);parsed.username='recovery_test_app';parsed.password='test-only';return parsed.href;};
   await source.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='recovery_test_app') THEN CREATE ROLE recovery_test_app LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_app TO recovery_test_app");
   const sourceApp=new Pool({connectionString:appUrl(sourceUrl),max:1}),restoredApp=new Pool({connectionString:appUrl(restoredUrl),max:1});
-  const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  // Each read looks up the environment's own 0.1.0 release and still names 0.1.0 when it is absent.
   async function read(pool,admin,owner,actor,purpose,question,worldTime=now.toISOString()){
-    const context={ownerScopeId:owner,actorId:actor,purpose:'memory.read',correlationId:randomUUID()};
-    // Every transaction declares the same source boundary as the public read,
-    // including saved packets; a broker's earlier transaction grants no access.
-    const runner=run=>withOwnerTransaction(pool,context,async tx=>{
-      await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
-      return run(tx);
-    });
-    const release=(await admin.query("SELECT id FROM registry_releases WHERE semantic_version='0.1.0'")).rows[0]?.id??null;
-    const options={now,correlationId:context.correlationId,requestingActorId:actor,registryReleaseId:release,registryRelease:'0.1.0'};
-    const ask=await answerQuestion(runner,{ownerScopeId:owner,question,purpose,worldTime,knowledgeTime:'LATEST',maximumSensitivity:'RESTRICTED'},options);
-    const today=await buildTodayBriefing(runner,{ownerScopeId:owner,timeZone:'UTC',date:null,dataPurpose:purpose,maximumSensitivity:'RESTRICTED'},options);
-    const packet=await runner(tx=>readPersistedPacket(tx,{ownerScopeId:owner,packetId:ask.packetId}));
-    const supplied=suppliedContextOf(packet.packet,{registryReleaseId:release});
-    const why=[];
-    for(const statement of [...ask.statements,...today.sections.flatMap(section=>section.items).map(item=>({objectRefs:item.sourceRefs}))]){
-      for(const ref of statement.objectRefs??[]){
-        if(!['propositions','owner_overlay_deltas','resolution_assertions'].includes(ref.objectType))continue;
-        why.push(await withOwnerTransaction(pool,{...context,purpose:'memory.inspect'},async tx=>{
-          await tx.query("SELECT set_config('unai.data_purpose',$1,true),set_config('unai.maximum_sensitivity','RESTRICTED',true)",[purpose]);
-          return readWhySources(tx,{ownerScopeId:owner,ref,readAt:now});
-        }));
-      }
-    }
-    const comparablePacket={...packet.packet,policy:{...packet.packet.policy,policyDecisionId:'GENERATED_READ_RECEIPT'}};
-    return comparableRecoveryOutput({ask,today,supplied,packet:comparablePacket,why});
+    const id=(await admin.query("SELECT id FROM registry_releases WHERE semantic_version='0.1.0'")).rows[0]?.id??null;
+    return acceptanceRead(readers,pool,{ownerScopeId:owner,actorId:actor,purpose,question,now,worldTime,registryRelease:{id,semanticVersion:'0.1.0'}});
   }
   try{
     const receipts=[];
@@ -106,6 +161,3 @@ export async function compareAcceptanceReads(sourceUrl,restoredUrl){
     return receipts;
   }finally{await Promise.all([sourceApp.end(),restoredApp.end(),source.end(),restored.end()]);await unregister();}
 }
-
-
-

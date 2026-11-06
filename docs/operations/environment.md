@@ -453,6 +453,35 @@ the target bucket's encrypted-store adapter, take credentials only from the SDK 
 below, as the API does, and `NODE_EXTRA_CA_CERTS` adds a private S3 CA. ADR 0043 D9 leaves a
 production restore's credentials to the operator at restore time.
 
+### pnpm restore:drill
+
+`scripts/restore-drill.mjs` reads every row below, in this order, before any network or database
+work. `--help` reads none of them. Every failure is one stderr JSON line
+`{"event":"restore.drill.failed","code":…}`. Only `RESTORE_DRILL_CONFIGURATION_REQUIRED` and
+`RESTORE_DRILL_CONFIGURATION_INVALID` add a `variable` naming the row.
+
+Every `### pnpm restore` variable above passes to the `pnpm restore` child unchanged and is
+checked there; the archive and the key are never read by the drill itself. The exceptions are
+`UNAI_RESTORE_DATABASE_URL` and `UNAI_RESTORE_S3_PREFIX`, which the drill sets itself for each
+run. The drill reads no `UNAI_S3_*` variable. Procedure: `docs/operations/restore.md`
+(Restore drill).
+
+| Variable | Required / default | Kind | When read | Consumer | Failure when missing |
+| --- | --- | --- | --- | --- | --- |
+| `UNAI_RESTORE_DATABASE_URL` | must be unset: the drill points the child at the database it creates | URL | startup | `scripts/restore-drill.mjs:117` | none; set, even empty, gives `RESTORE_DRILL_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_S3_PREFIX` | must be unset: the drill points the child at `restore-drill-<id>/` | literal | startup | `scripts/restore-drill.mjs:118` | none; set, even empty, gives `RESTORE_DRILL_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_DRILL_SERVER_URL` | required; literal `postgres(ql)://user@host[:port]/database` URL of an existing database on the drill server, with no password, query or fragment. The role must be superuser (`unai_migrator`). The password comes from PGPASSFILE, whose line needs database field `*`. The drill creates `unai_restore_drill_<id>` on this server, and the child connects to it with this URL's host, port and user | URL | startup | `scripts/restore-drill.mjs:119` | `RESTORE_DRILL_CONFIGURATION_REQUIRED`; `RESTORE_DRILL_DATABASE_URL_INVALID`; not a superuser `RESTORE_DRILL_ROLE_INVALID` |
+| `PGPASSWORD` | refused when set, even empty: the password belongs in PGPASSFILE | literal | startup | `scripts/restore-drill.mjs:120` | none; set gives `RESTORE_DRILL_CONFIGURATION_INVALID` |
+| `UNAI_DATABASE_CA_FILE` | required; trusted PostgreSQL CA for the drill's own connections; the child reads it too | file path | startup | `scripts/restore-drill.mjs:121` | `RESTORE_DRILL_CONFIGURATION_REQUIRED`; unreadable or empty `RESTORE_DRILL_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_S3_ENDPOINT` | required; the drill bucket's HTTPS endpoint, with no userinfo, query or fragment; the drill uses it only to delete its prefix's objects | URL | startup | `scripts/restore-drill.mjs:123` | `RESTORE_DRILL_CONFIGURATION_REQUIRED`; not such an https URL `RESTORE_DRILL_CONFIGURATION_INVALID` |
+| `UNAI_RESTORE_S3_REGION` | required; the drill bucket's region | literal | startup | `scripts/restore-drill.mjs:124` | `RESTORE_DRILL_CONFIGURATION_REQUIRED` |
+| `UNAI_RESTORE_S3_BUCKET` | required; the permanent drill bucket of ADR 0043 D9, never the evidence bucket | literal | startup | `scripts/restore-drill.mjs:125` | `RESTORE_DRILL_CONFIGURATION_REQUIRED`; the child's bucket checks |
+
+The probe login's password never reaches the child's environment, because the child runs before
+the login exists. Neither the drill nor the child receives it as a variable. The drill's S3 client
+takes credentials only from the SDK default chain, like the child's clients; under ADR 0043 D9 that
+is the `unai-restore-drill` IAM user.
+
 ## Test and development harness
 
 Never deliver an owner's production database or bucket. Tests create/drop databases,

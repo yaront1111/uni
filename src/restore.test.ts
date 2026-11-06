@@ -1,4 +1,4 @@
-import {afterAll,beforeAll,expect,it} from 'vitest';
+import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {spawn,spawnSync} from 'node:child_process';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
@@ -20,6 +20,8 @@ import {POSTGRES_IMAGE} from '../scripts/postgres-harness.mjs';
 import {createSelfSignedCertificate} from '../scripts/tls-certificate.mjs';
 // @ts-expect-error JavaScript harness helper.
 import {startS3ObjectServer} from '../scripts/s3-object-server.mjs';
+// @ts-expect-error JavaScript harness helper.
+import {PROBE_QUESTIONS as probeQuestions,probeEnvironment as probeEnvironmentOf} from '../scripts/recovery-acceptance.mjs';
 
 /**
  * `pnpm restore` (scripts/restore.mjs) as an operator runs it: a spawned process that restores a
@@ -58,7 +60,8 @@ interface S3Server{endpoint:string;certificate:string;operations:string[];receip
 interface S3Output{ServerSideEncryption?:string;SSEKMSKeyId?:string;Contents?:{Key:string}[];Body?:{transformToByteArray():Promise<Uint8Array>}}
 interface S3Client{send(command:object):Promise<S3Output>;destroy():void}
 const sdk=createRequire(new URL('../packages/storage/package.json',import.meta.url))('@aws-sdk/client-s3') as {S3Client:new(config:object)=>S3Client;
-  GetObjectCommand:new(input:object)=>object;ListObjectsV2Command:new(input:object)=>object;PutObjectCommand:new(input:object)=>object};
+  GetObjectCommand:new(input:object)=>object;ListObjectsV2Command:new(input:object)=>object;PutObjectCommand:new(input:object)=>object;
+  DeleteObjectCommand:new(input:object)=>object};
 const {Pool:PgPool}=createRequire(new URL('../packages/postgres/package.json',import.meta.url))('pg') as
   {Pool:new(config:{connectionString:string;max?:number;idleTimeoutMillis?:number})=>Pool};
 const need=(name:string)=>{const value=process.env[name];if(!value)throw new Error('HARNESS_VARIABLE_MISSING '+name);return value;};
@@ -721,8 +724,193 @@ it('has no flag but --help, never reads UNAI_S3_*, and never deletes, drops or e
   expect(text).not.toMatch(/\bdrop\s+(database|schema|table)\b|\btruncate/i);
 });
 
-/** The last test: no output of this file names a URL, password, key, key path, object key, bucket, prefix, ARN or endpoint. */
+/** The last restore test: no output so far names a URL, password, key, key path, object key, bucket, prefix, ARN or endpoint. */
 it('never prints a URL, password, key, key path, object key, bucket, prefix, KMS ARN or endpoint',()=>{
   expect(outputs.length).toBeGreaterThan(40);
   expectNoSentinels();
+});
+
+/**
+ * `pnpm restore:drill` (scripts/restore-drill.mjs) restores the beforeAll archive into a scratch database it creates on
+ * the harness server and a fresh prefix of the target bucket, by running restore.mjs as a child, then probes the
+ * restored database through a temporary unai_app login. Every case runs after every restore case above, so the source
+ * is still exactly what the archive holds when the last case probes it for the comparison.
+ */
+describe('pnpm restore:drill',()=>{
+  const drillScript=resolve('scripts/restore-drill.mjs');
+  const questions=probeQuestions as string[];
+  const probeEnvironment=probeEnvironmentOf as (admin:Pool,app:Pool,options:{now:Date})=>Promise<Record<string,unknown>>;
+  const serverDatabase=decodeURIComponent(serverUrl.pathname.slice(1));
+  const ID=/^[0-9a-f]{16}$/;
+  /** restore's environment without the two variables the drill sets itself, plus the archive directory and the server. */
+  const drillEnv=(overrides:Record<string,string|undefined>)=>restoreEnv({UNAI_RESTORE_ARCHIVE:archiveDirectory+sep,
+    UNAI_RESTORE_DRILL_SERVER_URL:terminatorUrl(harnessUser,serverDatabase),...overrides});
+  const drill=(args:string[],overrides:Record<string,string|undefined>={})=>spawnScript(drillScript,args,drillEnv(overrides));
+  const names=(id:string)=>({database:'unai_restore_drill_'+id,role:'unai_restore_drill_probe_'+id,prefix:'restore-drill-'+id+'/'});
+  const drillDatabases=async()=>
+    (await admin.query("SELECT datname FROM pg_database WHERE datname ~ '^unai_restore_drill_' ORDER BY 1")).rows.map(row=>String(row.datname));
+  async function leftovers(id:string){
+    const {database,role,prefix}=names(id);
+    return {database:(await admin.query('SELECT 1 FROM pg_database WHERE datname=$1',[database])).rowCount,
+      role:(await admin.query('SELECT 1 FROM pg_roles WHERE rolname=$1',[role])).rowCount,keys:await keysUnder(prefix)};
+  }
+  /** The probes of each PASS run, in order: the default run, then --keep. */
+  const probeRuns:Record<string,unknown>[]=[];
+  function drillPassed(result:Run){
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    const summary=line(result.stdout);
+    expect(Object.keys(summary)).toEqual(['event','verdict','drill','restore','probes','kept','durationMs']);
+    expect(summary).toMatchObject({event:'restore.drill.completed',verdict:'PASS',drill:expect.stringMatching(ID),durationMs:expect.any(Number)});
+    const tables=manifest.tables.length;
+    expect(summary.restore).toEqual({verdict:'PASS',format:'uai-backup/1',archive:archiveName,createdAt:manifest.createdAt,sha256:archiveSha256,
+      bytes:archiveBytes,tables,tablesVerified:tables,rows:manifest.tables.reduce((sum,table)=>sum+table.rows,0),objects:1,objectsVerified:1,
+      deletedObjects:1,dumpParts,migrationHead:manifest.migrations.head,migrations:manifest.migrations.count,
+      registryReleases:manifest.registryReleases.map(release=>release.semanticVersion),durationMs:expect.any(Number)});
+    // One owner scope with one member and one live item allowed for PERSONAL_ASSISTANCE: 1 × 1 × the probe questions.
+    expect(summary.probes).toEqual({owners:1,members:1,ownersWithoutEvidence:0,reads:questions.length,statements:expect.any(Number),
+      beliefs:expect.any(Number),explanations:expect.any(Number),todayItems:expect.any(Number),digest:expect.stringMatching(/^[0-9a-f]{64}$/)});
+    probeRuns.push(summary.probes as Record<string,unknown>);
+    return summary as {drill:string;kept:unknown};
+  }
+  /** Removes a kept scratch database once no backend is left on it (Pool.end() resolves before backends exit). */
+  async function dropScratch(database:string){
+    for(let attempt=0;attempt<200;attempt++){
+      if((await admin.query('SELECT 1 FROM pg_stat_activity WHERE datname=$1',[database])).rowCount===0){
+        await admin.query('DROP DATABASE '+database+' WITH (FORCE)');
+        return;
+      }
+      await delay(25);
+    }
+    throw new Error('RESTORE_TEST_BACKENDS_STILL_ACTIVE');
+  }
+
+  it('restores into its own database and prefix, probes every owner member and purpose, and removes both: PASS',async()=>{
+    const before=await drillDatabases(),operations=targetServer.operations.length;
+    const summary=drillPassed(await drill([]));
+    // restore: the encryption check, the emptiness listing, the put, the read-back; then the drill lists and deletes its prefix.
+    expect(targetServer.operations.slice(operations)).toEqual(['GetBucketEncryption','ListObjectsV2','PutObject','GetObject','ListObjectsV2','DeleteObject']);
+    expect(summary.kept).toBeNull();
+    expect(await leftovers(summary.drill)).toEqual({database:0,role:0,keys:[]});
+    expect(await drillDatabases()).toEqual(before);
+  },300000);
+
+  it('--keep keeps exactly its database and prefix with the restored data, and still drops the probe login',async()=>{
+    const summary=drillPassed(await drill(['--keep']));
+    const {database,role,prefix}=names(summary.drill);
+    expect(summary.kept).toEqual({database,prefix});
+    const url=new URL(serverUrl.href);url.pathname='/'+database;
+    const kept=new PgPool({connectionString:url.href,max:1});
+    kept.on('error',()=>{});
+    try{
+      const relations=await kept.query("SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r'");
+      expect(relations.rows[0].n).toBeGreaterThan(0);
+      expect((await kept.query('SELECT id FROM owner_scopes')).rows.map(row=>String(row.id))).toEqual([owner]);
+    }finally{await kept.end();}
+    expect(await keysUnder(prefix)).toEqual(manifest.objects.map(object=>prefix+object.key).sort());
+    expect((await admin.query('SELECT 1 FROM pg_roles WHERE rolname=$1',[role])).rowCount).toBe(0);
+    await dropScratch(database);
+    for(const key of await keysUnder(prefix))await targetClient.send(new sdk.DeleteObjectCommand({Bucket:targetBucket,Key:key}));
+    expect(await leftovers(summary.drill)).toEqual({database:0,role:0,keys:[]});
+  },300000);
+
+  it('fails a tampered archive at the restore stage with RESTORE_ARCHIVE_INTEGRITY_FAILED and leaves nothing behind',async()=>{
+    const directory=join(root,'drill-tampered');
+    await copyTriple(directory);
+    const path=join(directory,archiveName),bytes=await readFile(path);
+    const at=Math.floor((34+bytes.length-16)/2);
+    bytes[at]=(bytes[at] as number)^0x01;
+    await writeFile(path,bytes);
+    // Sidecars that agree with the flipped file, so the AES-GCM tag decides.
+    await writeSidecars(directory,archiveName,sha256(bytes),bytes.length);
+    const before=await drillDatabases(),operations=targetServer.operations.length;
+    const result=await drill([],{UNAI_RESTORE_ARCHIVE:directory+sep});
+    expect(result.stdout).toBe('');
+    expect(result.status).toBe(1);
+    const failure=line(result.stderr);
+    expect(failure).toEqual({event:'restore.drill.failed',code:'RESTORE_ARCHIVE_INTEGRITY_FAILED',stage:'restore',drill:expect.stringMatching(ID)});
+    // Only the drill's own cleanup listing of its prefix: the child wrote nothing.
+    expect(targetServer.operations.slice(operations)).toEqual(['ListObjectsV2']);
+    expect(await leftovers(String(failure.drill))).toEqual({database:0,role:0,keys:[]});
+    expect(await drillDatabases()).toEqual(before);
+  },300000);
+
+  it('refuses unsafe configuration, a role that is not superuser and any flag but --keep and --help before creating anything',async()=>{
+    const before=await drillDatabases(),operations=targetServer.operations.length;
+    const server=terminatorUrl(harnessUser,serverDatabase),withPassword=new URL(server);
+    withPassword.password='URLPASS-SENTINEL';
+    type Case=[string,Record<string,string|undefined>,Record<string,string>];
+    const required=(variable:string):Case=>[variable+' missing',{[variable]:undefined},{code:'RESTORE_DRILL_CONFIGURATION_REQUIRED',variable}];
+    const invalid=(variable:string,value:string):Case=>[variable+'='+value.length,{[variable]:value},{code:'RESTORE_DRILL_CONFIGURATION_INVALID',variable}];
+    const cases:Case[]=[
+      invalid('UNAI_RESTORE_DATABASE_URL',terminatorUrl(harnessUser,'unai_restore_drill_operator')),
+      invalid('UNAI_RESTORE_DATABASE_URL',''),
+      invalid('UNAI_RESTORE_S3_PREFIX','RESTORE-PREFIX-SENTINEL-'+hex+'-drill/'),
+      required('UNAI_RESTORE_DRILL_SERVER_URL'),
+      ...[withPassword.href,server+'?sslmode=disable',server+'#x',server+'/extra',server.replace(/\/[^/]+$/,'/'),server.replace(/^postgresql:/,'mysql:'),'not a url']
+        .map((value,index):Case=>['server url '+index,{UNAI_RESTORE_DRILL_SERVER_URL:value},{code:'RESTORE_DRILL_DATABASE_URL_INVALID'}]),
+      invalid('PGPASSWORD','PGPASS-SENTINEL'),
+      invalid('PGPASSWORD',''),
+      required('UNAI_DATABASE_CA_FILE'),
+      invalid('UNAI_DATABASE_CA_FILE',join(root,'absent.pem')),
+      required('UNAI_RESTORE_S3_ENDPOINT'),
+      invalid('UNAI_RESTORE_S3_ENDPOINT',targetServer.endpoint.replace('https:','http:')),
+      invalid('UNAI_RESTORE_S3_ENDPOINT','https://user@127.0.0.1:1'),
+      required('UNAI_RESTORE_S3_REGION'),
+      required('UNAI_RESTORE_S3_BUCKET'),
+    ];
+    for(const [label,overrides,expected] of cases){
+      const result=await drill([],overrides);
+      expect({label,failure:result.stderr.trim(),stdout:result.stdout,status:result.status})
+        .toEqual({label,failure:JSON.stringify({event:'restore.drill.failed',...expected}),stdout:'',status:1});
+    }
+    for(const args of [['--force'],['--keep','--keep'],['--keep=1'],['keep']]){
+      const result=await drill(args);
+      expect({args,failure:result.stderr.trim(),stdout:result.stdout,status:result.status})
+        .toEqual({args,failure:JSON.stringify({event:'restore.drill.failed',code:'RESTORE_DRILL_ARGUMENTS_INVALID'}),stdout:'',status:2});
+    }
+    // A login without SUPERUSER is refused before CREATE DATABASE (it has an id by then, and nothing to remove).
+    const weak=await drill([],{UNAI_RESTORE_DRILL_SERVER_URL:terminatorUrl(probeRole,serverDatabase)});
+    expect(weak.stdout).toBe('');
+    expect(weak.status).toBe(1);
+    expect(line(weak.stderr)).toEqual({event:'restore.drill.failed',code:'RESTORE_DRILL_ROLE_INVALID',drill:expect.stringMatching(ID)});
+    expect(targetServer.operations.slice(operations)).toEqual([]);
+    expect(await drillDatabases()).toEqual(before);
+  },300000);
+
+  it('prints usage for --help without reading the environment',async()=>{
+    const env={...process.env};
+    for(const name of Object.keys(env))if(name!=='PATH')delete env[name];
+    const result=await spawnScript(drillScript,['--help'],env);
+    expect(result).toMatchObject({status:0,stderr:''});
+    for(const word of ['pnpm restore:drill','--keep','--help','UNAI_RESTORE_DRILL_SERVER_URL','UNAI_RESTORE_ARCHIVE','UNAI_RESTORE_DATABASE_URL',
+      'UNAI_RESTORE_S3_PREFIX','restore.drill.completed','restore.drill.failed'])expect(result.stdout).toContain(word);
+  });
+
+  it('has no flag but --keep and --help and never reads UNAI_S3_*',async()=>{
+    const text=await readFile(drillScript,'utf8');
+    expect([...new Set(text.match(/--[A-Za-z][A-Za-z-]*/g)??[])].sort()).toEqual(['--help','--keep']);
+    expect(text).not.toContain('UNAI_S3_');
+    expect(text).not.toContain('DeleteObjects');
+  });
+
+  it('probes the untouched source with the same frozen clock to the digest of both drills',async()=>{
+    expect(probeRuns).toHaveLength(2);
+    expect(probeRuns[1]).toEqual(probeRuns[0]);
+    await admin.query('GRANT unai_app TO '+probeRole);
+    const url=new URL(serverUrl.href);url.pathname='/'+sourceDatabase;url.username=probeRole;url.password=probePassword;
+    const app=new PgPool({connectionString:url.href,max:2});
+    app.on('error',()=>{});
+    try{expect(await probeEnvironment(source,app,{now:new Date(manifest.createdAt)})).toEqual(probeRuns[0]);}
+    finally{await app.end();}
+  },300000);
+
+  it('never prints a URL, password, key, bucket, prefix, ARN, endpoint, owner id or question',()=>{
+    expect(outputs.length).toBeGreaterThan(70);
+    expectNoSentinels();
+    const values=[owner,actor,liveKey,erasedKey,'Restore owner',...questions];
+    outputs.forEach((output,index)=>values.forEach((value,sentinel)=>{
+      if(output.includes(value))expect.fail('output '+index+' names drill sentinel '+sentinel);
+    }));
+  });
 });

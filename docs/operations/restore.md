@@ -6,7 +6,9 @@ an evidence bucket. It then verifies every table digest, the migration ledger, t
 releases and every object against the archive's manifest. It authenticates the whole archive
 with the backup key before it touches the target, refuses a target database or prefix that is
 not empty, and never deletes, drops or empties anything. Deployment decisions: ADR 0043 D4 (PostgreSQL) and
-D9 (backups). Do not restore over a running environment.
+D9 (backups). Do not restore over a running environment. `pnpm restore:drill` rehearses a
+restore into a database and prefix of its own and reads the result through the product's read
+path ([Restore drill](#restore-drill)).
 
 ## Prerequisites
 
@@ -123,6 +125,123 @@ D9 (backups). Do not restore over a running environment.
    Ask and Why?. Any mismatch blocks cutover: keep the target for diagnosis and restore again
    into a new one.
 
+## Restore drill
+
+`pnpm restore:drill` (`scripts/restore-drill.mjs`) proves that an archive restores and that
+the restored memory answers through the product's own read path, without touching the
+production database or evidence bucket. ADR 0043 D9 schedules it monthly (first Sunday, 05:00
+UTC). One run:
+
+1. Draws an `<id>` of 16 random lowercase hex characters. Everything the run creates is named
+   with it, so two drills never share a database, prefix or login.
+2. Connects to `UNAI_RESTORE_DRILL_SERVER_URL`, which must be a superuser (`unai_migrator`),
+   and creates the database `unai_restore_drill_<id>` from `template0`.
+3. Runs `pnpm restore` as a child with `UNAI_RESTORE_DATABASE_URL` set to that database and
+   `UNAI_RESTORE_S3_PREFIX` set to `restore-drill-<id>/`. Every other `pnpm restore` variable
+   reaches it unchanged, and it applies every check above, both emptiness checks included. It
+   must answer PASS.
+4. Creates the login `unai_restore_drill_probe_<id>`:
+   - `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 4`, valid for one day, a member of `unai_app` only;
+   - its 32 random bytes of password exist only in the drill's memory, and the server receives
+     only a SCRAM-SHA-256 verifier.
+
+   The login exists because `withOwnerTransaction` refuses a superuser or BYPASSRLS session,
+   so the restoring role cannot run the probes.
+5. Probes the restored database as that login. The clock is frozen at the archive's `createdAt`,
+   and the newest registry release in the restored database is used. Who and what is probed:
+   - every live owner member, by the membership rule `withOwnerTransaction` applies;
+   - every data purpose of that scope's live evidence;
+   - each of `What did I promise?`, `What is on my calendar?` and `Did my prediction come true?`.
+
+   Each probe asks through Ask (the Context Broker), builds Today, re-reads the persisted packet,
+   and opens Why? for every proposition, overlay delta or resolution they cite. An owner scope
+   with no live evidence is counted in `ownersWithoutEvidence`, not probed. The probes' own
+   receipts (packets, briefings, audit rows) are written to the drill database only.
+6. Tears down on every exit, failure and SIGTERM included:
+   - the probe login is always dropped;
+   - without `--keep`, the database is dropped `WITH (FORCE)`, and every object under the prefix is deleted.
+
+   Only names carrying this run's `<id>` are ever dropped or deleted.
+
+Prerequisites, beyond the `pnpm restore` ones that apply to the archive and the key:
+
+- **The drill server.** It runs PostgreSQL of the archive's major with pgvector and the
+  cluster-wide roles of `deploy/postgres/provision.sql` (`unai_app` among them), because
+  pg_dump carries no roles.
+  - `pg_hba.conf` must admit, over `hostssl`:
+    - `unai_migrator` to the database of `UNAI_RESTORE_DRILL_SERVER_URL` and to every `unai_restore_drill_<id>`;
+    - each `unai_restore_drill_probe_<id>` to its database.
+
+    task-8384c4c973814affb1c9bfc02ddeed70 adds those lines.
+  - `unai_migrator` has a connection limit of 5, and a drill holds at most three of its sessions at once.
+- **`PGPASSFILE`** has a line for `unai_migrator` whose database field is `*`, because the
+  database name changes every run. `PGPASSWORD` is refused.
+- **The drill bucket.** It is `<bucket-prefix>-uai-restore-drill`, permanent, with one
+  `aws:kms` rule naming the evidence key and a 2-day expiry.
+  - `UNAI_RESTORE_S3_BUCKET` names it.
+  - `UNAI_RESTORE_S3_KMS_KEY_ID` names the evidence key's ARN.
+  - `UNAI_RESTORE_ARCHIVE` is `s3://<backup bucket>/<prefix>/`, so the newest complete archive is used.
+- **IAM user `unai-restore-drill`**, through the SDK default chain, with exactly the ADR 0043
+  D9 permissions:
+  - on the backup bucket: `s3:ListBucket` and `s3:GetObject`, plus `kms:Decrypt` on the backup key;
+  - on the drill bucket: `s3:GetEncryptionConfiguration`, `s3:ListBucket`, `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject`, plus `kms:GenerateDataKey` and `kms:Decrypt` on the evidence key;
+  - nothing on the evidence bucket.
+
+The verdict is exactly one JSON line. It never prints a URL, password, path, key, bucket, ARN,
+owner id, question or answer text.
+
+- **Success**, exit 0, on stdout:
+  `{"event":"restore.drill.completed","verdict":"PASS","drill":"<id>","restore":{"verdict":"PASS","format":"uai-backup/1",…},"probes":{"owners":1,"members":1,"ownersWithoutEvidence":0,"reads":3,"statements":…,"beliefs":…,"explanations":…,"todayItems":…,"digest":"<sha256>"},"kept":null,"durationMs":…}`.
+  - `restore` is `pnpm restore`'s success line without its `event`.
+  - `reads` is the number of probes.
+  - `digest` is the SHA-256 of their comparable outputs, which are free of receipt ids. Two drills of one archive give the same digest.
+  - With `--keep`, `kept` is `{"database":"unai_restore_drill_<id>","prefix":"restore-drill-<id>/"}`.
+- **Failure**, on stderr, for example
+  `{"event":"restore.drill.failed","code":"RESTORE_ARCHIVE_INTEGRITY_FAILED","stage":"restore","drill":"<id>"}`.
+  - `drill` appears once the id is drawn.
+  - `kept` appears whenever something the run created is still there (`--keep`, or a removal that failed). It names the `database`, `prefix` and `role` that remain.
+  - Exit 2 for `RESTORE_DRILL_ARGUMENTS_INVALID`, 1 for every other code.
+
+| Code | Cause | What to do |
+| --- | --- | --- |
+| `RESTORE_DRILL_ARGUMENTS_INVALID` | any argument other than a lone `--keep` or `--help` | run it with no argument or `--keep` |
+| `RESTORE_DRILL_CONFIGURATION_REQUIRED`, `RESTORE_DRILL_CONFIGURATION_INVALID` | the variable in `variable` is unset, or has the wrong form, or is one the drill sets itself (`UNAI_RESTORE_DATABASE_URL`, `UNAI_RESTORE_S3_PREFIX`) | fix or unset it ([environment.md](environment.md)) |
+| `RESTORE_DRILL_DATABASE_URL_INVALID` | `UNAI_RESTORE_DRILL_SERVER_URL` is not a password-less `postgres(ql)://user@host[:port]/<database>` without query or fragment | fix the URL; the password belongs in `PGPASSFILE` |
+| `RESTORE_DRILL_ROLE_INVALID` | the server login is not a superuser; nothing was created | connect as `unai_migrator` |
+| `RESTORE_DRILL_DATABASE_FAILED` | connecting, creating the database or the login, or granting `unai_app` failed | check the server, `pg_hba.conf`, the CA and `PGPASSFILE` |
+| any `RESTORE_…` code with `"stage":"restore"` | `pnpm restore` failed with that code (and `variable`) | the table above |
+| `RESTORE_DRILL_RESTORE_OUTPUT_INVALID` | `pnpm restore` ended without its one verdict line (killed or crashed) | run the drill again; check the host's memory and disk |
+| `RESTORE_DRILL_PROBE_FAILED` | a probe read failed; `probeCode` names the product's stable code when there is one (for example `DATABASE_ROLE_UNSAFE`) | keep the next run (`--keep`) and inspect the read path against it |
+| `RESTORE_DRILL_PROBES_EMPTY` | no live owner member has live evidence, so no read was proved | check that the archive is the production one |
+| `RESTORE_DRILL_CLEANUP_FAILED` | the drill passed, but a removal failed; `kept` names what remains | remove it as below |
+| `RESTORE_DRILL_INTERRUPTED` | SIGINT or SIGTERM: the restore child is stopped first, then the teardown runs | run it again |
+| `RESTORE_DRILL_FAILED` | any other failure | run it again; report it if it repeats |
+
+To remove what `--keep` kept, or what a failed teardown left (named in `kept`), use
+`unai_migrator` on the drill server:
+
+- `DROP DATABASE "unai_restore_drill_<id>" WITH (FORCE)`;
+- `DROP ROLE IF EXISTS "unai_restore_drill_probe_<id>"`;
+- delete the objects under `restore-drill-<id>/` in the drill bucket. They also expire after two days.
+
+What a PASS proves:
+
+- the archive authenticates under the backup key and restores into an empty database and an
+  empty prefix, with every table digest, the migration ledger, the registry releases and every
+  object equal to its manifest (`restore`);
+- every live owner member's Ask, Today, persisted-packet and Why? reads answer over the restored
+  data through `unai_app`, the product's RLS policies and its membership check (`probes`).
+
+What it does not prove:
+
+- That the restored memory equals production's answers. The drill never reads production, and the
+  digest compares drills, not environments; `src/restore.test.ts` is where a drill's probes are
+  compared with the source database's.
+- That the answers are right. The probes prove that the read path answers, not what it says.
+- The manual steps 5 to 7 above: deletion replay, credential and session rotation, and the cutover
+  review. A drill database is never cut over.
+- The units' startup against a restored environment (secrets, `unai.encryption_at_rest`).
+
 ## Executable test procedure
 
 `pnpm restore` is tested by `src/restore.test.ts` in the `operations` stage
@@ -131,7 +250,15 @@ D9 (backups). Do not restore over a running environment.
 verified TLS and empty prefixes of an in-process encrypted S3 bucket, from a file, a directory
 and an `s3://` location. It also proves the refusals: a tampered archive, a non-empty database
 or prefix, a receipt naming another key, a failing `pg_restore`, an inconsistent manifest, a
-busy target and bad configuration. The recovery rehearsal still runs
+busy target and bad configuration. `pnpm restore:drill` is tested in the same file
+(`describe('pnpm restore:drill')`), against the same archive:
+- a PASS leaves no database, login or object behind;
+- `--keep` keeps exactly its database and prefix, and still drops the login;
+- a tampered archive fails at the restore stage and leaves nothing;
+- unsafe configuration, a login that is not a superuser, and every flag but `--keep` and `--help` are refused before anything is created;
+- the probes of both PASS runs equal `probeEnvironment` over the untouched source database, with the same frozen clock.
+
+The recovery rehearsal still runs
 in `pnpm test`, as part of the default command. It creates a unique empty database, proves
 there are no application tables, and performs pg_restore with exit-on-error and a single
 transaction. It creates an independent empty encrypted object store, recovers the separately
