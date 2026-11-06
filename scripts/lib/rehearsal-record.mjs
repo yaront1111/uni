@@ -1,7 +1,7 @@
 // Pure record contract. Rehearsal extensions append implementations, not phase names.
 export const PHASES=Object.freeze(('host install-dry-run install tls postgres object-store secrets migrate publish owner preflights '+
   'services probes smoke failed-start sync backup restore-drill upgrade-dry-run upgrade-rollback upgrade telemetry browser').split(' '));
-export const IMPLEMENTED=Object.freeze(PHASES.slice(0,11));
+export const IMPLEMENTED=Object.freeze(PHASES.slice(0,16));
 const invalid=code=>{throw new Error(`REHEARSAL_${code}`);};
 
 export function requirePreflight(name,text){
@@ -69,6 +69,20 @@ const shape=(value,required,optional=[])=>object(value)&&required.every(key=>Obj
   Object.keys(value).every(key=>[...required,...optional].includes(key));
 const list=(value,test)=>Array.isArray(value)&&value.every(test);
 const exit=value=>value===null||(integer(value)&&value>=0&&value<=255);
+// Phase assertions hold numbers, booleans and status words only. Every word needs a
+// letter outside a-f, so no id, token, hostname, path or hex value fits.
+const WORD=/^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*(?::[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)?|[a-z]+(?:[_-][a-z]+)*)$/;
+const KEY=/^[a-z][A-Za-z]*(?:_[a-z]+)*$/;
+const word=value=>value.length<=96&&/[g-zG-Z]/.test(value);
+function assertion(value,depth){
+  if(value===null||typeof value==='boolean')return true;
+  if(typeof value==='number')return Number.isFinite(value)&&Math.abs(value)<=1e9;
+  if(typeof value==='string')return WORD.test(value)&&word(value);
+  if(depth>=4||!value||typeof value!=='object')return false;
+  if(Array.isArray(value))return value.length<=32&&value.every(item=>assertion(item,depth+1));
+  const entries=Object.entries(value);
+  return entries.length<=32&&entries.every(([key,item])=>KEY.test(key)&&word(key)&&assertion(item,depth+1));
+}
 
 function commandValid(value){
   return shape(value,['argv','exitCode','durationMs','tail'])&&list(value.argv,string)&&value.argv.length>0&&
@@ -78,7 +92,8 @@ function phaseErrors(phases,add){
   if(!Array.isArray(phases)){add('PHASES');return;}
   let previous=-1;
   phases.forEach((phase,index)=>{
-    if(!shape(phase,['name','status','commands'],['note','durationMs'])){add('PHASES');return;}
+    if(!shape(phase,['name','status','commands'],['note','durationMs','assertions'])){add('PHASES');return;}
+    if(phase.assertions!==undefined&&!(object(phase.assertions)&&assertion(phase.assertions,0)))add('ASSERTIONS');
     const position=PHASES.indexOf(phase.name);
     if(position<=previous||position<0||!['PASS','FAIL','UNVERIFIED'].includes(phase.status)||
       (phase.status==='FAIL'&&index!==phases.length-1)||

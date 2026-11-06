@@ -21,7 +21,10 @@ async function verify(path){
 async function run(options){
   if(process.platform!=='linux'){failed('REHEARSAL_PLATFORM_UNSUPPORTED');return 1;}
   const {createRun}=await import('./rehearsal/host.mjs');
+  const {servicePhases}=await import('./rehearsal/services.mjs');
+  const {syncPhases}=await import('./rehearsal/sync.mjs');
   const run=await createRun(options),interrupted=new AbortController();
+  Object.assign(run.phases,servicePhases,syncPhases);
   let signalCode=0,exitCode=0;
   const sigint=()=>{signalCode=130;interrupted.abort();};
   const sigterm=()=>{signalCode=143;interrupted.abort();};
