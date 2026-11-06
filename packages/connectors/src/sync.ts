@@ -300,8 +300,11 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
 }
 
 /** Lifecycle and consent refusals: another transaction's committed change
- * decided the run's outcome, so the run did not fail and nothing is recorded. */
-const LIFECYCLE_REFUSALS: readonly string[] = ['CONNECTOR_INGESTION_STOPPED', 'CONNECTOR_CAPABILITY_NOT_GRANTED'];
+ * decided the run's outcome, so the run did not fail and nothing is recorded.
+ * Exported so a caller that classifies a failed run (the connector.sync job)
+ * reads this list instead of copying it. */
+export const LIFECYCLE_REFUSALS: readonly string[] = Object.freeze(
+  ['CONNECTOR_INGESTION_STOPPED', 'CONNECTOR_CAPABILITY_NOT_GRANTED']);
 
 /** Record a failed run on the connector, under the sync's own purpose. The
  * status the screen shows is "sync failed with a named reason"; the consent

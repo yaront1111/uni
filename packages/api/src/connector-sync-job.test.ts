@@ -6,7 +6,9 @@ import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { postgresAdapter } from '@unai/auth';
 import { listDeadLetterJobs } from '@unai/jobs';
-import { ConnectorError, createConnector, disconnectConnector, type ConnectorClient, type ConnectorFetch } from '@unai/connectors';
+import {
+  ConnectorError, createConnector, disconnectConnector, setCapabilityGrants, type ConnectorClient, type ConnectorFetch,
+} from '@unai/connectors';
 import type { EvidenceObjects } from './evidence.js';
 import {
   CONNECTOR_SYNC_JOB_KIND, TERMINAL_CONNECTOR_SYNC_ERROR_CODES, createConnectorSyncRuntime, enqueueConnectorSync,
@@ -283,6 +285,50 @@ it('a disconnected connector completes the job with nothing to do', async () => 
     [o.ownerScopeId, job.jobId])).rows;
   expect(audits).toEqual([{ purpose: 'connector.sync', result: 'REFUSED', policy_decision: 'DENY' }]);
 }, TIMEOUT);
+
+// A change committed in the middle of a run refuses the run by name (the commit
+// point's grant check, or migration 0018's trigger at ingest). Another transaction
+// decided the outcome and recordSyncFailure writes nothing for it, so the job is
+// done with one REFUSED row that names the connector and no field: not a FAILURE
+// row naming fields nobody wrote, and not a retry of a deterministic refusal.
+const MID_RUN_CHANGES: [string, (o: Owner) => Promise<unknown>][] = [
+  ['CONNECTOR_CAPABILITY_NOT_GRANTED', o => o.as('connector.manage', tx =>
+    setCapabilityGrants(tx, o.connectorId, [{ capabilityId: 'gmail.read_content', granted: false }]))],
+  ['CONNECTOR_INGESTION_STOPPED', o => o.as('connector.manage', tx =>
+    disconnectConnector(tx, o.connectorId, async () => ({ revoked: true })))],
+];
+it.each(MID_RUN_CHANGES)('a %s refusal in the middle of a run completes the job without a retry and audits one REFUSED row',
+  async (code, change) => {
+    const o = await owner();
+    const logs = captureLogs();
+    const job = await enqueue(o);
+    const page = provider();
+    // The change commits inside the first fetch, before the page is returned: a
+    // fresh ACTIVE run holds no lock on the connector row yet, and every lifecycle
+    // writer takes it FOR NO KEY UPDATE, so the writer neither waits nor deadlocks.
+    let afterChange: unknown;
+    const client: ConnectorClient = {
+      async fetchPage(request) {
+        await change(o);
+        afterChange = await connectorRow(o.connectorId);
+        return page.client.fetchPage(request);
+      },
+    };
+    const sync = runtime(o, client);
+    expect(await sync.runOnce()).toMatchObject({ claimed: true, job: { jobId: job.jobId, status: 'SUCCEEDED', attemptCount: 1 } });
+    expect(await sync.runOnce()).toEqual({ claimed: false });
+    expect(page.fetches).toHaveLength(1);
+    expect(await sourceItemCount(o.ownerScopeId)).toBe(0);
+    // The job wrote nothing to the connector: no SYNC_FAILED, no last_sync_error, same updated_at.
+    expect(await connectorRow(o.connectorId)).toEqual(afterChange);
+    const audits = (await admin.query(`SELECT purpose,result,policy_decision,objects_and_fields_accessed AS objects
+      FROM audit_events WHERE owner_scope_id=$1 AND correlation_id=$2`, [o.ownerScopeId, job.jobId])).rows;
+    expect(audits).toEqual([{
+      purpose: 'connector.sync', result: 'REFUSED', policy_decision: 'DENY',
+      objects: [{ type: 'connectors', id: o.connectorId, fields: [] }],
+    }]);
+    expect(logs()).toContain(code);
+  }, TIMEOUT);
 
 // A first-party type has no provider to poll. The attempt is done on its first try
 // and records nothing on the connector: a recorded SYNC_FAILED would make migration

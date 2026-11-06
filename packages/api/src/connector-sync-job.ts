@@ -7,8 +7,8 @@ import {
 import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { enqueueJob, runJobAttempt, type JobAttempt } from '@unai/jobs';
 import {
-  CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError, ceilingAdmits, credentialRevoked, manifestFor,
-  markTokenRevoked, recordSyncFailure, runConnectorSync, storedSensitivity,
+  CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError, LIFECYCLE_REFUSALS, ceilingAdmits, credentialRevoked,
+  manifestFor, markTokenRevoked, recordSyncFailure, runConnectorSync, storedSensitivity,
   type ConnectorClient, type SourceIngest,
 } from '@unai/connectors';
 import { readSensitivityFloor } from '@unai/control';
@@ -28,7 +28,10 @@ import { importSource, type EvidenceObjects } from './evidence.js';
  * A provider 401 (after one forced refresh for Google), or a Google token
  * exchange invalid_grant (400), marks TOKEN_REVOKED. A 403 never does: Google
  * and GitHub use it for rate limits and insufficient scope, so it is recorded
- * as a sync failure and retried with its credential handle intact.
+ * as a sync failure and retried with its credential handle intact. A stop or a
+ * consent change committed before the run's commit point (CONNECTOR_INGESTION_STOPPED,
+ * CONNECTOR_CAPABILITY_NOT_GRANTED) is a refusal, not a failure: the job is done
+ * with one REFUSED audit row and the connector is left as that change left it.
  *
  * Only stable codes leave this file: a ConnectorError's detail, provider text and
  * database text never reach jobs.last_error, an audit row or a log line.
@@ -119,12 +122,24 @@ async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, 
 
 /** Bookkeeping after a failed sync, each in its own transaction because the
  * sync's own work has rolled back. Answers the code when the job is done;
- * throws it when the attempt must fail (retried unless runOnce lists it terminal). */
+ * throws it when the attempt must fail (retried unless runOnce lists it terminal).
+ * Three outcomes:
+ * - a lifecycle refusal (LIFECYCLE_REFUSALS: a stop or a consent change committed
+ *   before the run's commit point) is done, audited REFUSED with the connector and no field, because
+ *   another transaction decided it, nothing is written to the connector, and a retry
+ *   would be refused the same way;
+ * - a revocation (credentialRevoked) is done, marking TOKEN_REVOKED;
+ * - any other failure is recorded and thrown, then retried unless terminal. */
 async function settle(options: ConnectorSyncRuntimeOptions, connectorId: string, correlationId: string,
   error: unknown): Promise<string> {
   const code = error instanceof Error && CODE.test(error.message) ? error.message : 'CONNECTOR_SYNC_FAILED';
   if (!(error instanceof ConnectorError) || code === 'CONNECTOR_NOT_FOUND') throw new Error(code);
-  if (code === 'CONNECTOR_INGESTION_STOPPED') return code;
+  if (LIFECYCLE_REFUSALS.includes(code)) {
+    await withOwnerTransaction(options.appPool, context(options, CONNECTOR_SYNC_PURPOSE, correlationId), tx =>
+      tx.audit({ policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED',
+        objects: [{ type: 'connectors', id: connectorId, fields: [] }] })).catch(() => undefined);
+    return code;
+  }
   if (credentialRevoked(error)) {
     await withOwnerTransaction(options.appPool, context(options, CONNECTOR_MANAGE_PURPOSE, correlationId), async tx => {
       await markTokenRevoked(tx, connectorId);

@@ -309,10 +309,12 @@ deadlock between two syncs that both inserted evidence and then reach this guard
   back. A capability granted mid-run changes nothing the run read.
 - That refusal is not recorded as `SYNC_FAILED`: the owner's consent change
   decided the run, which did not fail. The connector stays `ACTIVE` with its old
-  cursor, and the next sync, or the job path's retry, reads under the narrowed
-  grant. `recordSyncFailure` records neither that code nor
-  `CONNECTOR_INGESTION_STOPPED`, so a stop's status, or a concurrent run's
-  `SYNC_FAILED` reason, stands.
+  cursor, and the next sync reads under the narrowed grant. `recordSyncFailure`
+  records neither that code nor `CONNECTOR_INGESTION_STOPPED`, so a stop's
+  status, or a concurrent run's `SYNC_FAILED` reason, stands. The `connector.sync`
+  job treats both codes (`LIFECYCLE_REFUSALS`) as done: the attempt succeeds with
+  no retry, and `settle()` writes one `DENY`/`REFUSED` audit row that names the
+  connector and no field.
 - A stop committed before an evidence insert can instead be refused by the
   importer (`CONNECTOR_REFUSED`) or migration 0018's ingestion trigger (SQLSTATE
   `55000`, `CONNECTOR_INGESTION_STOPPED`). Both yield the same 409 code with only
