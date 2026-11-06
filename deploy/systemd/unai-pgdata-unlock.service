@@ -1,0 +1,29 @@
+# ADR 0043 D4: unlocks and mounts the LUKS2 data volume before PostgreSQL starts.
+# deploy/pgdata/unlock.sh decrypts the volume key through KMS (unai-host-unlock,
+# kms:Decrypt only) and pipes it into cryptsetup open; the key never touches disk.
+# Fail closed: enabling this unit makes postgresql@17-main.service require it, so
+# when KMS or the volume is unavailable the unit fails and PostgreSQL stays stopped
+# instead of starting on the empty mount point. Retry: systemctl start
+# postgresql@17-main.service, which runs this unit again first.
+# No sandboxing on purpose: PrivateTmp, ProtectSystem, ProtectHome, ReadOnlyPaths,
+# PrivateMounts and MountFlags give the service its own mount namespace, which
+# would hide the mount from PostgreSQL. No ExecStop: at shutdown PostgreSQL stops
+# first (Before=), then systemd unmounts and detaches the volume.
+[Unit]
+Description=Uai data volume unlock (ADR 0043 D4)
+Wants=network-online.target
+After=network-online.target
+Before=postgresql@17-main.service postgresql.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials
+Environment=AWS_CONFIG_FILE=/etc/unai/pgdata/aws-config
+Environment=AWS_EC2_METADATA_DISABLED=true
+ExecStart=/usr/bin/bash /opt/unai/current/deploy/pgdata/unlock.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=postgresql@17-main.service

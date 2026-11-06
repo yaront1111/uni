@@ -199,7 +199,8 @@ const README_SECTIONS: Sections = [
   ['Before you start', ['Ubuntu Server 24.04', 'uai.<owner-domain>', '0 issue "letsencrypt.org"', 'ufw', 'Desktop app']],
   ['AWS buckets and IAM users', ['deploy/aws/provision.sh', '--dry-run']],
   ['Install the release', ['deploy/install.sh', '--tag', 'INSTALL_RELEASE_MISMATCH']],
-  ['Encrypted data volume', ['cryptsetup', '/etc/unai/pgdata/volume-key.enc', '/var/lib/postgresql/unai-restore-drill-staging']],
+  ['Encrypted data volume', ['cryptsetup', '/etc/unai/pgdata/volume-key.enc', '/var/lib/postgresql/unai-restore-drill-staging',
+    'deploy/pgdata/setup.sh', 'systemctl enable --now unai-pgdata-unlock.service', 'PGDATA_UNLOCK_KMS_FAILED']],
   ['Internal CA and PostgreSQL', ['deploy/tls/issue-internal-ca.sh', 'deploy/postgres/unai.conf', 'deploy/postgres/pg_hba.conf',
     'deploy/postgres/provision.sql', '/root/unai-provision.psql']],
   ['Secrets', ['pnpm secret:put', '/root/.pgpass', '/etc/unai/backup/backup.key', '/etc/unai/restore-drill/pgpass', 'google-connector-client']],
@@ -325,11 +326,9 @@ describe('operator documents', () => {
     expect([...text.matchAll(linkPattern)].length).toBeGreaterThanOrEqual(5);
     expect([...text.matchAll(pathPattern)].length).toBeGreaterThanOrEqual(5);
   });
-  it('volume formatting refuses an existing LUKS header explicitly, not via negated errexit', () => {
-    const text = read('deploy/README.md');
-    expect(text).toContain("test -b '/dev/<volume-device>'");
-    expect(text).toMatch(/if cryptsetup isLuks[^\n]+; then\n[^]*?exit 1\n\s*fi/);
-    expect(text).not.toMatch(/^\s*! cryptsetup isLuks/m);
+  // Formatting lives only in deploy/pgdata/setup.sh, whose refusals pgdata.test.ts proves.
+  it('volume setup is setup.sh and the unlock unit, never a hand-run luksFormat or mkfs', () => {
+    expect(read('deploy/README.md') + read('deploy/rotate.md')).not.toMatch(/luksFormat|mkfs/);
   });
   it.skipIf(spawnSync('bash', ['--version']).status !== 0)('all documented shell blocks pass bash -n without executing them', () => {
     for (const file of ['deploy/README.md', 'deploy/rotate.md']) {

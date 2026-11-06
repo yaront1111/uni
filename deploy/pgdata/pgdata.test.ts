@@ -62,12 +62,12 @@ const bodies: Record<string, string> = {
     '  hex=$(od -An -v -tx1 | tr -d " \\n")',
     '  printf "cryptsetup-stdin %s %s\\n" "$(printf "%s" "$hex" | sha256sum | cut -c1-64)" "$((${#hex} / 2))" >> "$STUB_LOG"',
     'fi',
-    'if [[ $1 == "${FAKE_CRYPTSETUP_FAIL:-}" ]]; then exit 2; fi',
+    'if [[ $1 == "${FAKE_CRYPTSETUP_FAIL:-}" ]]; then printf "cryptsetup-error-text\\n" >&2; exit 2; fi',
   ].join('\n'),
   lsblk: 'printf "%s" "$FAKE_LSBLK"\nexit "${FAKE_LSBLK_STATUS:-0}"',
   blkid: 'printf "%s" "${FAKE_BLKID:-}"\nexit "${FAKE_BLKID_STATUS:-2}"',
   mountpoint: 'if [[ -n ${FAKE_MOUNTED:-} ]]; then exit 0; fi\nexit 1',
-  mount: 'if [[ -n ${FAKE_MOUNT_FAIL:-} ]]; then exit 32; fi',
+  mount: 'if [[ -n ${FAKE_MOUNT_FAIL:-} ]]; then printf "mount-error-text\\n" >&2; exit 32; fi',
   'mkfs.ext4': '',
   chown: '',
   udevadm: 'exit "${FAKE_UDEV_STATUS:-0}"',
@@ -235,7 +235,8 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('deploy/p
   it('keeps the written key and stops when luksFormat fails', () => {
     const {base, R, log, device, run, files} = sandbox();
     const result = run(setupScript, args(device), {FAKE_CRYPTSETUP_FAIL: 'luksFormat'});
-    expect([result.status, result.stderr]).toEqual([1, 'PGDATA_SETUP_FORMAT_FAILED\n']);
+    // The operator sees cryptsetup's own message, then the code.
+    expect([result.status, result.stderr]).toEqual([1, 'cryptsetup-error-text\nPGDATA_SETUP_FORMAT_FAILED\n']);
     expect(logLines(log).filter(line => /^(cryptsetup open|mkfs|mount )/.test(line))).toEqual([]);
     expect(files()).toEqual(['dev/fake-disk', 'etc/unai/pgdata/volume-key.enc']);
     expect(readFileSync(`${R}/etc/unai/pgdata/volume-key.enc`).equals(blob)).toBe(true);
@@ -243,16 +244,157 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('deploy/p
   });
 });
 
+const unlockScript = join(root, 'deploy/pgdata/unlock.sh');
+const unitPath = join(root, 'deploy/systemd/unai-pgdata-unlock.service');
+// [section] -> key -> values, parsed as deploy/deploy.test.ts parses the process units.
+function unitSections(): Record<string, Record<string, string[]>> {
+  const sections: Record<string, Record<string, string[]>> = {};
+  let section: Record<string, string[]> | undefined;
+  for (const line of readFileSync(unitPath, 'utf8').replace(/\r/g, '').split('\n')) {
+    if (!line || line.startsWith('#')) continue;
+    const header = /^\[([^\]]+)\]$/.exec(line);
+    if (header) {
+      section = sections[header[1]!] ??= {};
+      continue;
+    }
+    const assignment = /^([A-Za-z]+)=(.*)$/.exec(line);
+    if (!section || !assignment) throw new Error(`Invalid unit line: ${line}`);
+    (section[assignment[1]!] ??= []).push(assignment[2]!);
+  }
+  return sections;
+}
+const unitEnvironment = (): Record<string, string> => Object.fromEntries((unitSections().Service?.Environment ?? [])
+  .map(assignment => [assignment.slice(0, assignment.indexOf('=')), assignment.slice(assignment.indexOf('=') + 1)]));
+
+describe.runIf(process.platform === 'linux' && process.arch === 'x64')('deploy/pgdata/unlock.sh', () => {
+  // A host after setup.sh: the ciphertext in place, the mapping closed, nothing mounted.
+  function locked() {
+    const s = sandbox();
+    write(`${s.R}/etc/unai/pgdata/volume-key.enc`, blob, 0o400);
+    return s;
+  }
+  // The unit's environment exactly: no operator profile or credentials.
+  const unitEnv = (extra: Record<string, string | undefined> = {}) => ({...unitEnvironment(),
+    AWS_PROFILE: undefined, AWS_ACCESS_KEY_ID: undefined, AWS_SECRET_ACCESS_KEY: undefined, AWS_ENDPOINT_URL: undefined, ...extra});
+  const decrypt = (R: string) => `aws kms decrypt --ciphertext-blob fileb://${R}/etc/unai/pgdata/volume-key.enc` +
+    ' --cli-connect-timeout 10 --query Plaintext --output text';
+
+  it('decrypts through KMS, opens with the key only on cryptsetup stdin and mounts nodev,nosuid', () => {
+    const {base, R, log, run, files} = locked();
+    const before = files();
+    const result = run(unlockScript, [], unitEnv());
+    expect([result.status, result.stdout, result.stderr]).toEqual([0, 'pgdata.unlocked\n', '']);
+    expect(logLines(log).filter(line => !line.startsWith('base64 '))).toEqual([
+      'cryptsetup status unai-pgdata',
+      `udevadm wait --timeout=60 ${R}/dev/disk/by-label/unai-pgdata`,
+      decrypt(R),
+      'aws-env AWS_CONFIG_FILE=/etc/unai/pgdata/aws-config AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials' +
+        ' AWS_PROFILE=unset AWS_EC2_METADATA_DISABLED=true',
+      `cryptsetup open --type luks2 --key-file=- ${R}/dev/disk/by-label/unai-pgdata unai-pgdata`,
+      `cryptsetup-stdin ${stdinHash} 64`,
+      `mountpoint -q ${R}/var/lib/postgresql`,
+      `mount -o nodev,nosuid ${R}/dev/mapper/unai-pgdata ${R}/var/lib/postgresql`,
+    ]);
+    expect(logLines(log).filter(line => line.startsWith('base64 '))).toEqual(['base64 -d']);
+    expect(files()).toEqual(before);
+    expectNoKey(base, result);
+  });
+
+  it.each([
+    ['an open, mounted volume (e.g. after a recovery-passphrase open)', {FAKE_STATUS: '0', FAKE_MOUNTED: '1'}, []],
+    ['an open volume that is not mounted', {FAKE_STATUS: '0'}, ['mount -o nodev,nosuid']],
+  ])('leaves %s to the mount step, with no AWS call', (_, env, mounts) => {
+    const {log, run} = locked();
+    const result = run(unlockScript, [], unitEnv(env));
+    expect([result.status, result.stdout, result.stderr]).toEqual([0, 'pgdata.unlocked\n', '']);
+    expect(logLines(log).filter(line => /^(udevadm|aws|cryptsetup open)/.test(line))).toEqual([]);
+    expect(logLines(log).filter(line => line.startsWith('mount ')).map(line => line.split(' /')[0])).toEqual(mounts);
+  });
+
+  // ADR 0043 D4 Known gaps: KMS unreachable means the volume stays locked and nothing is
+  // mounted, so the unit fails and PostgreSQL, which requires it, never starts on the
+  // bare mount point (the unit's RequiredBy= and Before= are pinned below).
+  it('fails closed when KMS fails: no open, no mount, and no provider text in the journal', () => {
+    const {base, R, log, run, files} = locked();
+    const before = files();
+    const result = run(unlockScript, [], unitEnv({FAKE_KMS_FAIL: '1'}));
+    expect([result.status, result.stdout, result.stderr]).toEqual([1, '', 'PGDATA_UNLOCK_KMS_FAILED\n']);
+    expect(logLines(log).filter(line => !line.startsWith('aws-env'))).toEqual(['cryptsetup status unai-pgdata',
+      `udevadm wait --timeout=60 ${R}/dev/disk/by-label/unai-pgdata`, decrypt(R)]);
+    expect(files()).toEqual(before);
+    expectNoKey(base, result);
+  });
+
+  const failures: ReadonlyArray<readonly [string, string, Record<string, string>, RegExp]> = [
+    ['the volume never appears', 'PGDATA_UNLOCK_DEVICE_MISSING', {FAKE_UDEV_STATUS: '1'}, /^(aws|cryptsetup open|mount )/],
+    ['KMS returns a 32-byte key', 'PGDATA_UNLOCK_KMS_RESPONSE_INVALID', {FAKE_PLAIN_B64: randomBytes(32).toString('base64')},
+      /^(cryptsetup open|base64|mount )/],
+    ['cryptsetup refuses the key', 'PGDATA_UNLOCK_OPEN_FAILED', {FAKE_CRYPTSETUP_FAIL: 'open'}, /^(mountpoint|mount )/],
+    ['the mount fails', 'PGDATA_UNLOCK_MOUNT_FAILED', {FAKE_MOUNT_FAIL: '1'}, /^$/],
+  ];
+  it.each(failures)('stops with one code and no tool text when %s', (_, code, env, forbidden) => {
+    const {base, log, run} = locked();
+    const result = run(unlockScript, [], unitEnv(env));
+    expect([result.status, result.stdout, result.stderr]).toEqual([1, '', `${code}\n`]);
+    expect(logLines(log).filter(line => forbidden.test(line))).toEqual([]);
+    expectNoKey(base, result);
+  });
+
+  it('refuses a missing volume key before any wait, AWS call or mount', () => {
+    const {log, run} = sandbox();
+    const result = run(unlockScript, [], unitEnv());
+    expect([result.status, result.stdout, result.stderr]).toEqual([1, '', 'PGDATA_UNLOCK_KEY_MISSING\n']);
+    expect(logLines(log)).toEqual(['cryptsetup status unai-pgdata']);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('refuses a non-root run without the deploy root', () => {
+    const {log, run} = locked();
+    const result = run(unlockScript, [], unitEnv({UNAI_DEPLOY_ROOT: undefined}));
+    expect([result.status, result.stderr]).toEqual([1, 'PGDATA_UNLOCK_ROOT_REQUIRED\n']);
+    expect(logLines(log)).toEqual([]);
+  });
+});
+
+describe('deploy/systemd/unai-pgdata-unlock.service', () => {
+  // Exact sections: no mount-namespace sandboxing (PrivateTmp, ProtectSystem,
+  // ProtectHome, ReadOnlyPaths, PrivateMounts, MountFlags...), which would hide the
+  // mount from PostgreSQL, and no ExecStop.
+  it('is a fail-closed oneshot ordered before and required by PostgreSQL 17', () => {
+    expect(unitSections()).toEqual({
+      Unit: {Description: ['Uai data volume unlock (ADR 0043 D4)'], Wants: ['network-online.target'],
+        After: ['network-online.target'], Before: ['postgresql@17-main.service postgresql.service']},
+      Service: {Type: ['oneshot'], RemainAfterExit: ['yes'], Environment: ['AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials',
+        'AWS_CONFIG_FILE=/etc/unai/pgdata/aws-config', 'AWS_EC2_METADATA_DISABLED=true'],
+      ExecStart: ['/usr/bin/bash /opt/unai/current/deploy/pgdata/unlock.sh'], TimeoutStartSec: ['180']},
+      Install: {WantedBy: ['multi-user.target'], RequiredBy: ['postgresql@17-main.service']},
+    });
+    expect(existsSync(unlockScript)).toBe(true);
+    const contract = readFileSync(join(root, 'docs/operations/environment.md'), 'utf8');
+    for (const name of Object.keys(unitEnvironment())) expect(contract).toContain('`' + name + '`');
+  });
+
+  const available = spawnSync('systemd-analyze', ['--version'], {encoding: 'utf8'}).status === 0;
+  it.skipIf(!available)(available ? 'passes systemd-analyze verify' : 'skipped: systemd-analyze not installed', () => {
+    const directory = scratch('unit'), copy = join(directory, 'unai-pgdata-unlock.service');
+    writeFileSync(copy, readFileSync(unitPath, 'utf8').replace(/\r/g, ''), {mode: 0o644});
+    const result = spawnSync('systemd-analyze', ['verify', copy], {encoding: 'utf8'});
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    // Unknown keys only warn (exit 0); unrelated host-unit warnings are ignored.
+    expect(result.stderr.split('\n').filter(line => line.includes('unai-pgdata-unlock'))).toEqual([]);
+  });
+});
+
 // Static guard for both scripts: the key variable only ever feeds a builtin printf pipe.
 describe('volume key handling in the pgdata scripts', () => {
-  for (const file of ['deploy/pgdata/setup.sh']) {
+  for (const file of ['deploy/pgdata/setup.sh', 'deploy/pgdata/unlock.sh']) {
     it(`${file}: no trace mode, no here-string and no key outside a builtin printf pipe`, () => {
       const text = readFileSync(join(root, file), 'utf8');
       expect(text).not.toMatch(/set -[a-z]*x|xtrace|\/usr\/bin\/printf|command printf|env printf/);
       const uses = text.split('\n').filter(line => !line.trimStart().startsWith('#') && /\$\{?(plain|pair)\b/.test(line));
       expect(uses.length).toBeGreaterThan(0);
       for (const line of uses) {
-        expect(line, line).toMatch(/^\s*(printf '%s' "\$plain" \| base64 -d \| "\$@" \|\| fail "\$code"|plain=\$\{pair#\*\$'\\t'\}|blob=\$\{pair%%\$'\\t'\*\}|\[\[ .*\$plain =~ \S+ \]\].*)$/);
+        expect(line, line).toMatch(/^\s*(printf '%s' "\$plain" \| base64 -d \| "\$@" \|\| fail "\$code"|printf '%s' "\$plain" \| base64 -d \| cryptsetup open --type luks2 --key-file=- "\$LABEL" "\$NAME" >\/dev\/null 2>&1 \|\||plain=\$\{pair#\*\$'\\t'\}|blob=\$\{pair%%\$'\\t'\*\}|\[\[ .*\$plain =~ \S+ \]\].*)$/);
         expect(line).not.toContain('<<<');
       }
     });
