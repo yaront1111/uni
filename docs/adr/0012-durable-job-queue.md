@@ -35,7 +35,12 @@ and `jobs_attempts_bounded` without a migration. Manual retry keeps that closed
 budget. This is an explicit per-call allowlist, never a default; all other
 failures, including non-code errors mapped to JOB_HANDLER_FAILED, stay retryable.
 Extraction's list is `TERMINAL_EXTRACTION_ERROR_CODES` in
-`packages/extraction/src/worker.ts`.
+`packages/extraction/src/worker.ts`. A provider's wait is the other case (added
+2026-11-06, task-9e3a6eba8b30449a9259a1115ca338d2): a FAILED job has no backoff,
+so every retry of a rate-limited `connector.sync` repeats its 429. Connector
+sync's list is `TERMINAL_CONNECTOR_SYNC_ERROR_CODES` in
+`packages/api/src/connector-sync-job.ts`, holding only `CONNECTOR_RATE_LIMITED`;
+the connector scheduler's next window is its retry (ADR 0041 D7).
 
 A claim takes the oldest runnable job with `FOR UPDATE SKIP LOCKED`: never
 claimed, failed with attempts remaining, or RUNNING under a lease whose deadline

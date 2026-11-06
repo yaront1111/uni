@@ -713,6 +713,17 @@ fails at once.
 - The run's transaction rolls back, so the stored cursor is unchanged.
 - The next sync after the wait resumes from that cursor. Pages read earlier in
   the failed run are read again and suppressed as duplicates.
+- The `connector.sync` job records the same failure and never retries it (added
+  2026-11-06, task-9e3a6eba8b30449a9259a1115ca338d2). A FAILED job is claimable
+  again at the worker's next poll, with no backoff, so every retry would land
+  inside the wait and spend the budget below. `CONNECTOR_RATE_LIMITED` is
+  therefore the only code in `TERMINAL_CONNECTOR_SYNC_ERROR_CODES`
+  (`packages/api/src/connector-sync-job.ts`; ADR 0012 terminal codes), whatever
+  `retryAfterSeconds` says, null included. The job dead-letters on that attempt,
+  and the connector scheduler's next window is the next sync. When `Retry-After`
+  is longer than the window (15 minutes for OMI), that sync can meet a 429 again
+  and fails the same way: one list call per window, at most 4 an hour, within
+  the budget.
 
 **Budget.** With transcripts, Omi allows 25 list calls per key per hour, one per
 page. A run uses at most `maxPages` pages (default 1).
@@ -931,6 +942,8 @@ tasks deliver them.
 - `packages/connectors/src/manifests.test.ts`: D6.
 - `packages/connectors/src/providers.test.ts`: D2, D7, D8.
 - `packages/api/src/omi-connector.test.ts`: D2, D3, D6, D7, D8.
+- `packages/api/src/connector-sync-job.test.ts`: D7 (a rate-limited
+  `connector.sync` job).
 - `packages/api/src/omi-pipeline.test.ts` and `packages/api/src/security.test.ts`:
   D3, D4 and the transcript prompt-injection case.
 - The OMI case of `packages/api/src/connectors.live.test.ts`: SKIPPED without

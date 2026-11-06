@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
@@ -8,7 +8,9 @@ import { postgresAdapter } from '@unai/auth';
 import { listDeadLetterJobs } from '@unai/jobs';
 import { ConnectorError, createConnector, disconnectConnector, type ConnectorClient, type ConnectorFetch } from '@unai/connectors';
 import type { EvidenceObjects } from './evidence.js';
-import { CONNECTOR_SYNC_JOB_KIND, createConnectorSyncRuntime, enqueueConnectorSync } from './connector-sync-job.js';
+import {
+  CONNECTOR_SYNC_JOB_KIND, TERMINAL_CONNECTOR_SYNC_ERROR_CODES, createConnectorSyncRuntime, enqueueConnectorSync,
+} from './connector-sync-job.js';
 import { createConnectorRuntime } from './connectors.js';
 
 /**
@@ -173,6 +175,69 @@ it('a 503 fails the attempt, is retried, and dead-letters with its code and no p
   expect(logged).toContain('CONNECTOR_PROVIDER_UNAVAILABLE');
   expect(logged).not.toContain(SENTINEL);
 }, TIMEOUT);
+
+it('ADR 0041 D7: an Omi 429 with Retry-After dead-letters the connector.sync job on that attempt; runOnce inside the wait makes no further Omi request, and the next window resumes from the stored cursor', async () => {
+  const o = await owner();
+  // The real Omi client through the production factory, over a fetch double: the
+  // client's 429 mapping and the job's terminal list are proven together. The key
+  // is invented at run time and only ever sits behind the handle (FR-104, D6).
+  const handle = 'secret://test/omi-key';
+  const key = 'omi_dev_' + randomBytes(24).toString('hex');
+  const omiId = await o.as('connector.manage', async tx => (await createConnector(tx, {
+    connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: handle,
+    requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }],
+  })).connectorId);
+  const requests: { method: string; url: URL }[] = [];
+  const replies: (() => Response)[] = [() => new Response(null, { status: 429, headers: { 'retry-after': '1800' } })];
+  vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ method: (init?.method ?? 'GET').toUpperCase(),
+      url: new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url) });
+    // An empty queue answers 500, so an unexpected extra request shows up.
+    return replies.shift()?.() ?? new Response(null, { status: 500 });
+  });
+  try {
+    const client = createConnectorRuntime({
+      async resolve(ref) { if (ref !== handle) throw new Error('SECRET_NOT_FOUND'); return key; },
+    }, {}).connectorClient({ connectorType: 'OMI', secretRef: handle });
+    const sync = runtime(o, client);
+    const logs = captureLogs();
+    const limited = await enqueue(o, { connectorId: omiId, window: '2026-11-06T10' });
+    expect(await sync.runOnce()).toMatchObject({ claimed: true, job: {
+      jobId: limited.jobId, status: 'DEAD_LETTER', attemptCount: 1, maxAttempts: 1, lastError: 'CONNECTOR_RATE_LIMITED' } });
+    // Inside the wait: the worker's next polls claim nothing and call nobody.
+    expect(await sync.runOnce()).toEqual({ claimed: false });
+    expect(await sync.runOnce()).toEqual({ claimed: false });
+    expect(requests).toHaveLength(1);
+    expect(requests.every(r => r.method === 'GET' && r.url.origin + r.url.pathname === 'https://api.omi.me/v1/dev/user/conversations'))
+      .toBe(true);
+    expect(await connectorRow(omiId)).toMatchObject({
+      status: 'SYNC_FAILED', last_sync_error: 'CONNECTOR_RATE_LIMITED', last_cursor: null, secret_ref: handle });
+    const audits = (await admin.query('SELECT purpose,result FROM audit_events WHERE owner_scope_id=$1 AND correlation_id=$2',
+      [o.ownerScopeId, limited.jobId])).rows;
+    expect(audits).toEqual([{ purpose: 'connector.sync', result: 'FAILURE' }]);
+    const logged = logs();
+    expect(logged).toContain('CONNECTOR_RATE_LIMITED');
+    expect(logged).not.toContain(key);
+
+    // The next window: what the scheduler's port enqueues (enqueueConnectorSync,
+    // mode INCREMENTAL, a new window and so a new job).
+    const fixture = JSON.parse(await readFile(resolve('fixtures/sources/omi-conversation.json'), 'utf8')) as unknown;
+    replies.push(() => Response.json([fixture], { headers: { 'x-omi-has-more': 'false' } }));
+    const next = await enqueue(o, { connectorId: omiId, window: '2026-11-06T11' });
+    expect(await sync.runOnce()).toMatchObject({ claimed: true, job: { jobId: next.jobId, status: 'SUCCEEDED', attemptCount: 1 } });
+    expect(requests).toHaveLength(2);
+    // Resumed from the cursor the failed run left unchanged (D7).
+    expect(requests[1]!.url.search).toBe(requests[0]!.url.search);
+    expect(await connectorRow(omiId)).toMatchObject({ status: 'ACTIVE', last_sync_error: null });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, TIMEOUT);
+
+it('connector.sync lists only CONNECTOR_RATE_LIMITED as terminal', () => {
+  expect([...TERMINAL_CONNECTOR_SYNC_ERROR_CODES]).toEqual(['CONNECTOR_RATE_LIMITED']);
+  expect(Object.isFrozen(TERMINAL_CONNECTOR_SYNC_ERROR_CODES)).toBe(true);
+});
 
 it('enqueueConnectorSync de-duplicates per connector, mode and window', async () => {
   const o = await owner();

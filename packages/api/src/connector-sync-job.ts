@@ -119,7 +119,7 @@ async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, 
 
 /** Bookkeeping after a failed sync, each in its own transaction because the
  * sync's own work has rolled back. Answers the code when the job is done;
- * throws it when the attempt must fail and be retried. */
+ * throws it when the attempt must fail (retried unless runOnce lists it terminal). */
 async function settle(options: ConnectorSyncRuntimeOptions, connectorId: string, correlationId: string,
   error: unknown): Promise<string> {
   const code = error instanceof Error && CODE.test(error.message) ? error.message : 'CONNECTOR_SYNC_FAILED';
@@ -140,6 +140,14 @@ async function settle(options: ConnectorSyncRuntimeOptions, connectorId: string,
   }).catch(() => undefined);
   throw new Error(code);
 }
+
+/** Codes that dead-letter the job on the failing attempt (ADR 0012 terminal codes).
+ * A FAILED job is claimable again at the worker's next poll with no backoff, so a
+ * retry of a rate-limited run would land inside the provider's Retry-After and spend
+ * its hourly budget (ADR 0041 D7). The connector stays SYNC_FAILED with its cursor,
+ * and the scheduler's next window is the next sync. Every other code keeps the
+ * bounded retry. */
+export const TERMINAL_CONNECTOR_SYNC_ERROR_CODES = Object.freeze(['CONNECTOR_RATE_LIMITED'] as const);
 
 /** No dispatch and no timer: something else enqueues, and the worker loop calls runOnce. */
 export function createConnectorSyncRuntime(options: ConnectorSyncRuntimeOptions) {
@@ -170,7 +178,7 @@ export function createConnectorSyncRuntime(options: ConnectorSyncRuntimeOptions)
     handle,
     runOnce: (): Promise<JobAttempt> => runJobAttempt(options.appPool, context(options, 'jobs.work', randomUUID()), {
       worker: options.workerId, leaseSeconds: options.leaseSeconds ?? 600,
-      jobKinds: [CONNECTOR_SYNC_JOB_KIND], handler: handle,
+      jobKinds: [CONNECTOR_SYNC_JOB_KIND], terminalErrorCodes: TERMINAL_CONNECTOR_SYNC_ERROR_CODES, handler: handle,
     }),
   };
 }
