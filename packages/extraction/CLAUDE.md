@@ -18,7 +18,8 @@ is `docs/model-path-and-extraction.md`.
   `model.call` inside the gateway, and `memory.canonicalize` to write the claims
   and complete the run atomically with them.
 - `createExtractionJobHandler` handles job kind `evidence.extract`, but only
-  `packages/api/src/extraction-pipeline.test.ts` calls it. Production runs
+  tests call it: `packages/api/src/extraction-pipeline.test.ts` and
+  `packages/api/src/omi-pipeline.test.ts`. Production runs
   `evidence.extract` in the worker process `packages/api/src/processing-worker.ts`
   through `createProcessingRuntime` (`packages/api/src/processing-runtime.ts`),
   which calls `runExtraction` directly. This package starts no worker and
@@ -42,7 +43,18 @@ is `docs/model-path-and-extraction.md`.
 - **Quoted history is cut once, in Tier 0.** A message that is only quoted
   history routes `SOURCE_ONLY`, so a thread update costs one deep extraction
   rather than one per quoted message (CRT-WRT-07-B). Never make the extractor
-  re-read a quoted body.
+  re-read a quoted body. The exception is OMI: its Tier-0 branch builds `newText`
+  itself from the labelled transcript segments and skips `splitQuotedHistory`
+  (ADR 0041 D4; `triage.ts:198`).
+- **An OMI transcript has a size bound before any run (ADR 0041 D4).** A deep
+  route whose estimate exceeds `ROUTE_EXTRACTION_LIMITS[route].maxInputBytes`
+  routes `DEFER_UNTIL_RELEVANT`. The estimate is the UTF-8 bytes of `newText`,
+  plus 320 × `segmentCount`, plus 2048. The route carries reason
+  `EXTRACTION_INPUT_OVER_BOUND` and negative signal `OVER_INPUT_BOUND`, keeps its
+  positive signals, and gets budget 0. For OMI, `buildExtractionInput` sends
+  `newText` null and orders the `TRANSCRIPT_SEGMENT` anchors by `segmentIndex`,
+  then by start. The run's own `EXTRACTION_INPUT_TOO_LARGE` check stays
+  authoritative.
 - **No run without a route.** `openRun` refuses a missing decision
   (`EXTRACTION_TRIAGE_REQUIRED`) and a route that does not admit deep extraction
   (`EXTRACTION_ROUTE_REFUSED`). `DEFER_UNTIL_RELEVANT` is reachable only by a
@@ -63,10 +75,13 @@ is `docs/model-path-and-extraction.md`.
 ## Running these tests
 
 `triage.test.ts` is pure: `pnpm exec vitest run packages/extraction/src/triage.test.ts`.
+So is `runs.test.ts`: `pnpm exec vitest run packages/extraction/src/runs.test.ts`.
 The end-to-end path is `packages/api/src/extraction-pipeline.test.ts`, which
 needs the full harness (`pnpm test`): it composes the real ingest path, triage,
 the gateway, the extraction service and the durable queue, with a provider double
-as the only stand-in.
+as the only stand-in. `packages/api/src/omi-pipeline.test.ts` is the OMI
+end-to-end path (a synced Omi transcript through the `evidence.extract` job), and
+it needs the harness too.
 
 ## Traps
 

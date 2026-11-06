@@ -22,6 +22,11 @@ grants and the connector lifecycle. Report: `docs/connectors.md`; decisions:
   offer no `WRITE` capability, and the schema refuses a granted one. A write
   capability is refused *by name* (`CONNECTOR_WRITE_SCOPE_REFUSED`) so the consent
   screen can say which.
+- **OMI (ADR 0041; report `docs/omi-connector.md`).** `connector.omi` has one READ
+  capability, `omi.read_conversations` (scope `conversations:read`). Its client
+  only GETs `https://api.omi.me/v1/dev/user/conversations`. The OMI branch of
+  `createTokenRevoker` answers `manualRevocationRequired` before it resolves any
+  secret (D8): Uai cannot revoke an Omi key.
 - **Capability narrowing happens on the raw payload** (`prepareForCapabilities`),
   before parsing and therefore before hashing, so the stored content hash
   describes exactly what was read.
@@ -36,6 +41,17 @@ grants and the connector lifecycle. Report: `docs/connectors.md`; decisions:
   changes and `markTokenRevoked` run under `connector.manage`.
 - A failed run is recorded by `recordSyncFailure` in a **separate** transaction:
   the run it failed has been rolled back.
+- Lock order: every lifecycle writer (`setCapabilityGrants`, `markTokenRevoked`,
+  `disconnectConnector`) takes the connector row `FOR NO KEY UPDATE` as its first
+  read, before its status check, and only then touches grant rows. Never
+  `FOR UPDATE`: it conflicts with the `KEY SHARE` locks evidence inserts hold, so
+  a writer would wait for a whole multi-page run. The sync's commit point re-reads
+  status and then grants under the same lock. `recordSyncFailure` records neither
+  `CONNECTOR_INGESTION_STOPPED` nor `CONNECTOR_CAPABILITY_NOT_GRANTED` (see
+  `docs/connectors.md`, "Concurrent syncs and lifecycle changes").
+- An Omi 429 fails the whole run, which is one transaction: pages read earlier
+  roll back and the next run reads them again, suppressed as duplicates. Never
+  sleep inside the transaction to wait out `Retry-After`.
 - `searchDocuments` relies on the row policies for owner, purpose and sensitivity;
   it adds no `WHERE` for them on purpose, so the isolation suite covers it.
 - Adding a capability means adding it to the manifest **and** to every existing

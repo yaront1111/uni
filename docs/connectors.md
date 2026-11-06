@@ -37,7 +37,7 @@ lexical over stored anchors, and the semantic index belongs to
 | Connected sources: redelivered items discarded | the same card's `duplicatesSuppressed` |
 | Connected sources: sync failed with a named reason | `connectors.last_sync_error`, written by `recordSyncFailure` |
 | Connected sources: token revoked, reauthorization required | status `TOKEN_REVOKED` |
-| Connected sources: disconnected, tokens revoked, ingestion stopped | status `DISCONNECTED` after `POST /v1/connectors/{id}/disconnect` |
+| Connected sources: disconnected, ingestion stopped | status `DISCONNECTED` after `POST /v1/connectors/{id}/disconnect`. A successful Disconnect navigates to `/connectors?disconnected=<id>[&notice=CONNECTOR_REVOCATION_MANUAL_REQUIRED]`. The server render keeps that query only for a listed connector that is `DISCONNECTED` and a known notice (`lastDisconnectFrom`, `Connectors.tsx:84-90`). For an OMI connector it adds the ADR 0041 D8 sentence verbatim: "Uai has stopped using this key and forgotten its handle. Omi does not let apps revoke developer keys: revoke it in the Omi app under Settings > Developer." |
 | Grant connector capabilities: manifest list with independent toggle and risk class | `CapabilityGrants`, one control per `connector_capability_grants` row |
 | Grant connector capabilities: read-only consent handoff | `requestedScopes`, derived from the granted capabilities only |
 | Grant connector capabilities: partial grant honoured | metadata granted while content stays denied, as two rows |
@@ -62,8 +62,8 @@ other two belong to `drafts-actions-permissions-export-and-deletion-workflow`.
 | `POST /v1/connectors` | `connector.manage` | `201` with the connector; `403 CONNECTOR_WRITE_SCOPE_REFUSED`; `409 CONNECTOR_ALREADY_CONNECTED` |
 | `GET /v1/connectors/{id}/capabilities` | `connector.read` | one row per manifest capability with its risk class |
 | `POST /v1/connectors/{id}/capabilities` | `connector.manage` | the resulting grant set; `403` for a write scope or an unknown capability |
-| `POST /v1/connectors/{id}/sync` | `connector.sync` | run id, resumed cursor, requested and stored sensitivity, items ingested, duplicates suppressed, episodes aggregated, new cursor, per-payload `refusals`; `409 CONNECTOR_INGESTION_STOPPED`; `403 CONNECTOR_SENSITIVITY_CEILING_TOO_LOW` |
-| `POST /v1/connectors/{id}/disconnect` | `connector.manage` | tokens revoked, secret destroyed, ingestion stopped, retained-evidence options |
+| `POST /v1/connectors/{id}/sync` | `connector.sync` | run id, resumed cursor, requested and stored sensitivity, items ingested, duplicates suppressed, episodes aggregated, new cursor, per-payload `refusals`; `409 CONNECTOR_INGESTION_STOPPED`; `403 CONNECTOR_SENSITIVITY_CEILING_TOO_LOW`; `429 CONNECTOR_RATE_LIMITED` with `retryAfterSeconds` (recorded `SYNC_FAILED`; the next sync resumes from the stored cursor); `409 CONNECTOR_CURSOR_INVALID` (a `BACKFILL` recovers); `409 CONNECTOR_TOKEN_REVOKED`: a provider 401 on any connector type marks the connector `TOKEN_REVOKED` through the route, as the `connector.sync` job already does, while a 403 stays `SYNC_FAILED` (owner decision of 2026-11-03, comment-138a7813 and comment-2e6f2b1e) |
+| `POST /v1/connectors/{id}/disconnect` | `connector.manage` | provider revocation where the provider allows it (`tokensRevokedAtProvider`), secret handle destroyed, ingestion stopped, retained-evidence options, and `providerRevocationNotice`: `CONNECTOR_REVOCATION_MANUAL_REQUIRED` for OMI, null otherwise |
 | `POST /v1/documents` | `evidence.ingest` | `201` with the stored, indexed receipt and the extraction plan with its reason |
 | `GET /v1/documents/search?q=` | `evidence.read` | bounded lexical hits over the owner's stored documents |
 
@@ -247,6 +247,31 @@ ingestion parses the whole payload before it writes anything.
 The exception is a connector stopped while the run was reading: it refuses with
 409 `CONNECTOR_INGESTION_STOPPED`, as described below.
 
+## The Omi connector (OMI)
+
+ADR 0041 and ADR 0042 add Omi, the wearable recorder, as an optional read-only
+source beyond PRD §27.5. The delivery report is `docs/omi-connector.md`.
+
+- **Type.** The connector type and the source type are both `OMI`.
+- **Manifest.** `connector.omi` has one READ capability, `omi.read_conversations`
+  (scope `conversations:read`, risk HIGH). Its context profile excludes HEALTH,
+  FAMILY and FINANCE, at a NORMAL ceiling.
+- **Sensitivity.** PRIVATE is a floor: a request asking for NORMAL still stores
+  PRIVATE.
+- **Client.** It only GETs `https://api.omi.me/v1/dev/user/conversations` with
+  the developer key, which is resolved from its `secret://` handle for each page.
+  D7 paging walks a time window and stops after the page that closes it
+  (`exhausted: true`). A 429 fails the run at once with `CONNECTOR_RATE_LIMITED`.
+- **Evidence.** Each conversation becomes two items:
+  - the transcript, actor EXTERNAL `omi:transcript`, with one `TRANSCRIPT_SEGMENT`
+    anchor per segment carrying the speaker and the OWNER/OTHER/UNKNOWN role;
+  - Omi's structured summary, actor ASSISTANT `omi:structured`, routed
+    SOURCE_ONLY.
+- **Disconnect.** Uai cannot revoke an Omi developer key. A disconnect stops
+  ingestion, forgets the handle and answers `providerRevocationNotice:
+  CONNECTOR_REVOCATION_MANUAL_REQUIRED` (D8). The owner then revokes the key in
+  the Omi app (`docs/operations/connector-revocation.md`).
+
 ## Concurrent syncs and lifecycle changes
 
 A sync holds no connector-row lock during provider I/O. The exception is a retry
@@ -305,7 +330,7 @@ The real-PostgreSQL proof is `packages/api/src/connector-sync-race.test.ts`.
 ## What this node does not claim
 
 - **No live provider account was exercised.** `packages/connectors/src/providers.ts`
-  holds the real read-only Gmail, Calendar and GitHub clients and the real token
+  holds the real read-only Gmail, Calendar, GitHub and Omi clients and the real token
   revocation calls, and the sync path is identical for them; but the suite drives a
   recorded double over the committed fixtures, because a live account needs
   operator credentials this environment does not hold. CRT-CON-02-A, CRT-CON-03-A
@@ -362,7 +387,15 @@ UNAI_SECRETS_MOUNT            directory the secrets manager reads
 UNAI_LIVE_GMAIL_ACCOUNT       / UNAI_LIVE_GMAIL_SECRET
 UNAI_LIVE_CALENDAR_ACCOUNT    / UNAI_LIVE_CALENDAR_SECRET
 UNAI_LIVE_GITHUB_REPOSITORY   / UNAI_LIVE_GITHUB_SECRET
+UNAI_LIVE_OMI_SECRET          an Omi developer key limited to conversations:read
 ```
+
+`UNAI_LIVE_OMI_SECRET` drives case ADR-0041-LIVE-A. Like the others, it needs
+`UNAI_SECRETS_MOUNT`. It has no account variable: a reserved example address fills
+`externalAccountRef`. The case makes one INCREMENTAL sync of GETs to
+`https://api.omi.me/v1/dev/user/conversations` and never disconnects, because Uai
+cannot revoke an Omi key (ADR 0041 D8). Its live half stays UNVERIFIED until an
+operator runs it (`docs/omi-connector.md`).
 
 Every provider call it makes is a GET. The disconnect case really revokes the
 operator's token, so it needs `UNAI_LIVE_CONNECTOR_ALLOW_REVOCATION=true` beyond

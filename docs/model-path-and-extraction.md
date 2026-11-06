@@ -166,6 +166,15 @@ dead-letters it; terminal refusal handling belongs to task-2c05639a7dc14766a22f3
 The gateway still records an overspend and then refuses it with
 `MODEL_COST_BUDGET_EXCEEDED`.
 
+An OMI transcript also gets a bound before routing (ADR 0041 D4). Triage
+estimates the deep route's input as the UTF-8 bytes of the Tier-0 text, plus 320
+bytes per segment, plus 2,048 bytes of framing. When the estimate exceeds the
+route's `maxInputBytes`, triage decides `DEFER_UNTIL_RELEVANT` with reason code
+`EXTRACTION_INPUT_OVER_BOUND` and Tier-1 signal `OVER_INPUT_BOUND`, before any
+run is scheduled. `EXTRACTION_INPUT_TOO_LARGE` stays the run-time guarantee,
+because a re-run adds claim anchors and unusual names can exceed the estimate. A
+long conversation stays evidence until windowed extraction exists (D10(g)).
+
 These ceilings assume D7's prices and the framing allowance above. At any other
 price, recompute them with the formula and change `ROUTE_COST_BUDGET_MICROUNITS`
 and the triage test together. Budgets already stored on `triage_decisions` rows
