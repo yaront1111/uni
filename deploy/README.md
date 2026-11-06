@@ -59,6 +59,15 @@ Create customer-managed symmetric KMS keys `alias/unai-evidence` and
 `alias/unai-pgdata` in `<aws-region>`, and `alias/unai-backup` in a different
 `<backup-region>`, retaining their default key policies.
 
+Find the owner's Google subject (`sub`) now: it is the only account that will be
+able to sign in. In the [OAuth 2.0 Playground](https://developers.google.com/oauthplayground),
+enter `openid` as your own scope, authorize, and sign in as the owner. Exchange
+the authorization code for tokens, then send a GET request to the
+`userinfo_endpoint` named in Google's [discovery document](https://accounts.google.com/.well-known/openid-configuration)
+(currently `https://openidconnect.googleapis.com/v1/userinfo`). The `sub` value,
+all digits, is the subject: an identifier, not a credential, and never the email.
+Afterwards remove the Playground's access at [Google Account permissions](https://myaccount.google.com/permissions).
+
 ## AWS buckets and IAM users
 
 On an administrator workstation with AWS CLI v2 and a checkout of the chosen
@@ -332,6 +341,11 @@ The installer copies absent examples only, never over a filled file. Fill
 `/etc/unai/migrate.env` is generated with a password-free migrator URL and
 `UNAI_DATABASE_CA_FILE` (the canonical name, not the deprecated CA_PATH alias).
 Registry ids wait for the next section; worker owner ids wait for first sign-in.
+Set `UNAI_WEB_OWNER_GOOGLE_SUBJECT` in web.env to the subject from
+[Before you start](#before-you-start). Until it holds only digits, unai-web's
+ExecStartPre `--check` fails `auth` with `CONFIG_REQUIRED:UNAI_WEB_OWNER_GOOGLE_SUBJECT`
+or `CONFIG_INVALID:UNAI_WEB_OWNER_GOOGLE_SUBJECT` and the web does not start,
+including the certificate hook's first start in [Web certificate](#web-certificate).
 Use identical evidence region/bucket/key settings across API, worker and backup;
 the drill uses its separate bucket and the evidence KMS key. Keep archive region,
 destination and key path aligned between backup and drill. No refused variable
@@ -434,13 +448,18 @@ See [D10](../docs/adr/0043-production-deployment-target.md#d10-health-probes-dev
 
 ## First sign-in, the worker and the timers
 
-Sign in at `https://uai.<owner-domain>/signin`. Today any Google account that
-completes sign-in receives its own empty owner scope; other rows are possible.
-This is not a sign-in allowlist. Select the owner's actual row, never the first
-row in the database. As postgres, read:
+Sign in at `https://uai.<owner-domain>/signin` as the owner. Only the Google
+account whose subject is `UNAI_WEB_OWNER_GOOGLE_SUBJECT` can sign in. Any other
+Google account sees the sign-in page's refused state and gets no user, owner
+scope or membership; the web journal (`journalctl -u unai-web -o cat`) shows one
+`{"event":"auth.refused","code":"AUTH_ACCOUNT_NOT_ALLOWED"}` line for it. If your
+own sign-in is refused, re-check the subject from [Before you start](#before-you-start).
+Changing the variable to another account later gives that account a new, empty
+owner scope and moves no data. Select the owner's row by subject, never by email
+or the first row in the database. As postgres, read:
 
 ```sh
-sudo -u postgres psql -X -d unai -At -c "SELECT m.owner_scope_id, m.user_id FROM owner_scope_members m JOIN users u ON u.id = m.user_id WHERE u.auth_email = '<owner-email>' AND m.role = 'OWNER' AND m.valid_to IS NULL"
+sudo -u postgres psql -X -d unai -At -c "SELECT m.owner_scope_id, m.user_id FROM auth_identities i JOIN owner_scope_members m ON m.user_id = i.user_id AND m.owner_scope_id = i.owner_scope_id WHERE i.issuer = 'https://accounts.google.com' AND i.subject = '<owner-google-subject>' AND m.role = 'OWNER' AND m.valid_to IS NULL"
 ```
 
 Require exactly the intended live membership. Put the two ids into worker.env
