@@ -3,11 +3,11 @@
  * backend (or of a request it parked), never from a sleep or a wall clock. */
 import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runMigrations } from '@unai/postgres';
-import { postgresAdapter, revokeSessions, SESSION_COOKIE } from '@unai/auth';
+import { postgresAdapter, resolveSession, revokeSessions, SESSION_COOKIE } from '@unai/auth';
 import { createPlatformApi } from './platform.js';
 
 if (!process.env.UNAI_TEST_DATABASE_URL) throw new Error('Run pnpm test for the required PostgreSQL harness');
@@ -156,6 +156,45 @@ async function expectExpired(response: Promise<{ statusCode: number; json(): unk
     [correlationId])).rows[0]?.n).toBe(0);
 }
 const outcome = (error: unknown) => String((error as { code?: unknown } | null)?.code ?? 'ERROR');
+/** @unai/auth's private token digest (sha256 hex), for calling its SQL functions directly. */
+const digest = (token: string) => createHash('sha256').update(token).digest('hex');
+/** The SQLSTATE or code of every error a route threw. Fastify runs onError hooks
+ * with the original error before setErrorHandler answers 500, so a route-side 40P01
+ * stays visible. Call it first: Fastify refuses addHook once the app has served. */
+function routeErrors(app: Case['app']): string[] {
+  const codes: string[] = [];
+  app.addHook('onError', async (_request, _reply, error) => { codes.push(outcome(error)); });
+  return codes;
+}
+/** A device route racing a same-user sign-out, with an admin holder on the users row.
+ * The sign-out MUST start first. Under 0002's FOR UPDATE the waiting revoker holds
+ * the users tuple's heavyweight lock in AccessExclusiveLock mode, so the route's
+ * foreign-key KEY SHARE (AccessShareLock) queues behind the revoker ('revoker').
+ * When the holder ends, the revoker takes FOR UPDATE and waits for the route's
+ * session row while the route waits for the revoker: 40P01. Under migration 0043's
+ * FOR NO KEY UPDATE the revoker's tuple lock is ExclusiveLock, which AccessShareLock
+ * does not conflict with, so the route waits on the holder beside it ('user row').
+ * The reverse start order never deadlocks: the first waiter keeps its queue place. */
+async function raceSignOut<T>(c: Case, o: Owner, signOut: () => Promise<void>, route: () => Promise<T>) {
+  const holder = await c.hold('SELECT 1 FROM users WHERE id=$1 FOR UPDATE', [o.userId]);
+  const out = c.track(signOut().then(() => 'REVOKED', outcome));
+  expect(await firstWaitOn(() => out.settled, { label: 'user row', pid: holder.pid })).toBe('user row');
+  const revokers = await waiters(holder.pid);
+  expect(revokers).toHaveLength(1);
+  const request = c.track(route());
+  const parkedOn = await firstWaitOn(() => request.settled, { label: 'revoker', pid: revokers[0]! },
+    { label: 'user row', pid: holder.pid, count: 2 });
+  await holder.end();
+  return { response: await request.promise, signOut: await out.promise, parkedOn };
+}
+async function auditPurposes(...ids: string[]) {
+  return (await admin.query<{ purpose: string }>(
+    'SELECT purpose FROM audit_events WHERE correlation_id=ANY($1::uuid[]) ORDER BY purpose', [ids])).rows.map(row => row.purpose);
+}
+async function liveSessions(userId: string) {
+  return (await admin.query<{ n: number }>('SELECT count(*)::int AS n FROM auth_sessions WHERE user_id=$1 AND revoked_at IS NULL',
+    [userId])).rows[0]?.n;
+}
 
 it('a request held inside its transaction does not stall a second request on the same session', () => scenario(async c => {
   const o = await owner();
@@ -214,8 +253,9 @@ it('a request that reaches its commit point during an uncommitted revocation wai
 
 it('device registration and its concurrent retry serialize on the session row against same-session reads: one device, no deadlock, no 500', () => scenario(async c => {
   const o = await owner();
-  // The per-user lock auth_create_session and auth_revoke_session take. It stops a
-  // registration at its devices INSERT, through the devices.user_id foreign key.
+  // auth_create_session's per-user FOR UPDATE. It stops a registration at its devices
+  // INSERT, through the devices.user_id foreign key; auth_revoke_session's FOR NO KEY
+  // UPDATE (migration 0043) would not.
   const holder = await c.hold('SELECT 1 FROM users WHERE id=$1 FOR UPDATE', [o.userId]);
   const first = c.track(c.app.inject(registration(o)));
   expect(await firstWaitOn(() => first.settled, { label: 'user row', pid: holder.pid })).toBe('user row');
@@ -244,3 +284,71 @@ it('device registration and its concurrent retry serialize on the session row ag
   expect((await admin.query('SELECT id FROM devices WHERE owner_scope_id=$1 AND user_id=$2', [p.scope, p.userId])).rows)
     .toEqual([{ id: burstId }]);
 }));
+
+it('registration racing a sign-out of its own session: both commit, no 40P01', () => scenario(async c => {
+  const errors = routeErrors(c.app);
+  const o = await owner();
+  const request = registration(o), signOutId = randomUUID();
+  const { response, signOut, parkedOn } = await raceSignOut(c, o,
+    () => revokeSessions(admin, o.token, signOutId, false), () => c.app.inject(request));
+  expect({ route: response.statusCode, routeErrors: errors, signOut }).toEqual({ route: 200, routeErrors: [], signOut: 'REVOKED' });
+  expect(parkedOn).toBe('user row');
+  const id = response.json<{ id: string }>().id;
+  expect((await admin.query('SELECT id, removed_at FROM devices WHERE owner_scope_id=$1 AND user_id=$2', [o.scope, o.userId])).rows)
+    .toEqual([{ id, removed_at: null }]);
+  // The revoker waited for the route's row lock, then re-checked the committed version.
+  expect((await admin.query('SELECT device_id, revoked_at IS NOT NULL AS revoked FROM auth_sessions WHERE user_id=$1', [o.userId])).rows)
+    .toEqual([{ device_id: id, revoked: true }]);
+  expect(await auditPurposes(request.headers['x-correlation-id'], signOutId)).toEqual(['auth.sign_out', 'device.register']);
+}));
+
+it('own-device removal racing a sign-out-all from another session: both commit, no 40P01', () => scenario(async c => {
+  const errors = routeErrors(c.app);
+  const o = await owner();
+  const device = await register(c, o);
+  const other = await o.session();
+  const removal = { method: 'POST' as const, url: '/v1/devices/' + device + '/revoke', headers: headers(o, 'device.remove'), payload: {} };
+  const signOutId = randomUUID();
+  const { response, signOut, parkedOn } = await raceSignOut(c, o,
+    () => revokeSessions(admin, other, signOutId, true), () => c.app.inject(removal));
+  expect({ route: response.statusCode, routeErrors: errors, signOut }).toEqual({ route: 200, routeErrors: [], signOut: 'REVOKED' });
+  expect(response.json()).toEqual({ removed: true });
+  expect(parkedOn).toBe('user row');
+  expect((await admin.query('SELECT id, removed_at IS NOT NULL AS removed FROM devices WHERE owner_scope_id=$1 AND user_id=$2',
+    [o.scope, o.userId])).rows).toEqual([{ id: device, removed: true }]);
+  // The device trigger revoked o.token's session; the sign-out-all revoked `other`
+  // and skipped the row the route had already revoked.
+  expect((await admin.query('SELECT count(*)::int AS n, (count(*) FILTER (WHERE revoked_at IS NULL))::int AS live FROM auth_sessions WHERE user_id=$1',
+    [o.userId])).rows).toEqual([{ n: 2, live: 0 }]);
+  expect(await auditPurposes(removal.headers['x-correlation-id'], signOutId)).toEqual(['auth.sign_out_all', 'device.remove']);
+}));
+
+it("the revoker's users lock still serializes it against an uncommitted sign-in and against another revoker", async () => {
+  await scenario(async c => {
+    const o = await owner();
+    const issued = randomBytes(32).toString('base64url');
+    // An uncommitted sign-in: auth_create_session holds users FOR UPDATE.
+    const holder = await c.hold('SELECT unai_private.auth_create_session($1,$2,$3,$4)',
+      [digest(issued), o.userId, new Date(Date.now() + 600_000), randomUUID()]);
+    const all = c.track(revokeSessions(admin, o.token, randomUUID(), true).then(() => 'REVOKED', outcome));
+    expect(await firstWaitOn(() => all.settled, { label: 'sign-in', pid: holder.pid })).toBe('sign-in');
+    await holder.end(true);
+    expect(await all.promise).toBe('REVOKED');
+    expect((await admin.query('SELECT revoked_at IS NOT NULL AS revoked FROM auth_sessions WHERE token_hash=$1', [digest(issued)])).rows)
+      .toEqual([{ revoked: true }]);
+    expect(await liveSessions(o.userId)).toBe(0);
+    expect(await resolveSession(admin, issued)).toBeNull();
+  });
+  await scenario(async c => {
+    const o = await owner();
+    const second = await o.session(), firstId = randomUUID(), secondId = randomUUID();
+    const holder = await c.hold('SELECT unai_private.auth_revoke_session($1,$2,$3)', [digest(o.token), firstId, false]);
+    // A different session row: only the users lock can make it wait.
+    const next = c.track(revokeSessions(admin, second, secondId, false).then(() => 'REVOKED', outcome));
+    expect(await firstWaitOn(() => next.settled, { label: 'first revoker', pid: holder.pid })).toBe('first revoker');
+    await holder.end(true);
+    expect(await next.promise).toBe('REVOKED');
+    expect(await liveSessions(o.userId)).toBe(0);
+    expect(await auditPurposes(firstId, secondId)).toEqual(['auth.sign_out', 'auth.sign_out']);
+  });
+});

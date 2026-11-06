@@ -358,7 +358,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0032_contextual_aging_policy_reader.sql', '0033_durable_owner_initiative.sql', '0034_goal_context_read_authority.sql',
     '0035_shared_attention_counts.sql', '0036_conversations.sql', '0037_conversation_answer_provenance.sql', '0038_owner_voice_settings.sql',
     '0039_conversation_presented_answer.sql', '0040_omi_source_type.sql', '0041_probe_release_reader.sql',
-    '0042_document_upload_grant_read.sql']);
+    '0042_document_upload_grant_read.sql', '0043_auth_revoke_session_no_key_update.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

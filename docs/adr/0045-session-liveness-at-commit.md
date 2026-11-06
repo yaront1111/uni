@@ -88,18 +88,29 @@ device the first attempt bound (`docs/foundation.md:61`).
    effects (object write, provider read, model call). Its rows roll back, as on
    any late failure. A reply that a route sends from inside its transaction (a
    4xx) can precede that rollback.
-2. Pre-existing and unchanged here: registration or own-device removal racing a
-   sign-out of the same user can still deadlock.
-   - Those routes hold the session row and then need `FOR KEY SHARE` on the
-     user row.
-   - `auth_revoke_session` holds the user row `FOR UPDATE` and waits for the
-     session row.
-   - PostgreSQL aborts one of them after `deadlock_timeout`. Two devices
-     removing each other at the same instant can also deadlock.
-   - Follow-up candidate: `auth_revoke_session` takes `FOR NO KEY UPDATE` on
-     `users`, in a new migration. That lock still conflicts with
-     `auth_create_session`'s `FOR UPDATE` and with other revokers, but not with
-     a foreign key's `KEY SHARE`.
+2. Resolved 2026-11-06 by migration 0043
+   (`migrations/0043_auth_revoke_session_no_key_update.sql`,
+   task-3cbcf92520654e1bb3cf71f98f874a7b): registration or own-device removal
+   racing a sign-out of the same user no longer deadlocks.
+   - The cycle: those routes hold their session row and then need
+     `FOR KEY SHARE` on the user row (`devices.user_id`,
+     `audit_events.actor`). 0002's `auth_revoke_session` held the user row
+     `FOR UPDATE` and waited for that session row, so PostgreSQL aborted one
+     side with 40P01 after `deadlock_timeout`.
+   - Migration 0043 replaces `auth_revoke_session` so that it locks the user
+     row `FOR NO KEY UPDATE`. That lock does not conflict with a foreign key's
+     `KEY SHARE`, which closes the cycle. It still conflicts with
+     `auth_create_session`'s `FOR UPDATE`, so a sign-in cannot escape a
+     sign-out-all, and with another revoker, so two revokers of one user still
+     serialize.
+   - Known limit, unchanged: two devices removing each other at the same
+     instant can still deadlock. Each route holds its own session row, and the
+     device trigger's UPDATE needs the other's. That cycle is over two
+     `auth_sessions` rows, which the user-row lock does not touch, so
+     PostgreSQL still aborts one side with 40P01. The same two-row cycle forms
+     when one session removes another session's device while a sign-out-all
+     has already revoked that device's session and waits for the remover's
+     own row (task-bff497bb8f0d4fa69a718fd6b8f5508c).
 3. Share lockers do not queue behind a waiting UPDATE, so a revocation also
    waits out every commit window that opens on the session while it waits. Each
    window is one statement and the COMMIT.
@@ -112,4 +123,9 @@ one on its session; a sign-out and a device removal each commit while a request
 is in flight, which then rolls back with 401 and leaves no rows; a request
 reaching its commit point during an uncommitted revocation waits and rolls
 back; registration and its retry serialize against same-session reads with one
-device and no deadlock.
+device and no deadlock. Migration 0043 (task-3cbcf92520654e1bb3cf71f98f874a7b)
+adds three cases: registration racing a sign-out of its own session, and
+own-device removal racing a sign-out-all from another session, each completing
+on both sides with no 40P01; and a sign-out-all that waits on an uncommitted
+sign-in and then revokes the issued session, plus two revokers of one user
+serializing.
