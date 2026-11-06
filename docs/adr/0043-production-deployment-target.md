@@ -308,8 +308,20 @@ comment-2fb66f2b58344dffa1ef91d4685e9771, folded in here):
 - `listen_addresses = '127.0.0.1'`, `ssl = on` (D2),
   `password_encryption = scram-sha-256`.
 - `pg_hba.conf` has only
-  `hostssl unai unai_api_login,unai_worker_login,unai_auth_login,unai_backup,unai_migrator 127.0.0.1/32 scram-sha-256`
+  `hostssl unai unai_api_login,unai_worker_login,unai_auth_login,unai_backup,unai_migrator 127.0.0.1/32 scram-sha-256`,
+  then
+  `hostssl /^unai_restore_drill_[0-9a-f]{16}$ unai_migrator,/^unai_restore_drill_probe_[0-9a-f]{16}$ 127.0.0.1/32 scram-sha-256`,
   plus `local all postgres peer`. There is no non-TLS `host` line.
+  (Amended 2026-11-06, task-8384c4c973814affb1c9bfc02ddeed70, owner
+  decision of 2026-11-05: the second line serves the monthly restore drill
+  (D9 **Schedule**). Each run creates database `unai_restore_drill_<16 hex>`;
+  `pnpm restore` connects to it as `unai_migrator`, and the read probes
+  connect as the temporary login `unai_restore_drill_probe_<16 hex>`. The
+  first line admits only database `unai`, so both were refused with "no
+  pg_hba.conf entry". A field that starts with `/` is a regular expression
+  (PostgreSQL 16+). Matching is unanchored, hence `^…$`, and a pattern that
+  holds a comma must be double-quoted; these hold none. The line names no
+  `all`, no other login and no other address.)
 - Runtime URLs are `postgresql://<login>:<password>@127.0.0.1:5432/unai` with no
   query string, because `createDatabasePool` refuses one
   (packages/postgres/src/index.ts:10-12). They live only in secret files (D6).

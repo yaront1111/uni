@@ -6,7 +6,7 @@ import {createRequire} from 'node:module';
 import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 // @ts-expect-error JavaScript harness helper.
-import {POSTGRES_IMAGE} from '../../scripts/postgres-harness.mjs';
+import {POSTGRES_IMAGE,postgresRunArguments} from '../../scripts/postgres-harness.mjs';
 
 if(!process.env.UNAI_TEST_DATABASE_URL)throw new Error('Run pnpm test for the required PostgreSQL harness');
 
@@ -50,7 +50,10 @@ const D4_MEMBERS:Membership[]=[['unai_api_login','unai_app',false,true,true],['u
 const D4_SETTINGS={listen_addresses:"'127.0.0.1'",ssl:'on',ssl_min_protocol_version:"'TLSv1.2'",
   ssl_cert_file:"'/etc/unai/tls/postgres/cert.pem'",ssl_key_file:"'/etc/unai/tls/postgres/key.pem'",
   password_encryption:'scram-sha-256',max_connections:'100',superuser_reserved_connections:'3'};
+const DRILL_DATABASE='^unai_restore_drill_[0-9a-f]{16}$';
+const DRILL_PROBE='^unai_restore_drill_probe_[0-9a-f]{16}$';
 const D4_HBA=['hostssl unai unai_api_login,unai_worker_login,unai_auth_login,unai_backup,unai_migrator 127.0.0.1/32 scram-sha-256',
+  `hostssl /${DRILL_DATABASE} unai_migrator,/${DRILL_PROBE} 127.0.0.1/32 scram-sha-256`,
   'local all postgres peer'];
 const ROLES=['unai_app','unai_auth',...Object.keys(D4_LOGINS)];
 const quoted=(names:string[])=>names.map(name=>`'${name}'`).join(',');
@@ -281,9 +284,98 @@ describe('server configuration', () => {
     }
   });
 
-  it('pg_hba.conf holds exactly the two D4 lines and no non-TLS host line', () => {
+  it('pg_hba.conf holds exactly the three D4 lines and no non-TLS host line', () => {
     const hba=lines('deploy/postgres/pg_hba.conf');
     expect(hba).toEqual(D4_HBA);
     for(const line of hba)expect(['host','hostnossl','hostgssenc','hostnogssenc']).not.toContain(line.split(' ')[0]);
   });
+});
+
+/**
+ * The shipped pg_hba.conf loaded by a throwaway PostgreSQL 17 (hba_file is read only at server start, and the harness
+ * server may be a delivered one). ssl is on, with the image's own snakeoil pair: with ssl off every hostssl rule
+ * carries an error. A file the server cannot parse makes it refuse to start, which shows as PG_HBA_TEST_SERVER_EXITED.
+ */
+type HbaRule=[string,string[],string[],string|null,string|null,string,string|null];
+interface HbaReport{version:number;hba:string;rules:HbaRule[];match:Record<string,[boolean,boolean]>}
+const docker=(args:string[],input?:string)=>{
+  const run=spawnSync('docker',args,{encoding:'utf8',timeout:60_000,...input===undefined?{}:{input}});
+  return {status:run.status,error:run.error,stdout:run.stdout??'',stderr:run.stderr??''};
+};
+
+describe('pg_hba.conf on PostgreSQL 17 (POSTGRES_IMAGE)', () => {
+  const container='unai-hba-'+randomBytes(6).toString('hex');
+  const id=randomBytes(8).toString('hex');
+  const drill='unai_restore_drill_'+id,probe='unai_restore_drill_probe_'+id;
+  // [database pattern, user pattern] verdicts, written out: never derived from the patterns under test.
+  const expected:Record<string,[boolean,boolean]>={[drill]:[true,false],[probe]:[false,true]};
+  for(const name of ['unai','postgres','unai_restore_drill_'+id.slice(1),'unai_restore_drill_'+id+'0','unai_restore_drill_0123456789ABCDEF',
+    drill+'x','x'+drill,'unai_restore_drill_probe_'+id.slice(1),probe+'0','unai_restore_drill_probe_0123456789ABCDEF',probe+'x'])expected[name]=[false,false];
+  let report!:HbaReport;
+
+  /** The entrypoint first runs an init server on the socket only; 127.0.0.1 answers once the final server runs. */
+  async function ready(){
+    for(let attempt=0;attempt<360;attempt++){
+      const ping=docker(['exec',container,'pg_isready','-q','-h','127.0.0.1']);
+      if(ping.status===0)return;
+      if(/No such container|is not running/.test(ping.stderr))throw new Error('PG_HBA_TEST_SERVER_EXITED');
+      await delay(250);
+    }
+    throw new Error('PG_HBA_TEST_SERVER_NOT_READY');
+  }
+  /** One socket session as postgres (`local all postgres peer`): the rules the server loaded and PostgreSQL's own regex engine. */
+  function load():HbaReport{
+    const select=`SELECT json_build_object('version',current_setting('server_version_num')::int,'hba',current_setting('hba_file'),
+      'rules',(SELECT json_agg(json_build_array(type,database,user_name,address,netmask,auth_method,error) ORDER BY line_number) FROM pg_hba_file_rules),
+      'match',(SELECT json_object_agg(n,json_build_array((n COLLATE "C") ~ :'db',(n COLLATE "C") ~ :'probe')) FROM unnest(:'names'::text[]) AS n));`;
+    const run=docker(['exec','--interactive','--user','postgres',container,'psql','-X','-q','-A','-t','-v','ON_ERROR_STOP=1','-f','-'],
+      [String.raw`\set db '${DRILL_DATABASE}'`,String.raw`\set probe '${DRILL_PROBE}'`,
+        String.raw`\set names '{${Object.keys(expected).join(',')}}'`,select].join('\n'));
+    if(run.status!==0)throw new Error('PG_HBA_TEST_QUERY_FAILED: '+run.stderr.trim());
+    return JSON.parse(run.stdout.trim()) as HbaReport;
+  }
+  /** A connection attempt from inside the container (source 127.0.0.1) with a wrong password. A matched scram line answers
+   * 'password authentication failed' even for a role or database that does not exist; no matching line answers 'no pg_hba.conf entry'. */
+  const attempt=(dbname:string,user:string,sslmode:string)=>{
+    const {stderr}=docker(['exec','--env','PGPASSWORD='+randomBytes(16).toString('hex'),'--env','PGCONNECT_TIMEOUT=10',container,
+      'psql','-X',`host=127.0.0.1 dbname=${dbname} user=${user} sslmode=${sslmode}`,'-c','SELECT 1']);
+    return /no pg_hba\.conf entry/.test(stderr)?'refused':/password authentication failed/.test(stderr)?'admitted':'unexpected';
+  };
+
+  beforeAll(async () => {
+    const run=docker(postgresRunArguments({name:container,
+      options:['--env','POSTGRES_PASSWORD='+randomBytes(16).toString('hex'),
+        '--mount',`type=bind,src=${resolve(root,'deploy/postgres/pg_hba.conf')},dst=/etc/unai/pg_hba.conf,readonly`],
+      command:['-c','hba_file=/etc/unai/pg_hba.conf','-c','ssl=on','-c','ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem',
+        '-c','ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key']}));
+    if(run.error||run.status!==0)throw new Error('PG_HBA_TEST_DOCKER_UNAVAILABLE'+(run.stderr?': '+run.stderr.trim():''));
+    await ready();
+    report=load();
+  },180_000);
+  afterAll(() => {docker(['rm','--force',container]);});
+
+  it('PostgreSQL 17 loads pg_hba.conf with ssl on: three rules, none with an error', () => {
+    expect(Math.floor(report.version/10000)).toBe(17);
+    expect(report.hba).toBe('/etc/unai/pg_hba.conf');
+    expect(report.rules).toEqual([
+      ['hostssl',['unai'],['unai_api_login','unai_worker_login','unai_auth_login','unai_backup','unai_migrator'],'127.0.0.1','255.255.255.255','scram-sha-256',null],
+      ['hostssl',['/'+DRILL_DATABASE],['unai_migrator','/'+DRILL_PROBE],'127.0.0.1','255.255.255.255','scram-sha-256',null],
+      ['local',['all'],['postgres'],null,null,'peer',null]]);
+    expect(report.rules.filter(rule=>rule[6]!==null)).toEqual([]);
+  });
+
+  it('the drill patterns admit a generated drill database and probe login and refuse every other name', () => {
+    expect(report.match).toEqual(expected);
+  });
+
+  it('the loaded server lets the drill connections past pg_hba and refuses the rest', () => {
+    expect([
+      attempt(drill,'unai_migrator','require'),   // pnpm restore
+      attempt(drill,probe,'require'),             // the read probes
+      attempt('unai','unai_migrator','require'),  // line 1, unchanged
+      attempt('unai',probe,'require'),
+      attempt(drill,'unai_api_login','require'),
+      attempt(drill,'unai_migrator','disable'),   // hostssl only
+    ]).toEqual(['admitted','admitted','admitted','refused','refused','refused']);
+  },60_000);
 });
