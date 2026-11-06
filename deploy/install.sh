@@ -6,7 +6,9 @@
 # It installs the host packages, the pinned toolchain, the system users and the
 # directory layout, builds the release at /opt/unai/releases/<tag>, points
 # /opt/unai/current at it, and installs the units and the certbot hook without
-# starting anything. It then prints the manual steps that remain.
+# enabling or starting any Uai unit. It then prints the manual steps that remain.
+# The one service it leaves running is the loopback OpenTelemetry Collector (ADR
+# 0043 D8), which its package enables and starts on the bundle config.
 #
 # - Idempotent: a re-run changes nothing, and --dry-run prints the same plan
 #   while executing nothing. Every mutation goes through run or put.
@@ -34,6 +36,12 @@ readonly PNPM_VERSION=11.0.8
 readonly AWSCLI_VERSION=2.36.7
 readonly AWSCLI_SHA256=d641283d37f1a2168457a9f26a20d4e29167652e9ab1719b37114ef1ebe859f4
 readonly AWSCLI_ZIP="awscli-exe-linux-x86_64-${AWSCLI_VERSION}.zip"
+# ADR 0043 D8: the official otelcol-contrib .deb from
+# github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.164.0.
+# The release's .sha256 asset and GitHub's asset digest agreed on 2026-11-06.
+readonly OTELCOL_VERSION=0.164.0
+readonly OTELCOL_SHA256=1995260c54cf5d74964a85e5e7d27834bb9a252c87a2582a4fb6a6c34565a90d
+readonly OTELCOL_DEB="otelcol-contrib_${OTELCOL_VERSION}_linux_amd64.deb"
 readonly R="${UNAI_DEPLOY_ROOT:-}"
 
 DRY_RUN=0
@@ -73,6 +81,17 @@ put() {
   chmod "$mode" "$temp"
   chown "$owner" "$temp"
   mv -f -- "$temp" "$path"
+}
+
+# put_if_differs PATH CONTENT writes $R/PATH (root 0644) only when its content is
+# not CONTENT, and then sets changed=1. put is never called in a condition, where
+# errexit is off and a failed mktemp or mv would pass silently.
+put_if_differs() {
+  if [[ ! -f $R$1 || $(<"$R$1") != "$2" ]]; then
+    run install -d -m 0755 "$R${1%/*}"
+    put 0644 root:root "$R$1" <<<"$2"
+    changed=1
+  fi
 }
 
 next_step() {
@@ -199,6 +218,96 @@ if [[ $DRY_RUN != 1 ]]; then
   [[ $(version_of "$R/usr/local/bin/node") == "v$NODE_VERSION" ]] || fail INSTALL_TOOLCHAIN_MISMATCH
   [[ $(version_of "$R/usr/local/bin/pnpm") == "$PNPM_VERSION" ]] || fail INSTALL_TOOLCHAIN_MISMATCH
   [[ $(version_of "$R/usr/local/bin/aws") == "aws-cli/$AWSCLI_VERSION "* ]] || fail INSTALL_TOOLCHAIN_MISMATCH
+fi
+
+# --- Telemetry (D8): the journald drop-in and the loopback OpenTelemetry
+# Collector. The package postinst enables and restarts the collector, so its
+# user, data directory, config and unit drop-in exist before dpkg runs: the
+# package default config, which listens on every interface, never runs. ---
+journald_conf=$(cat <<'EOF'
+# ADR 0043 D8, written by deploy/install.sh.
+[Journal]
+Storage=persistent
+SystemMaxUse=2G
+MaxRetentionSec=30day
+EOF
+)
+changed=0
+put_if_differs /etc/systemd/journald.conf.d/unai.conf "$journald_conf"
+if ((changed)); then
+  run systemctl restart systemd-journald.service
+fi
+# The package preinst's own command, so the preinst then skips it.
+if ! getent passwd otelcol-contrib >/dev/null; then
+  run useradd --system --user-group --no-create-home --shell /sbin/nologin otelcol-contrib
+fi
+run install -d -o root -g root -m 0755 "$R/var/lib/otelcol"
+run install -d -o otelcol-contrib -g otelcol-contrib -m 0750 "$R/var/lib/otelcol/unai"
+collector_yaml=$(cat <<'EOF'
+# ADR 0043 D8, written by deploy/install.sh: OTLP/HTTP on loopback in, JSON lines on disk, nothing remote.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+processors:
+  batch:
+exporters:
+  file:
+    path: /var/lib/otelcol/unai/telemetry.jsonl
+    format: json
+    rotation:
+      max_megabytes: 100
+      max_days: 14
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file]
+EOF
+)
+collector_dropin=$(cat <<'EOF'
+# ADR 0043 D8, written by deploy/install.sh: the bundle config, never the package default.
+[Service]
+EnvironmentFile=
+ExecStart=
+ExecStart=/usr/bin/otelcol-contrib --config=/etc/otelcol-contrib/unai.yaml
+EOF
+)
+changed=0
+put_if_differs /etc/otelcol-contrib/unai.yaml "$collector_yaml"
+put_if_differs /etc/systemd/system/otelcol-contrib.service.d/unai.conf "$collector_dropin"
+deb="$R/var/cache/unai/$OTELCOL_DEB"
+if [[ $(version_of "$R/usr/bin/otelcol-contrib") != "otelcol-contrib version $OTELCOL_VERSION" ]]; then
+  run install -d -m 0755 "$R/var/cache/unai"
+  run curl -fsSL --proto =https --tlsv1.2 --retry 3 -o "$deb" \
+    "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v$OTELCOL_VERSION/$OTELCOL_DEB"
+  printf '%s  %s\n' "$OTELCOL_SHA256" "$deb" | put 0644 root:root "$deb.sha256"
+  run sha256sum --check --status "$deb.sha256" || fail INSTALL_COLLECTOR_CHECKSUM_MISMATCH
+  # A hand-edited package conffile keeps its edit instead of stopping the run.
+  run dpkg --force-confdef --force-confold -i "$deb"
+  changed=1
+fi
+if [[ $DRY_RUN != 1 ]]; then
+  [[ $(version_of "$R/usr/bin/otelcol-contrib") == "otelcol-contrib version $OTELCOL_VERSION" ]] || fail INSTALL_COLLECTOR_VERSION_MISMATCH
+fi
+# Validate first: restarting a Type=simple unit succeeds even on a bad config.
+# ponytail: a run that dies between a put or dpkg and this restart leaves the old
+# state until the next restart, because a re-run finds nothing to change:
+# `systemctl restart otelcol-contrib.service` (after a failed dpkg, first
+# `dpkg --configure -a`) recovers it.
+if ((changed)); then
+  run "$R/usr/bin/otelcol-contrib" validate "--config=$R/etc/otelcol-contrib/unai.yaml" || fail INSTALL_COLLECTOR_CONFIG_INVALID
+  run systemctl daemon-reload
+  run systemctl restart otelcol-contrib.service
 fi
 
 # --- System users (D1, D9): one per process, plus the backup user. ---

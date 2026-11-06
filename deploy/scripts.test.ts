@@ -129,6 +129,7 @@ describe('deploy secret scan', () => {
       'UNAI_S3_KMS_KEY_ID=arn:aws:kms:<aws-region>:<aws-account-id>:key/<evidence-key-id>',
       'NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75',
       'readonly AWSCLI_SHA256=d641283d37f1a2168457a9f26a20d4e29167652e9ab1719b37114ef1ebe859f4',
+      'readonly OTELCOL_SHA256=1995260c54cf5d74964a85e5e7d27834bb9a252c87a2582a4fb6a6c34565a90d',
     ]) expect(secretHits(text), text).toEqual([]);
   });
 });
@@ -240,6 +241,40 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     ];
   };
   const users = ['unai-api', 'unai-web', 'unai-worker', 'unai-backup'];
+  // ADR 0043 D8: the release's .sha256 asset and GitHub's asset digest agree.
+  const otelcolSha256 = '1995260c54cf5d74964a85e5e7d27834bb9a252c87a2582a4fb6a6c34565a90d';
+  const collectorPlan = (R: string) => {
+    const deb = `${R}/var/cache/unai/otelcol-contrib_0.164.0_linux_amd64.deb`;
+    return [
+      `+ curl -fsSL --proto =https --tlsv1.2 --retry 3 -o ${deb} https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.164.0/otelcol-contrib_0.164.0_linux_amd64.deb`,
+      `+ put 0644 root:root ${deb}.sha256`,
+      `  | ${otelcolSha256}  ${deb}`,
+      `+ sha256sum --check --status ${deb}.sha256`,
+      `+ dpkg --force-confdef --force-confold -i ${deb}`,
+    ];
+  };
+  const collectorRestart = (R: string) => [
+    `+ ${R}/usr/bin/otelcol-contrib validate --config=${R}/etc/otelcol-contrib/unai.yaml`,
+    '+ systemctl daemon-reload',
+    '+ systemctl restart otelcol-contrib.service',
+  ];
+  const collectorUser = spawnSync('getent', ['passwd', 'otelcol-contrib']).status === 0 ? []
+    : ['+ useradd --system --user-group --no-create-home --shell /sbin/nologin otelcol-contrib'];
+  const collectorDirectories = (R: string) => [
+    `+ install -d -o root -g root -m 0755 ${R}/var/lib/otelcol`,
+    `+ install -d -o otelcol-contrib -g otelcol-contrib -m 0750 ${R}/var/lib/otelcol/unai`,
+  ];
+  const telemetryFiles = ['/etc/systemd/journald.conf.d/unai.conf', '/etc/otelcol-contrib/unai.yaml',
+    '/etc/systemd/system/otelcol-contrib.service.d/unai.conf'] as const;
+  const telemetryPuts = (output: string[]) =>
+    output.filter(line => line.startsWith('+ put ') && telemetryFiles.some(file => line.endsWith(file)));
+  // What a plan's `+ put MODE OWNER PATH` block writes, without put's `  | ` prefix.
+  function putContent(output: string[], path: string): string {
+    const start = output.findIndex(line => line.startsWith('+ put ') && line.endsWith(path));
+    expect(start, `no put of ${path}`).toBeGreaterThanOrEqual(0);
+    const end = output.findIndex((line, index) => index > start && !line.startsWith('  | '));
+    return output.slice(start + 1, end < 0 ? undefined : end).map(line => line.slice(4)).join('\n');
+  }
 
   // A fake host root plus FAILING stubs for every mutator: a dry run must invoke none.
   function host(options: {os?: string; except?: string[]} = {}) {
@@ -281,7 +316,9 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
       ['/etc/unai/secrets/worker/aws', 'unai-worker', '0750'], ['/etc/unai/tls/web', 'unai-web', '0750'],
       ['/etc/unai/backup', 'unai-backup', '0750'], ['/etc/unai/pgdata', 'root', '0700'],
     ].map(([path, group, mode]) => `+ install -d -o root -g ${group} -m ${mode} ${R}${path}`);
-    expect(output.filter(line => line.startsWith('+ install -d -o '))).toEqual(directories);
+    expect(output.filter(line => line.startsWith('+ install -d -o '))).toEqual([...collectorDirectories(R), ...directories]);
+    // The collector's user, directories, config and unit drop-in precede dpkg: its
+    // postinst starts the service, which must never run the package default config.
     expectInOrder(output, [
       '+ timedatectl set-timezone Etc/UTC',
       '+ env DEBIAN_FRONTEND=noninteractive apt-get update',
@@ -298,6 +335,22 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
       `+ /usr/local/bin/corepack enable --install-directory ${R}/usr/local/bin pnpm`,
       '+ env COREPACK_ENABLE_DOWNLOAD_PROMPT=0 /usr/local/bin/corepack install -g pnpm@11.0.8',
       ...awscliPlan(R),
+      `+ install -d -m 0755 ${R}/etc/systemd/journald.conf.d`,
+      `+ put 0644 root:root ${R}/etc/systemd/journald.conf.d/unai.conf`,
+      '  | [Journal]', '  | Storage=persistent', '  | SystemMaxUse=2G', '  | MaxRetentionSec=30day',
+      '+ systemctl restart systemd-journald.service',
+      ...collectorUser,
+      ...collectorDirectories(R),
+      `+ install -d -m 0755 ${R}/etc/otelcol-contrib`,
+      `+ put 0644 root:root ${R}/etc/otelcol-contrib/unai.yaml`,
+      '  |         endpoint: 127.0.0.1:4318', '  |     path: /var/lib/otelcol/unai/telemetry.jsonl',
+      '  |       max_days: 14', '  |       level: none',
+      `+ install -d -m 0755 ${R}/etc/systemd/system/otelcol-contrib.service.d`,
+      `+ put 0644 root:root ${R}/etc/systemd/system/otelcol-contrib.service.d/unai.conf`,
+      '  | EnvironmentFile=', '  | ExecStart=', '  | ExecStart=/usr/bin/otelcol-contrib --config=/etc/otelcol-contrib/unai.yaml',
+      `+ install -d -m 0755 ${R}/var/cache/unai`,
+      ...collectorPlan(R),
+      ...collectorRestart(R),
       ...missingUsers.map(user => `+ useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin ${user}`),
       ...directories,
       `+ git -c advice.detachedHead=false clone --branch ${tag} -- ${repo} ${rel}`,
@@ -313,7 +366,8 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
       '  | UNAI_DATABASE_CA_FILE=/etc/unai/tls/ca/ca.pem',
       'Remaining manual steps:',
     ]);
-    expect(output.filter(line => line.startsWith('+ systemctl'))).toEqual(['+ systemctl daemon-reload']);
+    expect(output.filter(line => line.startsWith('+ systemctl'))).toEqual(['+ systemctl restart systemd-journald.service',
+      '+ systemctl daemon-reload', '+ systemctl restart otelcol-contrib.service', '+ systemctl daemon-reload']);
     expect(result.stdout).not.toContain('apt.postgresql.org.sh');
     const manual = result.stdout.split('Remaining manual steps:')[1]!;
     for (const text of ['DNS', '/etc/unai/pgdata/aws-credentials', 'deploy/pgdata/setup.sh', '/var/lib/postgresql',
@@ -337,6 +391,10 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     for (const material of ['/dev/urandom', 'openssl rand', 'head -c', 'PASSWORD']) expect(text).not.toContain(material);
   });
 
+  // The telemetry files exactly as a fresh dry run writes them, so no test copies the YAML.
+  let freshPlan: string[] | undefined;
+  const telemetryContent = (path: string) => putContent(freshPlan ??= lines(host().install(fresh).stdout), path);
+
   function installed(target = `releases/${tag}`, marker = 'unai-build-complete') {
     const fixture = host({except: ['git']});
     const {R, rel} = fixture;
@@ -355,8 +413,53 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     write(join(R, 'usr/local/bin/node'), '#!/bin/sh\necho v24.22.2\n', 0o755);
     write(join(R, 'usr/local/bin/pnpm'), '#!/bin/sh\necho 11.0.8\n', 0o755);
     write(join(R, 'usr/local/bin/aws'), '#!/bin/sh\necho aws-cli/2.36.7 Python/3.13.0 Linux/6.8 exe/x86_64.ubuntu.24\n', 0o755);
+    // An already-correct ADR 0043 D8 host: the pinned collector and the files as put writes them.
+    write(join(R, 'usr/bin/otelcol-contrib'), '#!/bin/sh\necho otelcol-contrib version 0.164.0\n', 0o755);
+    for (const file of telemetryFiles) write(join(R, file), `${telemetryContent(file)}\n`);
     return {...fixture, git};
   }
+
+  it('re-plans an already-correct D8 host without a telemetry write, download, dpkg, validate or restart', () => {
+    const {R, log, install} = installed();
+    const result = install(['--tag', tag, '--dry-run']);
+    expect([result.status, result.stderr]).toEqual([0, '']);
+    expect(existsSync(log)).toBe(false);
+    const output = lines(result.stdout);
+    expect(output.filter(line => /otelcol|journald/.test(line))).toEqual([...collectorUser, ...collectorDirectories(R)]);
+    expect(output.filter(line => /^\+ (systemctl|dpkg|curl) /.test(line))).toEqual(['+ systemctl daemon-reload']);
+  });
+
+  it.each([
+    ['journald drop-in', telemetryFiles[0], false],
+    ['collector config', telemetryFiles[1], true],
+    ['collector unit drop-in', telemetryFiles[2], true],
+  ] as const)('re-plans exactly a stale %s and its own restarts', (_, file, collector) => {
+    const {R, log, install} = installed();
+    write(join(R, file), 'stale\n');
+    const result = install(['--tag', tag, '--dry-run']);
+    expect([result.status, result.stderr]).toEqual([0, '']);
+    expect(existsSync(log)).toBe(false);
+    const output = lines(result.stdout);
+    expect(telemetryPuts(output)).toEqual([`+ put 0644 root:root ${R}${file}`]);
+    expect(putContent(output, file)).toBe(telemetryContent(file));
+    expect(output.filter(line => /^\+ (systemctl|dpkg|curl|\S+\/otelcol-contrib validate) /.test(line))).toEqual([
+      ...(collector ? collectorRestart(R) : ['+ systemctl restart systemd-journald.service']),
+      '+ systemctl daemon-reload',
+    ]);
+  });
+
+  it('re-installs the pinned, checksummed collector over an older binary without rewriting its config', () => {
+    const {R, log, install} = installed();
+    write(join(R, 'usr/bin/otelcol-contrib'), '#!/bin/sh\necho otelcol-contrib version 0.163.0\n', 0o755);
+    const result = install(['--tag', tag, '--dry-run']);
+    expect([result.status, result.stderr]).toEqual([0, '']);
+    expect(existsSync(log)).toBe(false);
+    const output = lines(result.stdout);
+    expectInOrder(output, [...collectorPlan(R), ...collectorRestart(R)]);
+    expect(output.filter(line => /^\+ (curl|dpkg) /.test(line))).toEqual([collectorPlan(R)[0], collectorPlan(R)[4]]);
+    expect(telemetryPuts(output)).toEqual([]);
+    expect(output.filter(line => line.startsWith('+ systemctl'))).toEqual([...collectorRestart(R).slice(1), '+ systemctl daemon-reload']);
+  });
 
   it('re-plans an installed release without clone, build, link, toolchain or env overwrite', () => {
     const {R, rel, log, install} = installed();

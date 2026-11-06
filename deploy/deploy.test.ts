@@ -155,6 +155,32 @@ describe('deployment bundle', () => {
     expect(read('deploy/README.md')).toContain('UNAI_PROCESSING_DATA_PURPOSE=' + declared[0]);
   });
 
+  it('collector: one loopback OTLP/HTTP endpoint, the one the env examples export to, and a file exporter only (ADR 0043 D8)', () => {
+    const installer = read('deploy/install.sh');
+    const heredoc = (variable: string) => {
+      const match = new RegExp(`^${variable}=\\$\\(cat <<'EOF'\\n([\\s\\S]*?)\\nEOF\\n\\)$`, 'm').exec(installer);
+      expect(match, `missing heredoc: ${variable}`).not.toBeNull();
+      return match![1]!;
+    };
+    const yaml = heredoc('collector_yaml');
+    const endpoints = [...yaml.matchAll(/^\s*endpoint:\s*(\S+)\s*$/gm)].map(match => match[1]);
+    expect(endpoints).toEqual(['127.0.0.1:4318']);
+    for (const {name} of processes) expect(new URL(activeValue(name, 'UNAI_OTEL_EXPORTER_OTLP_ENDPOINT')).host, name).toBe(endpoints[0]);
+    expect(yaml).not.toMatch(/0\.0\.0\.0|grpc|extensions:/);
+    const lines = yaml.split('\n'), exporters = lines.slice(lines.indexOf('exporters:') + 1);
+    expect(lines).toContain('exporters:');
+    const end = exporters.findIndex(line => !line.startsWith(' '));
+    expect(exporters.slice(0, end < 0 ? undefined : end).filter(line => /^ {2}\S/.test(line))).toEqual(['  file:']);
+    for (const text of ['max_days: 14', 'path: /var/lib/otelcol/unai/', 'level: none']) expect(yaml).toContain(text);
+    expect(installer).toContain('install -d -o otelcol-contrib -g otelcol-contrib -m 0750 "$R/var/lib/otelcol/unai"');
+    // The unit drop-in runs the config install.sh writes, never the package default.
+    const config = /^ExecStart=\/usr\/bin\/otelcol-contrib --config=(\S+)$/m.exec(heredoc('collector_dropin'))?.[1];
+    expect(config).toBe('/etc/otelcol-contrib/unai.yaml');
+    expect(installer).toContain(`put_if_differs ${config} "$collector_yaml"`);
+    expect(heredoc('journald_conf').split('\n')).toEqual(expect.arrayContaining(['[Journal]', 'Storage=persistent',
+      'SystemMaxUse=2G', 'MaxRetentionSec=30day']));
+  });
+
   it('only web binds a privileged port', () => {
     // URL forbids placeholder brackets in hostnames; replace metadata for parsing only.
     const origin = new URL(activeValue('web', 'NEXTAUTH_URL').replace('<owner-domain>', 'example.invalid'));
@@ -209,7 +235,8 @@ type Sections = ReadonlyArray<readonly [string, readonly string[]]>;
 const README_SECTIONS: Sections = [
   ['Before you start', ['Ubuntu Server 24.04', 'uai.<owner-domain>', '0 issue "letsencrypt.org"', 'ufw', 'Desktop app']],
   ['AWS buckets and IAM users', ['deploy/aws/provision.sh', '--dry-run']],
-  ['Install the release', ['deploy/install.sh', '--tag', 'INSTALL_RELEASE_MISMATCH']],
+  ['Install the release', ['deploy/install.sh', '--tag', 'INSTALL_RELEASE_MISMATCH', 'otelcol-contrib',
+    '/etc/systemd/journald.conf.d/unai.conf', '/etc/otelcol-contrib/unai.yaml', 'INSTALL_COLLECTOR_CHECKSUM_MISMATCH']],
   ['Encrypted data volume', ['cryptsetup', '/etc/unai/pgdata/volume-key.enc', '/var/lib/postgresql/unai-restore-drill-staging',
     'deploy/pgdata/setup.sh', 'systemctl enable --now unai-pgdata-unlock.service', 'PGDATA_UNLOCK_KMS_FAILED']],
   ['Internal CA and PostgreSQL', ['deploy/tls/issue-internal-ca.sh', 'deploy/postgres/unai.conf', 'deploy/postgres/pg_hba.conf',
@@ -221,7 +248,8 @@ const README_SECTIONS: Sections = [
     'pnpm uai registry publish --version', 'UNAI_REGISTRY_RELEASE_ID']],
   ['Preflight checks', ['systemd-run', '--check', 'API_UNREACHABLE']],
   ['Start the API and the web', ['systemctl enable --now unai-api.service', 'systemctl enable --now unai-web.service']],
-  ['Health and readiness', ['/healthz', '/readyz', '127.0.0.1:9101', '/signin']],
+  ['Health and readiness', ['/healthz', '/readyz', '127.0.0.1:9101', '/signin', 'systemctl is-active otelcol-contrib.service',
+    '127.0.0.1:4318', '/var/lib/otelcol/unai', 'journalctl --disk-usage']],
   ['First sign-in, the worker and the timers', ['owner_scope_members', 'UNAI_PROCESSING_OWNER_SCOPE_ID',
     'UNAI_PROCESSING_DATA_PURPOSE=PERSONAL_ASSISTANCE', 'systemctl enable --now unai-worker.service', '127.0.0.1:9102', 'systemctl enable --now unai-backup.timer unai-restore-drill.timer']],
   ['Connectors', ['pnpm connect:google', 'ssh -L', 'secret://mounted/connectors/google', 'GitHub', 'Omi']],
@@ -316,6 +344,13 @@ describe('operator documents', () => {
     });
     it(`${file}: relative links and anchors resolve`, () => expect(linkProblems(read(file), file)).toEqual([]));
   }
+  it('deploy/README.md: Install the release names every install.sh refusal code', () => {
+    const codes = [...new Set([...read('deploy/install.sh').matchAll(/\bfail (INSTALL_[A-Z_]+)/g)].map(match => match[1]!))];
+    expect(codes.length).toBeGreaterThan(10);
+    const sections: Sections = README_SECTIONS.map(([title]) =>
+      [title, title === 'Install the release' ? codes.map(code => '`' + code + '`') : []] as const);
+    expect(structureProblems(read('deploy/README.md'), sections)).toEqual([]);
+  });
   it('document checkers reject broken structure, commands, paths and links', () => {
     expect(structureProblems('## Wrong\nbody', [['Right', ['required']]])).toEqual(['section order', 'Right: missing required']);
     expect(structureProblems('## Right\nrequired\n```\n## Not a section\n```', [['Right', ['required']]])).toEqual([]);

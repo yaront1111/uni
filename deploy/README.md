@@ -13,7 +13,7 @@ failed command; do not continue with partially written configuration.
 
 | Bundle | Purpose |
 | --- | --- |
-| `deploy/install.sh` | Idempotent first install, no service activation |
+| `deploy/install.sh` | Idempotent first install; activates only the loopback collector (D8), no Uai unit |
 | `deploy/aws/provision.sh` | Buckets and least-privilege IAM policies |
 | `deploy/tls/issue-internal-ca.sh` | CA and API/PostgreSQL leaves |
 | `deploy/postgres/unai.conf`, `deploy/postgres/pg_hba.conf` | Loopback TLS PostgreSQL |
@@ -100,12 +100,29 @@ cd /opt/unai/current
 ```
 
 The installer pins Node/pnpm, builds, copies units/env examples, reloads systemd
-and starts nothing. It defers PostgreSQL until the data volume is mounted.
+and starts none of the Uai units. It defers PostgreSQL until the data volume is mounted.
 Do not re-clone over an existing `/root/uai-install`; verify its tag instead.
+
+**Telemetry (D8).** The installer writes the journald drop-in
+`/etc/systemd/journald.conf.d/unai.conf` (`Storage=persistent`,
+`SystemMaxUse=2G`, `MaxRetentionSec=30day`) and restarts journald only when that
+file changes. It installs the pinned `otelcol-contrib` .deb, checked by SHA-256
+before dpkg. The package enables and starts the collector on the bundle config
+`/etc/otelcol-contrib/unai.yaml` through the drop-in
+`/etc/systemd/system/otelcol-contrib.service.d/unai.conf`. Both are written
+before dpkg, so the package default (every interface, debug exporter) never
+runs; `/etc/otelcol-contrib/config.yaml` is unused, so do not edit it.
+Telemetry lands in `/var/lib/otelcol/unai`, retained as amended in
+[D8](../docs/adr/0043-production-deployment-target.md#d8-observability). A
+re-run with the installed tag changes nothing, and `deploy/upgrade.sh` never
+touches these files.
+
 Refusals: `INSTALL_USAGE`, `INSTALL_TAG_INVALID`, `INSTALL_ROOT_REQUIRED`,
 `INSTALL_UNSUPPORTED_OS`, `INSTALL_UNSUPPORTED_ARCH`, `INSTALL_REPO_REQUIRED`,
 `INSTALL_ALREADY_INSTALLED`, `INSTALL_RELEASE_MISMATCH`, `INSTALL_PGVECTOR_VERSION`,
-`INSTALL_NODE_CHECKSUM_MISMATCH`, `INSTALL_TOOLCHAIN_MISMATCH`,
+`INSTALL_NODE_CHECKSUM_MISMATCH`, `INSTALL_AWSCLI_CHECKSUM_MISMATCH`,
+`INSTALL_TOOLCHAIN_MISMATCH`, `INSTALL_COLLECTOR_CHECKSUM_MISMATCH`,
+`INSTALL_COLLECTOR_VERSION_MISMATCH`, `INSTALL_COLLECTOR_CONFIG_INVALID`,
 `INSTALL_UNITS_MISSING`, `INSTALL_DEPLOY_ROOT_DRY_RUN_ONLY`.
 After a killed clone, `INSTALL_RELEASE_MISMATCH` requires inspecting the exact
 `/opt/unai/releases/<tag>` path: remove that incomplete directory **only** when
@@ -482,6 +499,22 @@ status words only, not owner data. Never bypass certificate checks with `-k`.
 Worker probes are on `127.0.0.1:9102` after startup below. Inspect JSON logs
 with `journalctl -u '<unit>' -o cat` and failures with `systemctl --failed`.
 See [D10](../docs/adr/0043-production-deployment-target.md#d10-health-probes-deviation).
+
+The loopback collector and the journal (D8):
+
+```sh
+systemctl is-active otelcol-contrib.service
+ss -Hltnp | grep otelcol-contrib
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4318/v1/traces
+grep -ho '"scope":{"name":"[^"]*"' /var/lib/otelcol/unai/*.jsonl | sort -u
+systemd-analyze cat-config systemd/journald.conf | grep -E '^(Storage|SystemMaxUse|MaxRetentionSec)='
+journalctl --disk-usage
+```
+
+Expect `active`; exactly one listener, `127.0.0.1:4318`; `405`, because the
+receiver accepts only POST, so this probe writes nothing; once the services have
+exported, only `unai.` scope names; the three D8 values; and a journal of at most
+2G. Never paste telemetry lines into tickets: they carry owner-scope ids.
 
 ## First sign-in, the worker and the timers
 

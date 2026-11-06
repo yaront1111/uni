@@ -653,6 +653,42 @@ Cites PRD §28 design constraints, PRD §41 Portability, PRD §20 and ADR 0016.
 - No remote exporter, because spans carry owner-scope identifiers. A hosted
   backend needs a successor ADR.
 
+Amended 2026-11-06 (task-e8ad36efc5fb4ec8ade7baca32c72ebb): `deploy/install.sh`
+sets up the host side as follows.
+
+- **Package.** `otelcol-contrib` 0.164.0, the official .deb, pinned by version
+  and SHA-256 (the release's `.sha256` asset and GitHub's asset digest agree),
+  installed with dpkg. `deploy/upgrade.sh` never touches it. A pin change is
+  applied by re-running the installed release's `install.sh` with its tag.
+- **Pre-seeding before dpkg.** The package postinst enables and restarts the
+  service on its own default `/etc/otelcol-contrib/config.yaml`, which listens on
+  0.0.0.0 (OTLP gRPC and HTTP, pprof, zpages, Jaeger, Zipkin) and prints every
+  item through the debug exporter. So `install.sh` first:
+  - creates the `otelcol-contrib` user exactly as the package preinst would;
+  - creates `/var/lib/otelcol/unai` (`otelcol-contrib`, 0750);
+  - writes the bundle config `/etc/otelcol-contrib/unai.yaml`;
+  - writes the drop-in
+    `/etc/systemd/system/otelcol-contrib.service.d/unai.conf`, which empties
+    `EnvironmentFile=` and `ExecStart=` and then sets
+    `ExecStart=/usr/bin/otelcol-contrib --config=/etc/otelcol-contrib/unai.yaml`.
+
+  Only then does it run dpkg, so the default config never runs and the package
+  conffiles stay unmodified.
+- **Config.** The `otlp` receiver, HTTP only, on `127.0.0.1:4318`; the `batch`
+  processor; the `file` exporter writing JSON lines to
+  `/var/lib/otelcol/unai/telemetry.jsonl`; traces and metrics pipelines only
+  (logs stay in journald); no extensions; `service.telemetry.metrics.level:
+  none`, so the collector opens no self-metrics port.
+- **Rotation (deviation from "14-day rotation").** The exporter rotates by size
+  (`max_megabytes: 100`), and `max_days: 14` deletes rotated files older than 14
+  days. The active file can hold older lines until it reaches 100 MB.
+- **Service.** The collector is enabled and running when `install.sh` ends.
+  Whenever the config, the drop-in or the package changed, `install.sh`
+  validates the config with the pinned binary, then reloads systemd and restarts
+  the collector. It still enables and starts no Uai unit.
+- **Journald.** The drop-in is as stated above. `install.sh` restarts
+  `systemd-journald` only when it writes that file.
+
 Cites PRD §28, PRD §41 Observability and docs/foundation.md:69 ("Deployment
 supplies the OpenTelemetry exporter").
 
@@ -917,7 +953,8 @@ Decisions map to the tasks that implement them; none of this exists yet:
   task-a620d2e856d947f5a2ffd49c1e279ada (the rotation runbook covers every D6
   copy and the internal-CA leaves).
 - D10: task-e9dd2f5215e9486fb09f60d18ee6e5ae. D8:
-  task-fc564767f0e9492cadad015259a53817.
+  task-fc564767f0e9492cadad015259a53817 (exporter) and
+  task-e8ad36efc5fb4ec8ade7baca32c72ebb (collector and journald host setup).
 - Google OAuth (D6): task-c7b1ad4dbf9545148bd0a5c6624ef318 and
   task-a814e89c582143b19660af695d824a24; the sign-in allowlist:
   task-42bc6eb3ab194132b00c0e765394c37b.
