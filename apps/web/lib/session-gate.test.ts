@@ -2,15 +2,21 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
+import {EventEmitter} from 'node:events';
 import type {IncomingMessage,ServerResponse} from 'node:http';
-import {SESSION_COOKIE} from '@unai/auth';
+import type {NextApiRequest,NextApiResponse} from 'next';
+import {SESSION_COOKIE,resolveSession} from '@unai/auth';
+const upstream=vi.hoisted(()=>({request:vi.fn()}));
+vi.mock('node:https',()=>upstream);
 import * as first from './server';
+import proxyHandler from '../pages/api/platform/[...path]';
 import {createRequestListener} from './security-headers';
 import {addressKey,createSessionGate,keepSession,type SessionGateVerdict} from './session-gate';
 
 const POOL=Symbol.for('unai.web.authPool');
+const HOLDS=Symbol.for('unai.web.sessionHolds');
 const slot=globalThis as unknown as Record<symbol,unknown>;
-afterEach(()=>{delete slot[POOL];vi.unstubAllEnvs();});
+afterEach(()=>{delete slot[POOL];delete slot[HOLDS];vi.unstubAllEnvs();vi.useRealTimers();vi.clearAllMocks();});
 // The parser Next hands pages and API routes (getCookieParser), so next-auth's view of the request.
 const {parse}=createRequire(import.meta.url)('next/dist/compiled/cookie') as {parse:(cookie:string)=>Record<string,string>};
 const TOKEN='t'.repeat(43),OTHER='o'.repeat(43);
@@ -98,7 +104,7 @@ type Sent={status:number;headers:Record<string,string>;body:string;cookie:string
 /** A listener over the real gate: a fake clock 15 s into a window, limit 3, a
  * lookup double that counts calls and resolves only `valid` tokens (or a held
  * promise), and a handle double that records the Cookie header Next would see. */
-function harness({gate}:{gate?:(req:IncomingMessage)=>Promise<SessionGateVerdict>}={}){
+function harness({gate,route}:{gate?:(req:IncomingMessage)=>Promise<SessionGateVerdict>;route?:(req:IncomingMessage,res:ServerResponse)=>Promise<void>}={}){
   const clock={now:15_000},valid=new Set<string>(),held=new Map<string,(ok:boolean)=>void>();
   let failing=false;
   const lookup=vi.fn(async(value:string)=>{
@@ -106,12 +112,12 @@ function harness({gate}:{gate?:(req:IncomingMessage)=>Promise<SessionGateVerdict
     if(value.startsWith('held'))return new Promise<boolean>(resolve=>held.set(value,resolve));
     return valid.has(value);
   });
-  const handle=vi.fn(async(_req:IncomingMessage,res:ServerResponse)=>{res.end('page');});
+  const handle=vi.fn(route??(async(_req:IncomingMessage,res:ServerResponse)=>{res.end('page');}));
   const listener=createRequestListener({origin:new URL('https://uai.test'),dev:false,handle,
     gate:gate??createSessionGate({lookup,authFailuresPerMinute:3,clock:()=>clock.now})});
-  function send({cookie,address='10.0.0.7',url='/',host='uai.test',forwarded}:{cookie?:string;address?:string;url?:string;host?:string;forwarded?:string}={}):Promise<Sent>{
+  function send({cookie,address='10.0.0.7',url='/',host='uai.test',forwarded,method='GET'}:{cookie?:string;address?:string;url?:string;host?:string;forwarded?:string;method?:string}={}):Promise<Sent>{
     const headers:Record<string,string>={host,...(cookie===undefined?{}:{cookie}),...(forwarded?{'x-forwarded-for':forwarded}:{})};
-    const req={headers,rawHeaders:Object.entries(headers).flat(),url,method:'GET',socket:{remoteAddress:address,encrypted:true}} as unknown as IncomingMessage;
+    const req={headers,rawHeaders:Object.entries(headers).flat(),url,method,socket:{remoteAddress:address,encrypted:true}} as unknown as IncomingMessage;
     return new Promise(resolve=>{
       const sent:Record<string,string>={};
       const res={statusCode:200,
@@ -236,7 +242,7 @@ it('never writes the token or its SHA-256 to a response or a log', async () => {
   vi.spyOn(process.stdout,'write').mockImplementation(record);vi.spyOn(process.stderr,'write').mockImplementation(record);
   try{
     const sentinel='SENTINEL'.padEnd(43,'s'),hash=createHash('sha256').update(sentinel).digest('hex');
-    const {valid,send,fail}=harness();
+    const {valid,send,fail,clock}=harness();
     const replies=[];
     for(const n of [1,2,3])replies.push(await send({cookie:session(token(n))}));
     replies.push(await send({cookie:session(sentinel)}));
@@ -247,8 +253,108 @@ it('never writes the token or its SHA-256 to a response or a log', async () => {
     fail(true);
     replies.push(await send({cookie:session(sentinel),address:'10.0.0.8'}));
     expect(replies.map(sent=>sent.status)).toEqual([200,200,200,429,200,200,200]);
+    expect(first.holdSession).toBeTypeOf('function');
+    first.holdSession(sentinel,clock.now+41_000);
+    const refused=await send({cookie:session(sentinel),url:'/api/platform/ask'});
+    expectRefused(refused,'41');replies.push(refused);
     const written=JSON.stringify([replies.map(({headers,body})=>({headers,body})),lines]);
     expect(written).not.toContain(sentinel);
     expect(written).not.toContain(hash);
+    expect(written).not.toContain('10.0.0.7');expect(written).not.toContain('10.0.0.8');
   }finally{vi.restoreAllMocks();}
+});
+
+it.each(['/api/platform/ask','/api/%70latform/ask','/api/platform/ask?x=1','/api/platform/%invalid'])('refuses a held token without lookup or handle at %s',async url=>{
+  expect(first.holdSession).toBeTypeOf('function');
+  const {clock,lookup,handle,send}=harness();
+  first.holdSession(TOKEN,clock.now+40_001);
+  expectRefused(await send({cookie:session(TOKEN),url}),'41');
+  clock.now+=2;expectRefused(await send({cookie:session(TOKEN),url}),'40');
+  expect(lookup).not.toHaveBeenCalled();expect(handle).not.toHaveBeenCalled();
+  // A held request must not reserve an address slot, even for an unknown token.
+  for(const n of [1,2,3])expect((await send({cookie:session(token(n))})).status).toBe(200);
+  expect(lookup).toHaveBeenCalledTimes(3);
+});
+
+it.each(['/','/api/chat','/api/auth/session','/_next/static/app.js','/api/platform-other/ask'])('still looks up a held token outside the platform proxy at %s',async url=>{
+  expect(first.holdSession).toBeTypeOf('function');
+  const {clock,valid,lookup,send}=harness();valid.add(TOKEN);
+  first.holdSession(TOKEN,clock.now+41_000);
+  expect((await send({cookie:session(TOKEN),url})).status).toBe(200);
+  expect(lookup).toHaveBeenCalledExactlyOnceWith(TOKEN);
+});
+
+it('looks up an unheld token and resumes the held token at expiry',async()=>{
+  expect(first.holdSession).toBeTypeOf('function');
+  const {clock,valid,lookup,send}=harness();valid.add(TOKEN);valid.add(OTHER);
+  first.holdSession(TOKEN,clock.now+41_000);
+  expect((await send({cookie:session(OTHER),url:'/api/platform/ask'})).status).toBe(200);
+  clock.now+=41_000;
+  expect((await send({cookie:session(TOKEN),url:'/api/platform/ask'})).status).toBe(200);
+  expect(lookup.mock.calls).toEqual([[OTHER],[TOKEN]]);
+  expect((slot[HOLDS] as Map<string,number>).size).toBe(0);
+});
+
+it('shares digest-only holds between module graphs and updates one token idempotently',async()=>{
+  expect(first.holdSession).toBeTypeOf('function');
+  vi.resetModules();const second=await import('./server');
+  first.holdSession(TOKEN,56_000);second.holdSession(TOKEN,56_000);
+  expect(second.heldSeconds(TOKEN,15_000)).toBe(41);
+  expect(slot[HOLDS]).toEqual(new Map([[createHash('sha256').update(TOKEN).digest('hex'),56_000]]));
+  expect(first.heldSeconds(TOKEN,56_000)).toBeNull();
+  expect(second.heldSeconds(TOKEN,15_000)).toBeNull();
+});
+
+it('fails open for old holds at the 10 000-key cap, without clearing on an update',()=>{
+  expect(first.holdSession).toBeTypeOf('function');
+  for(let n=0;n<10_000;n++)first.holdSession(token(n),56_000);
+  first.holdSession(token(0),56_000);
+  expect((slot[HOLDS] as Map<string,number>).size).toBe(10_000);
+  expect(first.heldSeconds(token(1),15_000)).toBe(41);
+  first.holdSession(token(10_000),56_000);
+  expect((slot[HOLDS] as Map<string,number>).size).toBe(1);
+  expect(first.heldSeconds(token(0),15_000)).toBeNull();
+  expect(first.heldSeconds(token(9999),15_000)).toBeNull();
+  expect(first.heldSeconds(token(10_000),15_000)).toBe(41);
+});
+
+/** Next's request/response shape at the real platform route, after the listener. */
+async function proxyRoute(req:IncomingMessage,res:ServerResponse){
+  if(req.url==='/'){res.end('page');return;}
+  const request={query:{path:['ask']},method:req.method,headers:{...req.headers,origin:'https://uai.test',
+    'x-purpose':'memory.read','x-correlation-id':'correlation','idempotency-key':'key'},body:{question:'What is next?'},socket:req.socket};
+  const response={setHeader:(name:string,value:string)=>res.setHeader(name,value),
+    status(code:number){res.statusCode=code;return response;},json:(body:unknown)=>res.end(JSON.stringify(body))};
+  await proxyHandler(request as unknown as NextApiRequest,response as unknown as NextApiResponse);
+}
+
+it('holds the real proxy after an API session refusal with zero further auth-pool queries',async()=>{
+  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(15_250);
+  vi.stubEnv('NEXTAUTH_URL','https://uai.test');vi.stubEnv('UNAI_API_ORIGIN','https://api.test');vi.stubEnv('UNAI_API_CA_FILE','package.json');
+  const pool={query:vi.fn(async()=>({rows:[{value:{id:'session-id',userId:'actor',ownerScopeId:'owner',deviceId:null}}]}))};
+  slot[POOL]=Promise.resolve(pool);
+  let statusCode=429;
+  upstream.request.mockImplementation((_url:URL,_options:unknown,callback:(res:IncomingMessage)=>void)=>{
+    const response=Object.assign(new EventEmitter(),{statusCode,headers:{'retry-after':'42','x-rate-limit-bucket':'session'}});
+    return Object.assign(new EventEmitter(),{setTimeout:vi.fn(),destroy:vi.fn(),end:()=>{
+      callback(response as unknown as IncomingMessage);
+      response.emit('data',Buffer.from(JSON.stringify(statusCode===429?{code:'RATE_LIMITED',correlationId:'c'}:{ok:true})));response.emit('end');
+    }});
+  });
+  const gate=createSessionGate({authFailuresPerMinute:3,lookup:async value=>Boolean(await resolveSession(await first.authPool(),value))});
+  const {send}=harness({gate,route:proxyRoute});
+  const post=()=>send({cookie:session(TOKEN),url:'/api/platform/ask',method:'POST'});
+  const initial=await post();
+  expect(initial).toMatchObject({status:429,headers:{'retry-after':'42'},body:'{"code":"RATE_LIMITED","correlationId":"c"}'});
+  expect(pool.query).toHaveBeenCalledTimes(2);expect(upstream.request).toHaveBeenCalledTimes(1);
+  for(let n=0;n<5;n++){
+    const held=await post();expect(pool.query).toHaveBeenCalledTimes(2);expect(upstream.request).toHaveBeenCalledTimes(1);
+    expectRefused(held,String(41-n));vi.setSystemTime(Date.now()+1000);
+  }
+  expect(pool.query).toHaveBeenCalledTimes(2);expect(upstream.request).toHaveBeenCalledTimes(1);
+  expect((await send({cookie:session(TOKEN)})).status).toBe(200);
+  expect(pool.query).toHaveBeenCalledTimes(3);
+  vi.setSystemTime(56_250);statusCode=200;
+  expect(await post()).toMatchObject({status:200,body:'{"ok":true}'});
+  expect(pool.query).toHaveBeenCalledTimes(5);expect(upstream.request).toHaveBeenCalledTimes(2);
 });
