@@ -115,92 +115,129 @@ active release. An installed host uses [Upgrade](#upgrade), not a new install.
 ## Encrypted data volume
 
 **Destructive, first install only:** verify the unused attached device with
-`lsblk -f`; never format a device holding data. This bundle does **not** unlock
-the volume at boot. No fstab or crypttab entry is installed. After each reboot,
-unlock and mount as below, then `systemctl restart postgresql`, then restart
-`unai-api` and `unai-worker`. Keep timers stopped until the mount is confirmed.
+`lsblk -f`; never point setup at a device holding data. PostgreSQL's data
+directory lives on a LUKS2 volume whose key exists on the host only as the KMS
+ciphertext `/etc/unai/pgdata/volume-key.enc`. `unai-pgdata-unlock.service`
+unlocks and mounts it at every boot, before PostgreSQL starts.
 See [D4](../docs/adr/0043-production-deployment-target.md#d4-postgresql).
 
-Install AWS CLI v2 using its [Linux installation procedure](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html);
-`aws --version` must print `aws-cli/2.`. Install `cryptsetup` and make the key directory:
+The installer's first pass installed `cryptsetup` and AWS CLI v2 and created
+`/etc/unai/pgdata` (root:root 0700). Attach one blank volume. Write the
+`unai-host-unlock` access key to `/etc/unai/pgdata/aws-credentials` with the
+[Secrets](#secrets) AWS recipe, then its region file; both end root:root 0400:
 
 ```sh
-apt-get install -y cryptsetup
-install -d -o root -g root -m 0700 /etc/unai/pgdata
+chmod 0400 /etc/unai/pgdata/aws-credentials
+(umask 0377 && printf '[default]\nregion = %s\n' '<aws-region>' > /etc/unai/pgdata/aws-config)
 ```
 
-Place the `unai-host-unlock` AWS credentials at `/etc/unai/pgdata/aws-credentials`
-(root:root 0400), using the [Secrets](#secrets) AWS recipe. For **formatting only**,
-use an administrator AWS profile via `AWS_PROFILE` on the single command below;
-the unlock identity can decrypt but cannot generate keys. Remove that temporary
-administrator profile from the host when formatting is complete.
+Run `deploy/pgdata/setup.sh` in a root shell (`sudo -i`: plain `sudo` drops the
+exported variables). It needs an administrator's access key for this one run,
+because `unai-host-unlock` may only decrypt. `read` keeps the key off the command
+line and out of the shell history; add `AWS_SESSION_TOKEN` the same way for
+temporary credentials. Check the plan with `--dry-run` first:
 
 ```bash
-(
-  set -euo pipefail
-  umask 0377
-  test ! -e /etc/unai/pgdata/volume-key.enc
-  test -b '/dev/<volume-device>'
-  if cryptsetup isLuks '/dev/<volume-device>'; then
-    printf 'VOLUME_ALREADY_FORMATTED\n' >&2
-    exit 1
-  fi
-  material=$(AWS_PROFILE='<admin-profile>' aws kms generate-data-key \
-    --region '<aws-region>' --key-id alias/unai-pgdata --number-of-bytes 64 \
-    --query '[CiphertextBlob,Plaintext]' --output text)
-  trap 'unset material ciphertext plaintext' EXIT
-  read -r ciphertext plaintext <<< "$material"
-  test -n "$ciphertext" && test -n "$plaintext"
-  printf '%s' "$ciphertext" | base64 -d > /etc/unai/pgdata/volume-key.enc
-  printf '%s' "$plaintext" | base64 -d | cryptsetup luksFormat --batch-mode \
-    --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf argon2id \
-    --key-file=- '/dev/<volume-device>'
-)
+read -r AWS_ACCESS_KEY_ID
+read -rs AWS_SECRET_ACCESS_KEY
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+bash /opt/unai/current/deploy/pgdata/setup.sh --device '/dev/<volume-device>' --key-arn '<pgdata-key-arn>' --dry-run
+bash /opt/unai/current/deploy/pgdata/setup.sh --device '/dev/<volume-device>' --key-arn '<pgdata-key-arn>'
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 ```
 
-One [GenerateDataKey call](https://docs.aws.amazon.com/cli/latest/reference/kms/generate-data-key.html)
-supplies both halves. Plaintext travels only through shell memory and pipes;
-only ciphertext reaches disk. If interrupted, preserve `volume-key.enc` and
-inspect the device; do not generate a replacement key or blindly reformat.
-Unlock now and after each reboot (the region is explicit):
+Before any AWS call or change, it refuses (`PGDATA_SETUP_*`) a device that is
+mounted or carries a partition, filesystem, partition table or LUKS header, and
+an existing volume key, mapping, `unai-pgdata` label or non-empty
+`/var/lib/postgresql`. It then takes 64 bytes from KMS, writes only their
+ciphertext to `volume-key.enc` (0400), formats LUKS2 (aes-xts-plain64, 512-bit,
+argon2id, label `unai-pgdata`), opens it, makes ext4 and mounts it at
+`/var/lib/postgresql` (nodev,nosuid). The plaintext key travels only through pipes.
+Then finish the steps it prints.
 
-```bash
-set -o pipefail
-AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials AWS_EC2_METADATA_DISABLED=true \
-  aws kms decrypt --region '<aws-region>' --key-id '<pgdata-key-arn>' \
-  --ciphertext-blob fileb:///etc/unai/pgdata/volume-key.enc --query Plaintext --output text \
-  | base64 -d | cryptsetup open --type luks2 --key-file=- '/dev/<volume-device>' unai-pgdata
-```
-
-Run `mkfs.ext4 -L unai-pgdata /dev/mapper/unai-pgdata` **once, only immediately
-after this first successful format**; never on reboot. Then:
-
-```sh
-install -d -m 0755 /var/lib/postgresql
-mount /dev/mapper/unai-pgdata /var/lib/postgresql
-findmnt /var/lib/postgresql
-```
-
-Add the offline recovery passphrase to slot 1 once (Bash process substitution
-keeps the existing key off disk; the new passphrase is prompted at the terminal):
+**Recovery passphrase.** Add the offline passphrase to keyslot 1. It is prompted
+at the terminal; process substitution keeps the KMS key off disk, and the
+decrypt proves the unlock credentials:
 
 ```bash
 cryptsetup luksAddKey --key-slot 1 --key-file <(
-  AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials AWS_EC2_METADATA_DISABLED=true \
-    aws kms decrypt --region '<aws-region>' --key-id '<pgdata-key-arn>' \
-    --ciphertext-blob fileb:///etc/unai/pgdata/volume-key.enc --query Plaintext --output text | base64 -d
-) '/dev/<volume-device>'
+  AWS_SHARED_CREDENTIALS_FILE=/etc/unai/pgdata/aws-credentials AWS_CONFIG_FILE=/etc/unai/pgdata/aws-config \
+    AWS_EC2_METADATA_DISABLED=true aws kms decrypt --ciphertext-blob fileb:///etc/unai/pgdata/volume-key.enc \
+    --query Plaintext --output text | base64 -d
+) /dev/disk/by-label/unai-pgdata
+cryptsetup open --test-passphrase --key-slot 1 /dev/disk/by-label/unai-pgdata
 ```
 
-Record the passphrase offline; verify it with `cryptsetup open --test-passphrase
---key-slot 1 '/dev/<volume-device>'`. Keep the D4 evidence (`cryptsetup status`,
-`findmnt`, KMS ARN) with the deployment record, never the plaintext key. Re-run
-the same installer/tag: it now installs PostgreSQL 17, pgvector and backup staging.
-Only **after confirming the mount**, create drill staging:
+Keep the passphrase offline with the backup key ([D9](../docs/adr/0043-production-deployment-target.md#d9-backups)),
+never on this host.
+
+**Evidence.** Keep the D4 evidence with the deployment record, never the key:
+`cryptsetup luksDump /dev/disk/by-label/unai-pgdata`,
+`lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINT`, `findmnt /var/lib/postgresql` and the
+pgdata key ARN.
+
+**Unlock unit.** Enabling it also makes `postgresql@17-main.service` require it
+(`RequiredBy=`, ordered first), so PostgreSQL never starts on the bare mount
+point. Starting it now finds the open, mounted volume and logs `pgdata.unlocked`:
+
+```sh
+systemctl enable --now unai-pgdata-unlock.service
+```
+
+Optionally prove the boot path while the volume is still empty:
+`systemctl reboot`, then `findmnt /var/lib/postgresql`.
+
+**PostgreSQL.** Re-run the same installer and tag: it now installs PostgreSQL 17,
+pgvector and backup staging on the volume. Only **after confirming the mount**,
+create drill staging:
 
 ```sh
 sudo bash /root/uai-install/deploy/install.sh --tag '<tag>' --repo '<repo-url>'
 install -d -o root -g root -m 0700 /var/lib/postgresql/unai-restore-drill-staging
+```
+
+**Reboots** unlock without a person: after `network-online.target` the unit
+decrypts the key through KMS, opens and mounts the volume, and only then does
+PostgreSQL start, followed by the API and the worker.
+`journalctl -u unai-pgdata-unlock.service -o cat` shows `pgdata.unlocked` or one code.
+
+**Fail closed.** When KMS decryption fails, the volume stays locked,
+`/var/lib/postgresql` stays unmounted and PostgreSQL does not start. If opening
+succeeds but mounting fails, the mapping remains open; PostgreSQL still does
+not start, and retrying after fixing the mount skips decryption. The journal
+holds one code, never the provider's text:
+
+| Code | Cause |
+| --- | --- |
+| `PGDATA_UNLOCK_KEY_MISSING` | `/etc/unai/pgdata/volume-key.enc` is missing |
+| `PGDATA_UNLOCK_DEVICE_MISSING` | no `/dev/disk/by-label/unai-pgdata` within 60 s: the volume is detached |
+| `PGDATA_UNLOCK_KMS_FAILED` | KMS unreachable, wrong credentials or region, or a host IPv4 that no longer matches the unlock policy (re-run `deploy/aws/provision.sh` with the new `--host-ipv4`) |
+| `PGDATA_UNLOCK_KMS_RESPONSE_INVALID` | KMS did not return a 64-byte key |
+| `PGDATA_UNLOCK_OPEN_FAILED` | the decrypted key does not open the volume |
+| `PGDATA_UNLOCK_MOUNT_FAILED` | the opened volume did not mount |
+
+Once the cause is fixed, `systemctl start postgresql@17-main.service` runs the
+unlock again first; then `systemctl restart unai-api.service unai-worker.service`.
+Without KMS, open the volume with the recovery passphrase; the unlock then
+succeeds with no KMS call:
+
+```sh
+cryptsetup open /dev/disk/by-label/unai-pgdata unai-pgdata
+mount -o nodev,nosuid /dev/mapper/unai-pgdata /var/lib/postgresql
+systemctl start postgresql@17-main.service
+```
+
+**Setup failure.** `setup.sh` prints the AWS CLI's or cryptsetup's own message,
+then one `PGDATA_SETUP_*` code; a refusal changes nothing. A run that stopped
+after writing `volume-key.enc` keeps it, and perhaps a LUKS header, and a re-run
+refuses both. The volume holds no data yet: undo whatever of this exists, then
+re-run `setup.sh`, which refuses again until `blkid -p` finds no signature:
+
+```sh
+umount /var/lib/postgresql
+cryptsetup close unai-pgdata
+rm /etc/unai/pgdata/volume-key.enc
+wipefs --all '/dev/<volume-device>'
 ```
 
 ## Internal CA and PostgreSQL
