@@ -50,8 +50,15 @@ device the first attempt bound (`docs/foundation.md:61`).
 3. `POST /v1/devices` and `POST /v1/devices/{id}/revoke` write their own session
    row: `device_id`, and `revoked_at` through the device trigger when the caller
    removes its own device.
-   - They take `FOR NO KEY UPDATE` as their first statement and hold it to
-     COMMIT.
+   - Registration locks only its own live session row `FOR NO KEY UPDATE`
+     as its first statement and holds it to COMMIT.
+   - Removal locks its own live row and every unrevoked session bound to the
+     target device, `FOR NO KEY UPDATE` in ascending id order, as its first
+     statement. These are exactly the rows the device trigger will update,
+     including expired but unrevoked rows. It holds them to COMMIT and answers
+     `SESSION_EXPIRED` unless its own live row is among them. The returned own
+     row must still satisfy the live predicate: the device predicate alone can
+     admit an expired row after a wait.
    - They skip the commit-point check, which would refuse the caller's own
      removal.
    - A share lock that the same transaction later upgrades would deadlock
@@ -61,6 +68,17 @@ device the first attempt bound (`docs/foundation.md:61`).
    `{code:'SESSION_EXPIRED', correlationId}` instead of 500 `INTERNAL_ERROR`. The
    web proxy already answers that code for a missing session, and
    `apps/web/lib` already treats an API 401 as an expired session.
+
+5. Session-row lock order: every transaction that writes more than one
+   `auth_sessions` row locks all of them `FOR NO KEY UPDATE` in ascending id
+   order before its first write. This applies to removal (decision 3) and,
+   through `migrations/0044_auth_session_lock_order.sql`,
+   `unai_private.auth_revoke_session` after its 0043 users lock and
+   `unai_private.revoke_disabled_sessions` before its UPDATE. A single-row
+   writer (registration) or commit-point `FOR SHARE` needs no order. Ordering
+   only the revoker is insufficient: a remover whose own id sorts after the
+   device session would still hold the higher row while waiting for the lower
+   one, preserving the cycle.
 
 ## Guarantees
 
@@ -72,6 +90,8 @@ device the first attempt bound (`docs/foundation.md:61`).
     its commit window commits first.
   - A revocation now waits only for commit windows and for the two device
     routes.
+  - A device removal and an in-flight revocation of the same user wait for
+    one another in session-id order, never both at once.
 - Expiry is checked at both points, so a transaction that crosses `expires_at`
   rolls back. Before, it committed.
 - Registration is unchanged. It serializes per session, a retry waits and then
@@ -103,14 +123,12 @@ device the first attempt bound (`docs/foundation.md:61`).
      `auth_create_session`'s `FOR UPDATE`, so a sign-in cannot escape a
      sign-out-all, and with another revoker, so two revokers of one user still
      serialize.
-   - Known limit, unchanged: two devices removing each other at the same
-     instant can still deadlock. Each route holds its own session row, and the
-     device trigger's UPDATE needs the other's. That cycle is over two
-     `auth_sessions` rows, which the user-row lock does not touch, so
-     PostgreSQL still aborts one side with 40P01. The same two-row cycle forms
-     when one session removes another session's device while a sign-out-all
-     has already revoked that device's session and waits for the remover's
-     own row (task-bff497bb8f0d4fa69a718fd6b8f5508c).
+   - Resolved by migration 0044 and decision 3's ordered removal lock set
+     (task-bff497bb8f0d4fa69a718fd6b8f5508c): two devices removing each other no
+     longer deadlock. The second route waits for the first, then answers 401
+     `SESSION_EXPIRED` because the first revoked its session. Removing another
+     session's device while a same-user sign-out-all runs no longer deadlocks
+     either; both commit. Both sides now obey the same session-row lock order.
 3. Share lockers do not queue behind a waiting UPDATE, so a revocation also
    waits out every commit window that opens on the session while it waits. Each
    window is one statement and the COMMIT.
@@ -129,3 +147,11 @@ own-device removal racing a sign-out-all from another session, each completing
 on both sides with no 40P01; and a sign-out-all that waits on an uncommitted
 sign-in and then revokes the issued session, plus two revokers of one user
 serializing.
+
+The ordered multi-row locking cases (task-bff497bb8f0d4fa69a718fd6b8f5508c)
+cover mutual device removal (one 200, one unaudited 401), removal of another
+session's device racing its sign-out-all (both commit), and lower/higher-row
+holders plus NOWAIT probes for removal, sign-out-all and user disablement.
+A lock-set parity case compares the route's locked sessions, excluding the
+caller, to the trigger's changed sessions, including expired unrevoked rows
+and excluding already-revoked, other-device and other-user rows.

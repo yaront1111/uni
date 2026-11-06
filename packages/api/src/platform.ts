@@ -189,7 +189,9 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
    * check that meets an uncommitted revocation waits for it and then sees it.
    * Nothing may run after the check. The two routes that write their own session row
    * take that UPDATE's lock up front (`ownSessionWork`): a share lock upgraded later
-   * deadlocks against a same-session retry.
+   * deadlocks against a same-session retry. A multi-row session writer locks all
+   * affected rows in ascending id order before its first write (ADR 0045 decision
+   * 5). Removal includes the device trigger's unrevoked rows, even expired ones.
    *
    * `purpose` lets a route open one transaction under a purpose its server code
    * names -- the projection rebuild after a merge runs under `memory.project`
@@ -198,20 +200,26 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
    * the request's: the session is re-verified exactly as for every other transaction. */
   const LIVE_SESSION='SELECT id FROM auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp()';
   type Run=(tx:OwnerTransaction,sessionId:string)=>Promise<unknown>;
-  async function sessionWork(request:import('fastify').FastifyRequest,run:Run,purpose:string|undefined,ownRow:boolean){
+  async function sessionWork(request:import('fastify').FastifyRequest,run:Run,purpose:string|undefined,ownRow:boolean|string){
     const token=sessionToken(request.headers.cookie);
     const session=token?await resolveSession(options.authPool,token):null;
     if(!session||session.ownerScopeId!==request.ownerContext!.ownerScopeId)throw new Error('SESSION_EXPIRED');
     const context=purpose===undefined?request.ownerContext!:{...request.ownerContext!,purpose};
     return withOwnerTransaction(options.appPool,context,async tx=>{
-      if((await tx.query(LIVE_SESSION+(ownRow?' FOR NO KEY UPDATE':''),[session.id])).rowCount!==1)throw new Error('SESSION_EXPIRED');
+      if(typeof ownRow==='string'){
+        const locked:{rows:{id:string;live:boolean}[]}=await tx.query(
+          'SELECT id, revoked_at IS NULL AND expires_at>statement_timestamp() AS live FROM auth_sessions WHERE (id=$1 AND revoked_at IS NULL AND expires_at>statement_timestamp()) OR (device_id=$2 AND revoked_at IS NULL) ORDER BY id FOR NO KEY UPDATE',
+          [session.id,ownRow]);
+        // The device predicate also admits expired rows; membership alone is not liveness.
+        if(!locked.rows.some(row=>row.id===session.id&&row.live))throw new Error('SESSION_EXPIRED');
+      }else if((await tx.query(LIVE_SESSION+(ownRow?' FOR NO KEY UPDATE':''),[session.id])).rowCount!==1)throw new Error('SESSION_EXPIRED');
       const value=await run(withRequestEventKind(tx,request.method),session.id);
       if(!ownRow&&(await tx.query(LIVE_SESSION+' FOR SHARE',[session.id])).rowCount!==1)throw new Error('SESSION_EXPIRED');
       return value;
     });
   }
   const deviceWork=(request:import('fastify').FastifyRequest,run:Run,purpose?:string)=>sessionWork(request,run,purpose,false);
-  const ownSessionWork=(request:import('fastify').FastifyRequest,run:Run)=>sessionWork(request,run,undefined,true);
+  const ownSessionWork=(request:import('fastify').FastifyRequest,run:Run,deviceId?:string)=>sessionWork(request,run,undefined,deviceId??true);
   registerVoiceSettingsRoutes(app,deviceWork);
   registerConversationRoutes(app,deviceWork);
   app.get('/v1/devices',async request=>deviceWork(request,async(tx)=>{
@@ -246,7 +254,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
       if(changed.rowCount!==1)return reply.code(404).send({code:'DEVICE_NOT_FOUND'});
       await tx.audit({policyDecision:'ALLOW',codeVersion:'0.1.0',result:'SUCCESS',objects:[{type:'devices',id:request.params.id,fields:['removed_at']}]});
       return {removed:true};
-    });
+    },request.params.id);
   });
   app.post('/v1/sessions/revoke-all',async request=>{
     await revokeSessions(options.authPool,sessionToken(request.headers.cookie)!,request.ownerContext!.correlationId,true);

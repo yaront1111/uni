@@ -110,15 +110,15 @@ interface Case {
  * case ends, the holder ends first, then every request it started settles. */
 async function scenario(run: (c: Case) => Promise<void>) {
   const app = api(), started: Promise<unknown>[] = [];
-  let holder: Held | undefined;
+  const holders: Held[] = [];
   try {
     await run({
       app,
       track(promise) { const t = tracked(promise); started.push(t.promise); return t; },
-      async hold(sql, params) { holder = await hold(sql, params); return holder; },
+      async hold(sql, params) { const holder = await hold(sql, params); holders.push(holder); return holder; },
     });
   } finally {
-    await holder?.end();
+    await Promise.all(holders.map(holder => holder.end()));
     await Promise.allSettled(started);
     await app.close();
   }
@@ -352,3 +352,158 @@ it("the revoker's users lock still serializes it against an uncommitted sign-in 
     expect(await auditPurposes(firstId, secondId)).toEqual(['auth.sign_out', 'auth.sign_out']);
   });
 });
+
+/** Each probe releases its lock even on refusal; only 55P03 means not lockable. */
+async function lockable(sessionId: string): Promise<boolean> {
+  const client = await admin.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT 1 FROM auth_sessions WHERE id=$1 FOR NO KEY UPDATE NOWAIT', [sessionId]);
+    return true;
+  } catch (error) {
+    if (outcome(error) === '55P03') return false;
+    throw error;
+  } finally {
+    try { await client.query('ROLLBACK'); } finally { client.release(); }
+  }
+}
+async function sessionId(token: string): Promise<string> {
+  return (await admin.query<{ id: string }>('SELECT id FROM auth_sessions WHERE token_hash=$1', [digest(token)])).rows[0]!.id;
+}
+const removal = (o: Owner, device: string) => ({ method: 'POST' as const, url: '/v1/devices/' + device + '/revoke',
+  headers: headers(o, 'device.remove'), payload: {} });
+
+it('mutual device removal commits once and expires the second session without 40P01', () => scenario(async c => {
+  const errors = routeErrors(c.app), y = await owner(), dy = await register(c, y);
+  const x = { ...y, token: await y.session() }, dx = await register(c, x);
+  const h1 = await c.hold('SELECT 1 FROM devices WHERE id=$1 FOR UPDATE', [dy]);
+  const h2 = await c.hold('SELECT 1 FROM devices WHERE id=$1 FOR UPDATE', [dx]);
+  const rx = c.track(c.app.inject(removal(x, dy)));
+  expect(await firstWaitOn(() => rx.settled, { label: 'DY', pid: h1.pid })).toBe('DY');
+  const parked = await waiters(h1.pid);
+  expect(parked).toHaveLength(1);
+  const requestY = removal(y, dx), ry = c.track(c.app.inject(requestY));
+  expect(await firstWaitOn(() => ry.settled, { label: 'DX', pid: h2.pid }, { label: 'X', pid: parked[0]! }))
+    .toMatch(/^(DX|X)$/);
+  await h1.end();
+  await h2.end();
+  const [first, second] = await Promise.all([rx.promise, ry.promise]);
+  expect({ codes: [first.statusCode, second.statusCode], deadlocks: errors.filter(code => code === '40P01') })
+    .toEqual({ codes: [200, 401], deadlocks: [] });
+  expect(first.json()).toEqual({ removed: true });
+  await expectExpired(ry.promise, requestY.headers['x-correlation-id']);
+  expect((await admin.query('SELECT id, removed_at IS NOT NULL AS removed FROM devices WHERE id=ANY($1::uuid[]) ORDER BY id',
+    [[dx, dy]])).rows).toEqual([{ id: dx, removed: false }, { id: dy, removed: true }].sort((a, b) => a.id.localeCompare(b.id)));
+  expect((await admin.query('SELECT id, revoked_at IS NOT NULL AS revoked FROM auth_sessions WHERE user_id=$1 ORDER BY id',
+    [y.userId])).rows).toEqual([{ id: await sessionId(x.token), revoked: false }, { id: await sessionId(y.token), revoked: true }]
+    .sort((a, b) => a.id.localeCompare(b.id)));
+}));
+
+it("removing another session's device racing its sign-out-all: both commit, no 40P01", () => scenario(async c => {
+  const errors = routeErrors(c.app), y = await owner(), device = await register(c, y);
+  const x = { ...y, token: await y.session() }, request = removal(x, device), signOutId = randomUUID();
+  const holder = await c.hold('SELECT 1 FROM devices WHERE id=$1 FOR UPDATE', [device]);
+  const route = c.track(c.app.inject(request));
+  expect(await firstWaitOn(() => route.settled, { label: 'device', pid: holder.pid })).toBe('device');
+  const parked = await waiters(holder.pid);
+  expect(parked).toHaveLength(1);
+  const signOut = c.track(revokeSessions(admin, y.token, signOutId, true).then(() => 'REVOKED', outcome));
+  expect(await firstWaitOn(() => signOut.settled, { label: 'route', pid: parked[0]! })).toBe('route');
+  await holder.end();
+  const response = await route.promise;
+  expect({ route: response.statusCode, routeErrors: errors, signOut: await signOut.promise })
+    .toEqual({ route: 200, routeErrors: [], signOut: 'REVOKED' });
+  expect(response.json()).toEqual({ removed: true });
+  expect((await admin.query('SELECT removed_at IS NOT NULL AS removed FROM devices WHERE id=$1', [device])).rows)
+    .toEqual([{ removed: true }]);
+  expect(await liveSessions(y.userId)).toBe(0);
+  expect(await auditPurposes(request.headers['x-correlation-id'], signOutId)).toEqual(['auth.sign_out_all', 'device.remove']);
+}));
+
+/** Find an inversion in creation order without choosing ids: auth creates random
+ * UUIDs. Revoke other fixture sessions before racing, leaving exactly two rows. */
+async function invertedPair(c: Case) {
+  const o = await owner();
+  let higherToken = o.token, higher = await sessionId(higherToken);
+  for (let attempts = 0; attempts < 128; attempts++) {
+    const lowerToken = await o.session(), lower = await sessionId(lowerToken);
+    if (lower < higher) {
+      const device = await register(c, { ...o, token: lowerToken });
+      await admin.query('UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>ALL($2::uuid[])',
+        [o.userId, [lower, higher]]);
+      return { o: { ...o, token: higherToken }, lower, higher, device };
+    }
+    higherToken = lowerToken; higher = lower;
+  }
+  throw new Error('SESSION_ID_INVERSION_NOT_FOUND');
+}
+it.each(['removal', 'sign-out-all', 'disable'] as const)('%s locks multiple sessions in ascending id order', async writer => {
+  for (const held of ['lower', 'higher'] as const) await scenario(async c => {
+    const errors = routeErrors(c.app), pair = await invertedPair(c);
+    const holder = await c.hold('SELECT 1 FROM auth_sessions WHERE id=$1 FOR NO KEY UPDATE', [pair[held]]);
+    const work = c.track(writer === 'removal'
+      ? c.app.inject(removal(pair.o, pair.device)).then(response => String(response.statusCode))
+      : writer === 'sign-out-all'
+        ? revokeSessions(admin, pair.o.token, randomUUID(), true).then(() => 'REVOKED', outcome)
+        : admin.query('UPDATE users SET disabled_at=now() WHERE id=$1', [pair.o.userId]).then(() => 'DISABLED', outcome));
+    expect(await firstWaitOn(() => work.settled, { label: held, pid: holder.pid })).toBe(held);
+    expect(await lockable(pair[held === 'lower' ? 'higher' : 'lower']), `${writer}: holder on ${held}`).toBe(held === 'lower');
+    await holder.end();
+    expect(await work.promise).toBe(writer === 'removal' ? '200' : writer === 'sign-out-all' ? 'REVOKED' : 'DISABLED');
+    expect(errors).toEqual([]);
+  });
+});
+
+it('removal pre-lock set equals the device trigger write set, excluding the caller', () => scenario(async c => {
+  const o = await owner(), device = await register(c, o);
+  const second = await o.session(), expired = await o.session(), revoked = await o.session();
+  const otherDeviceSession = { ...o, token: await o.session() }, otherDevice = await register(c, otherDeviceSession);
+  const caller = { ...o, token: await o.session() }, foreign = await owner();
+  const ids = await Promise.all([o.token, second, expired, revoked, otherDeviceSession.token, caller.token, foreign.token].map(sessionId));
+  const [firstId, secondId, expiredId, revokedId, otherId, callerId, foreignId] = ids as [string, string, string, string, string, string, string];
+  await admin.query('UPDATE auth_sessions SET device_id=$1 WHERE id=ANY($2::uuid[])', [device, [secondId, expiredId, revokedId]]);
+  await admin.query("UPDATE auth_sessions SET expires_at=now()-interval '1 minute' WHERE id=$1", [expiredId]);
+  await admin.query("UPDATE auth_sessions SET revoked_at=now()-interval '1 day' WHERE id=$1", [revokedId]);
+  const before = (await admin.query<{ id: string; revoked: string | null }>(
+    'SELECT id, revoked_at::text AS revoked FROM auth_sessions WHERE id=ANY($1::uuid[])', [ids])).rows;
+  const holder = await c.hold('SELECT 1 FROM devices WHERE id=$1 FOR UPDATE', [device]);
+  const route = c.track(c.app.inject(removal(caller, device)));
+  expect(await firstWaitOn(() => route.settled, { label: 'device', pid: holder.pid })).toBe('device');
+  const locked: string[] = [];
+  for (const id of ids) if (!await lockable(id)) locked.push(id);
+  expect(locked.sort()).toEqual([firstId, secondId, expiredId, callerId].sort());
+  await holder.end();
+  expect((await route.promise).statusCode).toBe(200);
+  const after = (await admin.query<{ id: string; revoked: string | null }>(
+    'SELECT id, revoked_at::text AS revoked FROM auth_sessions WHERE id=ANY($1::uuid[])', [ids])).rows;
+  const changed = after.filter(row => row.revoked !== before.find(old => old.id === row.id)!.revoked).map(row => row.id);
+  expect(locked.filter(id => id !== callerId).sort()).toEqual(changed.sort());
+  expect(changed.sort()).toEqual([firstId, secondId, expiredId].sort());
+  expect(locked).not.toEqual(expect.arrayContaining([revokedId, otherId, foreignId]));
+  expect((await admin.query('SELECT removed_at FROM devices WHERE id=$1', [otherDevice])).rows).toEqual([{ removed_at: null }]);
+}));
+
+it.each(['expires_at', 'revoked_at'] as const)('own-device removal refuses a concurrent %s change after its first statement waits',
+  field => scenario(async c => {
+    const o = await owner(), device = await register(c, o), id = await sessionId(o.token);
+    // Resolution sees the old live version; the locking statement must recheck
+    // the version committed by this holder, even if the device predicate matches.
+    const holder = await c.hold(`UPDATE auth_sessions SET ${field}=now()-interval '1 minute' WHERE id=$1`, [id]);
+    const request = removal(o, device), route = c.track(c.app.inject(request));
+    expect(await firstWaitOn(() => route.settled, { label: 'session', pid: holder.pid })).toBe('session');
+    await holder.end(true);
+    await expectExpired(route.promise, request.headers['x-correlation-id']);
+    expect((await admin.query('SELECT removed_at FROM devices WHERE id=$1', [device])).rows).toEqual([{ removed_at: null }]);
+  }));
+
+it('foreign-device removal answers 404 without locking its sessions', () => scenario(async c => {
+  const caller = await owner(), foreign = await owner(), device = await register(c, foreign);
+  const holder = await c.hold('SELECT 1 FROM auth_sessions WHERE id=$1 FOR NO KEY UPDATE', [await sessionId(foreign.token)]);
+  const route = c.track(c.app.inject(removal(caller, device)));
+  expect(await firstWaitOn(() => route.settled, { label: 'foreign session', pid: holder.pid })).toBe('settled');
+  const response = await route.promise;
+  expect(response.statusCode).toBe(404);
+  expect(response.json()).toEqual({ code: 'DEVICE_NOT_FOUND' });
+  expect((await admin.query('SELECT removed_at FROM devices WHERE id=$1', [device])).rows).toEqual([{ removed_at: null }]);
+  expect(await liveSessions(foreign.userId)).toBe(1);
+}));
