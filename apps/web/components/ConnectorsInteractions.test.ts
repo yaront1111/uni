@@ -94,3 +94,38 @@ describe('Connected sources refusals show one fixed sentence', () => {
     expect(document.body.textContent).not.toContain('api.internal');
   });
 });
+
+describe('Connected sources names the cause of a sync or disconnect the provider could not serve', () => {
+  const syncCases: [string, number, string][] = [
+    ['CONNECTOR_PROVIDER_UNAVAILABLE', 502, 'The provider could not be reached, so the sync stopped. Try again later.'],
+    ['CONNECTOR_PROVIDER_RESPONSE_INVALID', 502, 'The provider sent a response Uai could not read, so the sync stopped. Try again later.'],
+    ['CONNECTOR_CURSOR_INVALID', 409, "The provider no longer accepts this source's saved sync position, so the sync stopped."],
+    ['CONNECTOR_CREDENTIAL_MISSING', 409, 'Uai could not read the stored credential for this source, so the sync stopped.'],
+    ['CONNECTOR_OAUTH_CLIENT_MISSING', 503, 'The Google connectors client is not configured on this server, so the sync stopped.'],
+  ];
+  for (const [code, status, sentence] of syncCases) {
+    it('a sync refused with ' + code + ' shows its own sentence and re-enables the controls', async () => {
+      answer(async () => ({code, correlationId: 'c', status}), status);
+      await mount();
+      await press(new KeyboardUser(document), /^Sync now$/);
+      expect(alerts()).toEqual([sentence]);
+      expect(alerts()[0]).not.toMatch(/nothing/i);
+      expect(button(/^Sync now$/).disabled).toBe(false);
+      expect(button(/^Disconnect$/).disabled).toBe(false);
+    });
+  }
+
+  it('a disconnect refused with CONNECTOR_PROVIDER_UNAVAILABLE says the source is still connected', async () => {
+    answer(async () => ({code: 'CONNECTOR_PROVIDER_UNAVAILABLE', correlationId: 'c', status: 502}), 502);
+    await mount();
+    await press(new KeyboardUser(document), /^Disconnect$/);
+    expect(alerts()).toEqual(['The provider could not be reached to revoke access, so the source is still connected. Try again later.']);
+  });
+
+  it('a disconnect refused with a sync-only code shows the generic sentence', async () => {
+    answer(async () => ({code: 'CONNECTOR_CURSOR_INVALID'}), 409);
+    await mount();
+    await press(new KeyboardUser(document), /^Disconnect$/);
+    expect(alerts()).toEqual([GENERIC]);
+  });
+});

@@ -51,6 +51,19 @@ const REFUSAL_TEXT: Record<string, string> = {
   CONNECTOR_RATE_LIMITED: rateLimitedText('later'),
   CONNECTOR_TOKEN_REVOKED: 'The provider refused the credential for this source, so the sync stopped. Reauthorization is required before it can sync again.',
 };
+// Other sync failures the API records on the connector (SYNC_FAILED) after the run rolls back; the record is best-effort, so no sentence claims it.
+const SYNC_FAILURE_TEXT: Record<string, string> = {
+  CONNECTOR_PROVIDER_UNAVAILABLE: 'The provider could not be reached, so the sync stopped. Try again later.',
+  CONNECTOR_PROVIDER_RESPONSE_INVALID: 'The provider sent a response Uai could not read, so the sync stopped. Try again later.',
+  CONNECTOR_CURSOR_INVALID: "The provider no longer accepts this source's saved sync position, so the sync stopped.",
+  CONNECTOR_CREDENTIAL_MISSING: 'Uai could not read the stored credential for this source, so the sync stopped.',
+  CONNECTOR_OAUTH_CLIENT_MISSING: 'The Google connectors client is not configured on this server, so the sync stopped.',
+};
+// A disconnect refused for an unreachable provider rolls back in one transaction, so the source is still connected.
+const DISCONNECT_REFUSAL_TEXT: Record<string, string> = {
+  CONNECTOR_PROVIDER_UNAVAILABLE: 'The provider could not be reached to revoke access, so the source is still connected. Try again later.',
+};
+const ACTION_TEXT = {sync: SYNC_FAILURE_TEXT, disconnect: DISCONNECT_REFUSAL_TEXT};
 /** The one sentence a refused write shows. Only an object body whose own string
  * `code` is a REFUSAL_TEXT key picks its own sentence; every other body (null,
  * array, scalar, unknown or inherited name) gets the generic one.
@@ -58,10 +71,18 @@ const REFUSAL_TEXT: Record<string, string> = {
  * CONNECTOR_RATE_LIMITED and CONNECTOR_TOKEN_REVOKED are sync refusals the API
  * has already recorded on the connector (SYNC_FAILED, or TOKEN_REVOKED after a
  * provider 401), so neither sentence says nothing changed. The wait is named
- * only for a non-negative safe integer: no other body string reaches the DOM. */
-export function refusalText(answer: unknown): string {
+ * only for a non-negative safe integer: no other body string reaches the DOM.
+ *
+ * The button that posted passes `action`, never the response body. After the
+ * sync route's run rolls back, its catch block (packages/api/src/connectors.ts)
+ * records SYNC_FAILED for the other provider, response, cursor and credential
+ * codes, so SYNC_FAILURE_TEXT never says nothing changed. A disconnect refusal
+ * rolls back, so DISCONNECT_REFUSAL_TEXT says the source is still connected. */
+export function refusalText(answer: unknown, action?: 'sync' | 'disconnect'): string {
   const body = typeof answer === 'object' && answer !== null ? (answer as {code?: unknown; retryAfterSeconds?: unknown}) : undefined;
   const code = body?.code;
+  const actionText = action && Object.hasOwn(ACTION_TEXT, action) ? ACTION_TEXT[action] : undefined;
+  if (typeof code === 'string' && actionText && Object.hasOwn(actionText, code)) return actionText[code];
   if (typeof code !== 'string' || !Object.hasOwn(REFUSAL_TEXT, code)) return 'The request was refused. Nothing was changed.';
   const wait = body?.retryAfterSeconds;
   if (code === 'CONNECTOR_RATE_LIMITED' && typeof wait === 'number' && Number.isSafeInteger(wait) && wait >= 0) {
@@ -94,7 +115,7 @@ export function Connectors(props: ConnectorsProps) {
   const Heading=props.embedded?'h2':'h1';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(props.error ?? '');
-  async function post(path: string, body: Record<string, unknown>, purpose: string, next?: (answer: unknown) => string) {
+  async function post(path: string, body: Record<string, unknown>, purpose: string, next?: (answer: unknown) => string, action?: 'sync' | 'disconnect') {
     setBusy(true); setError('');
     try {
       const response = await fetch('/api/platform/' + path, {
@@ -104,7 +125,7 @@ export function Connectors(props: ConnectorsProps) {
         body: JSON.stringify(body),
       });
       if (response.status === 401) {window.location.assign('/signin?reason=expired'); return;}
-      if (!response.ok) {setError(refusalText(await response.json().catch(() => null))); return;}
+      if (!response.ok) {setError(refusalText(await response.json().catch(() => null), action)); return;}
       if (next) window.location.assign(next(await response.json().catch(() => null)));
       else window.location.reload();
     } catch {
@@ -171,9 +192,9 @@ export function Connectors(props: ConnectorsProps) {
             <a href={(props.embedded?'/admin/configuration':'/connectors')+'?connector=' + encodeURIComponent(connector.connectorId)}>Grant connector capabilities</a>
             {connector.status !== 'DISCONNECTED' && <>
               <button disabled={disabled} onClick={() => post('connectors/' + connector.connectorId + '/sync',
-                {mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE']}, 'connector.sync')}>Sync now</button>
+                {mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE']}, 'connector.sync', undefined, 'sync')}>Sync now</button>
               <button disabled={disabled} onClick={() => post('connectors/' + connector.connectorId + '/disconnect',
-                {}, 'connector.manage', answer => afterDisconnect(connector.connectorId, answer))}>Disconnect</button>
+                {}, 'connector.manage', answer => afterDisconnect(connector.connectorId, answer), 'disconnect')}>Disconnect</button>
             </>}
           </li>)}</ul>}
 

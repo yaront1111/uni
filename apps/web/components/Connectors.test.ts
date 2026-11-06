@@ -263,3 +263,50 @@ it('draws the new sentences from the shared refusal table',()=>{
   expect(render({refusal:{code:'CONNECTOR_TOKEN_REVOKED',capabilityId:null}})).toContain(REVOKED);
   expect(render({refusal:{code:'CONNECTOR_RATE_LIMITED',capabilityId:null}})).toContain(limited('later'));
 });
+
+const SYNC_CODES:[string,number,string][]=[
+  ['CONNECTOR_PROVIDER_UNAVAILABLE',502,'The provider could not be reached, so the sync stopped. Try again later.'],
+  ['CONNECTOR_PROVIDER_RESPONSE_INVALID',502,'The provider sent a response Uai could not read, so the sync stopped. Try again later.'],
+  ['CONNECTOR_CURSOR_INVALID',409,"The provider no longer accepts this source's saved sync position, so the sync stopped."],
+  ['CONNECTOR_CREDENTIAL_MISSING',409,'Uai could not read the stored credential for this source, so the sync stopped.'],
+  ['CONNECTOR_OAUTH_CLIENT_MISSING',503,'The Google connectors client is not configured on this server, so the sync stopped.'],
+];
+const STILL_CONNECTED='The provider could not be reached to revoke access, so the source is still connected. Try again later.';
+
+it('names the cause and says the sync stopped for the other recorded sync failures',()=>{
+  for(const [code,status,sentence] of SYNC_CODES){
+    const body={code,correlationId:'c',status,retryAfterSeconds:30};
+    expect(refusalText(body,'sync')).toBe(sentence);
+    expect(refusalText(body,'sync')).not.toMatch(/nothing/i);
+  }
+});
+
+it('says the source is still connected when a disconnect cannot reach the provider',()=>{
+  const text=refusalText({code:'CONNECTOR_PROVIDER_UNAVAILABLE',correlationId:'c',status:502},'disconnect');
+  expect(text).toBe(STILL_CONNECTED);
+  expect(text).toContain('still connected');
+  expect(text).not.toContain('sync');
+});
+
+it('keeps the generic sentence where the sync-only codes do not apply',()=>{
+  for(const [code] of SYNC_CODES){
+    expect(refusalText({code})).toBe(GENERIC);
+    if(code!=='CONNECTOR_PROVIDER_UNAVAILABLE')expect(refusalText({code},'disconnect')).toBe(GENERIC);
+  }
+  expect(refusalText({code:'CONNECTOR_PROVIDER_UNAVAILABLE'},'sync')).not.toBe(refusalText({code:'CONNECTOR_PROVIDER_UNAVAILABLE'},'disconnect'));
+});
+
+it('keeps the generic sentence for malformed bodies on both routes and the earlier sentences with an action',()=>{
+  for(const action of ['sync','disconnect'] as const){
+    for(const body of [null,undefined,[],'refused',403,{},{code:403},{code:'constructor'},{code:'toString'},
+      {code:'NOT_A_CONNECTOR_CODE'},{code:'connector_provider_unavailable'}]){
+      expect(refusalText(body,action)).toBe(GENERIC);
+    }
+  }
+  expect(refusalText({code:'CONNECTOR_RATE_LIMITED',retryAfterSeconds:30},'sync')).toBe(limited('in 30 seconds'));
+  expect(refusalText({code:'CONNECTOR_TOKEN_REVOKED'},'sync')).toBe(REVOKED);
+});
+
+it('leaves the server-rendered refusal prop on the shared table',()=>{
+  for(const [code] of SYNC_CODES)expect(render({refusal:{code,capabilityId:null}})).toContain('The request was refused.');
+});
