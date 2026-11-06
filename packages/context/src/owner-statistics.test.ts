@@ -156,6 +156,10 @@ function linear(cost: Cost, f: Fixture) {
   expect(cost.evaluations).toBeLessThanOrEqual(4 * (counts.claims + counts.propositions + counts.belief_slots) + 50);
   for (const table of tables) expect(cost[table], table).toBeLessThanOrEqual(3 * counts[table] + 20);
 }
+/** linear()'s membership-evaluation bound alone, for statements whose tuple fetches are not linear yet (task-7d2ca414). */
+function evaluationBound(f: Fixture) {
+  return 4 * ((f.units.length + 1) + f.units.length + f.units.length) + 50;
+}
 function runAs<T>(f: Fixture, run: (tx: MemoryTransaction) => Promise<T>): Promise<T> {
   if (!app) throw new Error('OWNER_STATISTICS_NOT_READY');
   return withOwnerTransaction(app, { ownerScopeId: f.owner, actorId: f.actor, purpose: 'memory.read', correlationId: randomUUID() }, run);
@@ -231,4 +235,12 @@ it('reads the fresh owner beliefs with linear hot-statement RLS work', async () 
   expect(hot).toHaveLength(1);
   console.info('OWNER_STATISTICS_BELIEFS', hot[0]!.cost);
   linear(hot[0]!.cost, f);
+  // ADR 0046: owner policies check membership once per statement, so every execution of these statements stays
+  // within linear()'s evaluation bound. Their tuple fetches under the one-row estimate are task-7d2ca414's.
+  for (const [name, filter] of [['readableFrameCandidates', 'LIMIT 2049'], ['proposition_slots', 'proposition_slots AS MATERIALIZED']] as const) {
+    const executions = measurements.filter(m => m.sql.includes(filter));
+    expect(executions.length, name).toBeGreaterThan(0);
+    console.info('OWNER_STATISTICS_' + name, executions.map(m => m.cost));
+    for (const m of executions) expect(m.cost.evaluations, name).toBeLessThanOrEqual(evaluationBound(f));
+  }
 }, 60_000);

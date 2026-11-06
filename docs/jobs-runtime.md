@@ -58,13 +58,15 @@ refusals.
 
 ## Owner isolation
 
-`jobs` has forced row-level security, `has_owner_access` on read, insert and
-update, and purpose gating in the policy itself; the application role has no
-DELETE or TRUNCATE privilege. `packages/postgres/src/isolation.test.ts` queries
-`SELECT * FROM jobs` with no application filter under owner A's session and sees
-only owner A's rows, sees nothing under an unrelated purpose, and sees nothing
-for a non-member actor. `assertOwnershipCoverage` now classifies `jobs`, so a
-future table without an ownership classification still fails the check.
+`jobs` has forced row-level security, the owner check
+`owner_scope_id = (SELECT unai_private.authorized_owner_id())` (ADR 0046) on
+read, insert and update, and purpose gating in the policy itself; the
+application role has no DELETE or TRUNCATE privilege.
+`packages/postgres/src/isolation.test.ts` queries `SELECT * FROM jobs` with no
+application filter under owner A's session and sees only owner A's rows, sees
+nothing under an unrelated purpose, and sees nothing for a non-member actor.
+`assertOwnershipCoverage` now classifies `jobs`, so a future table without an
+ownership classification still fails the check.
 
 ## Reference stack
 
