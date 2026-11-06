@@ -21,8 +21,17 @@ path ([Restore drill](#restore-drill)).
   first: the archive carries the schema and its migration ledger, and a migrated database is
   not empty. Deploy an application release whose `migrations/` includes the archive's
   `migrationHead` (named in `<archive>.manifest.json`).
-- **pg_hba** admits the restore role to that database over `hostssl`. The shipped
-  `deploy/postgres/pg_hba.conf` admits only the database `unai`.
+- **pg_hba** admits the restore role to that database over `hostssl`, so
+  `UNAI_RESTORE_DATABASE_URL` names `unai_migrator` at host `127.0.0.1`, never `localhost`, and
+  the database `unai`; the restore and its `pg_restore` verify the server certificate against
+  `UNAI_DATABASE_CA_FILE`. The shipped `deploy/postgres/pg_hba.conf` (ADR 0043 D4) has exactly
+  three lines, with no non-TLS `host` line and no IPv6 line:
+  - `hostssl` to the database `unai` for the five logins `unai_api_login`, `unai_worker_login`,
+    `unai_auth_login`, `unai_backup` and `unai_migrator`, from `127.0.0.1/32` with `scram-sha-256`;
+  - `hostssl` to the drill's per-run databases `unai_restore_drill_<16 lowercase hex>` for
+    `unai_migrator` and the probe logins `unai_restore_drill_probe_<16 lowercase hex>`, from
+    `127.0.0.1/32` with `scram-sha-256` ([Restore drill](#restore-drill));
+  - `local all postgres peer`: the `postgres` superuser connects only through the local socket.
 - **The restore role `unai_migrator`** (LOGIN SUPERUSER, ADR 0043 D4), its password in a 0600
   `PGPASSFILE`. `PGPASSWORD` is refused.
 - **An empty target bucket** whose single `aws:kms` default-encryption rule names
@@ -172,7 +181,13 @@ Prerequisites, beyond the `pnpm restore` ones that apply to the archive and the 
     - `unai_migrator` to the database of `UNAI_RESTORE_DRILL_SERVER_URL` and to every `unai_restore_drill_<id>`;
     - each `unai_restore_drill_probe_<id>` to its database.
 
-    task-8384c4c973814affb1c9bfc02ddeed70 adds those lines.
+    The shipped `deploy/postgres/pg_hba.conf` does, only over `hostssl` from `127.0.0.1/32` with
+    `scram-sha-256` ([Prerequisites](#prerequisites)). Its first line admits `unai_migrator` to
+    `unai`, so `UNAI_RESTORE_DRILL_SERVER_URL` names that database at host `127.0.0.1`, never
+    `localhost`. Its second line admits `unai_migrator` and every login matching
+    `^unai_restore_drill_probe_[0-9a-f]{16}$` to every database matching
+    `^unai_restore_drill_[0-9a-f]{16}$`. Both patterns are anchored, so only exactly 16 lowercase
+    hex characters match; pg_hba cannot pair a probe login with its own run's database.
   - `unai_migrator` has a connection limit of 5, and a drill holds at most three of its sessions at once.
 - **`PGPASSFILE`** has a line for `unai_migrator` whose database field is `*`, because the
   database name changes every run. `PGPASSWORD` is refused.
