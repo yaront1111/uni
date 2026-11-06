@@ -38,7 +38,21 @@ grants and the connector lifecycle. Report: `docs/connectors.md`; decisions:
 - `runConnectorSync` must run under `connector.sync`. That purpose may move the
   cursor and store evidence, and migration 0018's trigger refuses it any change to
   `secret_ref`, the permission manifest or the disconnect state — so consent
-  changes and `markTokenRevoked` run under `connector.manage`.
+  changes and `markTokenRevoked` run under `connector.manage`. Only
+  `credentialRevoked(error)` (`CONNECTOR_TOKEN_REVOKED` with provider status 401,
+  or 400 `invalid_grant` from the Google token exchange; a 403 never counts) may
+  lead a caller to `markTokenRevoked`, as `packages/api/src/connectors.ts` and
+  `connector-sync-job.ts` do.
+- Gmail and Google Calendar clients need the runtime's `GoogleAccessTokens`
+  (`createGoogleAccessTokens` over the `UNAI_GOOGLE_CONNECTOR_CLIENT` client),
+  which exchange the stored refresh token for an access token. Called without
+  one, or with no OAuth client configured, `createConnectorClient` still builds
+  the client, but its first request fails `CONNECTOR_OAUTH_CLIENT_MISSING`.
+- The `SourceIngest` port may throw `SourcePayloadInvalid` only before it writes
+  anything. `runConnectorSync` turns that one error into a per-item
+  `SOURCE_PAYLOAD_INVALID` refusal and continues in the same open transaction;
+  every other error (a stopped connector included) fails the whole run, because
+  it may follow a write or leave the transaction aborted.
 - A failed run is recorded by `recordSyncFailure` in a **separate** transaction:
   the run it failed has been rolled back.
 - Lock order: every lifecycle writer (`setCapabilityGrants`, `markTokenRevoked`,

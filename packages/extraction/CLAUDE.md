@@ -26,6 +26,11 @@ is `docs/model-path-and-extraction.md`.
   enqueues nothing: `enqueueEvidenceProcessing`
   (`packages/api/src/processing-store.ts`) queues the job, from the worker's
   dispatch of recorded processing intents and from a FULL document upload.
+- `TERMINAL_EXTRACTION_ERROR_CODES` (`src/worker.ts`; `EXTRACTION_INPUT_TOO_LARGE`,
+  `MODEL_COST_BUDGET_EXCEEDED`, `EXTRACTION_ROUTE_REFUSED`) is the list the
+  worker's `runOnce` in `packages/api/src/processing-runtime.ts` passes as
+  `runJobAttempt`'s `terminalErrorCodes`, so those refusals dead-letter on the
+  attempt that raised them; every other code stays retryable.
 - Runtime dependencies are `zod`, `@unai/domain`, `@unai/memory` and
   `@unai/model`. `pg` and `@unai/postgres` are devDependencies.
 

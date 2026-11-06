@@ -23,7 +23,7 @@ A provider is any `{read(name): Promise<string|null>}` passed by name to `create
 
 ## Adding a credential variable
 
-1. Read it in the entrypoint with `requireSecret(secrets,'NAME')`, never with `required('NAME')`.
+1. Read it in the entrypoint with `requireSecret(secrets,'NAME')`, never with `required('NAME')`. The one deliberate exception is `UNAI_GOOGLE_CONNECTOR_CLIENT`: it is optional, and `createConnectorRuntime` in `packages/api/src/connectors.ts` (built on a normal API and worker start, never by `--check`) reads it and resolves its `#client_id` and `#client_secret` fields on every token exchange, so a rotation applies without a restart. A literal is still refused with `SECRET_HANDLE_REQUIRED:UNAI_GOOGLE_CONNECTOR_CLIENT`, and a handle that already names a `#field` with `CONFIG_INVALID:UNAI_GOOGLE_CONNECTOR_CLIENT`.
 2. Add `NAME` to the `credentials` array of the entrypoint test in `src/index.test.ts`, otherwise nothing guards it.
 3. Add it to each consuming process table in `docs/operations/environment.md` with Kind `secret handle`. `pnpm check:env-contract` and `src/env-contract.test.ts` fail until the row exists.
 
