@@ -327,6 +327,44 @@ deadlock between two syncs that both inserted evidence and then reach this guard
 
 The real-PostgreSQL proof is `packages/api/src/connector-sync-race.test.ts`.
 
+## Extraction of synced items
+
+ADR 0038 holds for syncs as written (owner decision 2026-11-06, task-b00c772f; no
+amendment). Migration 0031's `triage_processing_intent` trigger records a `PENDING`
+processing intent, in the sync's own transaction, for every synced item that triage
+routes `FULL_EXTRACTION` or `ENTITY_EXTRACTION`. Sync now and the scheduled
+`connector.sync` job behave alike. The processing worker then extracts it; the full
+rules are in `docs/processing-runtime.md`, section "Items from connector syncs".
+
+- **No intent, never extracted automatically:** `SOURCE_ONLY` items (a message that
+  is only quoted history), `INDEX_ONLY` items (newsletters, routine CI notices),
+  `DEFER_UNTIL_RELEVANT` items (an Omi transcript over the ADR 0041 D4 bound is
+  one) and ASSISTANT-authored items (Omi's structured summary).
+- **When:** on a later worker turn, never in the sync request. Each turn enqueues up
+  to 20 pending intents, oldest first, runs one job, and sleeps
+  `UNAI_PROCESSING_POLL_MS` (default 1000). Only intents whose data purpose equals
+  `UNAI_PROCESSING_DATA_PURPOSE` are dispatched, and only for items the worker's
+  `UNAI_PROCESSING_MAXIMUM_SENSITIVITY` can read; any other intent stays `PENDING`
+  without an error. Sync now records `PERSONAL_ASSISTANCE` (the web pins it) with a
+  `RESTRICTED` ceiling; a scheduled sync records the worker's own purpose and
+  ceiling. Items are stored `PRIVATE` unless the owner raised the connector's
+  floor, so a `NORMAL` worker never sees them.
+- **Cost:** each run is bounded by its route's budget and limits in
+  `packages/extraction/src/triage.ts` (`ROUTE_COST_BUDGET_MICROUNITS`,
+  `ROUTE_EXTRACTION_LIMITS`).
+- **Outcome by source:**
+  - Gmail: a first-person commitment from the sender reaches `SUCCEEDED` with a
+    `PROVISIONAL` proposition.
+  - Omi: the transcript ends `NEEDS_REVIEW` with its claims unresolved (ADR 0041
+    D4); the summary is never extracted.
+  - Google Calendar and GitHub: the same intent rule, but canonicalization resolves
+    no asserting actor for them, so a claim ends `NEEDS_REVIEW`. Not exercised by
+    the tests.
+
+Proof: the two cases named "ADR 0038 for connector syncs" in
+`packages/api/src/processing-runtime.test.ts`, which run the web's exact Sync now
+request over a synced Gmail account and Omi account against real PostgreSQL.
+
 ## What this node does not claim
 
 - **No live provider account was exercised.** `packages/connectors/src/providers.ts`

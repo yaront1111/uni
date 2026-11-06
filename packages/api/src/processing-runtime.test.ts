@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -12,9 +12,11 @@ import { claimJob, retryDeadLetterJob } from '@unai/jobs';
 import { TERMINAL_EXTRACTION_ERROR_CODES } from '@unai/extraction';
 import { replayProjection, resolveOwnerEntity } from '@unai/capabilities';
 import { recordClaim, recordResolutionAssertion, setResolutionLifecycle } from '@unai/memory';
+import { createMountedSecretsProvider, createSecretsManager } from '@unai/secrets';
 import type { ModelProvider } from '@unai/model';
 import { lintRegistryCheckout, loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
 import { createPlatformApi } from './platform.js';
+import { createConnectorRuntime } from './connectors.js';
 import { createEvidenceObjects } from './evidence.js';
 import { createProcessingRuntime, type ProcessingRuntimeOptions } from './processing-runtime.js';
 
@@ -53,13 +55,13 @@ beforeAll(async () => {
 });
 afterAll(async () => { objects?.close(); await appPool.end(); await admin.end(); });
 
-async function owner(clock?: () => Date) {
+async function owner(clock?: () => Date, connectors?: ReturnType<typeof createConnectorRuntime>) {
   const adapter = postgresAdapter(admin);
   const user = await adapter.createUser!({ name: 'Processing journey', email: 'processing-' + randomUUID() + '@example.test', emailVerified: null });
   const ownerScopeId = (user as unknown as { ownerScopeId: string }).ownerScopeId;
   const token = randomBytes(32).toString('base64url');
   await adapter.createSession!({ userId: user.id, sessionToken: token, expires: new Date(Date.now() + 86400000) });
-  const app = createPlatformApi({ appPool, authPool: admin, evidenceObjects: objects, registryReleaseId, registryRelease: '0.1.0', ...(clock ? { clock } : {}) });
+  const app = createPlatformApi({ appPool, authPool: admin, evidenceObjects: objects, registryReleaseId, registryRelease: '0.1.0', ...(clock ? { clock } : {}), ...(connectors ? { connectors } : {}) });
   app.addHook('onRequest', async request => { Object.defineProperty(request.raw.socket, 'encrypted', { value: true, configurable: true }); });
   function headers(purpose: string, key = randomUUID()) { return { cookie: SESSION_COOKIE + '=' + token,
     'x-owner-scope-id': ownerScopeId, 'x-purpose': purpose, 'x-correlation-id': randomUUID(), 'idempotency-key': key,
@@ -522,3 +524,230 @@ it('withholds an old overdue notice after an owner changes its scheduled deadlin
     expect(await o.notices()).toEqual([]);
   }finally{await o.app.close();}
 },15000);
+
+// ADR 0038 for connector syncs (task-b00c772f): the owner decided on 2026-11-06 to keep the ADR as
+// written, so a synced item routed FULL or ENTITY gets its intent in the sync transaction (migration
+// 0031's triage_processing_intent trigger) and the worker extracts it. The two cases below drive the
+// web's exact Sync now request through the real connector runtime; only the provider endpoints
+// (global fetch) and the model are doubles.
+const GMAIL_SENTENCE = 'I will send the signed lease.';
+const OMI_QUOTE = 'pay you the 450 euro deposit by Friday 14 November';
+const OMI_LIST = 'https://api.omi.me/v1/dev/user/conversations';
+const omiFixture = JSON.parse(await readFile(resolve('fixtures/sources/omi-conversation.json'), 'utf8')) as { id: string };
+const EXTERNAL = { full: 'thread-full-m1', entity: 'thread-entity-m1', index: 'thread-index-m1', source: 'thread-source-m1',
+  transcript: 'omi:conversation:' + omiFixture.id, summary: 'omi:conversation:' + omiFixture.id + ':structured' } as const;
+
+function gmailThread(id: string, from: string, subject: string, body: string, labelIds = ['INBOX']) {
+  return { id, historyId: '1', messages: [{ id: id + '-m1', threadId: id, internalDate: '1788166800000', labelIds,
+    payload: { mimeType: 'text/plain', headers: [
+      { name: 'Message-Id', value: '<' + id + '@example.test>' }, { name: 'From', value: from },
+      { name: 'To', value: 'owner@example.test' }, { name: 'Subject', value: subject },
+      { name: 'Date', value: 'Mon, 31 Aug 2026 09:00:00 +0000' }],
+      body: { text: body } } }] };
+}
+const GMAIL_THREADS = [
+  gmailThread('thread-full', 'Dana <dana@example.test>', 'The lease', GMAIL_SENTENCE),
+  gmailThread('thread-entity', 'Lee <lee@example.test>', 'Hello', 'Thanks for the note.'),
+  gmailThread('thread-index', 'newsletter@shop.example', 'Weekly digest', 'Fresh arrivals this week. Unsubscribe here.', ['INBOX', 'CATEGORY_PROMOTIONS']),
+  gmailThread('thread-source', 'Lee <lee@example.test>', 'Re: The lease',
+    'On Mon, 31 Aug 2026 at 09:00, Dana <dana@example.test> wrote:\n> ' + GMAIL_SENTENCE),
+];
+
+/** The three provider endpoints a Gmail and an Omi sync touch, and nothing else. Every token is
+ * generated per run, and each endpoint refuses a request that does not carry the right one. */
+function providerFetch(google: { accessToken: string; refreshToken: string; clientId: string; clientSecret: string }, omiKey: string): typeof fetch {
+  return async (input, init) => {
+    const target = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    const bearer = new Headers(init?.headers).get('authorization');
+    if (target.href === 'https://oauth2.googleapis.com/token') {
+      const form = new URLSearchParams(String(init?.body));
+      const expected = { grant_type: 'refresh_token', refresh_token: google.refreshToken,
+        client_id: google.clientId, client_secret: google.clientSecret };
+      const valid = init?.method === 'POST' && [...form].length === 4 && Object.entries(expected).every(([key, value]) => form.get(key) === value);
+      return valid ? Response.json({ access_token: google.accessToken, expires_in: 3599, token_type: 'Bearer' })
+        : Response.json({ error: 'invalid_request' }, { status: 400 });
+    }
+    if (target.origin === 'https://gmail.googleapis.com') {
+      if (bearer !== 'Bearer ' + google.accessToken) return new Response('{}', { status: 401 });
+      if (/^\/gmail\/v1\/users\/[^/]+\/threads$/.test(target.pathname)) return Response.json({ threads: GMAIL_THREADS.map(thread => ({ id: thread.id })) });
+      const one = /^\/gmail\/v1\/users\/[^/]+\/threads\/([^/]+)$/.exec(target.pathname);
+      const thread = one ? GMAIL_THREADS.find(candidate => candidate.id === decodeURIComponent(one[1]!)) : undefined;
+      return thread ? Response.json(thread) : new Response('{}', { status: 404 });
+    }
+    if (target.origin + target.pathname === OMI_LIST) {
+      if (bearer !== 'Bearer ' + omiKey) return new Response('{}', { status: 401 });
+      return Response.json([omiFixture], { headers: { 'x-omi-has-more': 'false' } });
+    }
+    return new Response('{}', { status: 404 });
+  };
+}
+/** A mounted secrets directory holding the three credentials, behind the real connector runtime. */
+async function syncedSources() {
+  const dir = await mkdtemp(join(tmpdir(), 'unai-processing-sync-'));
+  const google = { accessToken: 'ya29.' + randomBytes(24).toString('base64url'), refreshToken: '1//' + randomBytes(24).toString('base64url'),
+    clientId: 'connector-client.apps.example.test', clientSecret: 'GOCSPX-' + randomBytes(18).toString('base64url') };
+  const omiKey = 'omi_dev_' + randomBytes(24).toString('hex');
+  try {
+    await writeFile(join(dir, 'gmail'), JSON.stringify({ refresh_token: google.refreshToken }));
+    await writeFile(join(dir, 'google-connector-client'), JSON.stringify({ client_id: google.clientId, client_secret: google.clientSecret }));
+    await writeFile(join(dir, 'omi'), omiKey);
+    return { fetch: providerFetch(google, omiKey), close: () => rm(dir, { recursive: true, force: true }),
+      connectors: createConnectorRuntime(createSecretsManager({ mounted: createMountedSecretsProvider(dir) }),
+        { UNAI_GOOGLE_CONNECTOR_CLIENT: 'secret://mounted/google-connector-client' }) };
+  } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
+}
+
+type SyncedOwner = Awaited<ReturnType<typeof owner>>;
+/** Connect a source and press Sync now exactly as the web does: the proxy pins the PERSONAL_ASSISTANCE
+ * data purpose and the RESTRICTED ceiling (apps/web/pages/api/platform/[...path].ts), the component
+ * sends {mode, allowedPurposes} (apps/web/components/Connectors.tsx). The fetch double is installed
+ * only around the sync request. */
+async function syncNow(o: SyncedOwner, provider: typeof fetch, connectorType: 'GMAIL' | 'OMI', itemsIngested: number) {
+  const gmail = connectorType === 'GMAIL';
+  const created = await o.app.inject({ method: 'POST', url: '/v1/connectors', headers: o.headers('connector.manage'), payload: {
+    connectorType, externalAccountRef: 'owner@example.test', secretRef: gmail ? 'secret://mounted/gmail#refresh_token' : 'secret://mounted/omi',
+    requestedCapabilities: (gmail ? ['gmail.read_metadata', 'gmail.read_content'] : ['omi.read_conversations']).map(capabilityId => ({ capabilityId, granted: true })) } });
+  expect(created.statusCode, created.body).toBe(201);
+  const original = globalThis.fetch;
+  globalThis.fetch = provider;
+  try {
+    const synced = await o.app.inject({ method: 'POST', url: '/v1/connectors/' + created.json().connectorId + '/sync',
+      headers: { ...o.headers('connector.sync'), 'x-maximum-sensitivity': 'RESTRICTED' },
+      payload: { mode: 'INCREMENTAL', allowedPurposes: ['PERSONAL_ASSISTANCE'] } });
+    expect(synced.statusCode, synced.body).toBe(200);
+    expect(synced.json()).toMatchObject({ itemsIngested, storedSensitivity: 'PRIVATE' });
+  } finally { globalThis.fetch = original; }
+}
+/** A fresh owner who has synced the four Gmail threads and the one Omi conversation. */
+async function withSyncedOwner<T>(run: (o: SyncedOwner) => Promise<T>): Promise<T> {
+  const sources = await syncedSources();
+  try {
+    const o = await owner(undefined, sources.connectors);
+    try {
+      await syncNow(o, sources.fetch, 'GMAIL', GMAIL_THREADS.length);
+      await syncNow(o, sources.fetch, 'OMI', 2);
+      return await run(o);
+    } finally { await o.app.close(); }
+  } finally { await sources.close(); }
+}
+async function items(ownerScopeId: string) {
+  const rows = (await admin.query(`SELECT s.id,s.external_id,t.tier1_route AS route,t.routing_reason->>'code' AS code
+    FROM source_items s JOIN triage_decisions t ON t.owner_scope_id=s.owner_scope_id AND t.source_item_id=s.id
+    WHERE s.owner_scope_id=$1`, [ownerScopeId])).rows as { id: string; external_id: string; route: string; code: string }[];
+  return { rows, of: (name: keyof typeof EXTERNAL) => rows.find(row => row.external_id === EXTERNAL[name])! };
+}
+const intents = async (ownerScopeId: string) =>
+  (await admin.query('SELECT * FROM evidence_processing WHERE owner_scope_id=$1 ORDER BY source_item_id', [ownerScopeId])).rows;
+
+/** A model double that quotes one fixed sentence from whichever anchor holds it, and answers no claim
+ * for any other item. The default double cites anchors[0], and anchors come back in random id order. */
+function citing() {
+  const requests: { sourceType: string; input: string }[] = [];
+  const provider: ModelProvider = { providerId: 'recorded-test', defaultModelId: 'source-span-test', async complete(request) {
+    const input = JSON.parse(request.input) as { sourceType: string; anchors: { anchorKind: string; parentAnchor: Record<string, unknown>; text: string }[] };
+    requests.push({ sourceType: input.sourceType, input: request.input });
+    for (const sentence of [GMAIL_SENTENCE, OMI_QUOTE]) {
+      const anchor = input.anchors.find(candidate => candidate.text.includes(sentence));
+      if (!anchor) continue;
+      const start = anchor.text.indexOf(sentence);
+      return { modelId: 'source-span-test', costMicrounits: 1, outputText: JSON.stringify({ claims: [{
+        frameTypeId: 'shared.commitment', statement: sentence, span: { anchorKind: anchor.anchorKind,
+          parentAnchor: anchor.parentAnchor, start, end: start + sentence.length, quote: sentence },
+        extractionConfidence: 0.95, temporalExpression: null, participants: [] }], unknowns: [] }) };
+    }
+    return { modelId: 'source-span-test', costMicrounits: 1, outputText: JSON.stringify({ claims: [], unknowns: [] }) };
+  } };
+  return { provider, requests };
+}
+
+it('ADR 0038 for connector syncs: Sync now records a PENDING intent in the sync transaction for every FULL or ENTITY item and none for SOURCE_ONLY or INDEX_ONLY items', () => withSyncedOwner(async o => {
+  const synced = await items(o.ownerScopeId);
+  // The fixtures route as intended, so a drifting router fails here and not as a vacuous pass below.
+  expect(Object.fromEntries(synced.rows.map(row => [row.external_id, row.route]))).toEqual({
+    [EXTERNAL.full]: 'FULL_EXTRACTION', [EXTERNAL.entity]: 'ENTITY_EXTRACTION', [EXTERNAL.index]: 'INDEX_ONLY',
+    [EXTERNAL.source]: 'SOURCE_ONLY', [EXTERNAL.transcript]: 'FULL_EXTRACTION', [EXTERNAL.summary]: 'SOURCE_ONLY',
+  });
+  expect(synced.of('summary').code).toBe('ASSISTANT_AUTHORED');
+  const deep = [synced.of('full').id, synced.of('entity').id, synced.of('transcript').id].sort();
+
+  const recorded = await intents(o.ownerScopeId);
+  expect(recorded.map(row => row.source_item_id as string).sort()).toEqual(deep);
+  for (const row of recorded) {
+    expect(row).toMatchObject({ status: 'PENDING', job_id: null, extraction_run_id: null, run_kind: 'FULL',
+      data_purpose: 'PERSONAL_ASSISTANCE', maximum_sensitivity: 'RESTRICTED', actor_id: o.user.id });
+  }
+  // Same transaction: nothing updates either row before dispatch, so an equal xmin means one inserting
+  // transaction, the sync's. An intent written by a later transaction would carry another xmin.
+  const together = (await admin.query(`SELECT p.source_item_id FROM evidence_processing p JOIN triage_decisions t
+    ON t.owner_scope_id=p.owner_scope_id AND t.source_item_id=p.source_item_id
+    WHERE p.owner_scope_id=$1 AND p.xmin=t.xmin`, [o.ownerScopeId])).rows;
+  expect(together.map(row => row.source_item_id as string).sort()).toEqual(deep);
+
+  for (const name of ['full', 'entity', 'transcript'] as const) {
+    const read = await o.app.inject({ method: 'GET', url: '/v1/evidence/' + synced.of(name).id, headers: o.headers('evidence.read') });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json().processing, name).toEqual({ status: 'PENDING', unresolvedClaims: 0, lastError: null, completedAt: null });
+  }
+  for (const name of ['index', 'source', 'summary'] as const) {
+    const read = await o.app.inject({ method: 'GET', url: '/v1/evidence/' + synced.of(name).id, headers: o.headers('evidence.read') });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json().processing, name).toBeNull();
+  }
+}), 30000);
+
+it('ADR 0038 for connector syncs: the worker extracts synced Gmail and Omi items only under the data purpose the sync recorded', () => withSyncedOwner(async o => {
+  const synced = await items(o.ownerScopeId);
+  const [full, entity, transcript] = [synced.of('full').id, synced.of('entity').id, synced.of('transcript').id] as const;
+  const c = citing();
+
+  // The web pins PERSONAL_ASSISTANCE for Sync now, and dispatch filters on that purpose
+  // (processing-runtime.ts dispatch), so a worker for another purpose claims nothing.
+  expect((await o.runtime({ provider: c.provider, dataPurpose: 'WORK_ASSISTANCE' }).runOnce()).claimed).toBe(false);
+  expect(c.requests).toEqual([]);
+  const waiting = await intents(o.ownerScopeId);
+  expect(waiting.map(row => row.source_item_id as string).sort()).toEqual([full, entity, transcript].sort());
+  for (const row of waiting) expect(row).toMatchObject({ status: 'PENDING', job_id: null });
+
+  // The matching worker dispatches all three on its first turn and runs one job per turn.
+  const worker = o.runtime({ provider: c.provider });
+  for (let turn = 1; turn <= 3; turn++) expect((await worker.runOnce()).job?.status, 'turn ' + turn).toBe('SUCCEEDED');
+  expect((await worker.runOnce()).claimed).toBe(false);
+  // The INDEX_ONLY newsletter and the SOURCE_ONLY quoted reply never reach the model.
+  expect(c.requests.map(request => request.sourceType).sort()).toEqual(['GMAIL', 'GMAIL', 'OMI']);
+  for (const request of c.requests) expect(request.input).not.toMatch(/Unsubscribe|wrote:/);
+
+  const runs = (await admin.query('SELECT id,source_item_id,status,error_code FROM extraction_runs WHERE owner_scope_id=$1', [o.ownerScopeId])).rows;
+  expect(runs.map(run => [run.source_item_id, run.status, run.error_code]).sort())
+    .toEqual([[full, 'SUCCEEDED', null], [entity, 'SUCCEEDED', null], [transcript, 'SUCCEEDED', null]].sort());
+  const ledger = new Map((await intents(o.ownerScopeId)).map(row => [row.source_item_id as string, row]));
+  const runOf = (id: string) => runs.find(run => run.source_item_id === id)!.id as string;
+  expect(ledger.get(full)).toMatchObject({ status: 'SUCCEEDED', unresolved_claims: 0, last_error: null, extraction_run_id: runOf(full) });
+  expect(ledger.get(entity)).toMatchObject({ status: 'SUCCEEDED', unresolved_claims: 0, last_error: null, extraction_run_id: runOf(entity) });
+  // By design (ADR 0041 D4): the quote is not first-person and the EXTERNAL omi:transcript actor gets no
+  // entity (processing-canonicalization.ts), so the claim stays unresolved and the item needs review.
+  expect(ledger.get(transcript)).toMatchObject({ status: 'NEEDS_REVIEW', unresolved_claims: 1, last_error: null, extraction_run_id: runOf(transcript) });
+  for (const id of [full, entity, transcript]) expect(ledger.get(id)!.completed_at, id).toBeInstanceOf(Date);
+
+  const claims = (await admin.query(`SELECT c.claim_origin,c.lifecycle,c.proposition_id,c.extraction_run_id,a.source_item_id,a.anchor_kind,a.anchor
+    FROM claims c JOIN source_anchors a ON a.owner_scope_id=c.owner_scope_id AND a.id=c.source_anchor_id
+    WHERE c.owner_scope_id=$1`, [o.ownerScopeId])).rows;
+  expect(claims.filter(claim => claim.source_item_id === entity)).toEqual([]);
+  for (const name of ['index', 'source', 'summary'] as const) {
+    expect(claims.filter(claim => claim.source_item_id === synced.of(name).id), name).toEqual([]);
+  }
+  const spoken = claims.filter(claim => claim.source_item_id === transcript);
+  expect(spoken).toHaveLength(1);
+  expect(spoken[0]).toMatchObject({ claim_origin: 'MODEL_EXTRACTION', lifecycle: 'CANDIDATE', proposition_id: null,
+    anchor_kind: 'TRANSCRIPT_SEGMENT', anchor: expect.objectContaining({ segmentIndex: 2 }) });
+  const sent = claims.filter(claim => claim.source_item_id === full && claim.proposition_id !== null);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ claim_origin: 'MODEL_EXTRACTION' });
+  const assessment = (await admin.query('SELECT assessment_status FROM belief_assessments WHERE owner_scope_id=$1 AND proposition_id=$2',
+    [o.ownerScopeId, sent[0]!.proposition_id])).rows;
+  expect(assessment).toEqual([{ assessment_status: 'PROVISIONAL' }]);
+
+  const read = await o.app.inject({ method: 'GET', url: '/v1/evidence/' + transcript, headers: o.headers('evidence.read') });
+  expect(read.statusCode, read.body).toBe(200);
+  expect(read.json().processing).toMatchObject({ status: 'NEEDS_REVIEW', unresolvedClaims: 1, lastError: null });
+  expect(typeof read.json().processing.completedAt).toBe('string');
+}), 60000);
