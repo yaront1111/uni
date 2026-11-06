@@ -128,6 +128,7 @@ describe('deploy secret scan', () => {
       '# GOOGLE_CLIENT_SECRET=',
       'UNAI_S3_KMS_KEY_ID=arn:aws:kms:<aws-region>:<aws-account-id>:key/<evidence-key-id>',
       'NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75',
+      'readonly AWSCLI_SHA256=d641283d37f1a2168457a9f26a20d4e29167652e9ab1719b37114ef1ebe859f4',
     ]) expect(secretHits(text), text).toEqual([]);
   });
 });
@@ -222,7 +223,22 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
   const repo = 'https://example.invalid/uai.git';
   const fresh = ['--tag', tag, '--repo', repo, '--dry-run'];
   const mutators = ['apt-get', 'useradd', 'install', 'mkdir', 'chown', 'chmod', 'ln', 'mv', 'cp', 'touch', 'curl', 'tar', 'git',
-    'corepack', 'pnpm', 'node', 'npm', 'systemctl', 'timedatectl', 'sha256sum', 'dpkg', 'dpkg-query'];
+    'corepack', 'pnpm', 'node', 'npm', 'systemctl', 'timedatectl', 'sha256sum', 'dpkg', 'dpkg-query', 'unzip', 'aws', 'rm'];
+  // ADR 0043 D4: the zip whose PGP signature verified against the AWS CLI Team key.
+  const awscliSha256 = 'd641283d37f1a2168457a9f26a20d4e29167652e9ab1719b37114ef1ebe859f4';
+  const awscliPlan = (R: string) => {
+    const zip = `${R}/var/cache/unai/awscli-exe-linux-x86_64-2.36.7.zip`;
+    return [
+      `+ install -d -m 0755 ${R}/var/cache/unai`,
+      `+ curl -fsSL --proto =https --tlsv1.2 --retry 3 -o ${zip} https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.36.7.zip`,
+      `+ put 0644 root:root ${zip}.sha256`,
+      `  | ${awscliSha256}  ${zip}`,
+      `+ sha256sum --check --status ${zip}.sha256`,
+      `+ rm -rf -- ${R}/var/cache/unai/aws`,
+      `+ unzip -q -o ${zip} -d ${R}/var/cache/unai`,
+      `+ ${R}/var/cache/unai/aws/install --update --install-dir ${R}/usr/local/aws-cli --bin-dir ${R}/usr/local/bin`,
+    ];
+  };
   const users = ['unai-api', 'unai-web', 'unai-worker', 'unai-backup'];
 
   // A fake host root plus FAILING stubs for every mutator: a dry run must invoke none.
@@ -263,13 +279,13 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
       ['/etc/unai/secrets/api/aws', 'unai-api', '0750'], ['/etc/unai/secrets/web', 'unai-web', '0750'],
       ['/etc/unai/secrets/worker', 'unai-worker', '0750'], ['/etc/unai/secrets/worker/connectors', 'unai-worker', '0750'],
       ['/etc/unai/secrets/worker/aws', 'unai-worker', '0750'], ['/etc/unai/tls/web', 'unai-web', '0750'],
-      ['/etc/unai/backup', 'unai-backup', '0750'],
+      ['/etc/unai/backup', 'unai-backup', '0750'], ['/etc/unai/pgdata', 'root', '0700'],
     ].map(([path, group, mode]) => `+ install -d -o root -g ${group} -m ${mode} ${R}${path}`);
     expect(output.filter(line => line.startsWith('+ install -d -o '))).toEqual(directories);
     expectInOrder(output, [
       '+ timedatectl set-timezone Etc/UTC',
       '+ env DEBIAN_FRONTEND=noninteractive apt-get update',
-      '+ env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git openssl xz-utils certbot postgresql-common',
+      '+ env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git openssl xz-utils certbot postgresql-common cryptsetup unzip',
       `+ put 0644 root:root ${R}/etc/apt/apt.conf.d/51unai-unattended-upgrades`,
       '  | Unattended-Upgrade::Package-Blacklist {', '  |     "postgresql-17";', '  |     "postgresql-17-pgvector";', '  | };',
       `+ put 0644 root:root ${R}/etc/apt/preferences.d/unai-pgvector`,
@@ -281,6 +297,7 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
       `+ tar --no-same-owner --strip-components=1 -xJf ${tarball} -C ${R}/usr/local`,
       `+ /usr/local/bin/corepack enable --install-directory ${R}/usr/local/bin pnpm`,
       '+ env COREPACK_ENABLE_DOWNLOAD_PROMPT=0 /usr/local/bin/corepack install -g pnpm@11.0.8',
+      ...awscliPlan(R),
       ...missingUsers.map(user => `+ useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin ${user}`),
       ...directories,
       `+ git -c advice.detachedHead=false clone --branch ${tag} -- ${repo} ${rel}`,
@@ -299,7 +316,8 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     expect(output.filter(line => line.startsWith('+ systemctl'))).toEqual(['+ systemctl daemon-reload']);
     expect(result.stdout).not.toContain('apt.postgresql.org.sh');
     const manual = result.stdout.split('Remaining manual steps:')[1]!;
-    for (const text of ['DNS', 'Mount the LUKS2 data volume at /var/lib/postgresql', '/etc/unai/secrets', '/root/.pgpass',
+    for (const text of ['DNS', '/etc/unai/pgdata/aws-credentials', 'deploy/pgdata/setup.sh', '/var/lib/postgresql',
+      'keyslot-1 recovery passphrase', 'unai-pgdata-unlock.service', '/etc/unai/secrets', '/root/.pgpass',
       'backup.key', 'certbot certonly', 'pnpm db:migrate', 'systemctl enable --now']) expect(manual).toContain(text);
   });
 
@@ -308,12 +326,12 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     expect(install(fresh).stdout).toBe(install(fresh).stdout);
   });
 
-  it('plans no file write under secrets, backup or /root and generates no key material', () => {
+  it('plans no file write under secrets, backup, pgdata or /root and generates no key material', () => {
     const {R, install} = host();
-    const writes = lines(install(fresh).stdout).filter(line => /^\+ (put |install (?!-d )|ln |touch |tar |curl |git .* clone )/.test(line));
+    const writes = lines(install(fresh).stdout).filter(line => /^\+ (put |install (?!-d )|ln |touch |tar |unzip |curl |git .* clone )/.test(line));
     expect(writes.length).toBeGreaterThan(5);
     for (const line of writes) {
-      for (const forbidden of [`${R}/etc/unai/secrets`, `${R}/etc/unai/backup`, `${R}/root`]) expect(line).not.toContain(forbidden);
+      for (const forbidden of [`${R}/etc/unai/secrets`, `${R}/etc/unai/backup`, `${R}/etc/unai/pgdata`, `${R}/root`]) expect(line).not.toContain(forbidden);
     }
     const text = read('deploy/install.sh');
     for (const material of ['/dev/urandom', 'openssl rand', 'head -c', 'PASSWORD']) expect(text).not.toContain(material);
@@ -336,6 +354,7 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     write(join(R, 'etc/unai/migrate.env'), 'UNAI_DATABASE_CA_FILE=/etc/unai/tls/ca/ca.pem\n');
     write(join(R, 'usr/local/bin/node'), '#!/bin/sh\necho v24.22.2\n', 0o755);
     write(join(R, 'usr/local/bin/pnpm'), '#!/bin/sh\necho 11.0.8\n', 0o755);
+    write(join(R, 'usr/local/bin/aws'), '#!/bin/sh\necho aws-cli/2.36.7 Python/3.13.0 Linux/6.8 exe/x86_64.ubuntu.24\n', 0o755);
     return {...fixture, git};
   }
 
@@ -346,7 +365,8 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
     expect(result.status).toBe(0);
     expect(existsSync(log)).toBe(false);
     const output = lines(result.stdout);
-    expect(output.filter(line => /^\+ (git |ln |curl |tar |env -u NODE_ENV|env NEXT_TELEMETRY|touch |\/usr\/local\/bin\/corepack|env COREPACK)/.test(line))).toEqual([]);
+    expect(output.filter(line => /^\+ (git |ln |curl |tar |unzip |rm |env -u NODE_ENV|env NEXT_TELEMETRY|touch |\/usr\/local\/bin\/corepack|env COREPACK)/.test(line))).toEqual([]);
+    expect(result.stdout).not.toContain('/aws/install');
     expect(result.stdout).not.toContain(`${R}/etc/unai/api.env`);
     expect(result.stdout).not.toContain(`+ put 0600 root:root ${R}/etc/unai/migrate.env`);
     expectInOrder(output, [
@@ -356,6 +376,18 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('install.
       `+ install -m 0600 -o root -g root ${rel}/deploy/env/web.env.example ${R}/etc/unai/web.env`,
     ]);
   });
+
+  it.each(['aws-cli/2.17.0 Python/3.12.6 Linux/6.8 exe/x86_64.ubuntu.24', 'aws-cli/2.36.70 Python/3.13.0 Linux/6.8 exe/x86_64.ubuntu.24'])(
+    're-installs the pinned, checksummed AWS CLI over %s', version => {
+      const {R, log, install} = installed();
+      write(join(R, 'usr/local/bin/aws'), `#!/bin/sh\necho ${version}\n`, 0o755);
+      const result = install(['--tag', tag, '--dry-run']);
+      expect([result.status, result.stderr]).toEqual([0, '']);
+      expect(existsSync(log)).toBe(false);
+      const output = lines(result.stdout);
+      expectInOrder(output, awscliPlan(R));
+      expect(output.filter(line => /^\+ (curl |tar |\/usr\/local\/bin\/corepack)/.test(line))).toEqual([awscliPlan(R)[1]]);
+    });
 
   it('rebuilds a release whose BUILD_ID outlived a failed build', () => {
     const {rel, log, install} = installed(`releases/${tag}`, 'BUILD_ID');

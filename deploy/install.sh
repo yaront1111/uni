@@ -10,8 +10,8 @@
 #
 # - Idempotent: a re-run changes nothing, and --dry-run prints the same plan
 #   while executing nothing. Every mutation goes through run or put.
-# - It never writes a secret: no file under /etc/unai/secrets, /etc/unai/backup
-#   or /root, and no key material.
+# - It never writes a secret: no file under /etc/unai/secrets, /etc/unai/backup,
+#   /etc/unai/pgdata or /root, and no key material.
 # - An installed host upgrades through deploy/upgrade.sh in the ADR 0043 D12
 #   order, never through this script: it refuses when /opt/unai/current points
 #   at another release.
@@ -27,6 +27,13 @@ readonly NODE_VERSION=24.22.2
 readonly NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
 readonly NODE_TARBALL="node-v${NODE_VERSION}-linux-x64.tar.xz"
 readonly PNPM_VERSION=11.0.8
+# ADR 0043 D4: AWS CLI v2 for the data volume unlock; Ubuntu 24.04 has no awscli
+# package. AWS publishes a PGP signature, not a checksum: this is the SHA-256 of
+# the zip whose signature verified on 2026-11-06 against the AWS CLI Team key in
+# the AWS CLI user guide, FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C.
+readonly AWSCLI_VERSION=2.36.7
+readonly AWSCLI_SHA256=d641283d37f1a2168457a9f26a20d4e29167652e9ab1719b37114ef1ebe859f4
+readonly AWSCLI_ZIP="awscli-exe-linux-x86_64-${AWSCLI_VERSION}.zip"
 readonly R="${UNAI_DEPLOY_ROOT:-}"
 
 DRY_RUN=0
@@ -127,7 +134,7 @@ fi
 run timedatectl set-timezone Etc/UTC
 run env DEBIAN_FRONTEND=noninteractive apt-get update
 run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  ca-certificates curl git openssl xz-utils certbot postgresql-common
+  ca-certificates curl git openssl xz-utils certbot postgresql-common cryptsetup unzip
 put 0644 root:root "$R/etc/apt/apt.conf.d/51unai-unattended-upgrades" <<'EOF'
 // ADR 0043 D12: PostgreSQL and pgvector update only in a maintenance window.
 // Entries add to the list in 50unattended-upgrades.
@@ -175,9 +182,23 @@ if [[ $(version_of "$R/usr/local/bin/pnpm") != "$PNPM_VERSION" ]]; then
   run /usr/local/bin/corepack enable --install-directory "$R/usr/local/bin" pnpm
   run env COREPACK_ENABLE_DOWNLOAD_PROMPT=0 /usr/local/bin/corepack install -g "pnpm@$PNPM_VERSION"
 fi
+# AWS CLI v2 (D4), for unai-pgdata-unlock.service. Its installer keeps each
+# version under /usr/local/aws-cli/v2 and links /usr/local/bin/aws to it.
+zip="$R/var/cache/unai/$AWSCLI_ZIP"
+if [[ $(version_of "$R/usr/local/bin/aws") != "aws-cli/$AWSCLI_VERSION "* ]]; then
+  run install -d -m 0755 "$R/var/cache/unai"
+  run curl -fsSL --proto =https --tlsv1.2 --retry 3 -o "$zip" "https://awscli.amazonaws.com/$AWSCLI_ZIP"
+  printf '%s  %s\n' "$AWSCLI_SHA256" "$zip" | put 0644 root:root "$zip.sha256"
+  run sha256sum --check --status "$zip.sha256" || fail INSTALL_AWSCLI_CHECKSUM_MISMATCH
+  # A stale extraction must not mix with this one.
+  run rm -rf -- "$R/var/cache/unai/aws"
+  run unzip -q -o "$zip" -d "$R/var/cache/unai"
+  run "$R/var/cache/unai/aws/install" --update --install-dir "$R/usr/local/aws-cli" --bin-dir "$R/usr/local/bin"
+fi
 if [[ $DRY_RUN != 1 ]]; then
   [[ $(version_of "$R/usr/local/bin/node") == "v$NODE_VERSION" ]] || fail INSTALL_TOOLCHAIN_MISMATCH
   [[ $(version_of "$R/usr/local/bin/pnpm") == "$PNPM_VERSION" ]] || fail INSTALL_TOOLCHAIN_MISMATCH
+  [[ $(version_of "$R/usr/local/bin/aws") == "aws-cli/$AWSCLI_VERSION "* ]] || fail INSTALL_TOOLCHAIN_MISMATCH
 fi
 
 # --- System users (D1, D9): one per process, plus the backup user. ---
@@ -187,9 +208,9 @@ for user in unai-api unai-web unai-worker unai-backup; do
   fi
 done
 
-# --- Directories (D1, D2, D6, D9). install -d also corrects an existing one.
+# --- Directories (D1, D2, D4, D6, D9). install -d also corrects an existing one.
 # The CA script owns tls/ca, tls/api and tls/postgres; this script creates no
-# file under /etc/unai/secrets or /etc/unai/backup. ---
+# file under /etc/unai/secrets, /etc/unai/backup or /etc/unai/pgdata. ---
 directory() {
   run install -d -o root -g "$2" -m "$3" "$R$1"
 }
@@ -207,6 +228,8 @@ for process in api web worker; do
 done
 directory /etc/unai/tls/web unai-web 0750
 directory /etc/unai/backup unai-backup 0750
+# D4: the unlock's credentials and config, and the key that pgdata/setup.sh writes.
+directory /etc/unai/pgdata root 0700
 if ((pg_mounted)); then
   # D9: on the encrypted data volume, never on a tmpfs.
   run install -d -o unai-backup -g unai-backup -m 0700 "$R/var/lib/postgresql/unai-backup-staging"
@@ -284,7 +307,7 @@ fi
 # --- What remains is the operator's: nothing above creates a secret. ---
 next_step 'DNS: an A record uai.<owner-domain> -> <host-ipv4> and a CAA record 0 issue "letsencrypt.org" (ADR 0043 D3). Allow inbound 22, 80 and 443 only (D1).'
 if ((!pg_mounted)); then
-  next_step 'Mount the LUKS2 data volume at /var/lib/postgresql (ADR 0043 D4), then re-run this script to install PostgreSQL 17 and pgvector.'
+  next_step 'Set up the LUKS2 data volume (ADR 0043 D4) as deploy/README.md describes: place /etc/unai/pgdata/aws-credentials and aws-config, run deploy/pgdata/setup.sh, which mounts the volume at /var/lib/postgresql, add the keyslot-1 recovery passphrase and enable unai-pgdata-unlock.service. Then re-run this script to install PostgreSQL 17 and pgvector.'
 fi
 next_step 'Issue the internal CA and the API and PostgreSQL leaves (D2), then configure and provision PostgreSQL (D4).'
 next_step 'Place the D6 secret files under /etc/unai/secrets/<process>/ (root:unai-<process> 0640), the AWS credentials at <mount>/aws/credentials for the api and worker mounts, and the unai_migrator password in /root/.pgpass (0600). Put backup.key, pgpass and aws-credentials in /etc/unai/backup (D9) and record the offline copy of backup.key.'
