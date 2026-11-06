@@ -213,7 +213,7 @@ const README_SECTIONS: Sections = [
   ['First sign-in, the worker and the timers', ['owner_scope_members', 'UNAI_PROCESSING_OWNER_SCOPE_ID',
     'systemctl enable --now unai-worker.service', '127.0.0.1:9102', 'systemctl enable --now unai-backup.timer unai-restore-drill.timer']],
   ['Connectors', ['pnpm connect:google', 'ssh -L', 'secret://mounted/connectors/google', 'GitHub', 'Omi']],
-  ['Upgrade', ['D12', 'unai-backup.timer']],
+  ['Upgrade', ['D12', 'unai-backup.timer', 'deploy/upgrade.sh', '--registry-version']],
   ['Backup and restore', ['systemctl start unai-backup.service', 'pnpm backup', 'pnpm restore', 'pnpm restore:drill',
     'restore.drill.completed', 'journalctl -u unai-restore-drill.service']],
   ['Runbooks', ['../docs/operations/backup.md', '../docs/operations/restore.md', '../docs/operations/deletion.md',

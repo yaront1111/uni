@@ -510,35 +510,64 @@ the owner-only checks. After a first sync, take a backup and run the drill.
 ## Upgrade
 
 Follow [ADR 0043 D12](../docs/adr/0043-production-deployment-target.md#d12-upgrade-and-rollback-order).
-There is no upgrade automation in this bundle yet. Stop `unai-backup.timer` and
-`unai-restore-drill.timer` for the whole operation, and wait for any already-running
-backup/drill service to finish before entering maintenance. Stopping a timer does
-not stop its running service. Never start `unai-backup.service` during an upgrade:
-its ExecStopPost restarts the **current** release's API and worker.
-
-1. Fetch the chosen tag into `/opt/unai/releases/<tag>`.
-2. There run `pnpm install --frozen-lockfile`, then `pnpm build`.
-3. Stop the worker, then the API (D11); leave web up.
-4. Run `node scripts/backup.mjs` as unai-backup with backup.env, PGPASSFILE and AWS settings from its unit, not through that service; require PASS.
-5. Run `pnpm db:migrate` from the new release using migrate.env and pgpass.
-6. Run `pnpm uai registry publish --version '<x.y.z>'` if the pinned registry version changes.
-7. Update environment files and run all three preflights against the new release (web API warning is expected while API is stopped).
-8. Swap `/opt/unai/current` to the new release.
-9. Start API and wait for readyz, restart web and check signin, then start worker and wait for readyz.
-
-For step 4, this transient command intentionally has **no** automatic restart:
+From `/opt/unai/current`, preview the plan, then run the same command without
+`--dry-run`. Only the operator runs the real upgrade on the deployed host:
 
 ```sh
-systemd-run --wait --pipe --quiet --uid=unai-backup --gid=unai-backup \
-  --working-directory=/opt/unai/current --property=EnvironmentFile=/etc/unai/backup.env \
-  --setenv=PGPASSFILE=/etc/unai/backup/pgpass --setenv=AWS_SHARED_CREDENTIALS_FILE=/etc/unai/backup/aws-credentials \
-  --setenv=AWS_EC2_METADATA_DISABLED=true /usr/local/bin/node scripts/backup.mjs
+sudo bash deploy/upgrade.sh '<tag>' --dry-run
 ```
 
-Failure before migration: swap back and start the previous units. From migration
-onwards, restore the step-4 backup into an empty database/store or fix forward;
-there are no down migrations. Start both timers again only after recovery and
-readiness checks. An abort must not silently leave protection disabled.
+- `--repo <url>` overrides the current release's Git origin. Dry-run without it
+  prints `<origin-url>` without invoking Git. Do not put credentials in the URL.
+- `--registry-version x.y.z` changes the common API/worker registry pin. When it
+  differs, publish creates the database release or returns the already-published
+  ID, then rewrites only `UNAI_REGISTRY_RELEASE` and `UNAI_REGISTRY_RELEASE_ID` in
+  `/etc/unai/api.env` and `/etc/unai/worker.env`, retaining root-only
+  `<file>.pre-<tag>` copies. No flag, or the same version, leaves the pin untouched.
+  The `registry-v<x.y.z>` tag must already be pushed; this is an
+  [owner gate](../docs/operations/real-data-gates.md), not something the script does.
+- `--dry-run` prints commands without executing or writing them. It validates
+  installed files, not the unfetched release, database, credentials or readiness.
+
+The script first stops previously active `unai-backup.timer` and
+`unai-restore-drill.timer`, then refuses an active/activating backup or drill.
+Stopping a timer does not stop its running service. D12 then runs in this order:
+
+1. Fetch the tag into a **new** `/opt/unai/releases/<tag>`; verify its HEAD and any requested registry tag.
+2. Run `pnpm install --frozen-lockfile`, `pnpm build`, then write the build-complete marker; check units and required env variables, naming missing variables without values, before stopping writers.
+3. Stop the worker, then API (D11); leave web up.
+4. Take the old release's backup using `node scripts/backup.mjs` in a transient unit as unai-backup, with its backup.env, pgpass and AWS settings; abort on failure.
+5. Run `pnpm db:migrate` from the new release with migrate.env and `/root/.pgpass`.
+6. Publish and re-pin only if `--registry-version` changes the pin.
+7. Run all three new-release preflights as their service users (the web API warning is expected while API is stopped).
+8. Atomically swap the relative current link; copy the new units and certbot hook, and reload systemd. Never enable units here.
+9. Start API and check port 9101 readyz, restart web and check signin with `curl --resolve`, then start worker and check port 9102 readyz; each retry has a 120-second window and bounded individual curl requests. Restart previously active timers only after success.
+
+Before migration, rollback re-points current, restarts the previous API/worker
+if maintenance began, restarts the stopped timers, and removes the new release
+directory this run created. An interrupted transient backup is stopped first.
+Check any `rollback incomplete` warning; it does not promise services recovered.
+
+**From migration on there is no automatic rollback.** Either
+[restore the step-4 backup](../docs/operations/restore.md) into an empty database
+and empty store, restore `.pre-<tag>` env files if the pin moved, re-point current
+at the old release and reinstall/start its units; or fix forward. For a failed
+preflight, correct the env file, rerun that check, then swap/start in D12 order.
+Both timers stay stopped on D12-step failures: start them only after recovery and
+readiness checks. The failed release directory is retained, so simply rerunning
+the upgrade with the same tag is refused.
+
+If D12 succeeds but the final timer restart fails or is interrupted, timer state
+is **unknown** (a multi-unit start can partially succeed). The script reports
+this separately; inspect both timers and backup/drill services before recovery.
+An interrupted migration/preflight transient unit may still be running: inspect
+systemd jobs before fixing forward, never race an unfinished migration.
+
+Never `systemctl start unai-backup.service` during an upgrade: its ExecStopPost
+starts the **current** release's API and worker. Do not run competing manual
+backups/drills or edit the deployment while upgrading. Persistent timers may fire
+a missed run immediately on restart. Old releases remain under `/opt/unai/releases`;
+prune manually only when a release and its backup are no longer your rollback point.
 
 ## Backup and restore
 
