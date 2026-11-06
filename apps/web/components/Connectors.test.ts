@@ -2,7 +2,7 @@ import {expect,it} from 'vitest';
 import {createElement} from 'react';
 import {connectorTypeSchema, disconnectResultSchema, publicConnectorSchema} from '@unai/domain';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {afterDisconnect, lastDisconnectFrom, Connectors,type ConnectorsProps} from './Connectors';
+import {afterDisconnect, lastDisconnectFrom, refusalText, Connectors,type ConnectorsProps} from './Connectors';
 import {Evidence} from './Evidence';
 
 /** One assertion per state the design draws for "Connected sources", "Grant
@@ -222,4 +222,44 @@ it('shows stored documents found by text before any extraction has run',()=>{
   const none=renderToStaticMarkup(createElement(Evidence,{evidence:null,connector:null,error:null,receipt:null,
     search:{query:'nothing here',hits:[]}} as never));
   expect(none).toContain('No stored document matches that text');
+});
+
+const GENERIC='The request was refused. Nothing was changed.';
+const limited=(when:string)=>'The provider is limiting requests, so the sync stopped. Try again '+when+'.';
+const REVOKED='The provider refused the credential for this source, so the sync stopped. Reauthorization is required before it can sync again.';
+const limitedBody=(retryAfterSeconds:unknown)=>({code:'CONNECTOR_RATE_LIMITED',correlationId:'c',status:429,retryAfterSeconds});
+
+it('names the wait of a rate-limited sync only when retryAfterSeconds is a non-negative integer',()=>{
+  expect(refusalText(limitedBody(30))).toBe(limited('in 30 seconds'));
+  expect(refusalText(limitedBody(1))).toBe(limited('in 1 second'));
+  expect(refusalText(limitedBody(0))).toBe(limited('in 0 seconds'));
+  expect(refusalText({code:'CONNECTOR_RATE_LIMITED'})).toBe(limited('later'));
+  for(const bad of [null,-1,-30,1.5,'30','soon','',true,[30],{},1e21]){
+    expect(refusalText(limitedBody(bad))).toBe(limited('later'));
+  }
+});
+
+it('says reauthorization is required after a revoked credential',()=>{
+  expect(refusalText({code:'CONNECTOR_TOKEN_REVOKED',correlationId:'c',status:401})).toBe(REVOKED);
+  expect(refusalText({code:'CONNECTOR_TOKEN_REVOKED',status:403,retryAfterSeconds:30})).toBe(REVOKED);
+});
+
+it('never says nothing changed after a sync the API recorded on the connector',()=>{
+  expect(refusalText(limitedBody(30))).not.toMatch(/nothing/i);
+  expect(refusalText(limitedBody(null))).not.toMatch(/nothing/i);
+  expect(refusalText({code:'CONNECTOR_TOKEN_REVOKED'})).not.toMatch(/nothing/i);
+});
+
+it('keeps the generic sentence for every other body and the existing sentences',()=>{
+  for(const body of [null,undefined,[],'refused',403,{},{code:403},{code:'constructor'},{code:'NOT_A_CONNECTOR_CODE'},
+    {retryAfterSeconds:30},{code:'connector_rate_limited',retryAfterSeconds:30}]){
+    expect(refusalText(body)).toBe(GENERIC);
+  }
+  expect(refusalText({code:'CONNECTOR_CAPABILITY_NOT_GRANTED'})).toBe('That capability has not been granted, so the operation was refused.');
+  expect(refusalText({code:'CONNECTOR_INGESTION_STOPPED'})).toBe('This source is disconnected or revoked, so nothing was ingested.');
+});
+
+it('draws the new sentences from the shared refusal table',()=>{
+  expect(render({refusal:{code:'CONNECTOR_TOKEN_REVOKED',capabilityId:null}})).toContain(REVOKED);
+  expect(render({refusal:{code:'CONNECTOR_RATE_LIMITED',capabilityId:null}})).toContain(limited('later'));
 });

@@ -39,19 +39,35 @@ const CONNECTOR_TYPE_LABEL: Record<ConnectorType, string> = {
   GMAIL: 'Gmail', GOOGLE_CALENDAR: 'Google Calendar', GITHUB: 'GitHub', DOCUMENT: 'Documents',
   CONVERSATION: 'Conversation source', OMI: 'Omi wearable',
 };
+// ADR 0041 D7: a rate-limited run fails at once, and the API sends the provider's whole-second Retry-After as retryAfterSeconds, or null.
+function rateLimitedText(retry: string): string {
+  return 'The provider is limiting requests, so the sync stopped. Try again ' + retry + '.';
+}
 const REFUSAL_TEXT: Record<string, string> = {
   CONNECTOR_WRITE_SCOPE_REFUSED: 'That capability needs a write scope. Uai V0 is read-only and refused it.',
   CONNECTOR_CAPABILITY_NOT_GRANTED: 'That capability has not been granted, so the operation was refused.',
   CONNECTOR_INGESTION_STOPPED: 'This source is disconnected or revoked, so nothing was ingested.',
   CONNECTOR_ALREADY_CONNECTED: 'That account is already connected to this owner scope.',
+  CONNECTOR_RATE_LIMITED: rateLimitedText('later'),
+  CONNECTOR_TOKEN_REVOKED: 'The provider refused the credential for this source, so the sync stopped. Reauthorization is required before it can sync again.',
 };
 /** The one sentence a refused write shows. Only an object body whose own string
  * `code` is a REFUSAL_TEXT key picks its own sentence; every other body (null,
- * array, scalar, unknown or inherited name) gets the generic one. */
-function refusalText(answer: unknown): string {
-  const code = typeof answer === 'object' && answer !== null ? (answer as {code?: unknown}).code : undefined;
-  return typeof code === 'string' && Object.hasOwn(REFUSAL_TEXT, code) ? REFUSAL_TEXT[code]
-    : 'The request was refused. Nothing was changed.';
+ * array, scalar, unknown or inherited name) gets the generic one.
+ *
+ * CONNECTOR_RATE_LIMITED and CONNECTOR_TOKEN_REVOKED are sync refusals the API
+ * has already recorded on the connector (SYNC_FAILED, or TOKEN_REVOKED after a
+ * provider 401), so neither sentence says nothing changed. The wait is named
+ * only for a non-negative safe integer: no other body string reaches the DOM. */
+export function refusalText(answer: unknown): string {
+  const body = typeof answer === 'object' && answer !== null ? (answer as {code?: unknown; retryAfterSeconds?: unknown}) : undefined;
+  const code = body?.code;
+  if (typeof code !== 'string' || !Object.hasOwn(REFUSAL_TEXT, code)) return 'The request was refused. Nothing was changed.';
+  const wait = body?.retryAfterSeconds;
+  if (code === 'CONNECTOR_RATE_LIMITED' && typeof wait === 'number' && Number.isSafeInteger(wait) && wait >= 0) {
+    return rateLimitedText('in ' + wait + (wait === 1 ? ' second' : ' seconds'));
+  }
+  return REFUSAL_TEXT[code];
 }
 
 const MANUAL_REVOCATION_TEXT = 'Uai has stopped using this key and forgotten its handle. Omi does not let apps revoke developer keys: revoke it in the Omi app under Settings > Developer.';
