@@ -1,7 +1,6 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
-import {spawn,spawnSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {existsSync} from 'node:fs';
 import {chmod,copyFile,mkdir,mkdtemp,readdir,readFile,rm,symlink,writeFile} from 'node:fs/promises';
 import {createServer,connect,type AddressInfo,type Server} from 'node:net';
 import {createRequire} from 'node:module';
@@ -15,7 +14,7 @@ import {createEncryptedS3Store} from '../packages/storage/src/index.js';
 // @ts-expect-error JavaScript harness helper.
 import * as archiveLibrary from '../scripts/lib/backup-archive.mjs';
 // @ts-expect-error JavaScript harness helper.
-import {POSTGRES_IMAGE} from '../scripts/postgres-harness.mjs';
+import {pgClient} from '../scripts/pg-client.mjs';
 // @ts-expect-error JavaScript harness helper.
 import {createSelfSignedCertificate} from '../scripts/tls-certificate.mjs';
 // @ts-expect-error JavaScript harness helper.
@@ -123,18 +122,10 @@ async function startPostgresTlsProxy(cert:string,tlsKey:string):Promise<{server:
   await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));
   return {server,port:(server.address() as AddressInfo).port};
 }
-/** A PostgreSQL client tool of the server's major: a host binary, else the pinned harness image. The
- * docker fallback needs --interactive: pg_restore reads the dump on stdin. */
-function pgTool(tool:string,major:number):string[]{
-  const host='/usr/lib/postgresql/'+major+'/bin/'+tool;
-  if(existsSync(host))return [host];
-  const onPath=spawnSync(tool,['--version'],{encoding:'utf8'});
-  if(!onPath.error&&onPath.status===0&&onPath.stdout.includes('(PostgreSQL) '+major+'.'))return [tool];
-  if(!posix)throw new Error(tool.toUpperCase()+'_'+major+'_REQUIRED');
-  const names=['PGHOST','PGPORT','PGUSER','PGDATABASE','PGSSLMODE','PGSSLROOTCERT','PGPASSFILE','PGCONNECT_TIMEOUT','PGAPPNAME'];
-  return ['docker','run','--rm','--interactive','--network','host','--user',`${process.getuid?.()}:${process.getgid?.()}`,
-    '--volume',`${root}:${root}:ro`,...names.flatMap(name=>['--env',name]),POSTGRES_IMAGE,tool];
-}
+/** A PostgreSQL client tool of the server's major: a host binary, else the pinned harness image's own binary run on
+ * this host (scripts/pg-client.mjs), never a container: under Docker Desktop one cannot reach this host's 127.0.0.1
+ * terminator. pg_restore reads the dump on stdin, which a host process gets directly. One extraction serves both tools. */
+function pgTool(tool:string,major:number):string[]{return pgClient(tool,major,join(root,'pg-client'));}
 /** A password-less URL through the terminator; the password comes from the `*` pgpass. */
 const terminatorUrl=(user:string,database:string)=>`postgresql://${encodeURIComponent(user)}@127.0.0.1:${proxyPort}/${database}`;
 /** One source item of the seeded connector and its evidence key row; `deleted` erases both. */

@@ -1,7 +1,6 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
-import {spawn,spawnSync} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {existsSync} from 'node:fs';
 import {chmod,mkdir,mkdtemp,readdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {createServer,connect,type AddressInfo,type Server} from 'node:net';
 import {createRequire} from 'node:module';
@@ -15,7 +14,7 @@ import {createEncryptedS3Store} from '../packages/storage/src/index.js';
 // @ts-expect-error JavaScript harness helper.
 import * as archiveLibrary from '../scripts/lib/backup-archive.mjs';
 // @ts-expect-error JavaScript harness helper.
-import {POSTGRES_IMAGE} from '../scripts/postgres-harness.mjs';
+import {imagePgClient,pgClient} from '../scripts/pg-client.mjs';
 // @ts-expect-error JavaScript harness helper.
 import {createSelfSignedCertificate} from '../scripts/tls-certificate.mjs';
 // @ts-expect-error JavaScript harness helper.
@@ -56,7 +55,7 @@ const objectBytes=Buffer.concat([Buffer.from('backup fixture '),randomBytes(4096
 const sha256=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const script=resolve('scripts/backup.mjs');
 let root='',key=Buffer.alloc(0),keyFile='',caFile='',passFile='',passLine='',inactiveBin='',systemctlLog='',backupUrl='',firstArchive='';
-let proxy:Server|undefined,proxyPort=0,pgDump:string[]=[],connector='',caBundle='';
+let proxy:Server|undefined,proxyPort=0,major=0,pgDump:string[]=[],connector='',caBundle='';
 const outputs:string[]=[],s3Sentinels:string[]=[];
 
 /** A TLS terminator for the PostgreSQL wire protocol in front of the plain harness server. */
@@ -77,17 +76,11 @@ async function startPostgresTlsProxy(cert:string,tlsKey:string):Promise<{server:
   await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));
   return {server,port:(server.address() as AddressInfo).port};
 }
-/** A pg_dump of the server's major: a host client, else the pinned harness image. */
-function pgDumpPrefix(major:number):string[]{
-  const host='/usr/lib/postgresql/'+major+'/bin/pg_dump';
-  if(existsSync(host))return [host];
-  const onPath=spawnSync('pg_dump',['--version'],{encoding:'utf8'});
-  if(!onPath.error&&onPath.status===0&&onPath.stdout.includes('(PostgreSQL) '+major+'.'))return ['pg_dump'];
-  if(!posix)throw new Error('PG_DUMP_'+major+'_REQUIRED');
-  const names=['PGHOST','PGPORT','PGUSER','PGDATABASE','PGSSLMODE','PGSSLROOTCERT','PGPASSFILE','PGCONNECT_TIMEOUT','PGAPPNAME'];
-  return ['docker','run','--rm','--network','host','--user',`${process.getuid?.()}:${process.getgid?.()}`,
-    '--volume',`${root}:${root}:ro`,...names.flatMap(name=>['--env',name]),POSTGRES_IMAGE,'pg_dump'];
-}
+/**
+ * A pg_dump of the server's major: a host client, else the pinned harness image's own binary run on this host
+ * (scripts/pg-client.mjs). Never a container: under Docker Desktop one cannot reach this host's 127.0.0.1 terminator.
+ */
+const pgDumpPrefix=(serverMajor:number):string[]=>pgClient('pg_dump',serverMajor,join(root,'pg-client'));
 async function fakeSystemctl(name:string,body:string){
   const bin=join(root,name);
   await mkdir(bin);
@@ -140,7 +133,8 @@ beforeAll(async()=>{
   systemctlLog=join(root,'systemctl.log');
   if(posix)inactiveBin=await fakeSystemctl('inactive-bin',`echo "$@" >> '${systemctlLog}'\necho inactive\nexit 3`);
   const version=Number((await scratch.query('SHOW server_version_num')).rows[0].server_version_num);
-  pgDump=pgDumpPrefix(Math.floor(version/10000));
+  major=Math.floor(version/10000);
+  pgDump=pgDumpPrefix(major);
   await seed();
 },240000);
 
@@ -185,6 +179,20 @@ function run(args:string[],overrides:Record<string,string|undefined>={}):Promise
     child.stderr.on('data',chunk=>{stderr+=chunk;});
     child.once('error',reject);
     child.once('close',status=>{outputs.push(stdout,stderr);done({status,stdout,stderr});});
+  });
+}
+/** A PostgreSQL client binary as a child with only `variables` as PG* settings. Never spawnSync: the terminator lives on this event loop. */
+function client(prefix:string[],args:string[],variables:Record<string,string>):Promise<Run>{
+  const env={...process.env};
+  for(const name of Object.keys(env)){if(name.startsWith('PG'))delete env[name];}
+  Object.assign(env,variables);
+  return new Promise((done,reject)=>{
+    const child=spawn(prefix[0] as string,[...prefix.slice(1),...args],{env});
+    let stdout='',stderr='';
+    child.stdout.on('data',chunk=>{stdout+=chunk;});
+    child.stderr.on('data',chunk=>{stderr+=chunk;});
+    child.once('error',reject);
+    child.once('close',status=>done({status,stdout,stderr}));
   });
 }
 function line(text:string):Record<string,unknown>{
@@ -561,6 +569,30 @@ describe.skipIf(!shared)('s3:// destination',()=>{
     }
   },300000);
 });
+
+it.skipIf(process.platform!=='linux')('an image pg_dump runs on this host and reaches the 127.0.0.1 TLS terminator only under the trusted CA (Docker Desktop loopback, task-6ed964aa)',async()=>{
+  expect(pgDump[0]).not.toBe('docker');
+  const directory=join(root,'pg-client'),prefix=imagePgClient('pg_dump',major,directory) as string[];
+  expect(prefix[0]).not.toBe('docker');
+  expect(prefix.at(-1)).toBe(join(directory,'pg_dump'));
+  const variables={PGHOST:'127.0.0.1',PGPORT:String(proxyPort),PGUSER:decodeURIComponent(serverUrl.username),PGDATABASE:database,
+    PGSSLMODE:'verify-full',PGPASSFILE:passFile,PGCONNECT_TIMEOUT:'10'};
+  const trusted=await client(prefix,['--schema-only'],{...variables,PGSSLROOTCERT:caFile});
+  expect(trusted.status,trusted.stderr).toBe(0);
+  expect(trusted.stdout).toContain('-- PostgreSQL database dump');
+  // The same command under a CA that did not sign the terminator's certificate: verify-full is enforced, not just requested.
+  const foreign=join(root,'foreign-ca.pem');
+  await writeFile(foreign,(createSelfSignedCertificate() as {certificate:string}).certificate);
+  const untrusted=await client(prefix,['--schema-only'],{...variables,PGSSLROOTCERT:foreign});
+  expect(untrusted.status).not.toBe(0);
+  expect(untrusted.stdout).toBe('');
+  expect(untrusted.stderr).toContain('certificate verify failed');
+},120000);
+
+it.skipIf(process.platform!=='linux')('a client the pinned image cannot supply fails early with a precise code (task-6ed964aa)',()=>{
+  expect(()=>imagePgClient('pg_dump',99,join(root,'pg-client-99'))).toThrow(/^PG_CLIENT_IMAGE_FAILED: pg_dump 99: /);
+  expect(()=>imagePgClient('pg_dumpall',17,join(root,'pg-client'))).toThrow(/^PG_CLIENT_TOOL_INVALID$/);
+},120000);
 
 it('never names a delete or list command, so the backup principal never deletes or lists (ADR 0043 D9)',async()=>{
   expect(await readFile(script,'utf8')).not.toMatch(/Delete\w*Command|List\w*Command/);

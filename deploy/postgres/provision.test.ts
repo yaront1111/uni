@@ -1,10 +1,13 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {spawn,spawnSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
-import {existsSync,readFileSync} from 'node:fs';
+import {existsSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
 import {createRequire} from 'node:module';
-import {resolve} from 'node:path';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+// @ts-expect-error JavaScript harness helper.
+import {imagePgClient} from '../../scripts/pg-client.mjs';
 // @ts-expect-error JavaScript harness helper.
 import {POSTGRES_IMAGE,postgresRunArguments} from '../../scripts/postgres-harness.mjs';
 
@@ -83,6 +86,8 @@ const session=(variables:Record<string,string>)=>[
   'BEGIN;',snapshot('PRE'),provision,snapshot('FIRST'),provision,snapshot('SECOND'),
   DRIFT,snapshot('DRIFTED'),provision,snapshot('CONVERGED'),'ROLLBACK;',snapshot('AFTER'),''].join('\n');
 
+/** The Linux image client's directory (scripts/pg-client.mjs), removed in afterAll. */
+let clientDirectory='';
 /** psql of the server's major on the host, else on PATH, else the pinned harness image (scripts/database-roundtrip.mjs). */
 function psqlClient(major:number):Psql{
   // No ambient PG* variable reaches the client; HOME and DOCKER_* stay so the docker CLI finds its daemon.
@@ -94,6 +99,13 @@ function psqlClient(major:number):Psql{
   if(existsSync(host))return {command:host,args:[],env};
   const onPath=spawnSync('psql',['--version'],{env});
   if(!onPath.error&&onPath.status===0)return {command:'psql',args:[],env};
+  // A `--network host` container shares Docker Desktop's VM loopback, not this host's, so it cannot reach the harness's
+  // published port: on Linux the pinned image's own psql runs here. Windows (host.docker.internal) and macOS keep the container.
+  if(process.platform==='linux'){
+    clientDirectory=mkdtempSync(join(tmpdir(),'unai-provision-psql-'));
+    const [command,...args]=imagePgClient('psql',major,clientDirectory) as string[];
+    return {command:command as string,args,env};
+  }
   const loopback=['127.0.0.1','localhost','[::1]'].includes(serverUrl.hostname);
   if(loopback&&process.platform==='win32')env.PGHOST='host.docker.internal';
   const network=process.platform==='win32'?[]:['--network','host'];
@@ -155,7 +167,10 @@ afterAll(async()=>{
       await delay(25);
     }
     throw new Error('PROVISION_TEST_BACKENDS_STILL_ACTIVE');
-  }finally{await admin.end();}
+  }finally{
+    if(clientDirectory)rmSync(clientDirectory,{recursive:true,force:true});
+    await admin.end();
+  }
 },30_000);
 
 describe('provision.sql on the harness server', () => {
