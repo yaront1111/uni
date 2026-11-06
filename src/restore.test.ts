@@ -265,10 +265,11 @@ async function copyTriple(directory:string){
   await mkdir(directory,{recursive:true});
   for(const suffix of ['','.sha256','.manifest.json'])await copyFile(join(archiveDirectory,archiveName+suffix),join(directory,archiveName+suffix));
 }
-/** Both sidecars for `name` as `pnpm backup` writes them, for an archive of `bytes` hashing to `digest`. */
+/** Both sidecars for `name` as `pnpm backup` writes them, by suffix, for an archive of `bytes` hashing to `digest`. */
+const sidecarsOf=(name:string,digest:string,bytes:number)=>({'.sha256':digest+'  '+name+'\n',
+  '.manifest.json':JSON.stringify({...sidecar,archive:name,sha256:digest,bytes},null,2)+'\n'});
 async function writeSidecars(directory:string,name:string,digest:string,bytes:number){
-  await writeFile(join(directory,name+'.sha256'),digest+'  '+name+'\n');
-  await writeFile(join(directory,name+'.manifest.json'),JSON.stringify({...sidecar,archive:name,sha256:digest,bytes},null,2)+'\n');
+  for(const [suffix,body] of Object.entries(sidecarsOf(name,digest,bytes)))await writeFile(join(directory,name+suffix),body);
 }
 /** The archive re-sealed under the SAME key with a mutated inner manifest, as a 2020 archive with fresh sidecars. */
 async function reseal(label:string,mutate:(inner:Manifest)=>void):Promise<string>{
@@ -418,6 +419,10 @@ it('restores the fresh backup into an empty database and prefix: PASS, and the t
 it('a /-terminated local directory selects the newest archive that has both sidecars',async()=>{
   const directory=join(root,'select');
   await copyTriple(directory);
+  // An OLDER complete archive (the same bytes under a 2000 name): picking the oldest would restore it and report its name.
+  const older='uai-backup-20000101T000000Z.tar.enc';
+  await copyFile(join(directory,archiveName),join(directory,older));
+  await writeSidecars(directory,older,archiveSha256,archiveBytes);
   const newer=(day:string)=>'uai-backup-209901'+day+'T000000Z.tar.enc';
   await writeFile(join(directory,newer('01')),'incomplete');await writeFile(join(directory,newer('01')+'.sha256'),'incomplete');
   await writeFile(join(directory,newer('02')),'incomplete');await writeFile(join(directory,newer('02')+'.manifest.json'),'incomplete');
@@ -438,6 +443,10 @@ it('a /-terminated local directory selects the newest archive that has both side
 it('restores an s3:// archive through an empty staging directory, and empties it after success and failure',async()=>{
   const newer='uai-backup-20990101T000000Z.tar.enc',nested=archivePrefix+'nested/',location='s3://'+archiveBucket+'/'+archivePrefix;
   for(const suffix of ['','.sha256','.manifest.json'])await upload(archivePrefix+archiveName+suffix,await readFile(archivePath+suffix));
+  // An OLDER complete triple beside it (the same bytes under a 2000 name): picking the oldest would restore it and report its name.
+  const older='uai-backup-20000101T000000Z.tar.enc';
+  await upload(archivePrefix+older,await readFile(archivePath));
+  for(const [suffix,body] of Object.entries(sidecarsOf(older,archiveSha256,archiveBytes)))await upload(archivePrefix+older+suffix,body);
   await upload(archivePrefix+newer,'incomplete');await upload(archivePrefix+newer+'.sha256','incomplete');
   for(const suffix of ['','.sha256','.manifest.json'])await upload(nested+'uai-backup-20990202T000000Z.tar.enc'+suffix,await readFile(archivePath+suffix));
   const s3Env=async(label:string,named:string)=>{
@@ -488,6 +497,24 @@ it('refuses a tampered archive with RESTORE_ARCHIVE_INTEGRITY_FAILED before any 
     if(recompute)await writeSidecars(directory,archiveName,sha256(bytes),bytes.length);
     const target=await freshTarget(recompute?'tampered-resealed':'tampered');
     const {result,targetOperations}=await restoreTo(target,{UNAI_RESTORE_ARCHIVE:path});
+    refused(result,'RESTORE_ARCHIVE_INTEGRITY_FAILED');
+    expect(targetOperations).toEqual([]);
+    await untouched(target);
+  }
+},600000);
+
+it('refuses an authentic archive whose sidecars disagree with it: RESTORE_ARCHIVE_INTEGRITY_FAILED before any write',async()=>{
+  // Only the sidecars change, so the archive still authenticates: the file's own digest and the .sha256 line must decide.
+  const cases:[string,(directory:string)=>Promise<void>][]=[
+    ['digest',directory=>writeSidecars(directory,archiveName,sha256('another archive'),archiveBytes)],
+    ['line',directory=>writeFile(join(directory,archiveName+'.sha256'),archiveSha256+'  uai-backup-20000101T000000Z.tar.enc\n')],
+  ];
+  for(const [label,alter] of cases){
+    const directory=join(root,'sidecar-'+label);
+    await copyTriple(directory);
+    await alter(directory);
+    const target=await freshTarget('sidecar-'+label);
+    const {result,targetOperations}=await restoreTo(target,{UNAI_RESTORE_ARCHIVE:join(directory,archiveName)});
     refused(result,'RESTORE_ARCHIVE_INTEGRITY_FAILED');
     expect(targetOperations).toEqual([]);
     await untouched(target);
