@@ -32,22 +32,39 @@ it('shows recorded processing progress and unresolved review without echoing raw
   evidence.processing=null;expect(renderToStaticMarkup(createElement(Evidence,{evidence,connector:null,error:null}))).toContain('Processing status is not available');
 });
 
-import {candidateBystanderPanel,candidateOwnerPanel,sourcesProps} from './testing/screens';
+import {candidateBystanderPanel,candidateOwnerPanel,id,sourcesProps} from './testing/screens';
 const statementsOf=(over:Record<string,unknown>)=>renderToStaticMarkup(createElement(Evidence,{...sourcesProps,...over}));
+const UUID=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const readingPath=(html:string)=>html.replace(/<details class="advanced">[\s\S]*?<\/details>/g,'').replace(/<[^>]+>/g,' ');
 it('lists the statements read from a source with their labels and one Why? / Sources disclosure each (ADR 0047)',()=>{
   const html=statementsOf({});
   expect(html).toContain('<h2 id="statements-heading">Statements read from this source</h2>');
   expect(html).toContain('aria-labelledby="statements-heading"');
   expect(html).toContain('These statements were read from this source. They are not yet in memory: nothing has accepted them.');
-  expect(html).toContain('What the labels mean');expect(html).toContain('data-label="REPORTED"');
-  expect(html).toContain('</span> '+candidateOwnerPanel.statement+'</p>');
-  expect(html).toContain('</span> '+candidateBystanderPanel.statement+'</p>');
+  expect(html).toContain('What the labels mean');
+  // Pin each list item's first paragraph: the closed Why panel repeats both
+  // the badge and statement, so page-wide substring checks would be vacuous.
+  const listed=html.match(/<li><p>[\s\S]*?<\/p>/g);
+  expect(listed).toHaveLength(2);
+  for(const [index,panel] of [candidateOwnerPanel,candidateBystanderPanel].entries()){
+    expect(listed![index]).toMatch(/^<li><p><span class="label label-dashed" data-label="REPORTED"/);
+    expect(listed![index]).toContain('</span> '+panel.statement+'</p>');
+  }
   expect(html.match(/<summary>Why\? \/ Sources/g)).toHaveLength(2);
   expect(html).not.toContain('Only the first');
   expect(html.indexOf('Source detail')).toBeLessThan(html.indexOf('Statements read from this source'));
-  const readingPath=html.replace(/<details class="advanced">[\s\S]*?<\/details>/g,'').replace(/<[^>]+>/g,' ');
-  expect(readingPath).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  expect(readingPath).not.toContain('omi-conv-2026-10-28-7f3a');
+  expect(readingPath(html)).not.toMatch(UUID);
+  expect(readingPath(html)).not.toContain('omi-conv-2026-10-28-7f3a');
+});
+it.each([{speaker:'owner',panel:candidateOwnerPanel},{speaker:'bystander',panel:candidateBystanderPanel}])(
+  'keeps a UUID in the $speaker quote off the reading path',({panel})=>{
+    const statement=panel.statement.replace('”',' Reference '+id(599)+'.”');
+    const html=statementsOf({statements:{...sourcesProps.statements!,statements:[{...panel,statement}]}});
+    const listed=html.match(/<li><p>[\s\S]*?<\/p>/g);
+    expect(listed).toHaveLength(1);
+    expect(listed![0]).toContain(' Reference (see the advanced inspector).”</p>');
+    expect(readingPath(html)).not.toMatch(UUID);
+    expect(html).toContain(panel.subject.objectId); // Identifiers still exist in the advanced inspector.
 });
 it('says when the list is cut short',()=>{
   expect(statementsOf({statements:{...sourcesProps.statements!,truncated:true}})).toContain('<p>Only the first 2 statements are shown.</p>');
