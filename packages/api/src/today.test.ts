@@ -557,26 +557,43 @@ it('refuses a Today request that declares no purpose or ceiling, or no timezone,
   } finally { await app.close(); }
 });
 
+/** The model's paraphrase, stored where extraction keeps it (`claims.metadata.statement`).
+ * No panel may show it: a candidate's statement is built from its quote (ADR 0047 D4). */
+const PARAPHRASE = 'MODEL-PARAPHRASE-MARKER';
+/** A claim the extraction model read from `anchorId`: an unresolved CANDIDATE unless
+ * `state` gives it another lifecycle or a proposition that took it up. */
+async function candidateClaim(anchorId: string, state: { id?: string; lifecycle?: string; propositionId?: string; recordedAt?: Date } = {}) {
+  const id = state.id ?? uuidV7();
+  await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,proposition_id,claim_origin,lifecycle,recorded_at,
+    extraction_confidence,metadata) VALUES($1,$2,$3,$4,'MODEL_EXTRACTION',$5,$6,0.7,$7)`,
+    [id, owner, anchorId, state.propositionId ?? null, state.lifecycle ?? 'CANDIDATE', state.recordedAt ?? RECORDED,
+      JSON.stringify({ statement: PARAPHRASE })]);
+  return id;
+}
+
 it('opens an unresolved candidate claim as REPORTED, a taken-up claim as its belief, and lists a source\'s candidates (ADR 0047)', async () => {
   const words = 'Maya will bring the signed lease on Monday.';
-  const MARKER = 'MODEL-PARAPHRASE-MARKER';
-  const claim = async (anchorId: string, lifecycle = 'CANDIDATE') => {
-    const id = uuidV7();
-    await admin.query(`INSERT INTO claims(id,owner_scope_id,source_anchor_id,claim_origin,lifecycle,recorded_at,extraction_confidence,metadata)
-      VALUES($1,$2,$3,'MODEL_EXTRACTION',$4,$5,0.7,$6)`, [id, owner, anchorId, lifecycle, RECORDED, JSON.stringify({ statement: MARKER })]);
-    return id;
-  };
+  const quoted = 'The source says: “' + words + '”';
   const app = api();
   const list = (evidenceId: string, purpose = 'memory.inspect', extra: Record<string, string> = {}) =>
     app.inject({ method: 'GET', url: '/v1/memory/evidence/' + evidenceId + '/claims', headers: headers(purpose, extra) });
   try {
     const said = await source('candidate-' + randomUUID(), 'CONVERSATION', words, [ASSISTANCE]);
-    const candidate = await claim(said.anchorId);
-    const rejected = await claim(said.anchorId, 'REJECTED');
     const takenUp = (await admin.query('SELECT id FROM claims WHERE owner_scope_id=$1 AND proposition_id=$2', [owner, p.oldAction])).rows[0].id as string;
+    // uuidV7 is ordered by millisecond only, so the ids are drawn first and sorted:
+    // the claim recorded a minute earlier gets the later id, and only its recorded
+    // time can list it first.
+    const [candidate, awaiting] = [uuidV7(), uuidV7()].sort() as [string, string];
+    const awaitingRecorded = new Date(RECORDED.getTime() - 60_000);
+    await candidateClaim(said.anchorId, { id: candidate });
+    await candidateClaim(said.anchorId, { id: awaiting, lifecycle: 'AWAITING_INSTANCE_RESOLUTION', recordedAt: awaitingRecorded });
+    const rejected = await candidateClaim(said.anchorId, { lifecycle: 'REJECTED' });
+    // A captured commitment's claim (packages/capabilities/src/commitments.ts): it
+    // stays CANDIDATE, but a belief took it up, so it is no unresolved candidate.
+    const backed = await candidateClaim(said.anchorId, { propositionId: p.oldAction });
     const panel = await why(app, 'claims', candidate);
     expect(panel).toMatchObject({ subject: { objectType: 'claims', objectId: candidate }, subjectKind: 'CANDIDATE_CLAIM', label: 'REPORTED',
-      statement: 'The source says: “' + words + '”', modality: null, assessmentStatus: null, explainPath: null,
+      statement: quoted, modality: null, assessmentStatus: null, explainPath: null,
       effectiveTime: { from: null, to: null, recordedAt: RECORDED.toISOString() }, conflict: { status: 'NO_CONFLICT' } });
     expect(panel.sources).toEqual([{ evidenceId: said.evidenceId, sourceType: 'CONVERSATION', occurredAt: RECORDED.toISOString(),
       anchorKind: 'MESSAGE_SPAN', excerpt: words }]);
@@ -584,13 +601,21 @@ it('opens an unresolved candidate claim as REPORTED, a taken-up claim as its bel
     expect(panel.claims.map(entry => [entry.claimId, entry.confidence.extraction])).toEqual([[candidate, 0.7]]);
     expect(panel.derivation).toEqual({ isInferred: false, steps: [], modelClaims: [
       { claimId: candidate, claimOrigin: 'MODEL_EXTRACTION', modelId: null, promptVersion: null }] });
-    expect(JSON.stringify(panel)).not.toContain(MARKER);
+    expect(JSON.stringify(panel)).not.toContain(PARAPHRASE);
     const withheld = await why(app, 'claims', candidate, 'NORMAL');
     expect(withheld).toMatchObject({ subjectKind: 'CANDIDATE_CLAIM', label: 'UNKNOWN', sources: [],
       redactions: [{ claimId: null, reason: 'SOURCE_NOT_READABLE_FOR_THIS_REQUEST' }] });
     expect(JSON.stringify(withheld)).not.toContain(words);
-    // Why opens what a statement rests on: a claim a belief took up opens that belief.
-    expect(await why(app, 'claims', takenUp)).toMatchObject({ subject: { objectType: 'propositions', objectId: p.oldAction }, subjectKind: 'BELIEF' });
+    // A claim still waiting for its frame instance is an unresolved candidate too (D2).
+    const waiting = await why(app, 'claims', awaiting);
+    expect(waiting).toMatchObject({ subject: { objectType: 'claims', objectId: awaiting }, subjectKind: 'CANDIDATE_CLAIM', label: 'REPORTED',
+      statement: quoted, effectiveTime: { recordedAt: awaitingRecorded.toISOString() } });
+    expect(JSON.stringify(waiting)).not.toContain(PARAPHRASE);
+    // Why opens what a statement rests on: a claim a belief took up opens that belief,
+    // whether it is PROVISIONAL or still CANDIDATE. The proposition decides first.
+    for (const taken of [takenUp, backed]) {
+      expect(await why(app, 'claims', taken), taken).toMatchObject({ subject: { objectType: 'propositions', objectId: p.oldAction }, subjectKind: 'BELIEF' });
+    }
     const gone = await app.inject({ method: 'GET', url: '/v1/memory/why/claims/' + rejected, headers: headers('memory.inspect') });
     expect(gone.statusCode).toBe(404);
     expect(gone.json()).toMatchObject({ code: 'WHY_OBJECT_NOT_FOUND' });
@@ -600,11 +625,14 @@ it('opens an unresolved candidate claim as REPORTED, a taken-up claim as its bel
     expect(listed.statusCode, listed.body).toBe(200);
     const statements = candidateStatementsSchema.parse(listed.json());
     expect(statements).toMatchObject({ evidenceId: said.evidenceId, truncated: false });
-    expect(statements.statements.map(entry => [entry.subject.objectId, entry.statement])).toEqual([[candidate, 'The source says: “' + words + '”']]);
-    expect(listed.body).not.toContain(MARKER);
+    // The rejected claim and the belief-backed CANDIDATE are not listed; the earlier
+    // recorded time lists first although its id is the later one.
+    expect(statements.statements.map(entry => [entry.subject.objectId, entry.subjectKind, entry.statement]))
+      .toEqual([[awaiting, 'CANDIDATE_CLAIM', quoted], [candidate, 'CANDIDATE_CLAIM', quoted]]);
+    expect(listed.body).not.toContain(PARAPHRASE);
     const audit = (await admin.query('SELECT policy_decision,objects_and_fields_accessed FROM audit_events WHERE correlation_id=$1', [correlationId])).rows;
     expect(audit.map(row => [row.policy_decision, (row.objects_and_fields_accessed as { type: string; id: string }[]).map(entry => [entry.type, entry.id])]))
-      .toEqual([['ALLOW', [['source_items', said.evidenceId], ['claims', candidate]]]]);
+      .toEqual([['ALLOW', [['source_items', said.evidenceId], ['claims', awaiting], ['claims', candidate]]]]);
 
     const undeclared = await list(said.evidenceId, 'memory.inspect', { 'x-data-purpose': '' });
     expect(undeclared.statusCode).toBe(400);
@@ -618,12 +646,51 @@ it('opens an unresolved candidate claim as REPORTED, a taken-up claim as its bel
 
     const crowded = await source('candidates-' + randomUUID(), 'CONVERSATION', words, [ASSISTANCE]);
     const many: string[] = [];
-    for (let index = 0; index < 51; index++) many.push(await claim(crowded.anchorId));
+    for (let index = 0; index < 51; index++) many.push(await candidateClaim(crowded.anchorId));
     const bounded = await list(crowded.evidenceId);
     expect(bounded.statusCode, bounded.body).toBe(200);
     const page = candidateStatementsSchema.parse(bounded.json());
     expect(page.truncated).toBe(true);
     expect(page.statements.map(entry => entry.subject.objectId)).toEqual([...many].sort().slice(0, 50));
+  } finally { await app.close(); }
+});
+
+it('lists a conversation\'s candidates by recorded time, then numeric segment index with none last, then id (ADR 0047 D7)', async () => {
+  const item = await source('candidate-order-' + randomUUID(), 'OMI', 'An Omi conversation about the lease.', [ASSISTANCE]);
+  /** A TRANSCRIPT_SEGMENT anchor shaped as the OMI parser stores it (sources.ts),
+   * with the segment index as given: a string or no index at all is malformed. */
+  const segment = async (segmentIndex: unknown, speakerName: string, speakerRole: string, startSeconds: number, words: string) => {
+    const id = uuidV7();
+    const anchor = { conversationExternalId: 'omi-order-fixture', ...(segmentIndex === undefined ? {} : { segmentIndex }),
+      speakerId: 'SPEAKER_' + speakerRole, speakerName, speakerRole, startSeconds, endSeconds: startSeconds + 3, start: 0, end: words.length };
+    await admin.query(`INSERT INTO source_anchors(id,owner_scope_id,source_item_id,anchor_kind,anchor,normalized_text)
+      VALUES($1,$2,$3,'TRANSCRIPT_SEGMENT',$4,$5)`, [id, owner, item.evidenceId, JSON.stringify(anchor), words]);
+    return id;
+  };
+  // One extraction run's claims share its recorded time (claims.recorded_at DEFAULT
+  // now()). The ids are drawn first and dealt out so that the id order, a text sort,
+  // a reversed sort and nulls-first each disagree with the order the list must give.
+  const [malformed, ten, nine, none] = [uuidV7(), uuidV7(), uuidV7(), uuidV7()].sort() as [string, string, string, string];
+  await candidateClaim(await segment(9, 'Dana', 'OTHER', 40, 'Can you send the lease by Friday?'), { id: nine });
+  await candidateClaim(await segment(10, 'User', 'OWNER', 44, 'I will send it on Thursday.'), { id: ten });
+  await candidateClaim(await segment('2', 'Speaker 2', 'UNKNOWN', 12, 'The deposit is 450 euro.'), { id: malformed });
+  await candidateClaim(await segment(undefined, 'User', 'OWNER', 50, 'Thursday works.'), { id: none });
+  // Recorded a minute later, so it lists last although segment 1 is the earliest.
+  const later = await candidateClaim(await segment(1, 'Dana', 'OTHER', 3, 'Hi, it is Dana.'), { recordedAt: new Date(RECORDED.getTime() + 60_000) });
+  const app = api();
+  try {
+    const response = await app.inject({ method: 'GET', url: '/v1/memory/evidence/' + item.evidenceId + '/claims', headers: headers('memory.inspect') });
+    expect(response.statusCode, response.body).toBe(200);
+    const page = candidateStatementsSchema.parse(response.json());
+    expect(page.truncated).toBe(false);
+    expect(page.statements.map(panel => [panel.subject.objectId, panel.sources[0]?.transcriptSegment?.segmentIndex ?? null, panel.statement])).toEqual([
+      [nine, 9, 'Dana said: “Can you send the lease by Friday?”'],
+      [ten, 10, 'You said (as Omi identified the speaker): “I will send it on Thursday.”'],
+      [malformed, null, 'The source says: “The deposit is 450 euro.”'],
+      [none, null, 'The source says: “Thursday works.”'],
+      [later, 1, 'Dana said: “Hi, it is Dana.”'],
+    ]);
+    expect(response.body).not.toContain(PARAPHRASE);
   } finally { await app.close(); }
 });
 

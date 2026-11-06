@@ -56,7 +56,10 @@ unresolved candidate when it has no `proposition_id` and its lifecycle is
 `CANDIDATE` or `AWAITING_INSTANCE_RESOLUTION`.
 
 - A claim a belief took up opens that belief's panel: Why answers what a
-  statement rests on, and the belief is that statement.
+  statement rests on, and the belief is that statement. The proposition decides
+  before the lifecycle does: a captured commitment's or decision's claim keeps
+  lifecycle `CANDIDATE` with a `proposition_id` (`packages/capabilities`), and it
+  is neither a candidate panel nor listed.
 - Any other claim, including an unattached `REJECTED` or `SUPPRESSED` one, is
   `WHY_OBJECT_NOT_FOUND` and is not listed.
 - A claim recorded after the read time is neither opened nor listed.
@@ -113,8 +116,10 @@ D10(d)), and bystander speech stays third-party data (PRD §30.8).
   anchor's numeric `segmentIndex` (none last), then id, with a `truncated` flag.
 - An unknown, deleted or unreadable item answers 404 `WHY_OBJECT_NOT_FOUND`;
   whether an above-ceiling item exists is never revealed.
-- Both reads write their audit row in the read's own transaction. The list
-  names the source item and each listed claim.
+- The list writes its audit row in the read's own transaction, naming the
+  source item and each listed claim. The Why route audits a claim as it audits
+  every Why object: in a second transaction after the read, naming the object
+  and each quoted source item (`packages/api/src/today.ts`).
 - A candidate whose anchor the request may not read is a withheld panel
   (`UNKNOWN`, redaction `SOURCE_NOT_READABLE_FOR_THIS_REQUEST`), never quoted.
 
@@ -143,9 +148,12 @@ D10(d)), and bystander speech stays third-party data (PRD §30.8).
 
 - `packages/context/src/why.test.ts`: the wording matrix, the label
   sanitization and the malformed-anchor degradation (pure).
-- `packages/api/src/today.test.ts`: a non-transcript candidate, delegation of a
-  taken-up claim, 404 for a rejected, unknown or missing object, the ceiling,
-  the declarations, the purpose and the 50-item bound.
+- `packages/api/src/today.test.ts`: a non-transcript candidate, an
+  `AWAITING_INSTANCE_RESOLUTION` candidate, delegation of a taken-up claim
+  (`PROVISIONAL`, and `CANDIDATE` with a proposition, which is also not
+  listed), 404 for a rejected, unknown or missing object, the ceiling, the
+  declarations, the purpose, the list order (recorded time, then the numeric
+  segment index with none last, then id) and the 50-item bound.
 - `packages/api/src/omi-pipeline.test.ts` cases 1 and 2: the owner's and a
   bystander's claim through both reads, and Omi's structured summary listing
   no statement.
