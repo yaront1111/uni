@@ -62,6 +62,7 @@ recommendations are recorded on its edition with RECOMMENDED semantics.
 | | Resolved item linked to its resolution assertion | RESOLVED, "Outcome" |
 | | Label set remaining distinguishable in a grayscale rendering and never conveyed by colour alone | words + glyph + border pattern, black/grey/white only |
 | | Source excerpt withheld as a listed redaction | "1 source is withheld: …", never quoted |
+| | Candidate statement not yet in memory | REPORTED, "not yet in memory"; the caption names the transcript segment, its times and the speaker (ADR 0047) |
 | Ask | Empty prompt with example questions | `state:'empty'` |
 | | Classifying the requested answer type | announced in the live region on submit |
 | | Answers of each type with per-statement certainty labels and source links | the answer the Ask pipeline returns, each statement labelled, linked and with its Why? / Sources |
@@ -77,10 +78,12 @@ clarification card belongs to `memory-inbox-attention-budgets-and-weekly-review`
 | Route | Purpose | Answer |
 | --- | --- | --- |
 | `GET /v1/today?timeZone=&date=` | `memory.read` | `200` briefing; `400 TODAY_REQUEST_INCOMPLETE` (no `x-data-purpose` / `x-maximum-sensitivity`), `TODAY_REQUEST_INVALID`, `TODAY_TIME_ZONE_REQUIRED`, `TODAY_TIME_ZONE_INVALID`; `409 TODAY_DATE_NOT_CURRENT`; `403 CONTEXT_READ_DENIED` |
-| `GET /v1/memory/why/{propositions\|owner_overlay_deltas\|resolution_assertions}/{id}` | `memory.inspect` | `200` panel; `400 WHY_REQUEST_INVALID`; `404 WHY_OBJECT_NOT_FOUND` |
+| `GET /v1/memory/why/{propositions\|owner_overlay_deltas\|resolution_assertions\|claims}/{id}` | `memory.inspect` | `200` panel; `400 WHY_REQUEST_INVALID`; `404 WHY_OBJECT_NOT_FOUND` |
+| `GET /v1/memory/evidence/{id}/claims` | `memory.inspect` | `200` candidate statements (at most 50, `truncated`); `400 CANDIDATE_STATEMENTS_REQUEST_INVALID`; `404 WHY_OBJECT_NOT_FOUND` |
 
-Web: `/today` and `/ask` (server-rendered through `apps/web/lib/screens.ts`). The
-POST-only write proxy is not extended.
+Web: `/today` and `/ask` (server-rendered through `apps/web/lib/screens.ts`), and
+`/sources`, which lists a source's candidate statements (ADR 0047). The POST-only
+write proxy is not extended.
 
 ## How each acceptance criterion is met
 

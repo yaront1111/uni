@@ -1,12 +1,13 @@
-import {askAnswerSchema,cardDecisionResultSchema,memoryInboxViewSchema,todayBriefingSchema,weeklyReviewSchema,whySourcesSchema,
-  type BriefingItem,type CardDecisionResult,type ClarificationCard,type CommitmentProjectionRow,type CommitmentsProjectionView,
-  type RelatedFrame} from '@unai/domain';
+import {askAnswerSchema,candidateStatementsSchema,cardDecisionResultSchema,memoryInboxViewSchema,publicEvidenceSchema,todayBriefingSchema,
+  weeklyReviewSchema,whySourcesSchema,type BriefingItem,type CandidateStatements,type CardDecisionResult,type ClarificationCard,type CommitmentProjectionRow,
+  type CommitmentsProjectionView,type RelatedFrame,type TranscriptSegment,type WhySources} from '@unai/domain';
 import type {TodayProps} from '../Today';
 import type {AskProps} from '../Ask';
 import type {CommitmentsProps} from '../Commitments';
 import type {WeeklyReviewProps} from '../WeeklyReview';
 import type {MemoryInspectorProps} from '../MemoryInspector';
 import type {MemoryInboxProps} from '../MemoryInbox';
+import type {EvidenceProps} from '../Evidence';
 import {inspection} from './inspection';
 
 /** Props for the six core views the accessibility suite walks (Today, Ask,
@@ -156,3 +157,37 @@ export const inboxDecision:CardDecisionResult=cardDecisionResultSchema.parse({
     ambiguityKind:'UNCONFIRMED_INTERPRETATION',decision:'ASK',reason:'WITHIN_ATTENTION_BUDGET',policyInputs:inboxCard.interruption!.policyInputs,
     ownerLocalDate:'2026-03-02',policyVersion:'interruption-policy-0.1.0',decidedAt:'2026-03-02T09:00:00.000Z'},
   proposedRule:null});
+
+// --- Sources: statements read from an Omi conversation (ADR 0047) ----------
+/** Worded exactly as GET /v1/memory/evidence/{id}/claims words them, with the
+ * values of fixtures/sources/omi-conversation.json. */
+const OMI_CONVERSATION='omi-conv-2026-10-28-7f3a';
+const omiRecordedAt='2026-10-28T09:45:00.000Z';
+const candidatePanel=(n:number,segment:Omit<TranscriptSegment,'conversationExternalId'>,statement:string,excerpt:string):WhySources=>{
+  const source={evidenceId:id(500),sourceType:'OMI',occurredAt:'2026-10-28T09:30:05.000Z',anchorKind:'TRANSCRIPT_SEGMENT',excerpt,
+    transcriptSegment:{conversationExternalId:OMI_CONVERSATION,...segment}};
+  const claimingActor={kind:'MODEL',label:'Uai (a model reading, not a person)',entityId:null};
+  const confidence={extraction:0.9,entityResolution:null,temporalResolution:null,instanceResolution:null};
+  return whySourcesSchema.parse({subject:{objectType:'claims',objectId:id(n)},subjectKind:'CANDIDATE_CLAIM',label:'REPORTED',statement,
+    modality:null,assessmentStatus:null,effectiveTime:{from:null,to:null,recordedAt:omiRecordedAt},confidence:{...confidence,assessmentStatus:null},
+    claims:[{claimId:id(n),claimOrigin:'MODEL_EXTRACTION',claimingActor,recordedAt:omiRecordedAt,validFrom:null,validTo:null,confidence,source}],
+    claimingActors:[claimingActor],sources:[source],redactions:[],conflict:{status:'NO_CONFLICT',competing:[],relations:[]},
+    derivation:{isInferred:false,steps:[],modelClaims:[{claimId:id(n),claimOrigin:'MODEL_EXTRACTION',modelId:'fixture-model-1',promptVersion:'extract-0.1.0'}]},
+    resolutions:[],explainPath:null,panelVersion:'why-sources-0.5.0',readAt:'2026-10-28T10:00:00.000Z'});
+};
+export const candidateOwnerPanel=candidatePanel(501,{segmentIndex:2,speakerLabel:'User',speakerRole:'OWNER',startSeconds:8.6,endSeconds:13.1},
+  'You said (as Omi identified the speaker): “I will pay you the 450 euro deposit by Friday 14 November.”',
+  'I will pay you the 450 euro deposit by Friday 14 November.');
+export const candidateBystanderPanel=candidatePanel(502,{segmentIndex:1,speakerLabel:'Dana',speakerRole:'OTHER',startSeconds:3.9,endSeconds:8.2},
+  'Dana said: “The landlord wants the deposit settled before the lease starts.”',
+  'The landlord wants the deposit settled before the lease starts.');
+export const candidateStatements:CandidateStatements=candidateStatementsSchema.parse({evidenceId:id(500),
+  statements:[candidateOwnerPanel,candidateBystanderPanel],truncated:false,readAt:'2026-10-28T10:00:00.000Z'});
+/** The Source page for that conversation's transcript, as pages/sources.tsx
+ * reads it: the item is still PENDING, as omi-pipeline.test.ts records it. */
+export const sourcesProps:EvidenceProps={connector:null,error:null,statements:candidateStatements,statementsError:null,
+  evidence:publicEvidenceSchema.parse({evidenceId:id(500),ownerScopeId:id(1),connectorId:id(503),sourceType:'OMI',
+    externalId:'omi:conversation:'+OMI_CONVERSATION,parentExternalId:null,actorRef:{type:'EXTERNAL',id:'omi:transcript'},
+    occurredAt:'2026-10-28T09:30:05.000Z',observedAt:'2026-10-28T09:41:12.000Z',rawObjectRef:id(504),contentHash:'d'.repeat(64),
+    sensitivity:'PRIVATE',allowedPurposes:['PERSONAL_ASSISTANCE'],ingestionVersion:'evidence-json-v1',deterministicMetadata:{},
+    ingestionStatus:'STORED',processing:{status:'PENDING',unresolvedClaims:0,lastError:null,completedAt:null}})};

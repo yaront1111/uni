@@ -1,6 +1,8 @@
 import React,{useRef,useState} from 'react';
-import type {PublicEvidence,DocumentReceipt,DocumentSearchResult} from '@unai/domain';
+import type {CandidateStatements,PublicEvidence,DocumentReceipt,DocumentSearchResult} from '@unai/domain';
+import {CertaintyBadge,LabelKey,withoutIdentifiers} from './Labels';
 import {Navigation} from './Navigation';
+import {WhySources} from './WhySources';
 
 /** The design screen "Upload a document", plus the source detail the earlier
  * evidence slice delivered.
@@ -34,7 +36,25 @@ function ProcessingStatus({processing}:{processing:PublicEvidence['processing']}
   </section>;
 }
 
-export function Evidence(props:{
+/** A source's statements that are not yet in memory (ADR 0047), each with its
+ * label and its Why? / Sources disclosure. The words are the API's: a statement
+ * quotes connector content, so it is rendered as text and never as markup. */
+function CandidateStatementsSection({statements,error}:{statements:CandidateStatements|null;error:string|null}){
+  if(!error&&(!statements||statements.statements.length===0))return null;
+  return <section className="card" aria-labelledby="statements-heading"><h2 id="statements-heading">Statements read from this source</h2>
+    {error||!statements?<p role="alert">{error}</p>:<>
+      <p>These statements were read from this source. They are not yet in memory: nothing has accepted them.</p>
+      <LabelKey labels={[...new Set(statements.statements.map(panel=>panel.label))]}/>
+      <ul>{statements.statements.map(panel=><li key={panel.subject.objectId}>
+        <p><CertaintyBadge label={panel.label}/> {withoutIdentifiers(panel.statement)}</p>
+        <WhySources about={panel.statement} panel={panel}/>
+      </li>)}</ul>
+      {statements.truncated&&<p>Only the first {statements.statements.length} statements are shown.</p>}
+    </>}
+  </section>;
+}
+
+export interface EvidenceProps{
   evidence:PublicEvidence|null;
   connector:{connectorType:string;status:string;evidence:PublicEvidence[]}|null;
   receipt?:DocumentReceipt|null;
@@ -42,7 +62,13 @@ export function Evidence(props:{
   /** A later extraction attempt that failed. The stored document is unaffected. */
   extractionFailed?:boolean;
   error:string|null;
-}){
+  /** The source's statements not yet in memory (GET /v1/memory/evidence/{id}/claims). */
+  statements?:CandidateStatements|null;
+  /** A fixed sentence when that read failed. The source detail still renders. */
+  statementsError?:string|null;
+}
+
+export function Evidence(props:EvidenceProps){
   const [busy,setBusy]=useState(false),[error,setError]=useState(props.error??'');
   const [receipt,setReceipt]=useState<DocumentReceipt|null>(props.receipt??null);
   const attempt=useRef<{file:File;key:string;documentId:string}|null>(null);
@@ -109,6 +135,7 @@ export function Evidence(props:{
         <dl><dt>Source</dt><dd>{props.evidence.sourceType}</dd><dt>Observed</dt><dd>{props.evidence.observedAt}</dd><dt>Occurred</dt><dd>{props.evidence.occurredAt??'Not supplied'}</dd><dt>Sensitivity</dt><dd>{props.evidence.sensitivity}</dd><dt>Allowed purposes</dt><dd>{props.evidence.allowedPurposes.join(', ')}</dd></dl>
         {props.evidence.connectorId&&<a href={'/connectors?connector='+encodeURIComponent(props.evidence.connectorId)}>View connected source</a>}
       </section>}
+      {props.evidence&&<CandidateStatementsSection statements={props.statements??null} error={props.statementsError??null}/>}
       {props.connector&&<section className="card"><h2>{props.connector.connectorType} source</h2><p>Connection status: {props.connector.status}</p><p>Most recent permitted stored items (up to 50):</p><ul>{props.connector.evidence.map(item=><li key={item.evidenceId}><a href={'/sources?evidence='+encodeURIComponent(item.evidenceId)}>{item.sourceType} · {item.observedAt}</a></li>)}</ul></section>}
     </main></div>;
 }

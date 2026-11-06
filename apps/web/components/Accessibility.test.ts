@@ -12,8 +12,9 @@ import {WeeklyReview} from './WeeklyReview';
 import {MemoryInspector} from './MemoryInspector';
 import {MemoryInbox} from './MemoryInbox';
 import {AuditLog} from './AuditLog';
+import {Evidence} from './Evidence';
 import {KeyboardUser,accessibleName,describe as described,tabOrder,type Step} from './testing/keyboard';
-import {askAnsweredProps,askEmptyProps,commitmentsProps,id,inboxDecision,memoryInboxProps,memoryInspectorProps,todayProps,
+import {askAnsweredProps,askEmptyProps,commitmentsProps,id,inboxDecision,memoryInboxProps,memoryInspectorProps,sourcesProps,todayProps,
   weeklyReviewProps} from './testing/screens';
 import {AUDIT_ACTOR,auditLog} from './testing/audit';
 
@@ -358,9 +359,24 @@ it('Audit log: automated checks pass, and it is read and filtered from the keybo
   });
 },CORE_VIEW_TIMEOUT_MS);
 
+it('Sources: candidate statements pass the automated checks and open from the keyboard alone',async()=>{
+  await mount(createElement(Evidence,sourcesProps));
+  await audit('Sources','candidate statements from an Omi conversation');
+  await structure('Sources');
+  await task('Sources','Open why a statement read from a conversation is shown',async user=>{
+    const why=user.tabTo(named(/^Why\? \/ Sources/))!;
+    expect(why).not.toBeNull();
+    await press(user,'Enter');
+    const details=why.parentElement as HTMLDetailsElement;
+    expect(details.open).toBe(true);
+    expect(details.textContent).toContain('not yet in memory');
+    expect(details.textContent).toContain('spoken by you (as Omi identified the speaker)');
+  });
+},CORE_VIEW_TIMEOUT_MS);
+
 it('no core view responds to a pointer alone: every handler sits on a native control', ()=>{
   for(const file of ['Today','Ask','Commitments','WeeklyReview','MemoryInspector','MemoryInbox','WhySources','BeliefLinks','Labels',
-    'MemoryChrome','Shell','Navigation','AuditLog']){
+    'MemoryChrome','Shell','Navigation','AuditLog','Evidence']){
     const source=readFileSync(resolve('apps/web/components',file+'.tsx'),'utf8');
     expect(source,file).not.toMatch(/on(Mouse|Pointer|DoubleClick|Drag|Touch)[A-Z][a-z]*=/);
     for(const match of source.matchAll(/<([A-Za-z]+)\b[^<>]*\bonClick=/g))expect(['button','a'],file+' <'+match[1]+'>').toContain(match[1]);

@@ -1,5 +1,5 @@
 import React from 'react';
-import type {WhySources as WhySourcesPanel} from '@unai/domain';
+import type {TranscriptSegment,WhySources as WhySourcesPanel} from '@unai/domain';
 import {CertaintyBadge,withoutIdentifiers} from './Labels';
 
 /**
@@ -49,6 +49,16 @@ export function when(value:string|null,timeZone?:string):string{
  * own identifier belongs in the advanced inspector. */
 function ruleName(evaluatorId:string){return (evaluatorId.split('.').at(-1)??evaluatorId).replaceAll('_',' ');}
 function percent(value:number|null){return value===null?'not recorded':Math.round(value*100)+'%';}
+/** 75.2 seconds into a recording reads "1:15". */
+function clock(seconds:number){return Math.floor(seconds/60)+':'+String(Math.floor(seconds%60)).padStart(2,'0');}
+/** Where a transcript excerpt sits and who spoke it (ADR 0047 D5). Only the
+ * recorded role says "you"; a label is the recording's own name for a speaker and
+ * is never read as a role, so a bystander called "User" stays "User". */
+function segmentCaption(sourceType:string,segment:TranscriptSegment){
+  const speaker=segment.speakerRole==='OWNER'?'you (as '+(sourceType==='OMI'?'Omi':'the transcript')+' identified the speaker)'
+    :segment.speakerLabel===null?'an unidentified speaker':withoutIdentifiers(segment.speakerLabel);
+  return ', segment '+(segment.segmentIndex+1)+' ('+clock(segment.startSeconds)+'–'+clock(segment.endSeconds)+'), spoken by '+speaker;
+}
 
 export function WhySources({about,panel,timeZone}:WhySourcesProps){
   return <details className="why">
@@ -58,14 +68,17 @@ export function WhySources({about,panel,timeZone}:WhySourcesProps){
       <dl>
         <dt>What it is</dt>
         <dd>{panel.subjectKind==='BELIEF'?'A belief'+(panel.assessmentStatus?', '+STATUS[panel.assessmentStatus]:'')+'.'
-          :panel.subjectKind==='OWNER_ASSERTION'?'Your own statement, recorded as you said it.':'A resolution assertion recording an outcome.'}</dd>
+          :panel.subjectKind==='OWNER_ASSERTION'?'Your own statement, recorded as you said it.'
+          :panel.subjectKind==='CANDIDATE_CLAIM'?'A statement read from this source. It is not yet in memory: nothing has accepted it.'
+          :'A resolution assertion recording an outcome.'}</dd>
         <dt>Who claimed it</dt>
         <dd>{panel.claimingActors.length===0?'No claim is recorded.':panel.claimingActors.map(actor=>actor.label).join('; ')}
           {panel.claims.length>0?<ul>{panel.claims.slice(0,10).map(claim=><li key={claim.claimId}>{claim.claimingActor.label}: {ORIGIN[claim.claimOrigin]??'recorded'}, {when(claim.recordedAt,timeZone)}</li>)}</ul>:null}</dd>
         <dt>What the source says</dt>
         <dd>{panel.sources.length===0?<p>No source excerpt can be shown here.</p>:panel.sources.slice(0,5).map((source,index)=><figure key={index}>
           <blockquote>{source.excerpt===null?'This source records a position but no text.':withoutIdentifiers(source.excerpt)}</blockquote>
-          <figcaption>{source.sourceType.toLowerCase().replaceAll('_',' ')}{source.occurredAt?', '+when(source.occurredAt,timeZone):''}</figcaption>
+          <figcaption>{source.sourceType.toLowerCase().replaceAll('_',' ')}{source.occurredAt?', '+when(source.occurredAt,timeZone):''}
+            {source.transcriptSegment?segmentCaption(source.sourceType,source.transcriptSegment):null}</figcaption>
         </figure>)}
           {panel.redactions.length>0?<p>{panel.redactions.length} source{panel.redactions.length===1?' is':'s are'} withheld: this view may not read {panel.redactions.length===1?'it':'them'} under its purpose or sensitivity limit.</p>:null}</dd>
         <dt>When it holds</dt>
@@ -94,6 +107,8 @@ export function WhySources({about,panel,timeZone}:WhySourcesProps){
           <dt>Object</dt><dd><code>{panel.subject.objectType} {panel.subject.objectId}</code></dd>
           {panel.claims.length>0?<><dt>Claims</dt><dd>{panel.claims.map(claim=><code key={claim.claimId}>{claim.claimId} </code>)}</dd></>:null}
           {panel.sources.length>0?<><dt>Evidence</dt><dd>{panel.sources.map((source,index)=><code key={index}>{source.evidenceId} </code>)}</dd></>:null}
+          {panel.sources.some(source=>source.transcriptSegment)?<><dt>Transcript segments</dt><dd>{panel.sources.map((source,index)=>source.transcriptSegment
+            ?<code key={index}>{source.transcriptSegment.conversationExternalId} segment index {source.transcriptSegment.segmentIndex} </code>:null)}</dd></>:null}
           {panel.derivation.steps.length>0?<><dt>Derivation rules</dt><dd>{panel.derivation.steps.map((step,index)=><code key={index}>{step.evaluatorId} </code>)}</dd></>:null}
           {panel.explainPath?<><dt>Memory inspector read</dt><dd><code>{panel.explainPath}</code></dd></>:null}
           <dt>Panel version</dt><dd><code>{panel.panelVersion}</code></dd>

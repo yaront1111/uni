@@ -3,6 +3,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {whySourcesSchema,type WhySources as Panel} from '@unai/domain';
 import {WhySources} from './WhySources';
+import {candidateBystanderPanel,candidateOwnerPanel} from './testing/screens';
 
 /** The Why? / Sources panel: one assertion per drawn state (CRT-UX-11-A), and
  * identifiers only inside the advanced inspector. */
@@ -111,4 +112,43 @@ it('lists a withheld source excerpt as a redaction and never quotes it',()=>{
 it('says so when the panel could not be read',()=>{
   const html=render(null);
   expect(html).toContain('role="alert"');expect(html).toContain('could not be read');
+});
+
+it('opens a candidate claim read from a conversation as reported and not yet in memory, never as an outcome',()=>{
+  const html=renderToStaticMarkup(createElement(WhySources,{about:candidateOwnerPanel.statement,panel:candidateOwnerPanel}));
+  expect(html).toContain('data-label="REPORTED"');
+  expect(html).toContain('You said (as Omi identified the speaker): “I will pay you the 450 euro deposit by Friday 14 November.”');
+  expect(html).toContain('A statement read from this source. It is not yet in memory: nothing has accepted it.');
+  expect(html).not.toContain('A resolution assertion recording an outcome');
+  expect(html).toContain('<figcaption>omi, 2026-10-28 09:30 UTC, segment 3 (0:08–0:13), spoken by you (as Omi identified the speaker)</figcaption>');
+  expect(html).toContain('<dt>Transcript segments</dt><dd><code>omi-conv-2026-10-28-7f3a segment index 2 </code></dd>');
+  expect(readingPath(html)).not.toContain('omi-conv-2026-10-28-7f3a');
+  expect(readingPath(html)).not.toMatch(UUID);
+});
+
+it('names a bystander by their own label and never as you',()=>{
+  const html=renderToStaticMarkup(createElement(WhySources,{about:candidateBystanderPanel.statement,panel:candidateBystanderPanel}));
+  expect(html).toContain('Dana said: “');
+  expect(html).toContain(', segment 2 (0:03–0:08), spoken by Dana</figcaption>');
+  expect(readingPath(html)).not.toContain('You said');
+  expect(readingPath(html)).not.toContain('spoken by you');
+});
+
+it('takes the speaker from the role alone: an unnamed speaker is unidentified, and a label is never read as a role',()=>{
+  const segmentOf=(panel:Panel)=>panel.sources[0]!.transcriptSegment!;
+  const withSegment=(segment:Partial<ReturnType<typeof segmentOf>>,sourceType='OMI'):Panel=>({...candidateBystanderPanel,
+    sources:[{...candidateBystanderPanel.sources[0]!,sourceType,transcriptSegment:{...segmentOf(candidateBystanderPanel),...segment}}]});
+  const unnamed=readingPath(render(withSegment({speakerRole:'UNKNOWN',speakerLabel:null})));
+  expect(unnamed).toContain('spoken by an unidentified speaker');
+  expect(unnamed).not.toContain('spoken by you');
+  expect(readingPath(render(withSegment({speakerRole:'UNKNOWN',speakerLabel:'User'})))).toContain('spoken by User');
+  expect(readingPath(render(withSegment({speakerRole:'OWNER',speakerLabel:null},'CONVERSATION'))))
+    .toContain('spoken by you (as the transcript identified the speaker)');
+  expect(readingPath(render(withSegment({startSeconds:75.2,endSeconds:600})))).toContain('segment 2 (1:15–10:00)');
+});
+
+it('renders a panel without a transcript segment exactly as before',()=>{
+  const html=render(confirmedPanel);
+  expect(html).toContain('<figcaption>conversation, 2026-09-20 08:00 UTC</figcaption>');
+  expect(html).not.toContain('Transcript segments');
 });

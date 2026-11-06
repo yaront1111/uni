@@ -1,14 +1,16 @@
 import type {GetServerSideProps} from 'next';
 import {randomUUID} from 'node:crypto';
-import {publicEvidenceSchema,documentSearchResultSchema} from '@unai/domain';
+import {candidateStatementsSchema,publicEvidenceSchema,documentSearchResultSchema,type CandidateStatements} from '@unai/domain';
 import {Evidence} from '../components/Evidence';
 import {apiRequest,identity} from '../lib/server';
 export default Evidence;
+const STATEMENTS_UNAVAILABLE='The statements read from this source could not be loaded. Please reload to retry.';
 export const getServerSideProps:GetServerSideProps=async({req,res,query})=>{
   res.setHeader('Cache-Control','no-store');
   const session=await identity(req);
   if(!session)return {redirect:{destination:'/signin?reason=expired',permanent:false}};
   let evidence=null,connector=null,error=null;
+  let statements:CandidateStatements|null=null,statementsError:string|null=null;
   const id=query.evidence??query.connector;
   if(id!==undefined){
     if(typeof id!=='string'||!publicEvidenceSchema.shape.evidenceId.safeParse(id).success)error='The source link is invalid.';
@@ -28,6 +30,18 @@ export const getServerSideProps:GetServerSideProps=async({req,res,query})=>{
       }catch{error='The source could not be loaded. Please retry.';}
     }
   }
+  // A source's statements not yet in memory (ADR 0047). A failed read leaves the
+  // source detail standing and shows only a fixed sentence.
+  if(evidence){
+    try{
+      const response=await apiRequest('/v1/memory/evidence/'+evidence.evidenceId+'/claims','GET',{
+        cookie:req.headers.cookie??'','x-owner-scope-id':session.ownerScopeId,'x-purpose':'memory.inspect',
+        'x-correlation-id':randomUUID(),'x-data-purpose':'PERSONAL_ASSISTANCE','x-maximum-sensitivity':'RESTRICTED'});
+      if(response.status===401)return {redirect:{destination:'/signin?reason=expired',permanent:false}};
+      const parsed=response.status===200?candidateStatementsSchema.safeParse(response.body):null;
+      if(parsed?.success)statements=parsed.data;else statementsError=STATEMENTS_UNAVAILABLE;
+    }catch{statementsError=STATEMENTS_UNAVAILABLE;}
+  }
   // The document index is readable as soon as an upload is stored, so the screen
   // can show that a document is searchable before any extraction has run.
   let search=null;
@@ -42,5 +56,5 @@ export const getServerSideProps:GetServerSideProps=async({req,res,query})=>{
       else search=documentSearchResultSchema.parse(response.body);
     }catch{error=error??'The document search could not be completed. Please retry.';}
   }
-  return {props:{evidence,connector,search,receipt:null,error}};
+  return {props:{evidence,connector,search,receipt:null,error,statements,statementsError}};
 };

@@ -151,8 +151,23 @@ endpoint and the model are doubles. Its four cases:
 lineage to its conversation, segment and speaker is read through
 `GET /v1/evidence/{id}`: its anchors contain the claim's narrowed anchor.
 
-- The memory inspector answers `INSPECTOR_TARGET_NOT_FOUND` for an unresolved
-  Omi claim. The test pins that answer until task-732c9d9a replaces it.
+- The owner reads the claim itself on the Source page (ADR 0047):
+  - `/sources?evidence=<transcript id>` lists the transcript's candidate
+    statements, read from `GET /v1/memory/evidence/{id}/claims`. Each opens its
+    Why? / Sources panel, `GET /v1/memory/why/claims/{id}`.
+  - The label is REPORTED, and the panel says the statement is not yet in memory.
+  - The statement is built by code from the exact quoted span, with Omi's
+    speaker wording: "You said (as Omi identified the speaker)" for the owner's
+    role, "<label> said" for another speaker, "An unidentified speaker said" when
+    Omi gives no usable name (ADR 0047 D4, D5). The model's paraphrase is never
+    shown.
+  - The source caption names the segment, its start and end times and the
+    speaker; the conversation id and segment index appear only in the advanced
+    inspector.
+  - `omi-pipeline.test.ts` cases 1 and 2 pin both reads. Omi's structured
+    summary lists no statement.
+  - The memory inspector still opens only beliefs: for an unresolved claim it
+    answers `INSPECTOR_TARGET_NOT_FOUND`.
 - The same read shows `processing: {status: PENDING}` for the transcript. Migration
   0031's `triage_processing_intent` trigger
   (`migrations/0031_durable_evidence_processing.sql:46-64`) records the intent
@@ -191,9 +206,9 @@ memories about me." The case proves:
   records the PENDING intent, and the processing worker dispatches it (ADR 0038).
   task-b00c772f was filed on the premise that no intent is recorded; that premise
   does not hold (comment-982628e1 on task-b00c772f).
-- **The statement-with-uncertainty-label half of DoD 2 is not met by design.** No
-  memory read surface shows an unresolved Omi claim (task-732c9d9a; owner
-  decision of 2026-11-06).
+- **No Omi candidate claim enters memory.** The Source page shows each one as
+  REPORTED, not yet in memory (ADR 0047). Canonicalization still leaves every
+  Omi claim unresolved (ADR 0041 D4, D10(d)).
 - **No speaker-to-entity resolution** (D10(d)).
 - **Transcripts over the D4 bound are deferred** (D10(g)). They are routed
   `DEFER_UNTIL_RELEVANT` with `EXTRACTION_INPUT_OVER_BOUND`.
@@ -216,7 +231,7 @@ ADR 0041 and ADR 0042. FIXED-HERE rows land in this task's completion commit.
 | 7 | Test stages missed `omi-connector.test.ts` and `connector-sync-race.test.ts` (connector-integration) and had no Omi end-to-end entry. | `scripts/test-stages.mjs` | FIXED-HERE: `scripts/test-stages.mjs` |
 | 8 | `docs/connectors.md` said a disconnect revokes tokens, which is false for OMI. | `docs/connectors.md` | FIXED-HERE: `docs/connectors.md` |
 | 9 | task-b00c772f's premise ("connector syncs record no processing intent") is false: migration 0031's trigger records the intent under `connector.sync`, and the worker dispatches it. | `0031_durable_evidence_processing.sql:46-64`; `processing-runtime.ts:42-45`; `omi-pipeline.test.ts` case 1 | NOT-A-DEFECT in the product (ADR 0038 holds). Evidence is posted as comment-982628e1; closing or re-scoping that task is recommended. |
-| 10 | No memory read surface shows an unresolved Omi claim; the inspector answers 404. | `omi-pipeline.test.ts` case 1 | FILED task-732c9d9a. The 404 is pinned until then. |
+| 10 | No memory read surface shows an unresolved Omi claim; the inspector answers 404. | `omi-pipeline.test.ts` cases 1-2; `Evidence.test.ts`; `Accessibility.test.ts` Sources | FIXED by task-e11c766b (API, ADR 0047) and task-732c9d9a (Source page). |
 | 11 | D4's generic labels ("Speaker 2", "Unknown speaker") reach the extractor as participants. | `triage.ts:179-181` (labels added as participants) | NOT-A-DEFECT: D4 by design, and a precondition for D10(d) |
 | 12 | Two Traps bullets proposed in comment-c8706bb6 | — | Rerouted to the class-wide RLS fix (comment-31805c9f on task-eb3f68fb). They are not Omi docs. |
 | 13 | task-53f1a1c1 QA note (a): `settle()` audits a `CONNECTOR_CAPABILITY_NOT_GRANTED` refusal as FAILURE, naming fields it never wrote, and retries it. | `connector-sync-job.ts:137-142` (was `:136-141`); `sync.ts:306`, `:325` (was `:304`, `:322`) | FIXED by task-ac002da1 (LOW). `settle()` classifies from the exported `LIFECYCLE_REFUSALS`: a `CONNECTOR_CAPABILITY_NOT_GRANTED` or `CONNECTOR_INGESTION_STOPPED` refusal now completes the job on that attempt (no retry) with one `DENY`/`REFUSED` audit row that names the connector and no field, and leaves the connectors row as the committed change left it. A mid-run stop gains that row too (it had none). Pinned by the `connector-sync-job.test.ts` cases "a CONNECTOR_CAPABILITY_NOT_GRANTED / CONNECTOR_INGESTION_STOPPED refusal in the middle of a run completes the job without a retry and audits one REFUSED row". |
