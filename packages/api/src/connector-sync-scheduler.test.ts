@@ -7,7 +7,7 @@ import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@una
 import { postgresAdapter } from '@unai/auth';
 import { connectorTypeSchema } from '@unai/domain';
 import {
-  createConnector, createConnectorClient, disconnectConnector, markTokenRevoked, recordSyncFailure, setCapabilityGrants,
+  connectorCredentialHandle, createConnector, createConnectorClient, disconnectConnector, markTokenRevoked, recordSyncFailure, setCapabilityGrants,
 } from '@unai/connectors';
 import { connectorSyncInterval, processingConfiguration } from './processing-config.js';
 import {
@@ -75,7 +75,7 @@ async function owner() {
   const as = <T,>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) =>
     withOwnerTransaction(appPool, { ownerScopeId, actorId: user.id, purpose, correlationId: randomUUID() }, run);
   const connect = async (connectorType: string, externalAccountRef: string, granted: readonly string[],
-    secretRef: string | null = 'secret://mounted/' + connectorType.toLowerCase() + '#token') =>
+    secretRef: string | null = connectorCredentialHandle(ownerScopeId, connectorType.toLowerCase(), { field: 'token' })) =>
     as('connector.manage', async tx => (await createConnector(tx, {
       connectorType: connectorType as ScheduledConnector['connectorType'], externalAccountRef, secretRef,
       requestedCapabilities: granted.map(capabilityId => ({ capabilityId, granted: true })),

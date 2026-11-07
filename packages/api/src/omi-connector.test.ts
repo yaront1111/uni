@@ -20,6 +20,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runMigrations } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
+import { connectorCredentialHandle } from '@unai/connectors';
 import type { SecretsManager } from '@unai/secrets';
 import { createPlatformApi } from './platform.js';
 import { createConnectorRuntime } from './connectors.js';
@@ -41,7 +42,6 @@ beforeAll(async () => {
 afterAll(async () => { await appPool?.end(); await admin?.end(); });
 
 const OMI_LIST = 'https://api.omi.me/v1/dev/user/conversations';
-const HANDLE = 'secret://test/omi-key';
 const KEY = 'omi_dev_' + randomBytes(24).toString('hex');
 const BODY_MARKER = 'omi-provider-body-' + randomUUID();
 const DAY_MS = 86_400_000;
@@ -88,12 +88,12 @@ function omiProvider() {
   };
   return { requests, replies, install() { globalThis.fetch = fake; }, restore() { globalThis.fetch = original; } };
 }
-function secretsDouble() {
+function secretsDouble(served: string) {
   const resolved: string[] = [];
   const manager: SecretsManager = {
     async resolve(handle) {
       resolved.push(handle);
-      if (handle !== HANDLE) throw new Error('SECRET_NOT_FOUND');
+      if (handle !== served) throw new Error('SECRET_NOT_FOUND');
       return KEY;
     },
   };
@@ -130,14 +130,15 @@ async function harness() {
       return bytes;
     },
   };
-  const omi = omiProvider(), secrets = secretsDouble();
+  const handle = connectorCredentialHandle(ownerScopeId, 'omi-key', { provider: 'test' });
+  const omi = omiProvider(), secrets = secretsDouble(handle);
   const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects,
     registryReleaseId: randomUUID(), connectors: createConnectorRuntime(secrets.manager) });
   app.addHook('onRequest', async request => {
     Object.defineProperty(request.raw.socket, 'encrypted', { value: true, configurable: true });
   });
   const result = {
-    app, ownerScopeId, omi, secrets, objects, bodies: [] as string[],
+    app, ownerScopeId, handle, omi, secrets, objects, bodies: [] as string[],
     headers(purpose: string, extra: Record<string, string> = {}) {
       return {
         cookie: SESSION_COOKIE + '=' + token, 'x-owner-scope-id': ownerScopeId, 'x-purpose': purpose,
@@ -160,7 +161,7 @@ interface ConnectorBody {
 }
 async function connectOmi(h: Harness, overrides: Record<string, unknown> = {}) {
   const response = await h.app.inject({ method: 'POST', url: '/v1/connectors', headers: h.headers('connector.manage'),
-    payload: { connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: HANDLE,
+    payload: { connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: h.handle,
       requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }], ...overrides } });
   h.bodies.push(response.body);
   return response;
@@ -222,7 +223,7 @@ it('(1) ADR 0041 D6: an OMI connector gets one HIGH read grant and Omi write cap
     const grants = await admin.query(
       'SELECT capability_id,granted,risk_class,access_kind FROM connector_capability_grants WHERE connector_id=$1 ORDER BY capability_id', [id]);
     expect(grants.rows).toEqual([{ capability_id: 'omi.read_conversations', granted: true, risk_class: 'HIGH', access_kind: 'READ' }]);
-    expect((await connectorRow(id)).secret_ref).toBe(HANDLE);
+    expect((await connectorRow(id)).secret_ref).toBe(h.handle);
     const refused = await connectOmi(h, { externalAccountRef: 'second@example.test',
       requestedCapabilities: [{ capabilityId: 'omi.write_conversations', granted: true }] });
     expect(refused.statusCode).toBe(403);
@@ -390,7 +391,7 @@ it('(5) ADR 0041 D7: a 429 fails at once with CONNECTOR_RATE_LIMITED and the nex
     expect(elapsed).toBeLessThan(10_000);
     expect(h.omi.requests).toHaveLength(2);
     expect(await connectorRow(id)).toMatchObject({ status: 'SYNC_FAILED', last_sync_error: 'CONNECTOR_RATE_LIMITED',
-      last_cursor: cursor, secret_ref: HANDLE });
+      last_cursor: cursor, secret_ref: h.handle });
     expect(await count('SELECT count(*) AS n FROM source_items WHERE owner_scope_id=$1', [h.ownerScopeId])).toBe(2);
     h.omi.replies.push(() => page([fixture]));
     const resumed = await sync(h, id);
@@ -515,7 +516,7 @@ it('(9) ADR 0041 D2/D6 and FR-104: no key or provider error body reaches respons
     expect(lines.join('\n')).toContain('omi-acceptance-log-canary');
     expect(h.bodies).toHaveLength(5);
     expect(h.omi.requests).toHaveLength(3);
-    expect([...new Set(h.secrets.resolved)]).toEqual([HANDLE]);
+    expect([...new Set(h.secrets.resolved)]).toEqual([h.handle]);
     expect(h.objects.size).toBe(2);
     for (const request of h.omi.requests) {
       expect(request.method).toBe('GET');

@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import {
-  ConnectorError, markTokenRevoked, recordSyncFailure, setCapabilityGrants, type ConnectorFetch, type ConnectorPage,
+  ConnectorError, connectorCredentialHandle, markTokenRevoked, recordSyncFailure, setCapabilityGrants, type ConnectorFetch, type ConnectorPage,
 } from '@unai/connectors';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
@@ -26,7 +26,6 @@ const contentPage: ConnectorPage = { payloads: [fixture], nextCursor: C1 };
 // The internal Gmail thread shape (body.text): 3 messages, one item each.
 const gmailThread: unknown = JSON.parse(await readFile(resolve('fixtures/sources/gmail-thread.json'), 'utf8'));
 const gmailPage: ConnectorPage = { payloads: [gmailThread], nextCursor: C1 };
-const GMAIL_HANDLE = 'secret://mounted/gmail#refresh';
 
 beforeAll(async () => {
   await runMigrations(admin, resolve('migrations'));
@@ -93,16 +92,17 @@ async function identity() {
 }
 
 interface ConnectorSetup {
-  readonly connectorType: string; readonly externalAccountRef: string; readonly secretRef: string;
+  readonly connectorType: string; readonly externalAccountRef: string; readonly secretRef: (ownerScopeId: string) => string;
   readonly capabilities: readonly string[];
 }
 const omiSetup: ConnectorSetup = { connectorType: 'OMI', externalAccountRef: 'owner@example.test',
-  secretRef: 'secret://test/omi-key', capabilities: ['omi.read_conversations'] };
+  secretRef: owner => connectorCredentialHandle(owner, 'omi-key', { provider: 'test' }), capabilities: ['omi.read_conversations'] };
 const gmailSetup: ConnectorSetup = { connectorType: 'GMAIL', externalAccountRef: 'owner@example.test',
-  secretRef: GMAIL_HANDLE, capabilities: ['gmail.read_metadata', 'gmail.read_content'] };
+  secretRef: owner => connectorCredentialHandle(owner, 'gmail', { field: 'refresh' }), capabilities: ['gmail.read_metadata', 'gmail.read_content'] };
 
 async function harness(setup: ConnectorSetup = omiSetup) {
   const who = await identity(), client = pausedClient();
+  const secretRef = setup.secretRef(who.ownerScopeId);
   const app = createPlatformApi({ authPool: admin, appPool, evidenceObjects: objectsDouble(), connectors: {
     connectorClient: () => client, revokeTokens: async () => ({ revoked: true }),
   } });
@@ -112,11 +112,11 @@ async function harness(setup: ConnectorSetup = omiSetup) {
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: who.headers('connector.manage'),
       payload: { connectorType: setup.connectorType, externalAccountRef: setup.externalAccountRef,
-        secretRef: setup.secretRef,
+        secretRef,
         requestedCapabilities: setup.capabilities.map(capabilityId => ({ capabilityId, granted: true })) } });
     expect(connected.statusCode).toBe(201);
     const connectorId = connected.json<{ connectorId: string }>().connectorId;
-    const h = { ...who, app, client, connectorId,
+    const h = { ...who, app, client, connectorId, secretRef,
       async close() { client.release(); await app.close(); } };
     expect((await sync(h)).response.statusCode).toBe(200);
     expect(await state(connectorId)).toMatchObject({ status: 'ACTIVE', last_cursor: C0 });
@@ -301,7 +301,7 @@ it('refuses a run whose capability was revoked while it was paused, and the next
     gate.release(emptyPage);
     notGranted(h, await pending, 'gmail.read_content');
     expect(await evidenceCount(h)).toBe(0);
-    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: GMAIL_HANDLE,
+    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: h.secretRef,
       last_cursor: C0, last_sync_error: null });
     h.client.serve(gmailPage);
     const next = await sync(h);
@@ -366,7 +366,7 @@ it('keeps a concurrent run\'s failure reason when a paused run is refused', asyn
     });
     gate.release(emptyPage);
     stopped(h, await pending, 'SYNC_FAILED');
-    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: 'secret://test/omi-key',
+    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: h.secretRef,
       last_cursor: C0, last_sync_error: 'CONNECTOR_PROVIDER_UNAVAILABLE' });
   } finally { await h.close(); }
 }, 30_000);

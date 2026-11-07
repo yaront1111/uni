@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { runMigrations } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
-import { ConnectorError } from '@unai/connectors';
+import { ConnectorError, connectorCredentialHandle } from '@unai/connectors';
 import { createPlatformApi } from './platform.js';
 
 if (!process.env.UNAI_TEST_DATABASE_URL) throw new Error('Run pnpm test for the required PostgreSQL harness');
@@ -12,7 +12,6 @@ const admin = new Pool({ connectionString: process.env.UNAI_TEST_DATABASE_URL })
 const appUrl = new URL(process.env.UNAI_TEST_DATABASE_URL);
 appUrl.username = 'connector_route_test_app'; appUrl.password = 'test-only';
 const appPool = new Pool({ connectionString: appUrl.href });
-const HANDLE = 'secret://mounted/gmail#refresh';
 
 beforeAll(async () => {
   await runMigrations(admin, resolve('migrations'));
@@ -26,6 +25,7 @@ async function harness() {
   const token = randomBytes(32).toString('base64url');
   await adapter.createSession!({ userId: user.id, sessionToken: token, expires: new Date(Date.now() + 86_400_000) });
   const ownerScopeId = (user as unknown as { ownerScopeId: string }).ownerScopeId;
+  const handle = connectorCredentialHandle(ownerScopeId, 'gmail', { field: 'refresh' });
   const built: string[] = [];
   const failure: { value: ConnectorError | null } = { value: null };
   const app = createPlatformApi({ authPool: admin, appPool, connectors: {
@@ -48,11 +48,11 @@ async function harness() {
     };
   }
   const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers('connector.manage'),
-    payload: { connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: HANDLE,
+    payload: { connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: handle,
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }] } });
   expect(connected.statusCode).toBe(201);
   const connectorId = connected.json<{ connectorId: string }>().connectorId;
-  return { app, connectorId, built, failure, headers };
+  return { app, connectorId, built, failure, headers, handle };
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
 
@@ -103,12 +103,12 @@ it('keeps a provider 403 retryable without changing the credential handle', asyn
     const first = await sync(h);
     expect(first.response.statusCode).toBe(409);
     expect(first.response.json()).toEqual({ code: 'CONNECTOR_TOKEN_REVOKED', correlationId: first.correlationId, status: 403 });
-    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: HANDLE,
+    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: h.handle,
       last_sync_error: 'CONNECTOR_TOKEN_REVOKED' });
     expect(await audits(first.correlationId)).toEqual([refused]);
     h.failure.value = null;
     expect((await sync(h)).response.statusCode).toBe(200);
-    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: HANDLE, last_sync_error: null });
+    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: h.handle, last_sync_error: null });
     expect(h.built).toEqual(['GMAIL', 'GMAIL']);
   } finally { await h.app.close(); }
 });
@@ -120,14 +120,14 @@ it('records an invalid stored cursor as a conflict and admits BACKFILL recovery'
     const first = await sync(h);
     expect(first.response.statusCode).toBe(409);
     expect(first.response.json()).toEqual({ code: 'CONNECTOR_CURSOR_INVALID', correlationId: first.correlationId });
-    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: HANDLE,
+    expect(await state(h.connectorId)).toEqual({ status: 'SYNC_FAILED', secret_ref: h.handle,
       last_sync_error: 'CONNECTOR_CURSOR_INVALID' });
     expect(await audits(first.correlationId)).toEqual([refused]);
     h.failure.value = null;
     const recovered = await sync(h, 'BACKFILL');
     expect(recovered.response.statusCode).toBe(200);
     expect(recovered.response.json<{ resumedFromCursor: unknown }>().resumedFromCursor).toBe(null);
-    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: HANDLE, last_sync_error: null });
+    expect(await state(h.connectorId)).toEqual({ status: 'ACTIVE', secret_ref: h.handle, last_sync_error: null });
   } finally { await h.app.close(); }
 });
 

@@ -23,6 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
+import { connectorCredentialHandle } from '@unai/connectors';
 import { candidateStatementsSchema, whySourcesSchema, type RequestContext } from '@unai/domain';
 import type { SecretsManager } from '@unai/secrets';
 import { enqueueJob, runJobAttempt, JOB_PURPOSES } from '@unai/jobs';
@@ -50,7 +51,6 @@ beforeAll(async () => {
 afterAll(async () => { await appPool?.end(); await admin?.end(); });
 
 const OMI_LIST = 'https://api.omi.me/v1/dev/user/conversations';
-const HANDLE = 'secret://test/omi-key';
 const KEY = 'omi_dev_' + randomBytes(24).toString('hex');
 const BODY_MARKER = 'omi-provider-body-' + randomUUID();
 const DAY_MS = 86_400_000;
@@ -96,11 +96,12 @@ async function harness() {
       return bytes;
     },
   };
+  const served = connectorCredentialHandle(ownerScopeId, 'omi-key', { provider: 'test' });
   const resolved: string[] = [];
   const secrets: SecretsManager = {
     async resolve(handle) {
       resolved.push(handle);
-      if (handle !== HANDLE) throw new Error('SECRET_NOT_FOUND');
+      if (handle !== served) throw new Error('SECRET_NOT_FOUND');
       return KEY;
     },
   };
@@ -113,7 +114,7 @@ async function harness() {
   const context = (purpose: string): RequestContext => ({ actorId: user.id, ownerScopeId, purpose, correlationId });
   const runner: ExtractionTransactionRunner = (purpose, run) => withOwnerTransaction(appPool, context(purpose), run);
   const result = {
-    app, ownerScopeId, omi, resolved, context, runner, correlationId,
+    app, ownerScopeId, handle: served, omi, resolved, context, runner, correlationId,
     headers(purpose: string, extra: Record<string, string> = {}) {
       return {
         cookie: SESSION_COOKIE + '=' + token, 'x-owner-scope-id': ownerScopeId, 'x-purpose': purpose,
@@ -134,7 +135,7 @@ async function post(h: Harness, url: string, purpose: string, payload: Record<st
 }
 async function connectOmi(h: Harness): Promise<string> {
   const response = await post(h, '/v1/connectors', 'connector.manage', { connectorType: 'OMI',
-    externalAccountRef: 'owner@example.test', secretRef: HANDLE,
+    externalAccountRef: 'owner@example.test', secretRef: h.handle,
     requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }] });
   expect(response.statusCode, response.body).toBe(201);
   return response.json<{ connectorId: string }>().connectorId;

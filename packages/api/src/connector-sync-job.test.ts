@@ -7,7 +7,7 @@ import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@una
 import { postgresAdapter } from '@unai/auth';
 import { listDeadLetterJobs } from '@unai/jobs';
 import {
-  ConnectorError, createConnector, disconnectConnector, setCapabilityGrants, type ConnectorClient, type ConnectorFetch,
+  ConnectorError, connectorCredentialHandle, createConnector, disconnectConnector, setCapabilityGrants, type ConnectorClient, type ConnectorFetch,
 } from '@unai/connectors';
 import type { EvidenceObjects } from './evidence.js';
 import {
@@ -59,11 +59,12 @@ async function owner() {
   const ownerScopeId = (user as unknown as { ownerScopeId: string }).ownerScopeId;
   const as = <T,>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) =>
     withOwnerTransaction(appPool, { ownerScopeId, actorId: user.id, purpose, correlationId: randomUUID() }, run);
+  const secretRef = connectorCredentialHandle(ownerScopeId, 'gmail', { field: 'token' });
   const connectorId = await as('connector.manage', async tx => (await createConnector(tx, {
-    connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#token',
+    connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef,
     requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }, { capabilityId: 'gmail.read_content', granted: true }],
   })).connectorId);
-  return { ownerScopeId, actorId: user.id, connectorId, as };
+  return { ownerScopeId, actorId: user.id, connectorId, secretRef, as };
 }
 type Owner = Awaited<ReturnType<typeof owner>>;
 
@@ -148,7 +149,7 @@ it('a 403 is a retryable sync failure and keeps the credential handle', async ()
   expect(await sync.runOnce()).toMatchObject({ claimed: true,
     job: { jobId: job.jobId, status: 'FAILED', attemptCount: 1, lastError: 'CONNECTOR_TOKEN_REVOKED' } });
   expect(await connectorRow(o.connectorId)).toMatchObject({
-    status: 'SYNC_FAILED', secret_ref: 'secret://mounted/gmail#token', last_sync_error: 'CONNECTOR_TOKEN_REVOKED' });
+    status: 'SYNC_FAILED', secret_ref: o.secretRef, last_sync_error: 'CONNECTOR_TOKEN_REVOKED' });
 }, TIMEOUT);
 
 it('a 503 fails the attempt, is retried, and dead-letters with its code and no provider text', async () => {
@@ -183,7 +184,7 @@ it('ADR 0041 D7: an Omi 429 with Retry-After dead-letters the connector.sync job
   // The real Omi client through the production factory, over a fetch double: the
   // client's 429 mapping and the job's terminal list are proven together. The key
   // is invented at run time and only ever sits behind the handle (FR-104, D6).
-  const handle = 'secret://test/omi-key';
+  const handle = connectorCredentialHandle(o.ownerScopeId, 'omi-key', { provider: 'test' });
   const key = 'omi_dev_' + randomBytes(24).toString('hex');
   const omiId = await o.as('connector.manage', async tx => (await createConnector(tx, {
     connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: handle,

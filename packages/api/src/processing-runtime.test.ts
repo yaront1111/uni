@@ -2,13 +2,14 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { claimJob, retryDeadLetterJob } from '@unai/jobs';
+import { connectorCredentialHandle } from '@unai/connectors';
 import { TERMINAL_EXTRACTION_ERROR_CODES } from '@unai/extraction';
 import { replayProjection, resolveOwnerEntity } from '@unai/capabilities';
 import { recordClaim, recordResolutionAssertion, setResolutionLifecycle } from '@unai/memory';
@@ -581,17 +582,22 @@ function providerFetch(google: { accessToken: string; refreshToken: string; clie
     return new Response('{}', { status: 404 });
   };
 }
-/** A mounted secrets directory holding the three credentials, behind the real connector runtime. */
+/** A mounted secrets directory behind the real connector runtime. The runtime credential
+ * google-connector-client sits at the mount root; `provision` writes an owner's Gmail and Omi
+ * credentials to connectors/<ownerScopeId>/{gmail,omi}, the connector namespace (ADR 0013). */
 async function syncedSources() {
   const dir = await mkdtemp(join(tmpdir(), 'unai-processing-sync-'));
   const google = { accessToken: 'ya29.' + randomBytes(24).toString('base64url'), refreshToken: '1//' + randomBytes(24).toString('base64url'),
     clientId: 'connector-client.apps.example.test', clientSecret: 'GOCSPX-' + randomBytes(18).toString('base64url') };
   const omiKey = 'omi_dev_' + randomBytes(24).toString('hex');
   try {
-    await writeFile(join(dir, 'gmail'), JSON.stringify({ refresh_token: google.refreshToken }));
     await writeFile(join(dir, 'google-connector-client'), JSON.stringify({ client_id: google.clientId, client_secret: google.clientSecret }));
-    await writeFile(join(dir, 'omi'), omiKey);
-    return { fetch: providerFetch(google, omiKey), close: () => rm(dir, { recursive: true, force: true }),
+    const provision = async (ownerScopeId: string) => {
+      await mkdir(join(dir, 'connectors', ownerScopeId), { recursive: true });
+      await writeFile(join(dir, 'connectors', ownerScopeId, 'gmail'), JSON.stringify({ refresh_token: google.refreshToken }));
+      await writeFile(join(dir, 'connectors', ownerScopeId, 'omi'), omiKey);
+    };
+    return { fetch: providerFetch(google, omiKey), close: () => rm(dir, { recursive: true, force: true }), provision,
       connectors: createConnectorRuntime(createSecretsManager({ mounted: createMountedSecretsProvider(dir) }),
         { UNAI_GOOGLE_CONNECTOR_CLIENT: 'secret://mounted/google-connector-client' }) };
   } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
@@ -605,7 +611,7 @@ type SyncedOwner = Awaited<ReturnType<typeof owner>>;
 async function syncNow(o: SyncedOwner, provider: typeof fetch, connectorType: 'GMAIL' | 'OMI', itemsIngested: number) {
   const gmail = connectorType === 'GMAIL';
   const created = await o.app.inject({ method: 'POST', url: '/v1/connectors', headers: o.headers('connector.manage'), payload: {
-    connectorType, externalAccountRef: 'owner@example.test', secretRef: gmail ? 'secret://mounted/gmail#refresh_token' : 'secret://mounted/omi',
+    connectorType, externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.ownerScopeId, gmail ? 'gmail' : 'omi', gmail ? { field: 'refresh_token' } : {}),
     requestedCapabilities: (gmail ? ['gmail.read_metadata', 'gmail.read_content'] : ['omi.read_conversations']).map(capabilityId => ({ capabilityId, granted: true })) } });
   expect(created.statusCode, created.body).toBe(201);
   const original = globalThis.fetch;
@@ -624,6 +630,7 @@ async function withSyncedOwner<T>(run: (o: SyncedOwner) => Promise<T>): Promise<
   try {
     const o = await owner(undefined, sources.connectors);
     try {
+      await sources.provision(o.ownerScopeId);
       await syncNow(o, sources.fetch, 'GMAIL', GMAIL_THREADS.length);
       await syncNow(o, sources.fetch, 'OMI', 2);
       return await run(o);

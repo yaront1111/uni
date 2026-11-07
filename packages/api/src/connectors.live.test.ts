@@ -1,10 +1,13 @@
 import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { randomUUID, randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
+import { chmod, copyFile, mkdir, rm, rmdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { runMigrations } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
-import { createDefaultSecretsManager, isSecretHandle } from '@unai/secrets';
+import { createDefaultSecretsManager, isSecretHandle, parseSecretHandle } from '@unai/secrets';
+import { connectorCredentialHandle } from '@unai/connectors';
 import { createPlatformApi } from './platform.js';
 import { createConnectorRuntime } from './connectors.js';
 import type { EvidenceObjects } from './evidence.js';
@@ -33,6 +36,13 @@ import type { EvidenceObjects } from './evidence.js';
  *   UNAI_LIVE_GITHUB_REPOSITORY     owner/name
  *   UNAI_LIVE_GITHUB_SECRET         secret://mounted/<name> for a read-only fine-grained PAT
  *   UNAI_LIVE_OMI_SECRET            secret://mounted/<name> for an Omi developer key limited to conversations:read
+ *
+ * Every case runs as a fresh owner, so it copies the configured secret file into
+ * that owner's connector namespace, <UNAI_SECRETS_MOUNT>/connectors/<ownerScopeId>/live-<type>
+ * (a 0700 directory, a 0600 file; the test never reads the value), and connects
+ * with that namespaced handle, keeping the #field (ADR 0013 as amended). afterAll
+ * removes every copy, even after a failure, so the mount must be writable by the
+ * test process.
  *
  * Google refresh tokens are minted by the Uai connectors OAuth client.
  * UNAI_GOOGLE_CONNECTOR_CLIENT names its JSON {client_id, client_secret} secret;
@@ -71,10 +81,14 @@ const appPool = new Pool({ connectionString: appUrl.href });
 /** A provider is exercised only when both its account reference and a
  * well-formed secret *handle* are configured. A literal credential in the
  * environment is refused here exactly as ADR 0013 refuses it at startup. */
-function live(account: string | undefined, secretRef: string | undefined): { account: string; secretRef: string } | null {
+interface LiveSource { account: string; secretRef: string; name: string; field: string | null }
+function live(account: string | undefined, secretRef: string | undefined): LiveSource | null {
   if (!process.env.UNAI_SECRETS_MOUNT || !account || !secretRef) return null;
   if (!isSecretHandle(secretRef)) throw new Error('SECRET_HANDLE_REQUIRED:UNAI_LIVE_*_SECRET');
-  return { account, secretRef };
+  // Only a mounted handle names a file this suite can copy into the owner's namespace.
+  const { provider, name, field } = parseSecretHandle(secretRef);
+  if (provider !== 'mounted') throw new Error('SECRET_MOUNTED_HANDLE_REQUIRED:UNAI_LIVE_*_SECRET');
+  return { account, secretRef, name, field };
 }
 const GMAIL = live(process.env.UNAI_LIVE_GMAIL_ACCOUNT, process.env.UNAI_LIVE_GMAIL_SECRET);
 const CALENDAR = live(process.env.UNAI_LIVE_CALENDAR_ACCOUNT, process.env.UNAI_LIVE_CALENDAR_SECRET);
@@ -90,7 +104,16 @@ beforeAll(async () => {
   await runMigrations(admin, resolve('migrations'));
   await admin.query("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='connector_live_app') THEN CREATE ROLE connector_live_app LOGIN PASSWORD 'test-only'; END IF; END $$; GRANT unai_app TO connector_live_app");
 });
-afterAll(async () => { await appPool.end(); await admin.end(); });
+/** Every per-owner credential copy, registered before it is written. */
+const copies: { file: string; directory: string }[] = [];
+afterAll(async () => {
+  try {
+    // Never recursive: only each exact copy and its own, then empty, owner directory.
+    const removed = await Promise.allSettled(copies.map(copy => rm(copy.file, { force: true })));
+    await Promise.allSettled(copies.map(copy => rmdir(copy.directory)));
+    if (removed.some(result => result.status === 'rejected')) throw new Error('LIVE_SECRET_COPY_CLEANUP_FAILED');
+  } finally { await appPool.end(); await admin.end(); }
+});
 
 interface Harness {
   app: ReturnType<typeof createPlatformApi>;
@@ -132,6 +155,21 @@ async function harness(): Promise<Harness> {
     },
     async close() { await app.close(); },
   };
+}
+
+/** Copies the operator's secret file into the owner's connector namespace and
+ * returns the namespaced handle. The value never enters a variable. */
+async function provision(h: Harness, source: LiveSource, type: string): Promise<string> {
+  // Validates the owner and label before anything touches the filesystem.
+  const handle = connectorCredentialHandle(h.ownerScopeId, 'live-' + type, source.field === null ? {} : { field: source.field });
+  const mount = process.env.UNAI_SECRETS_MOUNT!;
+  // createMountedSecretsProvider's own rule, so the copy sits exactly where the handle resolves.
+  const file = resolve(mount, parseSecretHandle(handle).name), directory = dirname(file);
+  copies.push({ file, directory }); // registered first: afterAll also removes a partial copy
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await copyFile(resolve(mount, source.name), file, constants.COPYFILE_EXCL);
+  await chmod(file, 0o600);
+  return handle;
 }
 
 async function connect(h: Harness, body: Record<string, unknown>) {
@@ -194,7 +232,7 @@ it.skipIf(GMAIL === null)('CRT-CON-02-A (live): the Gmail connector ingests a re
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: GMAIL!.account, secretRef: GMAIL!.secretRef,
+      connectorType: 'GMAIL', externalAccountRef: GMAIL!.account, secretRef: await provision(h, GMAIL!, 'gmail'),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -236,7 +274,7 @@ it.skipIf(CALENDAR === null)('CRT-CON-03-A (live): the Calendar connector popula
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GOOGLE_CALENDAR', externalAccountRef: CALENDAR!.account, secretRef: CALENDAR!.secretRef,
+      connectorType: 'GOOGLE_CALENDAR', externalAccountRef: CALENDAR!.account, secretRef: await provision(h, CALENDAR!, 'calendar'),
       requestedCapabilities: [{ capabilityId: 'calendar.read', granted: true }],
     });
     expect(created.statusCode).toBe(201);
@@ -284,7 +322,7 @@ it.skipIf(GITHUB === null)('CRT-CON-04-A (live): a real repository\'s PRs and is
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GITHUB', externalAccountRef: GITHUB!.account, secretRef: GITHUB!.secretRef,
+      connectorType: 'GITHUB', externalAccountRef: GITHUB!.account, secretRef: await provision(h, GITHUB!, 'github'),
       requestedCapabilities: [{ capabilityId: 'github.read_pull_requests', granted: true },
         { capabilityId: 'github.read_issues', granted: true }],
     });
@@ -329,12 +367,13 @@ it.skipIf(OMI === null)('ADR-0041-LIVE-A (live): the Omi connector ingests real 
   const observed = observeFetch();
   try {
     const key = await createDefaultSecretsManager().resolve(OMI!.secretRef);
+    const secretRef = await provision(h, OMI!, 'omi');
     observed.install();
     const bodies: string[] = [];
     const { value: result, lines } = await capturingLogs(async () => {
       console.info('omi-live-log-canary');
       const created = await connect(h, {
-        connectorType: 'OMI', externalAccountRef: OMI!.account, secretRef: OMI!.secretRef,
+        connectorType: 'OMI', externalAccountRef: OMI!.account, secretRef,
         requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }],
       });
       bodies.push(created.body);
@@ -389,7 +428,7 @@ it.skipIf(GMAIL === null || !REVOCATION_ALLOWED)('CRT-CON-06-A (live): disconnec
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: GMAIL!.account, secretRef: GMAIL!.secretRef,
+      connectorType: 'GMAIL', externalAccountRef: GMAIL!.account, secretRef: await provision(h, GMAIL!, 'gmail'),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }],
     });
     const connectorId = created.json().connectorId;
