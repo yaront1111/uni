@@ -1,7 +1,7 @@
 // Pure record contract. Rehearsal extensions append implementations, not phase names.
 export const PHASES=Object.freeze(('host install-dry-run install tls postgres object-store secrets migrate publish owner preflights '+
   'services probes smoke failed-start sync backup restore-drill upgrade-dry-run upgrade-rollback upgrade telemetry browser').split(' '));
-export const IMPLEMENTED=Object.freeze(PHASES.slice(0,16));
+export const IMPLEMENTED=Object.freeze(PHASES.slice(0,21));
 const invalid=code=>{throw new Error(`REHEARSAL_${code}`);};
 
 export function requirePreflight(name,text){

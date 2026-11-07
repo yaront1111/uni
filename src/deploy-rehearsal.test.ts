@@ -62,7 +62,7 @@ describe('rehearsal record and arguments',()=>{
   });
   it('pins shared order and the implemented prefix',()=>{
     expect(lib.PHASES.join(' ')).toBe(`${first} ${later}`);
-    expect(lib.IMPLEMENTED.join(' ')).toBe(`${first} services probes smoke failed-start sync`);
+    expect(lib.IMPLEMENTED.join(' ')).toBe(`${first} services probes smoke failed-start sync backup restore-drill upgrade-dry-run upgrade-rollback upgrade`);
   });
   it.each(unsafe)('scrubs a sensitive string: %s',input=>{
     const output=lib.scrub(input,{forbidden});
@@ -129,7 +129,8 @@ describe('rehearsal record and arguments',()=>{
   });
   it('distinguishes unknown from unimplemented phases',()=>{
     expect(()=>lib.parseArguments(['--until','what'])).toThrow('REHEARSAL_PHASE_UNKNOWN');
-    expect(()=>lib.parseArguments(['--until','backup'])).toThrow('REHEARSAL_PHASE_UNIMPLEMENTED');
+    expect(()=>lib.parseArguments(['--until','telemetry'])).toThrow('REHEARSAL_PHASE_UNIMPLEMENTED');
+    expect(lib.parseArguments(['--until','upgrade']).until).toBe('upgrade');
     expect(lib.parseArguments(['--until','sync'])).toEqual({until:'sync',keep:false});
   });
   const assertions={adapterResolvesOwner:true,apiReadySeconds:4,listening:{port:3443,count:1},
@@ -745,4 +746,240 @@ describe('rehearsal 2/4 sync phase',()=>{
     await expect(sync(syncRun({leaks:leakLines({journal:'1'})}).run)).rejects.toThrow('REHEARSAL_SECRET_LEAKED');
     await expect(sync(syncRun({leaks:leakLines({'session-mint':'0'})}).run)).rejects.toThrow('REHEARSAL_LEAK_PROBE_INVALID');
   });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import * as untypedLifecycle from '../scripts/rehearsal/lifecycle-tool.mjs';
+type UnitEvent={unit:string;event:string};
+type Version={major:number;minor:number;patch:number};
+interface Lifecycle {
+  systemdEvents(text:string,units:string[]):UnitEvent[];
+  followsOrder(events:UnitEvent[],expected:UnitEvent[]):{ok:boolean;observed:UnitEvent[]};
+  neverStopped(events:UnitEvent[],unit:string):boolean;
+  peakOf(samples:number[]):{peak:number;samples:number};
+  registryTarget(input:{pinned:string;recorded:string[];published:string[];tagged:string[];bases:Record<string,string>}):
+    {from:Version;to:Version;direction:string}|{unverified:string};
+  d12Steps(text:string):string[];
+  classifyObserved(text:string):Record<string,unknown>;
+  observerScript(paths:{real:string;log:string}):string;
+  backupSummary(text:string):Record<string,unknown>;
+  drillSummary(text:string):Record<string,unknown>;
+}
+const lifecycle=untypedLifecycle as Lifecycle;
+const journalIds={stopping:'de5b426a63be47a7b6ac3eaac82e2f6f',stopped:'9d1aaa27d60140bd96365438aad20286',
+  starting:'7d4958e842da4a758f6c1cdc7b36dcc5',started:'39f53479d3a045ac8e11786248231fbf',failed:'be02cf6855d2428ba40df7e9d022f03d'};
+const d11:UnitEvent[]=[{unit:'unai-worker',event:'stopped'},{unit:'unai-api',event:'stopped'},
+  {unit:'unai-backup',event:'completed'},{unit:'unai-api',event:'started'},{unit:'unai-worker',event:'started'}];
+const backupLine=JSON.stringify({event:'backup.completed',bytes:123,objects:3,quiescence:'systemd',archive:'private.tar.enc',sha256:'f'.repeat(64)});
+const drillLine=JSON.stringify({event:'restore.drill.completed',verdict:'PASS',restore:{tables:10,objects:3},probes:{reads:2},drill:'PRIVATE'});
+const jsonLines=(values:unknown[])=>values.map(value=>JSON.stringify(value)).join('\n');
+describe('rehearsal lifecycle pure evidence',()=>{
+  it('pins D11 journal order and drops private fields and spoofed events',()=>{
+    const rows=d11.map(row=>row.event==='completed'?{_SYSTEMD_UNIT:row.unit+'.service',MESSAGE:backupLine}:
+      {_PID:'1',UNIT:row.unit+'.service',MESSAGE_ID:journalIds[row.event as keyof typeof journalIds],_HOSTNAME:'private.host'});
+    const result=lifecycle.systemdEvents(jsonLines([...rows,{...rows[0],_PID:'99'},
+      {_PID:'1',UNIT:'other.service',MESSAGE_ID:journalIds.started}]),['unai-worker','unai-api','unai-backup']);
+    expect(result).toEqual(d11);
+    expect(lifecycle.followsOrder(result,d11)).toEqual({ok:true,observed:d11});
+    expect(lifecycle.neverStopped(result,'unai-web')).toBe(true);
+    expect(lifecycle.neverStopped(result,'unai-api')).toBe(false);
+  });
+  it.each([[d11[1]!,d11[0]!,...d11.slice(2)],[...d11.slice(0,2),d11[3]!,d11[2]!,d11[4]!]].map(events=>({events})))('rejects reordered D11 %#',({events})=>{
+    expect(lifecycle.followsOrder(events,d11)?.ok).toBe(false);
+  });
+  it('samples finite nonnegative integers, requiring at least one',()=>{
+    expect(lifecycle.peakOf([0,2,6,3])).toEqual({peak:6,samples:4});
+    for(const samples of [[],[NaN],[1.1],[-1]])expect(()=>lifecycle.peakOf(samples)).toThrow('REHEARSAL_SAMPLES_INVALID');
+  });
+  it('picks the newest safe registry tag in either direction',()=>{
+    const input={pinned:'0.1.0',recorded:['0.1.0','0.2.0','0.3.0'],published:['0.1.0'],tagged:['0.1.0','0.2.0','0.3.0'],bases:{}};
+    const version=(minor:number)=>({major:0,minor,patch:0});
+    expect(lifecycle.registryTarget(input)).toEqual({from:version(1),to:version(3),direction:'forward'});
+    expect(lifecycle.registryTarget({...input,pinned:'0.3.0'})).toEqual({from:version(3),to:version(2),direction:'backward'});
+    expect(lifecycle.registryTarget({...input,bases:{'0.3.0':'0.2.0'}})).toEqual({from:version(1),to:version(2),direction:'forward'});
+    expect(lifecycle.registryTarget({...input,tagged:[]})).toEqual({unverified:'REGISTRY_TARGET_UNAVAILABLE'});
+  });
+  it('keeps only D12 titles and summary counts, refuses empty probe evidence',()=>{
+    expect(lifecycle.d12Steps('private\n== D12 step 0: timers\n== D12 step 1: fetch\n')).toEqual(['timers','fetch']);
+    expect(lifecycle.backupSummary(backupLine)).toEqual({bytes:123,objects:3,quiescence:'systemd'});
+    expect(lifecycle.drillSummary(drillLine)).toEqual({verdict:'PASS',tables:10,objects:3,probeReads:2});
+    expect(()=>lifecycle.drillSummary(drillLine.replace('"reads":2','"reads":0'))).toThrow('REHEARSAL_DRILL_INVALID');
+    expect(()=>lifecycle.backupSummary('{}')).toThrow('REHEARSAL_BACKUP_INVALID');
+  });
+  it('classifies observed invocations without exposing argv or stdout',()=>{
+    const rows=[{argv:['--unit=unai-upgrade-backup','--uid=unai-backup','--property=EnvironmentFile=/etc/unai/backup.env'],exit:1,stdout:''},
+      {argv:['--setenv=HOME=/root','/usr/local/bin/pnpm','db:migrate'],exit:0,stdout:'PRIVATE'},
+      {argv:['--setenv=HOME=/root','/usr/local/bin/pnpm','uai','registry','publish'],exit:0,stdout:'PRIVATE'},
+      {argv:['--uid=unai-web','server.ts','--check'],exit:0,stdout:'noise\n'+JSON.stringify({check:'api',status:'warn',code:'API_UNREACHABLE',secret:'PRIVATE'})}];
+    expect(lifecycle.classifyObserved(jsonLines(rows))).toEqual({transientBackup:{user:'unai-backup',environmentFile:true,exit:1},
+      migrate:{user:'root',home:true,exit:0},publish:{user:'root',home:true,exit:0},checks:{web:{exit:0,lines:[{check:'api',status:'warn',code:'API_UNREACHABLE'}]}}});
+  });
+  it.skipIf(process.platform!=='linux')('observer preserves argv stdout and exit, only retains checks',()=>{
+    const dir=mkdtempSync(join(tmpdir(),'observer-')),real=join(dir,'real'),log=join(dir,'log'),observer=join(dir,'observer');
+    try{
+      writeFileSync(real,'#!/bin/bash\nprintf \'{"check":"api","status":"warn","code":"API_UNREACHABLE"}\\n\'\nexit 3\n',{mode:0o700});
+      writeFileSync(observer,lifecycle.observerScript({real,log}),{mode:0o700});
+      for(const args of [['--check'],['db:migrate']]){
+        const r=spawnSync('bash',[observer,...args],{encoding:'utf8'});
+        expect(r.status).toBe(3);expect(r.stdout).toContain('API_UNREACHABLE');
+      }
+      const rows=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line) as {argv:string[];exit:number;stdout:string});
+      expect(rows.map(row=>row.argv)).toEqual([['--check'],['db:migrate']]);
+      expect(rows.map(row=>row.exit)).toEqual([3,3]);
+      expect(rows[0]!.stdout).toContain('API_UNREACHABLE');expect(rows[1]!.stdout).toBe('');
+    }finally{rmSync(dir,{recursive:true,force:true});}
+  });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {backupVerdict as untypedBackupVerdict} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const backupVerdict=untypedBackupVerdict as (events:UnitEvent[],summary:Record<string,unknown>,inventory:Record<string,unknown>)=>Record<string,unknown>;
+describe('rehearsal backup proof',()=>{
+  const inventory={archives:1,sidecars:2,encrypted:true,sizeMatches:true,headerValid:true};
+  it('requires the actual D11 order and one encrypted archive with both sidecars',()=>{
+    expect(backupVerdict(d11,{bytes:123,objects:3,quiescence:'systemd'},inventory)).toMatchObject({webNeverStopped:true,archives:1,bytes:123});
+  });
+  it.each(['archives','sidecars','encrypted','sizeMatches','headerValid'])('refuses a failed archive observation %s',key=>{
+    expect(()=>backupVerdict(d11,{bytes:123,objects:3,quiescence:'systemd'},{...inventory,[key]:false})).toThrow('REHEARSAL_BACKUP_INVALID');
+  });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {drillVerdict as untypedDrillVerdict} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const drillVerdict=untypedDrillVerdict as (input:Record<string,unknown>)=>Record<string,unknown>;
+describe('rehearsal restore drill proof',()=>{
+  const good={summary:drillLine,samples:[0,2,6,3],limit:5,user:'',capability:'cap_dac_read_search',protect:'strict',databases:0,roles:0,failed:false};
+  it('records a measured over-limit finding signal without hiding a passing restore',()=>{
+    expect(drillVerdict(good)).toMatchObject({verdict:'PASS',migratorPeak:6,migratorLimit:5,overLimit:true,samples:4,intervalMs:100,user:'root'});
+  });
+  it.each([{user:'unai-backup'},{capability:''},{protect:'full'},{databases:1},{roles:1},{failed:true},{limit:NaN}])('fails on invalid or missing drill evidence %#',override=>{
+    expect(()=>drillVerdict({...good,...override})).toThrow('REHEARSAL_DRILL_INVALID');
+  });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {dryVerdict as untypedDryVerdict} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const dryVerdict=untypedDryVerdict as (text:string,equal:boolean)=>Record<string,unknown>;
+const upgradeTitles='timers fetch build maintenance backup migrate registry preflight swap start'.split(' ');
+const dryText=upgradeTitles.map((title,i)=>`== D12 step ${i}: ${title}`).join('\n')+'\ndry run: nothing was executed\n';
+describe('rehearsal dry upgrade proof',()=>{
+  it('requires all ten titles, a zero-mutation snapshot and dry marker',()=>{
+    expect(dryVerdict(dryText,true)).toEqual({exit:0,steps:upgradeTitles,changedPaths:0});
+    expect(()=>dryVerdict(dryText,false)).toThrow('REHEARSAL_DRY_RUN_INVALID');
+    expect(()=>dryVerdict(dryText.replace('dry run: nothing was executed',''),true)).toThrow('REHEARSAL_DRY_RUN_INVALID');
+    expect(()=>dryVerdict(dryText.replace('== D12 step 9: start',''),true)).toThrow('REHEARSAL_DRY_RUN_INVALID');
+  });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {rollbackVerdict as untypedRollbackVerdict} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const rollbackVerdict=untypedRollbackVerdict as (input:Record<string,unknown>)=>Record<string,unknown>;
+describe('rehearsal real rollback proof',()=>{
+  const input={text:'ROLLBACK (ADR 0043 D12): step 4 failed before migrate; no data changed.\nUPGRADE_BACKUP_FAILED',exit:1,
+    observed:{transientBackup:{user:'unai-backup',environmentFile:true,exit:1}},events:d11.filter(row=>row.event!=='completed'),
+    current:true,removed:true,unchanged:true,noCopies:true,ready:true,timers:true};
+  it('accepts only the step-four propagated failure and restored state',()=>{
+    expect(rollbackVerdict(input)).toMatchObject({exit:1,code:'UPGRADE_BACKUP_FAILED',current:'rehearsal-a',releaseRemoved:true});
+  });
+  it.each(['current','removed','unchanged','noCopies','ready','timers'])('rejects missing rollback proof %s',key=>{
+    expect(()=>rollbackVerdict({...input,[key]:false})).toThrow('REHEARSAL_ROLLBACK_INVALID');
+  });
+  it('rejects an earlier failure or incomplete rollback',()=>{
+    expect(()=>rollbackVerdict({...input,text:input.text.replace('step 4','step 2')})).toThrow('REHEARSAL_ROLLBACK_INVALID');
+    expect(()=>rollbackVerdict({...input,text:'rollback incomplete\n'+input.text})).toThrow('REHEARSAL_ROLLBACK_INVALID');
+    expect(()=>rollbackVerdict({...input,observed:{transientBackup:{user:'unai-backup',environmentFile:true,exit:0}}})).toThrow('REHEARSAL_ROLLBACK_INVALID');
+  });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {parseEnvironment as untypedParseEnvironment} from '../scripts/rehearsal/lifecycle-host.mjs';
+const parseEnvironment=untypedParseEnvironment as (text:string)=>Record<string,string>;
+it('parses numbered S3 variable names without dropping endpoints or keys',()=>{
+  expect(parseEnvironment('# comment\nUNAI_BACKUP_S3_ENDPOINT=https://127.0.0.1\nUNAI_BACKUP_S3_REGION=west\n')).toEqual({UNAI_BACKUP_S3_ENDPOINT:'https://127.0.0.1',UNAI_BACKUP_S3_REGION:'west'});
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {upgradeVerdict as untypedUpgradeVerdict} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const upgradeVerdict=untypedUpgradeVerdict as (input:Record<string,unknown>)=>Record<string,unknown>;
+describe('rehearsal real upgrade proof',()=>{
+  const observed={transientBackup:{user:'unai-backup',environmentFile:true,exit:0},migrate:{user:'root',home:true,exit:0},
+    publish:{user:'root',home:true,exit:0},checks:{api:{exit:0,lines:[]},worker:{exit:0,lines:[]},
+      web:{exit:0,lines:[{check:'api',status:'warn',code:'API_UNREACHABLE'}]}}};
+  const input={text:dryText.replace('dry run: nothing was executed','upgraded rehearsal-a -> rehearsal-b'),exit:0,observed,
+    events:[['unai-api','started'],['unai-web','stopped'],['unai-web','started'],['unai-worker','started']].map(([unit,event])=>({unit,event})),
+    archiveDelta:1,cacheUnchanged:true,offlineVersion:'11.0.8',current:true,marker:true,ready:true,timers:true,signin:200,publishExpected:true};
+  it('requires real invocations, offline corepack, swap and ordered restart',()=>{
+    expect(upgradeVerdict(input)).toMatchObject({exit:0,current:'rehearsal-b',archiveDelta:1,offlineVersion:{major:11,minor:0,patch:8}});
+  });
+  it.each(['cacheUnchanged','current','marker','ready','timers'])('fails a missing upgrade proof %s',key=>{
+    expect(()=>upgradeVerdict({...input,[key]:false})).toThrow('REHEARSAL_UPGRADE_INVALID');
+  });
+  it.each([{archiveDelta:0},{offlineVersion:'11.0.9'},{signin:302},{exit:1},{observed:{...observed,publish:null}},
+    {observed:{...observed,migrate:{user:'root',home:false,exit:0}}}])('refuses incomplete upgrade %#',override=>{
+    expect(()=>upgradeVerdict({...input,...override})).toThrow('REHEARSAL_UPGRADE_INVALID');
+  });
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {lifecyclePhases as untypedLifecyclePhases} from '../scripts/rehearsal/lifecycle.mjs';
+const apiCheckNames='rate_limits secrets database auth_database database_role encryption_at_rest object_store registry_release tls_certificate probe_port'.split(' ');
+const checkRows=(names:string[])=>names.map(check=>({check,status:'ok',code:'OK'}));
+it.skipIf(process.platform!=='linux')('lifecycle recipes are valid bash, isolate state, and run the shipped commands',async()=>{
+  const calls:Array<{script:string;report?:string}>=[];
+  const value={registry:{from:{major:0,minor:1,patch:0},to:{major:0,minor:3,patch:0}},
+    apiChecks:checkRows(apiCheckNames),webChecks:[...checkRows(['rate_limits','origin','tls_certificate','auth']),{check:'api',status:'warn',code:'API_UNREACHABLE'}],workerChecks:[],
+    apiReady:{status:'ready',checks:Object.fromEntries(['database','encryption_at_rest','object_store','registry_release','tls_certificate'].map(key=>[key,'ok']))},
+    workerReady:{status:'ready',checks:{database:'ok',registry_release:'ok',loop:'ok'}}};
+  const run={container:'disposable',record:{unverified:[] as unknown[]},phase:{assertions:{}},command:async()=>'',
+    inside:async(script:string,options:{report?:string}={})=>{calls.push({script,...options});return '@@lifecycle\n'+JSON.stringify(value);}};
+  const phases=untypedLifecyclePhases as Record<string,(r:typeof run)=>Promise<void>>;
+  expect(Object.keys(phases)).toEqual(['backup','restore-drill','upgrade-dry-run','upgrade-rollback','upgrade']);
+  for(const phase of Object.values(phases))await phase(run);
+  for(const {script,report} of calls){
+    const result=spawnSync('bash',['-n'],{input:script+'\n'+(report??''),encoding:'utf8'});
+    expect(result.stderr).toBe('');expect(result.status).toBe(0);
+  }
+  const text=calls.map(call=>call.script).join('\n');
+  expect(text).toContain('systemctl start unai-backup.service');
+  expect(text).toContain('systemctl start unai-restore-drill.service');
+  expect(text).toContain('trap stop_sampler EXIT');expect(text).toContain('trap cleanup_injection EXIT');
+  expect(text).toContain('run-.service.d');expect(text).toContain('COREPACK_ENABLE_NETWORK=0');
+  expect(text).toContain('bash deploy/upgrade.sh "${args[@]}"');
+  expect(text).not.toMatch(/(?:cat|cp|base64) .*backup\.key/);
+  expect(run.record.unverified).toHaveLength(4);
+  expect(lib.validateRecord({...record(),phases:[{...phase('upgrade'),assertions:value}]})).toEqual([]);
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {drillInvocation as untypedDrillInvocation} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const drillInvocation=untypedDrillInvocation as (text:string)=>string;
+it('finds the completed oneshot invocation in the cursor-scoped journal after systemd clears the property',()=>{
+  const row={_SYSTEMD_UNIT:'unai-restore-drill.service',_SYSTEMD_INVOCATION_ID:'a'.repeat(32),MESSAGE:drillLine};
+  expect(drillInvocation(JSON.stringify(row))).toBe('a'.repeat(32));
+  expect(()=>drillInvocation('')).toThrow('REHEARSAL_DRILL_INVALID');
+  expect(()=>drillInvocation(jsonLines([row,{...row,_SYSTEMD_INVOCATION_ID:'b'.repeat(32)}]))).toThrow('REHEARSAL_DRILL_INVALID');
+});
+
+it('puts the executable observer outside the noexec run tmpfs',()=>{
+  const source=readFileSync('scripts/rehearsal/lifecycle.mjs','utf8');
+  expect(source).not.toContain('/run/unai-rehearsal-observer');
+  expect(source).toContain('/usr/local/lib/unai-rehearsal/observer');
+});
+
+it('ignores non-check telemetry JSON without losing check lines',()=>{
+  const line={argv:['--uid=unai-web','--check'],exit:0,stdout:jsonLines([{event:'telemetry.startup',status:'TELEMETRY_ENABLED'},
+    {check:'api',status:'warn',code:'API_UNREACHABLE'}])};
+  expect(lifecycle.classifyObserved(JSON.stringify(line))).toMatchObject({checks:{web:{exit:0,lines:[{check:'api',status:'warn',code:'API_UNREACHABLE'}]}}});
+});
+it.skipIf(process.platform!=='linux')('sampler startup failure emits a bare code even without root state access',()=>{
+  const r=spawnSync(process.execPath,['scripts/rehearsal/lifecycle-host.mjs','sample'],{encoding:'utf8'});
+  expect(r.status).toBe(1);expect(r.stderr).toBe('REHEARSAL_LIFECYCLE_FAILED\n');
+});
+
+// @ts-expect-error Plain JavaScript operator tooling.
+import {archiveChange as untypedArchiveChange} from '../scripts/rehearsal/lifecycle-tool.mjs';
+const archiveChange=untypedArchiveChange as (before:number,after:number,events:UnitEvent[])=>Record<string,number>;
+it('attributes only completed timer archives separately from the upgrade backup',()=>{
+  expect(archiveChange(1,3,[{unit:'unai-backup',event:'completed'}])).toEqual({archiveIncrease:2,timerArchives:1,archiveDelta:1});
+  expect(archiveChange(1,2,[{unit:'unai-backup',event:'starting'}])).toEqual({archiveIncrease:1,timerArchives:0,archiveDelta:1});
 });

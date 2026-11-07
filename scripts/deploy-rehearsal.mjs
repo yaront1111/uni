@@ -23,8 +23,9 @@ async function run(options){
   const {createRun}=await import('./rehearsal/host.mjs');
   const {servicePhases}=await import('./rehearsal/services.mjs');
   const {syncPhases}=await import('./rehearsal/sync.mjs');
+  const {lifecyclePhases}=await import('./rehearsal/lifecycle.mjs');
   const run=await createRun(options),interrupted=new AbortController();
-  Object.assign(run.phases,servicePhases,syncPhases);
+  Object.assign(run.phases,servicePhases,syncPhases,lifecyclePhases);
   let signalCode=0,exitCode=0;
   const sigint=()=>{signalCode=130;interrupted.abort();};
   const sigterm=()=>{signalCode=143;interrupted.abort();};

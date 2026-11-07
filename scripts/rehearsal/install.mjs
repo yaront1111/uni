@@ -1,8 +1,9 @@
 // Shell runs only inside the disposable host, with root-only logs.
 const installer='bash /root/uai-install/deploy/install.sh --tag rehearsal-a --repo file:///srv/unai.git';
-const snapshot=String.raw`
+export const snapshot=String.raw`
 snapshot() {
-  for path in /opt/unai /etc/unai /etc/systemd/system /etc/apt /etc/letsencrypt /usr/local/bin /usr/local/aws-cli /var/cache/unai /var/lib/postgresql; do
+  if [ "$#" = 0 ]; then set -- /opt/unai /etc/unai /etc/systemd/system /etc/apt /etc/letsencrypt /usr/local/bin /usr/local/aws-cli /var/cache/unai /var/lib/postgresql; fi
+  for path in "$@"; do
     if [ -e "$path" ]; then find "$path" -printf '%p %m %u %g %s %T@\n' | LC_ALL=C sort; else printf 'absent:%s\n' "$path"; fi
   done | sha256sum
   (getent passwd unai-api unai-web unai-worker unai-backup || true) | sha256sum
