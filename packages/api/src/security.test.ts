@@ -8,10 +8,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
-import { createMountedSecretsProvider, createSecretsManager } from '@unai/secrets';
+import { createMountedSecretsProvider, createSecretsManager, type SecretsManager } from '@unai/secrets';
 import { createModelGateway, MODEL_PURPOSES, type ModelProvider, type ModelProviderRequest } from '@unai/model';
 import { runExtraction, type ExtractionTransactionRunner } from '@unai/extraction';
-import { buildPluginContextBundle, connectorCredentialHandle } from '@unai/connectors';
+import {
+  buildPluginContextBundle, connectorCredentialHandle, createConnector, isConnectorCredentialHandle, markTokenRevoked,
+  recordSyncFailure, type ConnectorTransaction,
+} from '@unai/connectors';
 import {
   decisionProjectionViewSchema, decisionReviewResultSchema, deletionReceiptSchema, exportBundleSchema,
   goalSchema, mentorViewSchema, recordDecisionResultSchema, type RecordDecision, type TransitionContract,
@@ -19,6 +22,8 @@ import {
 // The registry library stays out of the API's manifest (registry-boundary.test.ts);
 // only this test publishes the pinned release, through the package's own source.
 import { lintRegistryCheckout, loadRegistryRelease, publishRegistryRelease } from '../../registry/src/index.js';
+// The shared credential handle vectors are test data, imported by relative path too.
+import { credentialHandleVectors } from '../../connectors/src/testing/credential-handles.js';
 import { createPlatformApi } from './platform.js';
 import { createConnectorRuntime } from './connectors.js';
 import { createGatewayAnswerPhraser } from './answers.js';
@@ -45,6 +50,8 @@ import type { EvidenceObjects } from './evidence.js';
  *  - CRT-SEC-05-A: every model prompt and every application log line captured
  *    during a connector sync (and the extraction and answer that follow it) is
  *    free of the OAuth token and every other configured secret value.
+ *  - PRD §31 unauthorized connector token use: a connector stores only a
+ *    credential handle in its own owner's namespace (ADR 0013, layers 1 and 2).
  *
  * CRT-SEC-08-A (TLS, encryption at rest, object keys) is `transport.test.ts`.
  */
@@ -156,17 +163,19 @@ const financialContext = (o: Owner) => belief(o, { frameTypeId: 'shared.obligati
 
 interface Api { app: ReturnType<typeof createPlatformApi>; prompts: string[] }
 /** The platform as production composes it, with the connector runtime built from
- * a real secrets manager, and an answer phraser whose provider the test supplies. */
-function api(o: Owner, options: { secretsRoot?: string; phraser?: ModelProvider; googleClient?: string } = {}): Api {
+ * a real secrets manager (or the one the test supplies), and an answer phraser
+ * whose provider the test supplies. */
+function api(o: Owner, options: { secretsRoot?: string; secrets?: SecretsManager; phraser?: ModelProvider; googleClient?: string } = {}): Api {
   const prompts: string[] = [];
+  const secrets = options.secrets
+    ?? (options.secretsRoot ? createSecretsManager({ mounted: createMountedSecretsProvider(options.secretsRoot) }) : null);
   const phraserGateway = options.phraser ? createModelGateway({
     provider: recording(options.phraser, prompts),
     recordCall: run => withOwnerTransaction(appPool, { actorId: o.actor, ownerScopeId: o.owner, purpose: MODEL_PURPOSES.call, correlationId: randomUUID() }, run),
   }) : null;
   const app = createPlatformApi({
     authPool: admin, appPool, evidenceObjects, registryReleaseId, registryRelease: '0.1.0',
-    ...(options.secretsRoot ? { connectors: createConnectorRuntime(
-      createSecretsManager({ mounted: createMountedSecretsProvider(options.secretsRoot) }),
+    ...(secrets ? { connectors: createConnectorRuntime(secrets,
       { UNAI_GOOGLE_CONNECTOR_CLIENT: options.googleClient ?? 'secret://mounted/google-connector-client' }) } : {}),
     ...(phraserGateway ? { answerPhraser: createGatewayAnswerPhraser(phraserGateway) } : {}),
   });
@@ -1246,4 +1255,155 @@ it.each([
     expect((await admin.query('SELECT status,secret_ref,last_sync_error FROM connectors WHERE id=$1', [id])).rows[0])
       .toEqual({ status: state, secret_ref: state === 'TOKEN_REVOKED' ? null : connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }), last_sync_error: code });
   } finally { globalThis.fetch = original; await app.close(); await rm(secrets, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// PRD §31 unauthorized connector token use (ADR 0013, layers 1 and 2)
+
+const OUT_OF_SCOPE = 'CONNECTOR_SECRET_REF_OUT_OF_SCOPE';
+/** A runtime credential handle: the API's own database URL. */
+const RUNTIME_HANDLE = 'secret://mounted/api-database-url';
+/** The trigger's refusal: SQLSTATE 42501 and the bare code, with no detail. */
+const triggerRefusal = { code: '42501', message: OUT_OF_SCOPE, detail: undefined };
+const gmailConnect = (secretRef: string, externalAccountRef = 'owner@example.test') => ({
+  connectorType: 'GMAIL' as const, externalAccountRef, secretRef,
+  requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }],
+});
+const auditRows = async (correlationId: string) => (await admin.query(
+  'SELECT purpose,policy_decision,result,objects_and_fields_accessed FROM audit_events WHERE correlation_id=$1', [correlationId])).rows;
+
+it('PRD §31 and CRT-SEC-10-A unauthorized connector token use: POST /v1/connectors naming a runtime credential handle is refused before anything is read, sent or stored', async () => {
+  const o = await newOwner('runtime-handle');
+  const mount = await mkdtemp(join(tmpdir(), 'unai-security-secrets-'));
+  const value = 'runtime-credential-' + randomBytes(16).toString('hex');
+  await writeFile(join(mount, 'api-database-url'), value);
+  const mounted = createSecretsManager({ mounted: createMountedSecretsProvider(mount) });
+  // The handle is real: the mount serves it. Compared, never printed.
+  expect(await mounted.resolve(RUNTIME_HANDLE) === value).toBe(true);
+  const resolved: string[] = [];
+  const secrets: SecretsManager = { async resolve(handle) { resolved.push(handle); return mounted.resolve(handle); } };
+  const { app } = api(o, { secrets });
+  const original = globalThis.fetch;
+  const requests: unknown[] = [];
+  globalThis.fetch = async (...args) => { requests.push(args); return Response.json({}); };
+  try {
+    const request = headers(o, 'connector.manage');
+    const { value: refused, lines } = await capturingLogs(() =>
+      app.inject({ method: 'POST', url: '/v1/connectors', headers: request, payload: gmailConnect(RUNTIME_HANDLE) }));
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toEqual({ code: OUT_OF_SCOPE, correlationId: request['x-correlation-id'] });
+    expect(await count('SELECT count(*) AS n FROM connectors WHERE owner_scope_id=$1', [o.owner])).toBe(0);
+    expect(await count('SELECT count(*) AS n FROM connector_capability_grants WHERE owner_scope_id=$1', [o.owner])).toBe(0);
+    expect(resolved).toEqual([]);
+    expect(requests).toEqual([]);
+    const audits = await auditRows(request['x-correlation-id']);
+    expect(audits).toEqual([{ purpose: 'connector.manage', policy_decision: 'DENY', result: 'REFUSED', objects_and_fields_accessed: [] }]);
+    const surfaces = { response: refused.body, audit: JSON.stringify(audits), logs: lines.join('\n') };
+    for (const [where, text] of Object.entries(surfaces)) {
+      for (const secret of [RUNTIME_HANDLE, 'api-database-url', value]) expect(text.includes(secret), where).toBe(false);
+    }
+    // Before any query: the library refuses without touching the transaction.
+    const queries: string[] = [];
+    const tx: ConnectorTransaction = {
+      context: { ownerScopeId: o.owner, actorId: o.actor, purpose: 'connector.manage', correlationId: randomUUID() },
+      async query(text) { queries.push(text); throw new Error('QUERY_NOT_EXPECTED'); },
+    };
+    await expect(createConnector(tx, gmailConnect(RUNTIME_HANDLE))).rejects.toMatchObject({ message: OUT_OF_SCOPE, detail: {} });
+    expect(queries).toEqual([]);
+  } finally { globalThis.fetch = original; await app.close(); await rm(mount, { recursive: true, force: true }); }
+});
+
+it('PRD §31 and CRT-SEC-10-A unauthorized connector token use: an owner cannot store another owner\'s namespaced credential handle', async () => {
+  const a = await newOwner('namespace-a'), b = await newOwner('namespace-b');
+  const { app } = api(b);
+  try {
+    const foreign = connectorCredentialHandle(a.owner, 'gmail', { field: 'refresh_token' });
+    const request = headers(b, 'connector.manage');
+    const refused = await app.inject({ method: 'POST', url: '/v1/connectors', headers: request, payload: gmailConnect(foreign) });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toEqual({ code: OUT_OF_SCOPE, correlationId: request['x-correlation-id'] });
+    expect(await count('SELECT count(*) AS n FROM connectors WHERE owner_scope_id=$1', [b.owner])).toBe(0);
+    const audits = await auditRows(request['x-correlation-id']);
+    expect(audits).toEqual([{ purpose: 'connector.manage', policy_decision: 'DENY', result: 'REFUSED', objects_and_fields_accessed: [] }]);
+    for (const text of [refused.body, JSON.stringify(audits)]) {
+      expect(text).not.toContain(foreign);
+      expect(text).not.toContain(a.owner);
+    }
+    // The same request naming b's own handle is stored.
+    const own = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(b, 'connector.manage'),
+      payload: gmailConnect(connectorCredentialHandle(b.owner, 'gmail', { field: 'refresh_token' })) });
+    expect(own.statusCode, own.body).toBe(201);
+  } finally { await app.close(); }
+});
+
+it('PRD §31 and CRT-SEC-10-A unauthorized connector token use: the route and the secret_ref trigger agree with isConnectorCredentialHandle on every shared vector, and a legacy row keeps its other updates', async () => {
+  const o = await newOwner('namespace-vectors'), other = await newOwner('namespace-other');
+  const vectors = credentialHandleVectors(o.owner, other.owner);
+  const as = <T,>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) =>
+    withOwnerTransaction(appPool, { ownerScopeId: o.owner, actorId: o.actor, purpose, correlationId: randomUUID() }, run);
+  const { app } = api(o);
+  const client = await admin.connect();
+  try {
+    // Layer 1, at the route: 201 exactly for the accepted vectors, else 403 and the bare code, never a 500.
+    let namespaced = '';
+    for (const [index, vector] of vectors.entries()) {
+      expect(isConnectorCredentialHandle(vector.handle, o.owner), vector.title).toBe(vector.accepted);
+      const response = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'),
+        payload: gmailConnect(vector.handle, 'vector-' + index + '@example.test') });
+      expect(response.statusCode, vector.title).toBe(vector.accepted ? 201 : 403);
+      if (vector.accepted) namespaced ||= response.json().connectorId as string;
+      else expect(response.json(), vector.title).toMatchObject({ code: OUT_OF_SCOPE });
+    }
+    expect(await count('SELECT count(*) AS n FROM connectors WHERE owner_scope_id=$1', [o.owner]))
+      .toBe(vectors.filter(vector => vector.accepted).length);
+
+    // Layer 2, the trigger, over the same list: an UPDATE is admitted exactly for the accepted vectors.
+    // One verdict per vector, compared as a whole, so a failure names every vector that disagrees.
+    const refusal = (error: { code?: string; message?: string; detail?: string }) =>
+      ({ code: error.code, message: error.message, detail: error.detail });
+    const verdicts: { title: string; verdict: unknown }[] = [];
+    await client.query('BEGIN');
+    try {
+      for (const vector of vectors) {
+        await client.query('SAVEPOINT v');
+        verdicts.push({ title: vector.title, verdict: await client.query('UPDATE connectors SET secret_ref=$1 WHERE id=$2',
+          [vector.handle, namespaced]).then(result => result.rowCount, refusal) });
+        await client.query('ROLLBACK TO SAVEPOINT v');
+      }
+    } finally { await client.query('ROLLBACK'); }
+    expect(verdicts).toEqual(vectors.map(vector => ({ title: vector.title, verdict: vector.accepted ? 1 : triggerRefusal })));
+    // ...and for the application role under connector.manage, a direct INSERT and a direct UPDATE alike.
+    await expect(as('connector.manage', tx => tx.query(`INSERT INTO connectors(id,owner_scope_id,connector_type,external_account_ref,
+      permission_manifest,status,secret_ref) VALUES($1,$2,'GITHUB','direct@example.test','{}','ACTIVE',$3)`,
+    [randomUUID(), o.owner, RUNTIME_HANDLE]))).rejects.toMatchObject(triggerRefusal);
+    await expect(as('connector.manage', tx => tx.query('UPDATE connectors SET secret_ref=$1 WHERE id=$2',
+      [connectorCredentialHandle(other.owner, 'gmail', { field: 'refresh_token' }), namespaced]))).rejects.toMatchObject(triggerRefusal);
+
+    // A legacy row, stored outside the namespace before it existed. Replica mode skips every trigger.
+    const created = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'),
+      payload: gmailConnect(connectorCredentialHandle(o.owner, 'legacy', { field: 'refresh' }), 'legacy@example.test') });
+    expect(created.statusCode, created.body).toBe(201);
+    const legacy = created.json().connectorId as string;
+    const LEGACY_HANDLE = 'secret://mounted/gmail#refresh';
+    await client.query('BEGIN');
+    await client.query('SET LOCAL session_replication_role = replica');
+    await client.query('UPDATE connectors SET secret_ref=$1 WHERE id=$2', [LEGACY_HANDLE, legacy]);
+    await client.query('COMMIT');
+    const row = async () => (await admin.query(
+      'SELECT status,secret_ref,last_sync_error,last_cursor FROM connectors WHERE id=$1', [legacy])).rows[0];
+    // Its unrelated updates still work: a sync failure is recorded by the production writer...
+    await as('connector.sync', tx => recordSyncFailure(tx, legacy, 'CONNECTOR_PROVIDER_UNAVAILABLE'));
+    expect(await row()).toMatchObject({ status: 'SYNC_FAILED', secret_ref: LEGACY_HANDLE, last_sync_error: 'CONNECTOR_PROVIDER_UNAVAILABLE' });
+    // ...a re-set of the same value is no new value...
+    const cursor = { position: 'legacy-cursor', providerToken: null };
+    expect((await admin.query('UPDATE connectors SET secret_ref=secret_ref,last_cursor=$2 WHERE id=$1',
+      [legacy, JSON.stringify(cursor)])).rowCount).toBe(1);
+    expect(await row()).toMatchObject({ secret_ref: LEGACY_HANDLE, last_cursor: cursor });
+    // ...but another value outside the namespace is refused...
+    await expect(admin.query('UPDATE connectors SET secret_ref=$1 WHERE id=$2', ['secret://mounted/github#token', legacy]))
+      .rejects.toMatchObject(triggerRefusal);
+    // ...and revocation still drops the handle to NULL.
+    await as('connector.manage', tx => markTokenRevoked(tx, legacy));
+    expect(await row()).toMatchObject({ status: 'TOKEN_REVOKED', secret_ref: null });
+  } finally { await client.query('ROLLBACK'); client.release(); await app.close(); }
 });

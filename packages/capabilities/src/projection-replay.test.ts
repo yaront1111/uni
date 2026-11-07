@@ -258,9 +258,12 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // ...and so do migration 0018's connector capability grants, connector
   // lifecycle columns and the policies it added to the delivered evidence
   // tables. `CREATE OR REPLACE` definitions (evidence_access) and the grants are
-  // idempotent, so only what 0018 created outright is removed here.
+  // idempotent, so only what 0018 created outright is removed here. Migration
+  // 0049's trigger on secret_ref goes first: the column cannot be dropped while
+  // that trigger depends on it.
   await admin!.query('DROP TABLE connector_capability_grants CASCADE');
-  await admin!.query(`DROP FUNCTION IF EXISTS unai_private.connector_grant_identity() CASCADE;
+  await admin!.query(`DROP FUNCTION IF EXISTS unai_private.connector_secret_ref_namespace() CASCADE;
+    DROP FUNCTION IF EXISTS unai_private.connector_grant_identity() CASCADE;
     DROP FUNCTION IF EXISTS unai_private.connector_update_guard() CASCADE;
     DROP FUNCTION IF EXISTS unai_private.connector_ingestion_active() CASCADE`);
   await admin!.query(`ALTER TABLE connectors
@@ -375,7 +378,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0039_conversation_presented_answer.sql', '0040_omi_source_type.sql', '0041_probe_release_reader.sql',
     '0042_document_upload_grant_read.sql', '0043_auth_revoke_session_no_key_update.sql', '0044_auth_session_lock_order.sql',
     '0045_owner_access_once_per_statement.sql', '0046_decision_and_mentor_erasure.sql', '0047_governed_resolve_operation.sql',
-    '0048_connector_secret_ref_slash_names.sql']);
+    '0048_connector_secret_ref_slash_names.sql', '0049_connector_secret_ref_owner_namespace.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry

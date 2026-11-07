@@ -4,6 +4,7 @@ import {
   type ConnectorCursor, type ConnectorManifest, type CreateConnector, type DisconnectResult,
   type ManifestCapability, type PublicCapabilityGrant, type PublicConnector,
 } from '@unai/domain';
+import { isConnectorCredentialHandle } from './credentials.js';
 import { ConnectorError, capabilityOf, isWriteScope, manifestFor, requestedScopes, WRITE_CAPABILITIES }
   from './manifests.js';
 
@@ -44,11 +45,19 @@ function requirePurpose(tx: ConnectorTransaction, ...allowed: string[]): void {
  *
  * A request naming a write capability is refused before anything is written: V0
  * requests read-only scopes for Gmail, Calendar and GitHub, so a write scope is
- * never part of a consent handoff at all (CRT-CON-02-A/03-A/04-A).
+ * never part of a consent handoff at all (CRT-CON-02-A/03-A/04-A). A credential
+ * handle outside the owner's own namespace is refused the same way, before any
+ * query, with the bare code CONNECTOR_SECRET_REF_OUT_OF_SCOPE.
  */
 export async function createConnector(tx: ConnectorTransaction, input: CreateConnector): Promise<PublicConnector> {
   requirePurpose(tx, CONNECTOR_MANAGE_PURPOSE);
   const request = createConnectorSchema.parse(input);
+  // ADR 0013 (amended 2026-11-07), layer 1: a connector stores only a credential
+  // handle in its own owner's namespace, secret://<provider>/connectors/<ownerScopeId>/<label>[#field].
+  // The refusal carries the code alone: the input may be a pasted credential or another owner's handle.
+  if (request.secretRef !== null && !isConnectorCredentialHandle(request.secretRef, tx.context.ownerScopeId)) {
+    throw new ConnectorError('CONNECTOR_SECRET_REF_OUT_OF_SCOPE');
+  }
   const manifest = manifestFor(request.connectorType);
   for (const requested of request.requestedCapabilities) capabilityOf(manifest, requested.capabilityId);
   assertReadOnly(manifest);

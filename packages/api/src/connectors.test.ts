@@ -982,9 +982,9 @@ it('the production runtime declares exactly the connector types createConnectorC
   expect([...polled].sort()).toEqual(['GITHUB', 'GMAIL', 'GOOGLE_CALENDAR', 'OMI']);
 });
 
-it('ADR 0013 namespace: POST /v1/connectors stores an owner-namespaced handle and a flat legacy one; the secret_ref CHECK still refuses malformed names', async () => {
-  // A handle outside the owner namespace. Still stored here; slice 5/6 (task-097d9f22)
-  // turns this 201 into 403 CONNECTOR_SECRET_REF_OUT_OF_SCOPE.
+it('ADR 0013 namespace: POST /v1/connectors stores an owner-namespaced handle and refuses a flat legacy one; the secret_ref CHECK alone still refuses malformed names', async () => {
+  // A handle outside the owner namespace: createConnector refuses it before any
+  // query (ADR 0013, layer 1), so it is never stored.
   const LEGACY_HANDLE = 'secret://mounted/gmail#refresh';
   const h = await harness();
   try {
@@ -1000,12 +1000,13 @@ it('ADR 0013 namespace: POST /v1/connectors stores an owner-namespaced handle an
     const legacy = await connect(h, {
       connectorType: 'GMAIL', externalAccountRef: 'legacy@example.test', secretRef: LEGACY_HANDLE, requestedCapabilities,
     });
-    expect(legacy.statusCode).toBe(201);
+    expect(legacy.statusCode).toBe(403);
+    expect(legacy.json()).toMatchObject({ code: 'CONNECTOR_SECRET_REF_OUT_OF_SCOPE' });
     expect(legacy.body).not.toContain('secret://');
     const namespacedId = namespaced.json().connectorId as string;
     const stored = (await admin.query('SELECT id,secret_ref FROM connectors WHERE owner_scope_id=$1', [h.ownerScopeId])).rows;
     expect(Object.fromEntries(stored.map(row => [row.id, row.secret_ref])))
-      .toEqual({ [namespacedId]: handle, [legacy.json().connectorId]: LEGACY_HANDLE });
+      .toEqual({ [namespacedId]: handle });
     expect(isConnectorCredentialHandle(stored.find(row => row.id === namespacedId)?.secret_ref, h.ownerScopeId)).toBe(true);
 
     // The CHECK alone: replica mode skips every trigger on connectors, never a CHECK.
