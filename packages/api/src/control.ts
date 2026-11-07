@@ -9,7 +9,7 @@ import {
 } from '@unai/domain';
 import type { PolicyPorts } from '@unai/belief';
 import { CONTEXT_READ_PURPOSE } from '@unai/context';
-import { PROJECTION_PURPOSE, REDUCER_VERSION, replayProjection } from '@unai/capabilities';
+import { DECISION_PROJECTION, PROJECTION_PURPOSE, REDUCER_VERSION, replayDecisionProjection, replayProjection } from '@unai/capabilities';
 import { CONNECTOR_READ_PURPOSE, listConnectors } from '@unai/connectors';
 import { EMBEDDING_MODEL, EMBEDDING_VERSION } from '@unai/memory';
 import {
@@ -140,12 +140,20 @@ export async function deleteEvidence(run: ControlRunner, objects: EvidenceObject
   const rebuilt: string[] = [];
   await run(async tx => {
     const receipts: string[] = [];
+    const asOf = new Date();
     for (const projectionName of committed.erased.length ? PROJECTION_NAMES : []) {
-      const receipt = await replayProjection(tx, { ownerScopeId: tx.context.ownerScopeId, projectionName, asOf: new Date(),
+      const receipt = await replayProjection(tx, { ownerScopeId: tx.context.ownerScopeId, projectionName, asOf,
         trigger: 'MANUAL_REPLAY', compareWithStored: false,
         detail: { cause: 'DELETION', retentionAndDeletionRequestId: committed.requestId } });
       receipts.push(receipt.projectionRebuildReceiptId);
       rebuilt.push(projectionName);
+    }
+    if (committed.erased.length > 0) {
+      const receipt = await replayDecisionProjection(tx, { ownerScopeId: tx.context.ownerScopeId, asOf,
+        trigger: 'MANUAL_REPLAY', compareWithStored: false,
+        detail: { cause: 'DELETION', retentionAndDeletionRequestId: committed.requestId } });
+      receipts.push(receipt.projectionRebuildReceiptId);
+      rebuilt.push(DECISION_PROJECTION);
     }
     // The rebuild is its own audited event (CRT-SEC-07-A), beside the deletion's.
     await tx.audit({ policyDecision: 'ALLOW', codeVersion: REDUCER_VERSION, result: 'SUCCESS', objects: [

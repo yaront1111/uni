@@ -1079,7 +1079,7 @@ it('[AC44.18] CRT-NFR-04-A and CRT-SEC-06-A: export carries raw evidence and can
     for (const key of ['anchors', 'parsedContent', 'embeddings', 'searchIndexEntries', 'projectionRows', 'contextPacketsErased']) {
       expect(receipt.cascade[key], key).toBeGreaterThan(0);
     }
-    expect(receipt.projectionsRebuilt).toEqual(['open_commitments_projection', 'obligations_projection', 'schedule_projection']);
+    expect(receipt.projectionsRebuilt).toEqual(['open_commitments_projection', 'obligations_projection', 'schedule_projection', 'decision_projection']);
 
     // Not retrievable by any API ...
     expect(stored.has(rawRef)).toBe(false);

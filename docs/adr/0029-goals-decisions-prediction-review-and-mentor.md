@@ -127,6 +127,17 @@ separate change with its own review; here the receipts table's
 `projection_name` CHECK is widened so a decision replay is recorded like any
 other.
 
+Amended 2026-11-07 (task-c3a9786cf528428db7b7590c50e15e5d): the deletion replay
+in `packages/api/src/control.ts` (`deleteEvidence`) rebuilds `decision_projection`
+through `replayDecisionProjection` after every evidence erasure, beside the three
+V0 projections, recording cause `DELETION` without an incremental comparison.
+The cascade in migration 0046 first deletes rows of affected decision frames and
+any row naming an erased object, so a failed replay cannot retain their text.
+A decision frame with no live slot value, no resolution naming it as source and
+no pending owner write projects no row: an erased decision leaves the workspace
+instead of leaving a blank row (PRD §30.7, §44.18). The replay CLI default and
+lineage rebuild remain the scope of task-e54441da.
+
 ## 5. "Why did I make this decision?" is answered through the Context Broker
 
 `GET /v1/decisions/{id}` classifies the question with the Ask classifier (it
@@ -211,6 +222,14 @@ evidence-proportional (PRD §4.9, §36.13, §37.7):
   owner-local day (again only when the budget changes), so reloading spends no
   budget. Cards the budget withholds are recorded with their reason and shown
   as withheld, never emitted.
+
+Amended 2026-11-07 (task-c3a9786cf528428db7b7590c50e15e5d): evidence erasure is
+the one exception to append-only mentor cards. `unai_private.erase_evidence`
+deletes a card whose `evidence_ids` include the erased item, or whose row names
+an erased object. `mentor_card_immutable` admits exactly that DELETE under
+`data.delete`; `unai_app` retains no DELETE grant on `mentor_cards`, and no
+UPDATE is ever admitted. The next `GET /v1/mentor/contradictions` evaluates the
+goal again from the remaining evidence.
 
 ## 8. Purposes
 

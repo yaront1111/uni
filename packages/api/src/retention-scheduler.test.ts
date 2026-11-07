@@ -190,7 +190,7 @@ it('one tick erases expired items through the route cleanup, audited as DELETION
   expect(refs.filter(ref => stored.has(ref))).toHaveLength(2);
   const lines = schedulerLines();
   expect(await a.scheduler(() => LATER).tickIfDue()).toEqual({ ...ZERO, passes: 1, evidenceErased: 2,
-    projectionsRebuilt: PROJECTION_NAMES.length });
+    projectionsRebuilt: PROJECTION_NAMES.length + 1 }); // The three typed projections and decision_projection.
   expect((await admin.query('SELECT count(*)::int AS n FROM source_items WHERE id=ANY($1::uuid[]) AND deleted_at IS NOT NULL',
     [ids])).rows[0].n).toBe(2);
   expect(refs.filter(ref => stored.has(ref))).toEqual([]);
@@ -233,7 +233,7 @@ it('one tick drains full batches of 50 and stops after the first short pass', as
   await b.retain();
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
   expect(await b.scheduler(() => LATER).tickIfDue()).toEqual({ ...ZERO, passes: 2, evidenceErased: 51,
-    projectionsRebuilt: 2 * PROJECTION_NAMES.length });
+    projectionsRebuilt: 2 * (PROJECTION_NAMES.length + 1) });
   expect(await counts(b.ownerScopeId)).toMatchObject({ live: 0, requests: 2 });
 }, TIMEOUT);
 
@@ -244,10 +244,10 @@ it('maxPasses bounds the drain, and the next window erases the rest', async () =
   vi.spyOn(console, 'info').mockImplementation(() => undefined);
   let now = LATER;
   const scheduler = c.scheduler(() => now, 1);
-  expect(await scheduler.tickIfDue()).toEqual({ ...ZERO, passes: 1, evidenceErased: 50, projectionsRebuilt: PROJECTION_NAMES.length });
+  expect(await scheduler.tickIfDue()).toEqual({ ...ZERO, passes: 1, evidenceErased: 50, projectionsRebuilt: PROJECTION_NAMES.length + 1 });
   expect(await counts(c.ownerScopeId)).toMatchObject({ live: 1, requests: 1 });
   now += DAY;
-  expect(await scheduler.tickIfDue()).toEqual({ ...ZERO, passes: 1, evidenceErased: 1, projectionsRebuilt: PROJECTION_NAMES.length });
+  expect(await scheduler.tickIfDue()).toEqual({ ...ZERO, passes: 1, evidenceErased: 1, projectionsRebuilt: PROJECTION_NAMES.length + 1 });
   expect(await counts(c.ownerScopeId)).toMatchObject({ live: 0, requests: 2 });
 }, TIMEOUT);
 

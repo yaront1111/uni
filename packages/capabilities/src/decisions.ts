@@ -483,10 +483,12 @@ async function buildDecisionRows(tx: MemoryTransaction, input: {
     const frameResolutions = resolutions.filter(resolution => resolution.sourceFrameInstanceId === frame.frameInstanceId);
     const reviews = frameResolutions.filter(resolution => REVIEW_CODES.has(resolution.outcomeCode) && STANDING.has(resolution.lifecycle));
     const latestReview = reviews.at(-1) ?? null;
+    const allValues = (Object.keys(DECISION_PREDICATES) as DecisionPredicate[]).flatMap(of);
+    // Erasure leaves no blank decision shell, but never hides a resolution or pending owner write.
+    if (allValues.length === 0 && frameResolutions.length === 0 && fold.pending.length === 0) continue;
     const outcome = await frameOutcomeProjection(tx, { ownerScopeId: input.ownerScopeId, frameInstanceId: frame.frameInstanceId, asOf: input.asOf });
     const reviewDate = timeOf(selected('reviewDate')?.normalizedValue);
     const goal = roleValue(roles, frame.frameInstanceId, 'related_goal') as Record<string, unknown> | null;
-    const allValues = (Object.keys(DECISION_PREDICATES) as DecisionPredicate[]).flatMap(of);
     const functional: DecisionPredicate[] = ['question', 'recommendation', 'choice', 'rationale', 'expectedResult', 'reviewDate', 'observedResult'];
     const updatedAt = latestTime([
       ...allValues.map(value => value.latestClaimAt), ...frameResolutions.map(resolution => resolution.recordedAt),
@@ -628,13 +630,15 @@ export async function applyDecisionProjection(tx: MemoryTransaction, input: {
 /**
  * Rebuild the whole decision projection from canonical memory and record the
  * receipt, with `equalsIncremental` computed by comparing row content with what
- * was stored before (PRD §25.4).
+ * was stored before (PRD §25.4), or null when no comparison was requested.
  */
 export async function replayDecisionProjection(tx: MemoryTransaction, input: {
   ownerScopeId: string; asOf: Date; trigger?: RebuildTrigger; transactionId?: string | null;
+  compareWithStored?: boolean; detail?: Record<string, unknown>;
 }): Promise<ProjectionRebuildReceipt> {
   const trigger = rebuildTriggerSchema.parse(input.trigger ?? 'MANUAL_REPLAY');
-  const before = await readDecisionRows(tx, input);
+  const compare = input.compareWithStored ?? true;
+  const before = compare ? await readDecisionRows(tx, input) : [];
   const applied = await applyDecisionProjection(tx, input);
   const keep = applied.rows.map(row => row.decisionFrameInstanceId);
   const pruned = (await tx.query(
@@ -642,14 +646,14 @@ export async function replayDecisionProjection(tx: MemoryTransaction, input: {
        OR NOT EXISTS(SELECT 1 FROM frame_instances f WHERE f.owner_scope_id=p.owner_scope_id
          AND f.id=p.decision_frame_instance_id AND f.lifecycle='ACTIVE'))`, [input.ownerScopeId, keep])).rowCount ?? 0;
   const after = await readDecisionRows(tx, input);
-  const equal = before.length === after.length
-    && before.every((row, index) => decisionRowContent(row) === decisionRowContent(after[index]!));
+  const equal = compare ? before.length === after.length
+    && before.every((row, index) => decisionRowContent(row) === decisionRowContent(after[index]!)) : null;
   const row = (await tx.query(
     `INSERT INTO projection_rebuild_receipts(id,owner_scope_id,projection_name,trigger,transaction_id,rows_rebuilt,
       equals_incremental,projection_version,reducer_version,detail)
      VALUES($1,$2,'decision_projection',$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [uuidV7(), input.ownerScopeId, trigger, input.transactionId ?? null, applied.rowsWritten, equal, applied.projectionVersion,
-      DECISION_REDUCER_VERSION, JSON.stringify({ comparedRows: before.length, prunedRows: pruned, asOf: input.asOf.toISOString() })])).rows[0]!;
+      DECISION_REDUCER_VERSION, JSON.stringify({ ...input.detail, comparedRows: before.length, prunedRows: pruned, asOf: input.asOf.toISOString() })])).rows[0]!;
   return projectionRebuildReceiptSchema.parse({
     projectionRebuildReceiptId: row['id'], projectionName: row['projection_name'], trigger: row['trigger'],
     transactionId: row['transaction_id'] ?? null, rowsRebuilt: Number(row['rows_rebuilt']),

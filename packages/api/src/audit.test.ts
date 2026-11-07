@@ -165,10 +165,10 @@ it('CRT-SEC-07-A: a read, a write, a projection rebuild, an export and a deletio
     expectComplete(rebuild, owner, deleting['x-correlation-id']);
     expect(rebuild).toMatchObject({ purpose: 'memory.project', result: 'SUCCESS', model_or_code_version: 'projection-reducers-0.1.0' });
     const receipts = rebuild.objects_and_fields_accessed.filter(object => object.type === 'projection_rebuild_receipts');
-    expect(receipts).toHaveLength(3);
+    expect(receipts).toHaveLength(4);
     const recorded = await admin.query('SELECT count(*)::int AS n FROM projection_rebuild_receipts WHERE owner_scope_id=$1 AND id=ANY($2::uuid[])',
       [owner.owner, receipts.map(receipt => receipt.id)]);
-    expect(recorded.rows[0].n).toBe(3);
+    expect(recorded.rows[0].n).toBe(4);
 
     // --- An external action: refused in V0, and the event names the recorded decision.
     const acting = headers(owner, 'action.execute');
