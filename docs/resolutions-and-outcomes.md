@@ -94,12 +94,105 @@ Three behaviours are worth stating because they are easy to assume the other way
   and their triggers bind the migration owner too, so a REALIZES or RESOLVES link
   cannot become a way to rewrite what it points at.
 
+## The owner route: POST /v1/memory/resolutions
+
+`packages/api/src/resolutions.ts` is the production writer of resolution
+assertions (PRD §16.1-§16.4, §18.7, §35.6). It needs a session holding
+`memory.govern`, `x-data-purpose` and `x-maximum-sensitivity` (else 400
+`MEMORY_CONTEXT_REQUIRED`) and an `idempotency-key`. The web proxy pins
+`PERSONAL_ASSISTANCE` and `RESTRICTED` for it, as for every `memory.govern` path.
+
+Body (`resolutionSubmissionSchema`, strict): `statement` (the owner's words,
+1-8192 characters), optional `sourceFrameInstanceId`, `targetFrameInstanceId`,
+`outcomeCode`, `effectiveAt` (an offset is accepted and stored as UTC; never in
+the future), `candidateFrameTypes` (only without a source) and `sourceDeviceId`.
+A target without a source, a target equal to the source, or candidate frame
+types next to a source is 400 `RESOLUTION_INPUT_INVALID`.
+
+Three paths:
+
+- **Target-linked** (source and target): the RESOLVES link runs from the target
+  frame to the source frame.
+- **Target-less** (source only): the link runs from the resolution assertion to
+  the source frame.
+- **No item** (no source): the words become an owner overlay delta of kind
+  `USER_ASSERTION` with lifecycle `AWAITING_INSTANCE_RESOLUTION` (PRD §14.2,
+  §44.5). The answer is `status: AWAITING_SOURCE` with the delta id and owner
+  sequence. Typed projection reads list it in `pendingAssertions` with reason
+  `DELTA_NOT_ATTACHED`, and `GET /v1/memory/overlay-deltas` lists it, so it is
+  never dropped. No resolution assertion is written.
+
+The outcome code is the deterministic classifier's reading of the statement
+(`classifyResolutionStatement`), or the owner's explicit `outcomeCode`. A
+statement it cannot read with no code is 422 `RESOLUTION_STATEMENT_UNRECOGNIZED`;
+a code that disagrees with the reading is 422
+`RESOLUTION_OUTCOME_DISAGREES_WITH_STATEMENT`.
+
+On the two governed paths:
+
+1. The transition contract is the pinned release's single RESOLVES contract
+   whose source frame types include the source frame's type, read through
+   `unai_private.registry_release_transition_contracts`.
+   `validateTransition` checks the target type and the outcome code before
+   anything is written. The governor checks again at commit.
+2. The statement is stored as evidence under `memory.correct`, through
+   `ingestOwnerStatement`, as one `MESSAGE_SPAN` anchor. It is `PRIVATE`
+   (ADR 0028 §4), or `NORMAL` when the request's ceiling is `NORMAL`.
+3. A RESOLVE belief transaction is proposed and committed at risk LOW with the
+   evidence as its source:
+   - an `ADD_CLAIM` (`USER_STATEMENT`, `CANDIDATE`, no proposition);
+   - the `RESOLVE` operation.
+   The assertion is therefore ACCEPTED under AUTO_ACCEPT. The outcome claim has
+   no proposition, so the Source page lists it as a `REPORTED` candidate
+   (ADR 0047 D2).
+4. The source frame's typed projection rows are rebuilt under `memory.project`
+   and audited. This step is needed because a projection read folds the owner
+   overlay over the stored rows and recomputes nothing: without the rebuild,
+   `GET /v1/projections/commitments` would keep reporting a done commitment as
+   unresolved and overdue. No overlay delta is written on these paths; the
+   outcome is canonical.
+
+The answer is `status: COMMITTED` with the assertion, transaction, evidence and
+claim ids, the contract, the lifecycle and the frame's outcome state, read back
+from the stored rows.
+
+Idempotency: the belief transaction's key is the request's key.
+- A retry answers 200 with the same body, from the committed transaction (the
+  first answer is 201).
+- A simultaneous duplicate answers the first request's transaction.
+- A key already spent on another outcome, or on the other path, is 409
+  `IDEMPOTENCY_KEY_REUSED`.
+- Different words under a used key are 409 `IDEMPOTENCY_CONFLICT`, from the
+  evidence store.
+
+Refusals, each audited DENY/REFUSED after the refused work rolled back:
+
+| Status | Code |
+| --- | --- |
+| 400 | `MEMORY_CONTEXT_REQUIRED`, `RESOLUTION_INPUT_INVALID` |
+| 403 | `PURPOSE_REFUSED` (boundary, not audited by the route), `EVIDENCE_POLICY_REFUSED` |
+| 404 | `RESOLUTION_SOURCE_NOT_FOUND`, `RESOLUTION_TARGET_NOT_FOUND` |
+| 409 | `RESOLUTION_SOURCE_NOT_ACTIVE`, `RESOLUTION_TARGET_NOT_ACTIVE`, `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_CONFLICT`, `BELIEF_TRANSACTION_REFUSED`, `BELIEF_TRANSACTION_REJECTED` |
+| 422 | `RESOLUTION_STATEMENT_UNRECOGNIZED`, `RESOLUTION_OUTCOME_DISAGREES_WITH_STATEMENT`, `RESOLUTION_CONTRACT_UNAVAILABLE`, the `TRANSITION_*` codes of `validateTransition` (for example `TRANSITION_OUTCOME_REFUSED` for WAIVED on a commitment) |
+| 503 | `REGISTRY_RELEASE_NOT_CONFIGURED`, `STORAGE_UNAVAILABLE`, `RESOLUTION_UNAVAILABLE` (logged as ALLOW/FAILURE) |
+
+What it does not do:
+- write REALIZES links;
+- resolve an obligation from a payment allocation (task-20a2d1bc);
+- attach an unattached delta to the frame it turns out to name (task-75d63589).
+
+Tests: `packages/api/src/resolutions.test.ts` (database-backed, through
+`app.inject`) and `apps/web/lib/memory-proxy.test.ts` (the proxy mapping).
+
 ## What this node does not claim
 
-- **No screen and no HTTP route.** The Commitment detail screen, the Memory
-  inspector's resolution panel and the correction controls belong to
-  `commitments-obligations-inspector-and-correction-controls`; no route, proxy
-  path or purpose was added.
+- **No screen.** The Commitment detail screen, the Memory inspector's resolution
+  panel and the correction controls belong to
+  `commitments-obligations-inspector-and-correction-controls`; the Commitments
+  screen control that calls the route is task-271f9aa7. The HTTP route exists:
+  `POST /v1/memory/resolutions` under `memory.govern`, registered in
+  `PLATFORM_PURPOSES` and `routePurpose` (`packages/api/src/platform.ts`) and in
+  the web proxy as `memory/resolutions` (see "The owner route" above).
 - **No typed projection.** `open_commitments_projection`, `obligations_projection`
   and `schedule_projection`, the overdue flag of CRT-OUT-07-A and the allocation
   arithmetic boundary of CRT-OUT-06-A are
@@ -110,9 +203,11 @@ Three behaviours are worth stating because they are easy to assume the other way
   unread by any deployed package here; the caller that pinned a release supplies
   its transition contracts. Registry lint's refusal of an outcome status predicate
   (CRT-OUT-01-A) stays `registry-loader-lint-release-0-1-0-and-base-contexts`'s.
-- **No belief transaction.** `recordResolutionAssertion` records a proposal and
-  refuses to record an accepted one without a transaction id; proposing,
-  validating and committing the transaction remain `@unai/belief`'s.
+- **No belief transaction here.** `recordResolutionAssertion` records a proposal
+  and refuses to record an accepted one without a transaction id. An owner's
+  outcome is committed by the write governor's RESOLVE operation (task-67c47741,
+  `@unai/belief`): ACCEPTED under AUTO_ACCEPT, with the committing transaction as
+  `creation_transaction_id`, and PROPOSED otherwise.
 - **No extraction.** `canonicalizeResolutionStatement` consumes a statement a
   caller already has; producing it from evidence is `@unai/extraction`'s work, and
   its phrase classifier is a deterministic reader, not a model.
@@ -134,7 +229,10 @@ codes. ADR 0020 §10 records the decision; the gap is submitted as a finding.
 
 ## Configuration
 
-No new environment variable and no new purpose. The two new tables are read under
+No new environment variable and no new purpose. `POST /v1/memory/resolutions`
+runs under the existing `memory.govern` and opens its evidence, owner-entity and
+projection transactions under `memory.correct`, `memory.canonicalize` and
+`memory.project`, chosen by server code. The two new tables are read under
 `memory.canonicalize`, `memory.govern`, `memory.inspect` and `memory.correct`,
 inserted under `memory.canonicalize`, `memory.govern` and `memory.correct`, and
 their lifecycle moved only under `memory.govern` and `memory.correct`; a session

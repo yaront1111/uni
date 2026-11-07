@@ -123,3 +123,44 @@ export const outcomeProjectionSchema = z.strictObject({
   projectionVersion: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/),
 });
 export type OutcomeProjection = z.infer<typeof outcomeProjectionSchema>;
+
+/** The body of POST /v1/memory/resolutions (PRD §35.6): the owner's own words
+ * about an outcome. Cross-field rules (a target needs a source, candidate frame
+ * types only without one, no future effectiveAt) are the route's. */
+export const resolutionSubmissionSchema = z.strictObject({
+  statement: z.string().trim().min(1).max(8192),
+  sourceFrameInstanceId: z.uuid().optional(),
+  targetFrameInstanceId: z.uuid().optional(),
+  outcomeCode: outcomeCodeSchema.optional(),
+  effectiveAt: z.iso.datetime({ offset: true }).optional(),
+  candidateFrameTypes: z.array(registryId).min(1).max(8).optional(),
+  sourceDeviceId: z.uuid().optional(),
+});
+export type ResolutionSubmission = z.infer<typeof resolutionSubmissionSchema>;
+
+/** What the route answers: a committed resolution assertion when the statement
+ * named its item, or the unattached owner delta that waits for one (PRD §14.2). */
+export const resolutionReceiptSchema = z.discriminatedUnion('status', [
+  z.strictObject({
+    status: z.literal('COMMITTED'),
+    resolutionAssertionId: z.uuid(),
+    transactionId: z.uuid(),
+    evidenceId: z.uuid(),
+    claimId: z.uuid(),
+    sourceFrameInstanceId: z.uuid(),
+    targetFrameInstanceId: z.uuid().nullable(),
+    outcomeCode: outcomeCodeSchema,
+    transitionContractId: registryId,
+    lifecycle: resolutionLifecycleSchema,
+    outcomeState: outcomeProjectionStateSchema,
+  }),
+  z.strictObject({
+    status: z.literal('AWAITING_SOURCE'),
+    overlayDeltaId: z.uuid(),
+    ownerSequence: z.number().int().positive(),
+    evidenceId: z.uuid(),
+    outcomeCode: outcomeCodeSchema,
+    lifecycle: z.literal('AWAITING_INSTANCE_RESOLUTION'),
+  }),
+]);
+export type ResolutionReceipt = z.infer<typeof resolutionReceiptSchema>;

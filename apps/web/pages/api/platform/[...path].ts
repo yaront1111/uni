@@ -26,6 +26,7 @@ export default async function handler(req:NextApiRequest,res:NextApiResponse){
       /^connectors\/[0-9a-f-]{36}\/sync$/i.test(path)?'connector.sync':
       /^ops\/dead-letter\/[0-9a-f-]{36}\/retry$/i.test(path)?'ops.dead_letter.retry':
       /^memory\/(frame-instances|entities)\/(merge|[0-9a-f-]{36}\/split)$/i.test(path)?'memory.govern':
+      path==='memory/resolutions'?'memory.govern':
       /^memory\/inbox\/cards\/[0-9a-f-]{36}\/decide$/i.test(path)?'memory.inbox':
       /^approval-rules\/[0-9a-f-]{36}\/(approve|revoke)$/i.test(path)?'approval.rules':
       path==='goals'||/^goals\/[0-9a-f-]{36}\/priority$/i.test(path)?'goals.manage':

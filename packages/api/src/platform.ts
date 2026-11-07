@@ -14,6 +14,7 @@ import {registerMetricsRoutes,METRICS_READ_PURPOSE,SHADOW_READ_PURPOSE} from './
 import {registerProjectionRoutes,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE} from './projections.js';
 import {registerContextRoutes,CONTEXT_READ_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE} from './context.js';
 import {registerLineageRoutes,LINEAGE_WRITE_PURPOSE,MERGE_SPLIT_REVIEW_PURPOSE} from './lineage.js';
+import {registerResolutionRoutes,RESOLUTION_WRITE_PURPOSE} from './resolutions.js';
 import {registerAskRoutes,ASK_PURPOSE} from './ask.js';
 import {registerInspectionRoutes,INSPECTION_PURPOSE,INSPECTION_URLS} from './inspection.js';
 import {registerAnswerRoutes,ANSWER_READ_PURPOSE} from './answers.js';
@@ -60,7 +61,7 @@ function withRequestEventKind(tx:OwnerTransaction,method:string):OwnerTransactio
  * boundary (`ACCESS_DENIED`) before any route runs. */
 export const PLATFORM_PURPOSES:ReadonlySet<string>=new Set(['settings.voice','device.list','device.register','device.remove','auth.sign_out_all','evidence.ingest','evidence.read','connector.read',
   CONNECTOR_MANAGE_PURPOSE,CONNECTOR_SYNC_PURPOSE,
-  'memory.govern',CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
+  'memory.govern',RESOLUTION_WRITE_PURPOSE,CORRECTION_PURPOSE,PROJECTION_READ_PURPOSE,PROJECTION_HEALTH_PURPOSE,
   CONTEXT_READ_PURPOSE,ASK_PURPOSE,TODAY_PURPOSE,WHY_PURPOSE,MEMORY_INSPECT_PURPOSE,MEMORY_THREAD_PURPOSE,
   INBOX_PURPOSE,APPROVAL_RULES_PURPOSE,ATTENTION_SETTINGS_PURPOSE,WEEKLY_REVIEW_PURPOSE,
   GOALS_READ_PURPOSE,GOALS_MANAGE_PURPOSE,DECISIONS_READ_PURPOSE,DECISIONS_RECORD_PURPOSE,MENTOR_PURPOSE,
@@ -122,6 +123,7 @@ export function routePurpose(method:string,url:string|undefined):string|null{
     url==='/v1/decisions/:id'?DECISIONS_READ_PURPOSE:
     url==='/v1/mentor/contradictions'?MENTOR_PURPOSE:
     url&&LINEAGE_URLS.has(url)?LINEAGE_WRITE_PURPOSE:
+    url==='/v1/memory/resolutions'?RESOLUTION_WRITE_PURPOSE:
     url==='/v1/memory/merge-split/review'?MERGE_SPLIT_REVIEW_PURPOSE:
     url&&CORRECTION_URLS.has(url)?CORRECTION_PURPOSE:
     url?.startsWith('/v1/projections/')?PROJECTION_READ_PURPOSE:
@@ -282,6 +284,7 @@ export function createPlatformApi(options:{authPool:Pool;appPool:Pool;tls?:ApiBo
   registerMemoryGovernorRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerCorrectionRoutes(app,deviceWork,{evidenceObjects:options.evidenceObjects,registryReleaseId:options.registryReleaseId});
   registerLineageRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId,evidenceObjects:options.evidenceObjects});
+  registerResolutionRoutes(app,deviceWork,{registryReleaseId:options.registryReleaseId,evidenceObjects:options.evidenceObjects});
   registerOpsRoutes(app,deviceWork);
   registerMetricsRoutes(app,deviceWork,options.answerPhraser);
   registerProjectionRoutes(app,deviceWork);
