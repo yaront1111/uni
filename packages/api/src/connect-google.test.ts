@@ -6,10 +6,13 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { isConnectorCredentialHandle } from '@unai/connectors';
 import { createMountedSecretsProvider, createSecretsManager } from '@unai/secrets';
 import { runConnectCli, type ConnectCliIo } from './connect-google.js';
 
 const CLIENT_HANDLE = 'secret://mounted/google-connector-client';
+/** The owner scope whose connector namespace (ADR 0013) a default ceremony writes into. */
+const OWNER = '0193a4b2-6c7d-7e8f-9a0b-1c2d3e4f5a6b';
 const POSIX = process.platform !== 'win32';
 let mount = '';
 
@@ -65,7 +68,8 @@ it('--help prints the usage with the Google capability ids, reads no variable an
     expect(await runConnectCli([command, '--help'], run.io)).toBe(0);
     const usage = run.out.join('\n');
     for (const text of ['pnpm connect:google', 'pnpm secret:put', 'gmail.read_metadata', 'gmail.read_content',
-      'gmail.search', 'calendar.read', '--capabilities', '--secret-name', '--replace']) expect(usage).toContain(text);
+      'gmail.search', 'calendar.read', '--capabilities', '--owner-scope', 'connectors/<uuid>/google', '--secret-name',
+      '--replace']) expect(usage).toContain(text);
     expect(run.err).toEqual([]);
     expect(run.requests).toEqual([]);
   }
@@ -73,7 +77,7 @@ it('--help prints the usage with the Google capability ids, reads no variable an
 
 it.each([
   [['google', '--bogus']], [['google', 'extra']], [['secret:put']], [['secret:put', 'a', 'b']],
-  [['secret:put', 'a', '--port', '9000']], [['unknown']], [[]],
+  [['secret:put', 'a', '--port', '9000']], [['secret:put', 'a', '--owner-scope', OWNER]], [['unknown']], [[]],
 ])('a usage error exits 2 with CONNECT_USAGE_INVALID: %j', async argv => {
   const run = harness();
   expect(await runConnectCli(argv, run.io)).toBe(2);
@@ -153,6 +157,8 @@ it('secret:put needs an existing mount directory and never creates one', async (
 const CLIENT_ID = 'client-id-0123.apps.googleusercontent.com';
 const CLIENT_SECRET = 'GOCSPX-client-secret-SENTINEL';
 const READ_IDS = 'gmail.read_metadata,gmail.read_content,gmail.search,calendar.read';
+/** A default ceremony: every read capability, stored in OWNER's connector namespace. */
+const GOOGLE = ['--capabilities', READ_IDS, '--owner-scope', OWNER];
 
 async function writeClient(document: unknown = { client_id: CLIENT_ID, client_secret: CLIENT_SECRET }): Promise<void> {
   await writeFile(join(mount, 'google-connector-client'), typeof document === 'string' ? document : JSON.stringify(document));
@@ -163,7 +169,8 @@ it.each(['gmail.send', 'calendar.create', 'gmail.create_draft'])(
     await writeClient();
     const before = await listing();
     const run = harness({ respond: async () => new Response('{}') });
-    const argv = ['google', '--capabilities', `gmail.read_metadata,${capabilityId},calendar.read`, '--open'];
+    const argv = ['google', '--capabilities', `gmail.read_metadata,${capabilityId},calendar.read`, '--owner-scope', OWNER,
+      '--open'];
     expect(await runConnectCli(argv, run.io)).toBe(1);
     expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECTOR_WRITE_SCOPE_REFUSED', capabilityId });
     expect(run.out).toEqual([]);
@@ -176,7 +183,8 @@ it.each(['github.read_issues', 'gmail.read_everything', 'omi.read_conversations'
   'google refuses the unknown capability %s by name', async capabilityId => {
     await writeClient();
     const run = harness();
-    expect(await runConnectCli(['google', '--capabilities', `calendar.read,${capabilityId}`], run.io)).toBe(1);
+    expect(await runConnectCli(['google', '--capabilities', `calendar.read,${capabilityId}`, '--owner-scope', OWNER],
+      run.io)).toBe(1);
     expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECTOR_CAPABILITY_UNKNOWN', capabilityId });
     expect(run.out).toEqual([]);
   });
@@ -192,7 +200,7 @@ it.each([
   // The sign-in client's variables are never a fallback: a refresh token refreshes only with its minting client.
   const run = harness({ env: { UNAI_SECRETS_MOUNT: mount, UNAI_GOOGLE_CONNECTOR_CLIENT: value,
     GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_HANDLE } });
-  expect(await runConnectCli(['google', '--capabilities', READ_IDS], run.io)).toBe(1);
+  expect(await runConnectCli(['google', ...GOOGLE], run.io)).toBe(1);
   expect(failure(run)).toEqual({ event: 'connect.failed', code });
   expect(run.out).toEqual([]);
   expect(run.err.join('\n')).not.toContain('SENTINEL');
@@ -208,7 +216,7 @@ it.each([
 ])('google refuses a client secret $label before any URL', async ({ document, code }) => {
   await writeClient(document);
   const run = harness();
-  expect(await runConnectCli(['google', '--capabilities', READ_IDS], run.io)).toBe(1);
+  expect(await runConnectCli(['google', ...GOOGLE], run.io)).toBe(1);
   expect(failure(run)).toEqual({ event: 'connect.failed', code });
   expect(run.out).toEqual([]);
   expect(run.err.join('\n')).not.toContain('SENTINEL');
@@ -229,27 +237,49 @@ it('google never targets the client secret itself, even with --replace', async (
 
 it('google refuses an existing default target without --replace before any URL', async () => {
   await writeClient();
-  await mkdir(join(mount, 'connectors'));
-  await writeFile(join(mount, 'connectors', 'google'), 'previous-refresh-token');
+  await mkdir(join(mount, 'connectors', OWNER), { recursive: true });
+  await writeFile(join(mount, 'connectors', OWNER, 'google'), 'previous-refresh-token');
   const run = harness();
-  expect(await runConnectCli(['google', '--capabilities', READ_IDS, '--open'], run.io)).toBe(1);
+  expect(await runConnectCli(['google', ...GOOGLE, '--open'], run.io)).toBe(1);
   expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_SECRET_EXISTS' });
   expect(run.out).toEqual([]);
   expect(run.opened).toEqual([]);
-  expect(await readFile(join(mount, 'connectors', 'google'), 'utf8')).toBe('previous-refresh-token');
+  expect(await readFile(join(mount, 'connectors', OWNER, 'google'), 'utf8')).toBe('previous-refresh-token');
 });
 
 it.each([
   [['--capabilities', READ_IDS, '--port', 'abc']], [['--capabilities', READ_IDS, '--port', '80']],
   [['--capabilities', READ_IDS, '--port', '0']], [['--capabilities', READ_IDS, '--port', '65536']],
   [['--capabilities', READ_IDS, '--port', '9000.5']], [[]], [['--capabilities', ' , ']],
+  // The two are exclusive, so a token never lands outside the namespace the operator named.
+  [[...GOOGLE, '--secret-name', 'connectors/gmail']], [['--capabilities', READ_IDS, '--owner-scope']],
 ])('google treats %j as a usage error', async args => {
   await writeClient();
   const run = harness();
   expect(await runConnectCli(['google', ...args], run.io)).toBe(2);
   expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_USAGE_INVALID' });
   expect(run.out).toEqual([]);
+  expect(await listing()).toEqual(['google-connector-client']);
 });
+
+it.each([
+  { label: 'absent', extra: [], code: 'CONFIG_REQUIRED:--owner-scope' },
+  { label: 'empty', extra: ['--owner-scope', ''], code: 'CONFIG_REQUIRED:--owner-scope' },
+  ...['not-a-uuid', `${OWNER}x`, `../${OWNER}`, `${OWNER}/..`, `{${OWNER}}`, OWNER.replaceAll('-', ''), ` ${OWNER}`]
+    .map(value => ({ label: JSON.stringify(value), extra: ['--owner-scope', value], code: 'CONFIG_INVALID:--owner-scope' })),
+])('google without --secret-name refuses an owner scope that is $label before any listener, URL or request',
+  async ({ extra, code }) => {
+    await writeClient();
+    const run = harness({ respond: tokenResponse(), timeoutMs: 200 });
+    expect(await runConnectCli(['google', '--capabilities', READ_IDS, '--open', ...extra], run.io)).toBe(1);
+    expect(failure(run)).toEqual({ event: 'connect.failed', code });
+    expect(run.out).toEqual([]);
+    expect(run.opened).toEqual([]);
+    expect(run.requests).toEqual([]);
+    expect(await listing()).toEqual(['google-connector-client']);
+    const value = extra[1];
+    if (value) expect(run.err.join('\n')).not.toContain(value.trim());
+  });
 
 const GMAIL_READONLY = 'https://www.googleapis.com/auth/gmail.readonly';
 const GMAIL_METADATA = 'https://www.googleapis.com/auth/gmail.metadata';
@@ -267,7 +297,7 @@ function tokenResponse(fields: Record<string, unknown> = {}, status = 200): () =
 interface Ceremony { readonly exit: Promise<number>; readonly url: URL; readonly redirectUri: string }
 
 /** Starts the ceremony and waits for the consent URL, as an owner reading the terminal would. */
-async function begin(run: Harness, args: readonly string[] = ['--capabilities', READ_IDS]): Promise<Ceremony> {
+async function begin(run: Harness, args: readonly string[] = GOOGLE): Promise<Ceremony> {
   const exit = runConnectCli(['google', ...args], run.io);
   const url = await Promise.race([run.consent, exit.then(code => { throw new Error(`exited ${code}: ${run.err.join(' ')}`); })]);
   return { exit, url, redirectUri: url.searchParams.get('redirect_uri') ?? '' };
@@ -333,22 +363,53 @@ it.skipIf(!POSIX)('google runs the loopback PKCE flow and stores only the refres
     code_verifier: request!.body.get('code_verifier') });
   expect(sha256(request!.body.get('code_verifier') ?? '')).toBe(url.searchParams.get('code_challenge'));
 
-  const path = join(mount, 'connectors', 'google');
+  const path = join(mount, 'connectors', OWNER, 'google');
   expect(await readFile(path, 'utf8')).toBe(REFRESH);
   expect(await mode(path)).toBe(0o600);
-  expect(JSON.parse(run.out.at(-1)!)).toEqual({ event: 'connect.stored', handle: 'secret://mounted/connectors/google',
+  const handle = `secret://mounted/connectors/${OWNER}/google`;
+  expect(JSON.parse(run.out.at(-1)!)).toEqual({ event: 'connect.stored', handle,
     scopes: [CALENDAR_READONLY, GMAIL_READONLY] });
+  expect(isConnectorCredentialHandle(handle, OWNER)).toBe(true);
   const secrets = createSecretsManager({ mounted: createMountedSecretsProvider(mount) });
-  expect(await secrets.resolve('secret://mounted/connectors/google')).toBe(REFRESH);
+  expect(await secrets.resolve(handle)).toBe(REFRESH);
   expect(run.err).toEqual([]);
   assertNoSecretPrinted(run);
   for (const content of await filesUnderMount()) expect(content).not.toContain(ACCESS);
 });
 
+it('google stores an uppercase --owner-scope under the lowercase namespace and prints that handle', async () => {
+  await writeClient();
+  const run = harness({ respond: tokenResponse() });
+  const ceremony = await begin(run, ['--capabilities', READ_IDS, '--owner-scope', OWNER.toUpperCase()]);
+  await redirect(ceremony, { code: CODE, state: ceremony.url.searchParams.get('state') ?? '' });
+  expect(await ceremony.exit).toBe(0);
+  expect(await listing()).toEqual(['connectors', join('connectors', OWNER), join('connectors', OWNER, 'google'),
+    'google-connector-client']);
+  expect(await readFile(join(mount, 'connectors', OWNER, 'google'), 'utf8')).toBe(REFRESH);
+  expect(JSON.parse(run.out.at(-1)!).handle).toBe(`secret://mounted/connectors/${OWNER}/google`);
+  assertNoSecretPrinted(run);
+});
+
+// docs/operations/real-data-gates.md stores the live Gmail token this way; slice 3/6's live test copies it.
+it.skipIf(!POSIX)('google with --secret-name and no --owner-scope stores at that name exactly as before', async () => {
+  await writeClient();
+  const run = harness({ respond: tokenResponse({ scope: GMAIL_READONLY }) });
+  const ceremony = await begin(run, ['--capabilities', 'gmail.read_content', '--secret-name', 'live-gmail']);
+  await redirect(ceremony, { code: CODE, state: ceremony.url.searchParams.get('state') ?? '' });
+  expect(await ceremony.exit).toBe(0);
+  const path = join(mount, 'live-gmail');
+  expect(await readFile(path, 'utf8')).toBe(REFRESH);
+  expect(await mode(path)).toBe(0o600);
+  expect(JSON.parse(run.out.at(-1)!)).toEqual({ event: 'connect.stored', handle: 'secret://mounted/live-gmail',
+    scopes: [GMAIL_READONLY] });
+  expect(await listing()).toEqual(['google-connector-client', 'live-gmail']);
+  assertNoSecretPrinted(run);
+});
+
 it('google asks for gmail.metadata alone for a metadata-only grant and stops when consent is denied', async () => {
   await writeClient();
   const run = harness();
-  const ceremony = await begin(run, ['--capabilities', 'gmail.read_metadata']);
+  const ceremony = await begin(run, ['--capabilities', 'gmail.read_metadata', '--owner-scope', OWNER]);
   expect(ceremony.url.searchParams.get('scope')).toBe(GMAIL_METADATA);
   const reply = await redirect(ceremony, { error: 'access_denied', state: ceremony.url.searchParams.get('state') ?? '' });
   expect(reply.status).toBe(400);
@@ -436,7 +497,7 @@ it('google refuses a port already in use before printing any URL', async () => {
   try {
     const run = harness();
     const port = String((blocker.address() as AddressInfo).port);
-    expect(await runConnectCli(['google', '--capabilities', READ_IDS, '--port', port, '--open'], run.io)).toBe(1);
+    expect(await runConnectCli(['google', ...GOOGLE, '--port', port, '--open'], run.io)).toBe(1);
     expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_PORT_UNAVAILABLE' });
     expect(run.out).toEqual([]);
     expect(run.opened).toEqual([]);
@@ -484,7 +545,7 @@ it.skipIf(!POSIX || process.getuid?.() === 0)(
     await mkdir(join(mount, 'connectors'), { mode: 0o500 });
     try {
       const run = harness({ respond: tokenResponse() });
-      expect(await runConnectCli(['google', '--capabilities', READ_IDS, '--open'], run.io)).toBe(1);
+      expect(await runConnectCli(['google', ...GOOGLE, '--open'], run.io)).toBe(1);
       expect(failure(run)).toEqual({ event: 'connect.failed', code: 'CONNECT_SECRET_WRITE_FAILED' });
       expect(run.out).toEqual([]);
       expect(run.opened).toEqual([]);

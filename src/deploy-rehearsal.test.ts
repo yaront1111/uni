@@ -3,6 +3,7 @@ import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,existsSync,rmSync} from
 import {tmpdir} from 'node:os';
 import {join,delimiter} from 'node:path';
 import {spawnSync} from 'node:child_process';
+import {isConnectorCredentialHandle} from '../packages/connectors/src/index.js';
 // @ts-expect-error Plain JavaScript operator tooling.
 import * as untyped from '../scripts/lib/rehearsal-record.mjs';
 // @ts-expect-error Plain JavaScript operator tooling.
@@ -530,6 +531,10 @@ const double=untypedDouble as {route(input:Record<string,unknown>):Answer;logLin
 const fixture=JSON.parse(readFileSync('fixtures/sources/github-issue-thread.json','utf8')) as
   {repository:{full_name:string};issue:Record<string,unknown>&{number:number};comments:unknown[]};
 const doubleLine=(route:string,status:number,authorized:boolean)=>JSON.stringify({event:'github.double',route,status,authorized});
+// Two owner scopes for the connector credential namespace (ADR 0013): the rehearsal's own and a stranger's.
+const SAMPLE='0193a4b2-6c7d-7e8f-9a0b-1c2d3e4f5a6b',OTHER='0193a4b2-6c7d-7e8f-9a0b-1c2d3e4f5a6c';
+interface SyncNames {OWNER_SCOPE:string;TOKEN_NAME:string;TOKEN_HANDLE:string;syncScript:string;leakScript:string}
+const syncNames=untypedSync as SyncNames;
 describe('rehearsal 2/4 GitHub double',()=>{
   const base=`/repos/${fixture.repository.full_name}/issues`,token='a'.repeat(48);
   const ask=(url:string,authorization:string|undefined=`Bearer ${token}`,method='GET')=>double.route({method,url,authorization,token,fixture});
@@ -593,19 +598,23 @@ describe.skipIf(process.platform!=='linux')('rehearsal 2/4 leak probe and seam w
   const journal=[entry('_CMDLINE=/sbin/init','MESSAGE=Started run-u7.service - rehearsal-owner-check.'),
     entry('_CMDLINE=/sbin/init',`MESSAGE=Started run-r${'0a'.repeat(16)}.service - rehearsal-session-mint.`),
     entry('_CMDLINE=/usr/local/bin/node github-double.mjs /root/rehearsal/github-token','MESSAGE={"event":"github.double"}')].join('');
-  const connectorRow=(error='\\N')=>`COPY public.connectors (id, secret_ref, last_sync_error) FROM stdin;\nc1\tsecret://mounted/connectors-github\t${error}\n\\.\n`;
+  const connectorRow=(error='\\N',handle=`secret://mounted/connectors/${SAMPLE}/github`)=>
+    `COPY public.connectors (id, secret_ref, last_sync_error) FROM stdin;\nc1\t${handle}\t${error}\n\\.\n`;
+  // envval answers only the worker's owner scope, and silently: the calls file records the capture tools alone.
+  const envval=(scope:string)=>`envval(){ [ "$1 $2" = 'worker UNAI_PROCESSING_OWNER_SCOPE_ID' ] && printf '%s\\n' '${scope}'; }`;
   // journalctl -o export writes a value holding a newline or a control byte as name, LE64 length, bytes.
   const binary=(name:string,value:string)=>{
     const length=Buffer.alloc(8);length.writeBigUInt64LE(BigInt(Buffer.byteLength(value)));
     return Buffer.concat([Buffer.from(`__CURSOR=s=9\n${name}\n`),length,Buffer.from(`${value}\n\n`)]);
   };
-  function probe(files:Record<string,string|Buffer|null>={}){
+  function probe(files:Record<string,string|Buffer|null>={},scope=SAMPLE){
     const directory=mkdtempSync(join(tmpdir(),'unai-leak-')),path=(name:string)=>join(directory,name);
     const contents:Record<string,string|Buffer|null>={'github-token':`${githubToken}\n`,'session-token':`${sessionToken}\n`,
       'record-copy.json':'{"format":"unai-deploy-rehearsal/1"}',journal,dump:connectorRow(),...files};
     for(const [name,value] of Object.entries(contents))if(value!==null)writeFileSync(path(name),value);
     const stubs=`journalctl(){ echo "journalctl $*" >> ${path('calls')}; [ "$1" = --sync ] || cat ${path('journal')}; }
-sudo(){ echo "sudo $*" >> ${path('calls')}; cat ${path('dump')}; }`;
+sudo(){ echo "sudo $*" >> ${path('calls')}; cat ${path('dump')}; }
+${envval(scope)}`;
     const result=spawnSync('bash',['-euo','pipefail','-s'],{input:`${stubs}\n${leakScript.replaceAll('/root/rehearsal',directory)}`,encoding:'utf8'});
     const read=(name:string)=>existsSync(path(name))?readFileSync(path(name),'utf8'):null;
     const outcome={status:result.status,leaks:read('leaks'),calls:read('calls'),
@@ -642,6 +651,8 @@ sudo(){ echo "sudo $*" >> ${path('calls')}; cat ${path('dump')}; }`;
     ['a capture without the session mint Started line',{journal:journal.replace('rehearsal-session-mint','rehearsal-auth-seam')},'session-mint 0'],
     ['an empty capture',{journal:''},'owner-check 0'],
     ['a dump without this run\'s connector row',{dump:'COPY public.connectors (id, secret_ref, last_sync_error) FROM stdin;\n\\.\n'},'record 0'],
+    ['a dump whose only connector row names the flat legacy handle',{dump:connectorRow('\\N','secret://mounted/connectors-github')},'record 0'],
+    ['a dump whose only connector row names another owner\'s namespace',{dump:connectorRow('\\N',`secret://mounted/connectors/${OTHER}/github`)},'record 0'],
     ['a record copy that is not the record',{'record-copy.json':'{"phases":[{"format":"unai-deploy-rehearsal/1"}]}'},'record 0'],
   ])('fails the phase on %s',(_name,files,last)=>{
     const result=probe(files);
@@ -649,6 +660,26 @@ sudo(){ echo "sudo $*" >> ${path('calls')}; cat ${path('dump')}; }`;
     expect((result.leaks??'').trim().split('\n').at(-1)).toBe(last);
     expect(result.left).toEqual([]);
   });
+  it.each(['not-a-uuid','',SAMPLE.toUpperCase(),`${SAMPLE}/..`])('refuses the owner scope %j before any capture',scope=>{
+    const result=probe({},scope);
+    expect(result.status).not.toBe(0);
+    expect(result.leaks).toBeNull();expect(result.calls).toBeNull();expect(result.left).toEqual([]);
+  });
+  // The trigger's body line, run as the host runs it: the handle is built from the validated scope inside the host.
+  it.each([[SAMPLE,true],['not-a-uuid',false],['',false],[SAMPLE.toUpperCase(),false]] as const)(
+    'builds the connector body from the owner scope %j only when it is a lowercase UUID',(scope,valid)=>{
+      const line=syncNames.syncScript.split('\n').filter(text=>text.startsWith('printf ')&&text.includes('/connector-body'));
+      expect(line).toHaveLength(1);
+      const directory=mkdtempSync(join(tmpdir(),'unai-body-')),body=join(directory,'connector-body');
+      const result=spawnSync('bash',['-euo','pipefail','-s'],
+        {input:`${envval(scope)}\n${syncNames.OWNER_SCOPE}\n${line[0]!.replaceAll('/root/rehearsal',directory)}`,encoding:'utf8'});
+      const written=existsSync(body)?readFileSync(body,'utf8'):null;
+      rmSync(directory,{recursive:true,force:true});
+      if(!valid){expect(result.status).not.toBe(0);expect(written).toBeNull();return;}
+      expect(result.stderr).toBe('');expect(result.status).toBe(0);
+      expect(JSON.parse(written!)).toEqual({connectorType:'GITHUB',externalAccountRef:'example-org/uai-reference',
+        secretRef:`secret://mounted/connectors/${SAMPLE}/github`,requestedCapabilities:[{capabilityId:'github.read_issues',granted:true}]});
+    });
   it('runs each seam mode as a unit with its own description and passes the values on stdin only',()=>{
     const directory=mkdtempSync(join(tmpdir(),'unai-seam-words-')),path=(name:string)=>join(directory,name);
     writeFileSync(path('web.env'),`NEXTAUTH_URL=https://rehearsal.invalid\nUNAI_WEB_TLS_CERT_FILE=${path('cert.pem')}\nUNAI_WEB_OWNER_GOOGLE_SUBJECT=${subject}\n`);
@@ -717,18 +748,33 @@ describe('rehearsal 2/4 sync phase',()=>{
     for(const {script,report} of calls){expect(script).not.toContain('${');expect(report).not.toContain('${');}
     shellSyntax(calls);
   });
-  it('names the token by a handle the shipped secret_ref check accepts and files the slash refusal',async()=>{
+  it('names the token inside the rehearsal owner\'s connector namespace (ADR 0013) and files no finding',async()=>{
     const {run,calls,directory}=syncRun();
     await sync(run);rmSync(directory,{recursive:true,force:true});
-    const [setup,trigger]=calls.map(call=>call.script);
-    const check=/secret_ref ~ '([^']+)'/.exec(readFileSync('migrations/0018_connector_capabilities_and_lifecycle.sql','utf8'))![1]!;
-    const handle=/"secretRef":"([^"]+)"/.exec(trigger!)![1]!;
-    expect(handle).toBe('secret://mounted/connectors-github');expect(new RegExp(check).test(handle)).toBe(true);
-    expect(setup).toContain('pnpm secret:put connectors-github <');
-    expect(setup).toContain('/etc/unai/secrets/api/connectors-github /etc/unai/secrets/worker/connectors-github\n');
-    expect(`${setup}${trigger}`).not.toContain('connectors/github');
-    expect(run.record.findings).toEqual([{id:'connector-secret-ref-slash',area:'sync',verdict:'FILED',
-      taskId:'task-43a9ecba94a348aaa4d050e7920ec14a',note:expect.stringContaining('500 INTERNAL_ERROR')}]);
+    const {OWNER_SCOPE,TOKEN_NAME,TOKEN_HANDLE}=syncNames;
+    expect(TOKEN_NAME).toBe('connectors/$scope/github');expect(TOKEN_HANDLE).toBe('secret://mounted/connectors/$scope/github');
+    expect(OWNER_SCOPE).toBe(String.raw`scope=$(envval worker UNAI_PROCESSING_OWNER_SCOPE_ID); printf '%s\n' "$scope" | grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'`);
+    expect(isConnectorCredentialHandle(TOKEN_HANDLE.replace('$scope',SAMPLE),SAMPLE)).toBe(true);
+    expect(isConnectorCredentialHandle(TOKEN_HANDLE.replace('$scope',SAMPLE),OTHER)).toBe(false);
+    expect(isConnectorCredentialHandle('secret://mounted/connectors-github',SAMPLE)).toBe(false);
+    const [setup,trigger,leak]=calls.map(call=>call.script);
+    const ordered=(text:string,parts:string[])=>{
+      const at=parts.map(part=>text.indexOf(part));
+      expect(at.every((position,index)=>position>(index?at[index-1]!:-1)),JSON.stringify(at)).toBe(true);
+    };
+    const api='/etc/unai/secrets/api/connectors/$scope',worker='/etc/unai/secrets/worker/connectors/$scope';
+    ordered(setup!,[OWNER_SCOPE,`install -d -o root -g unai-api -m 0750 ${api}\n`,`install -d -o root -g unai-worker -m 0750 ${worker}\n`,
+      'pnpm secret:put connectors/$scope/github < /root/rehearsal/github-token',
+      `chown root:unai-api ${api}/github; chmod 0640 ${api}/github`,`install -o root -g unai-worker -m 0640 ${api}/github ${worker}/github\n`]);
+    ordered(trigger!,['seam session',OWNER_SCOPE,'"secretRef":"%s"',
+      `' "secret://mounted/connectors/$scope/github" > /root/rehearsal/connector-body\n`,'/v1/connectors']);
+    expect(leak!.endsWith(syncNames.leakScript)).toBe(true);
+    // The scope is checked once the cleanup trap holds the record copy and before anything is captured.
+    ordered(syncNames.leakScript,[`trap 'rm -f "$needles" "$capture" "$dump" /root/rehearsal/record-copy.json' EXIT\n${OWNER_SCOPE}\n`,
+      'journalctl --sync']);
+    expect(leak).toContain('grep -q -F "secret://mounted/connectors/$scope/github" "$dump"');
+    expect(`${setup}${trigger}${leak}`).not.toMatch(/connectors-github|secret:\/\/mounted\/connectors\/github/);
+    expect(run.record.findings).toBeUndefined();
     expect(lib.validateRecord({...run.record,phases:[{...phase('sync'),assertions:run.phase.assertions}]})).toEqual([]);
   });
   it('records the stopped state and refuses a dead-lettered or twice-enqueued sync',async()=>{

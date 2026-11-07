@@ -306,8 +306,10 @@ for its session. Re-use those passwords in the files below, never in commands.
 
 [D6](../docs/adr/0043-production-deployment-target.md#d6-secrets-layout-and-handles)
 defines separate api/web/worker mounts. The installer creates their directories
-root:unai-\<process\> 0750, including `connectors/` and `aws/`. Use this recipe
-for each runtime value, substituting the mount/name/process from the table:
+root:unai-\<process\> 0750, including `connectors/` and `aws/`. Connector tokens
+go one level deeper, in `connectors/<ownerScopeId>/`, which
+[Connectors](#connectors) creates. Use this recipe for each runtime value,
+substituting the mount/name/process from the table:
 
 ```bash
 read -rs v && printf '%s' "$v" | UNAI_SECRETS_MOUNT=/etc/unai/secrets/api pnpm secret:put '<name>'
@@ -332,7 +334,7 @@ secret, install its second copy with `install -o root -g unai-<other> -m 0640
 | `api/google-connector-client`, `worker/google-connector-client` | One-line JSON `{"client_id":"<client-id>","client_secret":"<client-secret>"}`, Uai connectors Desktop app |
 | `worker/anthropic-api-key` | Anthropic workspace key |
 | `api/aws/credentials`, `worker/aws/credentials` | Distinct IAM keys for unai-api and unai-worker, not duplicate keys |
-| `api/connectors/<name>`, `worker/connectors/<name>` | Matching per-connector tokens, installed in [Connectors](#connectors) |
+| `api/connectors/<ownerScopeId>/<label>`, `worker/connectors/<ownerScopeId>/<label>` | Matching per-connector tokens in the owner's credential namespace ([ADR 0013](../docs/adr/0013-secrets-manager-handles.md)), installed in [Connectors](#connectors) |
 
 AWS files contain `[default]`, `aws_access_key_id = <access-key-id>` and
 `aws_secret_access_key = <secret-access-key>`. For each distinct IAM user,
@@ -563,46 +565,86 @@ the first sync and manual backup/drill below; never count an empty drill as PASS
 
 ## Connectors
 
+Every connector token is `secret://mounted/connectors/<ownerScopeId>/<label>`,
+the file `<mount>/connectors/<ownerScopeId>/<label>` in both the api and the
+worker mount: the owner scope's credential namespace
+([ADR 0013](../docs/adr/0013-secrets-manager-handles.md)). Print the owner
+scope id that [First sign-in](#first-sign-in-the-worker-and-the-timers) put into
+worker.env. The command prints one lowercase UUID, or exits 1 when the id is
+absent or malformed:
+
+```sh
+sed -n 's/^UNAI_PROCESSING_OWNER_SCOPE_ID=//p' /etc/unai/worker.env | tail -n 1 | grep -Ex '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+```
+
+Substitute the printed id for every `<ownerScopeId>` below. Before any
+ceremony, create the namespace in both mounts with the mount directories' owner
+and mode. Otherwise the CLI creates it as a root-only 0700 directory, which
+unai-api and unai-worker cannot traverse. Re-running these lines is safe and
+repairs the owner and mode:
+
+```sh
+install -d -o root -g unai-api -m 0750 '/etc/unai/secrets/api/connectors/<ownerScopeId>'
+install -d -o root -g unai-worker -m 0750 '/etc/unai/secrets/worker/connectors/<ownerScopeId>'
+```
+
 For Gmail and Calendar use [the connector procedure](../docs/connectors.md).
 First, on your laptop: `ssh -L 8765:127.0.0.1:8765 '<host>'`. Keep that tunnel
 open. On the host in `/opt/unai/current`, run the CLI as root, then open its
 printed consent URL in the laptop browser:
 
 ```sh
-sh -c 'set -a; . /etc/unai/api.env; set +a; pnpm connect:google --capabilities gmail.read_content,gmail.search --secret-name connectors/gmail --port 8765'
-sh -c 'set -a; . /etc/unai/api.env; set +a; pnpm connect:google --capabilities calendar.read --secret-name connectors/calendar --port 8765'
+sh -c 'set -a; . /etc/unai/api.env; set +a; pnpm connect:google --capabilities gmail.read_content,gmail.search --secret-name connectors/<ownerScopeId>/gmail --port 8765'
+sh -c 'set -a; . /etc/unai/api.env; set +a; pnpm connect:google --capabilities calendar.read --secret-name connectors/<ownerScopeId>/calendar --port 8765'
 ```
 
 Each ceremony writes one root-owned 0600 file. Fix permissions and install the
 worker copy for **each** name, here `gmail` (repeat with `calendar`):
 
 ```sh
-chown root:unai-api /etc/unai/secrets/api/connectors/gmail
-chmod 0640 /etc/unai/secrets/api/connectors/gmail
-install -o root -g unai-worker -m 0640 /etc/unai/secrets/api/connectors/gmail /etc/unai/secrets/worker/connectors/gmail
+chown root:unai-api '/etc/unai/secrets/api/connectors/<ownerScopeId>/gmail'
+chmod 0640 '/etc/unai/secrets/api/connectors/<ownerScopeId>/gmail'
+install -o root -g unai-worker -m 0640 '/etc/unai/secrets/api/connectors/<ownerScopeId>/gmail' '/etc/unai/secrets/worker/connectors/<ownerScopeId>/gmail'
 ```
 
-On Connected sources enter `secret://mounted/connectors/gmail` or the Calendar
-equivalent and grant the selected capabilities. The CLI default is
-`secret://mounted/connectors/google`; distinct names/ceremonies avoid sharing a
-token between connector rows, but revoking a Google grant may still affect other
-tokens for the same client/account. Recheck both after any disconnect.
-`CONNECT_SCOPES_NOT_GRANTED`: grant every requested scope; if extra scopes persist,
-remove Uai's access at `myaccount.google.com/permissions` and retry.
+On Connected sources enter `secret://mounted/connectors/<ownerScopeId>/gmail` or
+the Calendar equivalent and grant the selected capabilities. Without
+`--secret-name` the CLI requires `--owner-scope <ownerScopeId>` and stores
+`secret://mounted/connectors/<ownerScopeId>/google`. Distinct names/ceremonies
+avoid sharing a token between connector rows, but revoking a Google grant may
+still affect other tokens for the same client/account. Recheck both after any
+disconnect. `CONNECT_SCOPES_NOT_GRANTED`: grant every requested scope; if extra
+scopes persist, remove Uai's access at `myaccount.google.com/permissions` and
+retry.
 `invalid_grant` during sync: repeat the ceremony with `--replace`, then restore
 0640 ownership and both copies. See [rotation](rotate.md#connector-tokens).
 
 GitHub: create a fine-grained PAT with Metadata, Issues and Pull requests **read**,
 selected repositories only, expiring within a year. Use the [Secrets](#secrets)
-recipe with `pnpm secret:put connectors/github`, fix both mounts, and enter its
-handle on Connected sources. Never grant an external write capability.
+recipe with `pnpm secret:put connectors/<ownerScopeId>/github`, fix both mounts,
+and enter `secret://mounted/connectors/<ownerScopeId>/github` on Connected
+sources. Never grant an external write capability.
 
 Omi is delivered: obtain a developer key restricted to `conversations:read`,
-use `pnpm secret:put connectors/omi` with the same recipe and both mounts, then
-connect with `secret://mounted/connectors/omi`. Follow [Omi's runbook](../docs/omi-connector.md).
+use `pnpm secret:put connectors/<ownerScopeId>/omi` with the same recipe and both
+mounts, then connect with `secret://mounted/connectors/<ownerScopeId>/omi`.
+Follow [Omi's runbook](../docs/omi-connector.md).
 Disconnect stops Uai ingestion but cannot revoke the key: revoke it yourself in
 the Omi app under Settings > Developer. Live provider behavior still requires
 the owner-only checks. After a first sync, take a backup and run the drill.
+
+A connector whose handle lies outside `connectors/<ownerScopeId>/` predates the
+namespace. Under the ADR 0013 legacy rule Uai never resolves that handle: a sync
+answers `CONNECTOR_SECRET_REF_OUT_OF_SCOPE`, and Uai cannot revoke its token.
+For each such connector:
+
+1. Disconnect it on Connected sources.
+2. Revoke its token at the provider by hand: Google at
+   `myaccount.google.com/permissions`, GitHub by deleting the PAT, Omi under
+   Settings > Developer.
+3. Remove its token file from both mounts.
+4. Store a new token under `connectors/<ownerScopeId>/` as above, then connect
+   again with that handle.
 
 ## Upgrade
 

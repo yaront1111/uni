@@ -5,7 +5,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { dirname, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
-import { ConnectorError, capabilityOf, isWriteScope, manifestFor, requestedScopes } from '@unai/connectors';
+import { ConnectorError, capabilityOf, connectorCredentialHandle, isWriteScope, manifestFor, requestedScopes }
+  from '@unai/connectors';
 import { createMountedSecretsProvider, createSecretsManager, isSecretHandle, parseSecretHandle }
   from '@unai/secrets';
 
@@ -13,10 +14,13 @@ import { createMountedSecretsProvider, createSecretsManager, isSecretHandle, par
  * `pnpm connect:google` and `pnpm secret:put`: the operator commands that place a
  * connector credential in the secrets mount as a file the `mounted` provider reads
  * (ADR 0043 D6). `connect:google` runs Google's installed-app loopback flow with
- * PKCE and stores only the refresh token; `secret:put` stores a value piped on
- * stdin (a GitHub fine-grained PAT, an Omi key). Both print the handle and never a
- * credential. This module has no side effects: `connect-google-cli.ts` is the
- * process entry, and nothing on the API or worker path imports either file.
+ * PKCE and stores only the refresh token: in the connector namespace of the owner
+ * scope that `--owner-scope` names (`connectors/<uuid>/google`, ADR 0013 as
+ * amended), or at an explicit `--secret-name`, never both. `secret:put` stores a
+ * value piped on stdin (a GitHub fine-grained PAT, an Omi key, a runtime secret).
+ * Both print the handle and never a credential. This module has no side effects:
+ * `connect-google-cli.ts` is the process entry, and nothing on the API or worker
+ * path imports either file.
  */
 
 export interface ConnectCliIo {
@@ -85,12 +89,15 @@ function help(io: ConnectCliIo): number {
     .flatMap(type => manifestFor(type).capabilities.map(entry => entry.capabilityId));
   for (const line of [
     'Usage:',
-    '  pnpm connect:google --capabilities <ids> [--secret-name <name>] [--port <1024-65535>] [--open] [--replace]',
+    '  pnpm connect:google --capabilities <ids> (--owner-scope <uuid> | --secret-name <name>) [--port <1024-65535>]',
+    '                      [--open] [--replace]',
     '  pnpm secret:put <name> [--replace]        (reads the value from stdin; pipe it, never type it)',
     '',
     `Read-only capabilities for --capabilities (comma-separated): ${ids.join(', ')}`,
-    '--secret-name defaults to connectors/google. Both commands read UNAI_SECRETS_MOUNT; connect:google also',
-    'reads UNAI_GOOGLE_CONNECTOR_CLIENT (the Uai connectors Desktop app OAuth client, ADR 0043 D6).',
+    '--owner-scope stores the refresh token in that owner scope\'s connector namespace, connectors/<uuid>/google',
+    '(ADR 0013); --secret-name stores it at <name> instead. The two are exclusive. Both commands read',
+    'UNAI_SECRETS_MOUNT; connect:google also reads UNAI_GOOGLE_CONNECTOR_CLIENT (the Uai connectors Desktop',
+    'app OAuth client, ADR 0043 D6).',
     'Each writes one file, <UNAI_SECRETS_MOUNT>/<name> at mode 0600 (never replaced without --replace),',
     'and prints its handle secret://mounted/<name>. No token is ever printed.',
   ]) io.stdout(line);
@@ -118,15 +125,16 @@ async function secretPut(args: readonly string[], io: ConnectCliIo): Promise<num
 
 async function connectGoogle(args: readonly string[], io: ConnectCliIo): Promise<number> {
   const { values } = parsed(() => parseArgs({ args: [...args], strict: true, allowPositionals: false,
-    options: { capabilities: { type: 'string' }, 'secret-name': { type: 'string' }, port: { type: 'string' },
-      open: { type: 'boolean' }, replace: { type: 'boolean' }, help: { type: 'boolean' } } }));
+    options: { capabilities: { type: 'string' }, 'owner-scope': { type: 'string' }, 'secret-name': { type: 'string' },
+      port: { type: 'string' }, open: { type: 'boolean' }, replace: { type: 'boolean' }, help: { type: 'boolean' } } }));
   if (values.help) return help(io);
   const ids = capabilityIds(values.capabilities);
   const port = portOf(values.port);
   const scopes = scopesFor(ids);
+  const name = secretNameOf(values['owner-scope'], values['secret-name']);
   const mount = await mountOf(io.env);
   const clientHandle = clientHandleOf(io.env);
-  const target = targetOf(mount, values['secret-name'] ?? 'connectors/google');
+  const target = targetOf(mount, name);
   if (target.handle === clientHandle) throw new ConnectorError('CONNECT_SECRET_NAME_RESERVED');
   const replace = values.replace === true;
   await assertWritable(target.path, replace);
@@ -270,6 +278,23 @@ function scopesFor(ids: readonly string[]): string[] {
   const scopes = [...grants].flatMap(([type, granted]) => requestedScopes(manifestFor(type), granted)).sort();
   if (scopes.some(isWriteScope)) throw new ConnectorError('CONNECTOR_WRITE_SCOPE_REFUSED');
   return scopes;
+}
+
+/** An explicit --secret-name is used as given. Otherwise the token goes into the
+ * owner scope's connector namespace, built by the one helper that defines it; the
+ * label is a constant, so its refusal can only mean the owner scope. Neither code
+ * carries the value. Runs before any variable is read or listener opened. */
+function secretNameOf(ownerScope: string | undefined, secretName: string | undefined): string {
+  if (secretName !== undefined) {
+    if (ownerScope !== undefined) throw new ConnectorError(USAGE_INVALID);
+    return secretName;
+  }
+  if (!ownerScope) throw new ConnectorError('CONFIG_REQUIRED:--owner-scope');
+  let handle: string;
+  try { handle = connectorCredentialHandle(ownerScope, 'google'); } catch {
+    throw new ConnectorError('CONFIG_INVALID:--owner-scope');
+  }
+  return parseSecretHandle(handle).name;
 }
 
 /** The Uai connectors client (ADR 0043 D6), required here: the refresh token it

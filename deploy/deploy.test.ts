@@ -252,7 +252,11 @@ const README_SECTIONS: Sections = [
     '127.0.0.1:4318', '/var/lib/otelcol/unai', 'journalctl --disk-usage']],
   ['First sign-in, the worker and the timers', ['owner_scope_members', 'UNAI_PROCESSING_OWNER_SCOPE_ID',
     'UNAI_PROCESSING_DATA_PURPOSE=PERSONAL_ASSISTANCE', 'systemctl enable --now unai-worker.service', '127.0.0.1:9102', 'systemctl enable --now unai-backup.timer unai-restore-drill.timer']],
-  ['Connectors', ['pnpm connect:google', 'ssh -L', 'secret://mounted/connectors/google', 'GitHub', 'Omi']],
+  ['Connectors', ['pnpm connect:google', 'ssh -L', 'secret://mounted/connectors/<ownerScopeId>/', '--owner-scope',
+    "s/^UNAI_PROCESSING_OWNER_SCOPE_ID=//p",
+    "install -d -o root -g unai-api -m 0750 '/etc/unai/secrets/api/connectors/<ownerScopeId>'",
+    "install -d -o root -g unai-worker -m 0750 '/etc/unai/secrets/worker/connectors/<ownerScopeId>'",
+    '../docs/adr/0013-secrets-manager-handles.md', 'GitHub', 'Omi']],
   ['Upgrade', ['D12', 'unai-backup.timer', 'deploy/upgrade.sh', '--registry-version']],
   ['Backup and restore', ['systemctl start unai-backup.service', 'pnpm backup', 'pnpm restore', 'pnpm restore:drill',
     'restore.drill.completed', 'journalctl -u unai-restore-drill.service']],
@@ -269,7 +273,7 @@ const ROTATE_SECTIONS: Sections = ([
   ['NEXTAUTH_SECRET', ['nextauth-secret']],
   ['Google sign-in client secret', ['google-signin-client-secret']],
   ['Google connector client', ['google-connector-client']],
-  ['Connector tokens', ['pnpm connect:google', '--replace', 'pnpm secret:put']],
+  ['Connector tokens', ['pnpm connect:google', '--replace', 'pnpm secret:put', 'connectors/<ownerScopeId>/']],
   ['Model API key', ['anthropic-api-key']],
   ['AWS access keys', ['unai-host-unlock', 'unai-restore-drill']],
   ['Backup key', ['/etc/unai/backup/backup.key', 'systemctl start unai-backup.service']],
@@ -335,6 +339,12 @@ function linkProblems(text: string, document: string): string[] {
   return problems;
 }
 
+/** Every non-empty name after `connectors/`, up to whitespace, a backtick, a quote, a bracket or a parenthesis. */
+const connectorNames = (text: string): string[] =>
+  [...text.matchAll(/connectors\/([^\s`'"()[\]]*)/g)].map(match => match[1]!).filter(name => name !== '');
+const flatConnectorNames = (text: string): string[] =>
+  connectorNames(text).filter(name => !/^<ownerScopeId>(?:\/|$)/.test(name));
+
 describe('operator documents', () => {
   for (const [file, sections] of [['deploy/README.md', README_SECTIONS], ['deploy/rotate.md', ROTATE_SECTIONS]] as const) {
     it(`${file}: exact ordered sections and required operational details`, () => expect(structureProblems(read(file), sections)).toEqual([]));
@@ -371,6 +381,18 @@ describe('operator documents', () => {
     expect([...text.matchAll(pnpmPattern)].length).toBeGreaterThanOrEqual(10);
     expect([...text.matchAll(linkPattern)].length).toBeGreaterThanOrEqual(5);
     expect([...text.matchAll(pathPattern)].length).toBeGreaterThanOrEqual(5);
+  });
+  // ADR 0013 as amended: a connector token lives at connectors/<ownerScopeId>/<label>; a flat name is a
+  // legacy handle the resolver never reads again, so the runbooks must never teach one.
+  it('connector tokens are named only inside an owner namespace (ADR 0013)', () => {
+    expect(flatConnectorNames('secret://mounted/connectors/gmail and `connectors/`')).toEqual(['gmail']);
+    expect(flatConnectorNames("'/x/connectors/<ownerScopeId>' `connectors/<ownerScopeId>/omi` connectors/<ownerScopeId>x"))
+      .toEqual(['<ownerScopeId>x']);
+    for (const [file, minimum] of [['deploy/README.md', 10], ['deploy/rotate.md', 3]] as const) {
+      const text = read(file);
+      expect(flatConnectorNames(text), file).toEqual([]);
+      expect(connectorNames(text).length, file).toBeGreaterThanOrEqual(minimum);
+    }
   });
   // Formatting lives only in deploy/pgdata/setup.sh, whose refusals pgdata.test.ts proves.
   it('volume setup is setup.sh and the unlock unit, never a hand-run luksFormat or mkfs', () => {

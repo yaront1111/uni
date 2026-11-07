@@ -150,19 +150,24 @@ exchanges may still hold the old value.
 
 **Invalidated.** A secret-only rotation need not revoke refresh tokens. If a
 sync reports `invalid_grant`, repeat `pnpm connect:google --capabilities <ids>
---secret-name connectors/<name> --replace`, then repair both copies as below.
+--secret-name connectors/<ownerScopeId>/<label> --replace`, then repair both
+copies as below.
 A different client ID cannot use the old client's refresh tokens: reauthorize
 every Google connector; revoke the old grants separately if retiring that client.
 
 ## Connector tokens
 
-**Change.** For Google, use the laptop SSH tunnel and root API environment from
-[Connectors](README.md#connectors), with `pnpm connect:google --capabilities <ids>
---secret-name connectors/<name> --replace`. For GitHub, issue a replacement
-read-only fine-grained PAT and use `pnpm secret:put connectors/github --replace`.
-For Omi, issue a developer key limited to `conversations:read` and use
-`pnpm secret:put connectors/omi --replace`. For **all three**, restore api file
-ownership/mode and install the matching worker copy before syncing.
+**Change.** `<ownerScopeId>` is the id [Connectors](README.md#connectors)
+prints. For Google, use the laptop SSH tunnel and root API environment from
+there, with `pnpm connect:google --capabilities <ids>
+--secret-name connectors/<ownerScopeId>/<label> --replace`. For GitHub, issue a
+replacement read-only fine-grained PAT and use
+`pnpm secret:put connectors/<ownerScopeId>/github --replace`. For Omi, issue a
+developer key limited to `conversations:read` and use
+`pnpm secret:put connectors/<ownerScopeId>/omi --replace`. For **all three**,
+restore api file ownership/mode and install the matching worker copy before
+syncing. A token stored outside `connectors/<ownerScopeId>/` is not rotated in
+place: follow the legacy steps in [Connectors](README.md#connectors).
 
 **Restart.** None; tokens resolve on each sync. Verify a sync of every affected
 connector. An in-flight sync may finish using its previous token.

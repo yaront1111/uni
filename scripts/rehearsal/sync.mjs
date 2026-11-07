@@ -16,11 +16,13 @@ const github='/etc/unai/rehearsal/github';
 // a veth pair in 198.18.0.0/30 (RFC 2544 benchmarking space, never routed), and dies with the host.
 export const NAMESPACE='rehearsal-github',DOUBLE_ADDRESS='198.18.0.2';
 const local=name=>fileURLToPath(new URL(name,import.meta.url));
-// deploy/README.md names connector tokens connectors/<name>, but the shipped connectors.secret_ref
-// check (migration 0018) refuses the slash and the API answers 500, so this run uses a flat name.
-const SECRET_NAME='connectors-github';
-const finding={id:'connector-secret-ref-slash',area:'sync',verdict:'FILED',taskId:'task-43a9ecba94a348aaa4d050e7920ec14a',
-  note:'The shipped connectors.secret_ref check (migration 0018) refuses the slash in the deploy/README.md handle secret://mounted/connectors/<name>, so POST /v1/connectors answers 500 INTERNAL_ERROR; this run names the token connectors-github.'};
+// ADR 0013 as amended and deploy/README.md Connectors: a connector token lives in its owner scope's
+// namespace, connectors/<ownerScopeId>/<label>, in both mounts. The id is the one the owner phase wrote
+// into worker.env; each script reads it and refuses anything but one lowercase UUID before using it, so
+// it expands only in the host and never reaches the driver or the record.
+const UUID_ERE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+export const OWNER_SCOPE=String.raw`scope=$(envval worker UNAI_PROCESSING_OWNER_SCOPE_ID); printf '%s\n' "$scope" | grep -Eqx '${UUID_ERE}'`;
+export const TOKEN_NAME='connectors/$scope/github',TOKEN_HANDLE=`secret://mounted/${TOKEN_NAME}`;
 // The scheduler interval is the shipped default (UNAI_CONNECTOR_SYNC_INTERVAL_MS unset):
 // GITHUB windows are 900 s. The whole trigger must fit inside one window, or a boundary pass
 // would enqueue the next window's job, so a start closer than 420 s to it waits past it.
@@ -50,10 +52,13 @@ ip -n ${NAMESPACE} link set lo up
 printf '${DOUBLE_ADDRESS} api.github.com\n' >> /etc/hosts
 test "$(getent hosts api.github.com | awk '{print $1}')" = ${DOUBLE_ADDRESS}
 openssl rand -hex 24 > ${state}/github-token
+${OWNER_SCOPE}
+install -d -o root -g unai-api -m 0750 /etc/unai/secrets/api/connectors/$scope
+install -d -o root -g unai-worker -m 0750 /etc/unai/secrets/worker/connectors/$scope
 cd /opt/unai/current
-UNAI_SECRETS_MOUNT=/etc/unai/secrets/api /usr/local/bin/pnpm secret:put ${SECRET_NAME} < ${state}/github-token > /dev/null
-chown root:unai-api /etc/unai/secrets/api/${SECRET_NAME}; chmod 0640 /etc/unai/secrets/api/${SECRET_NAME}
-install -o root -g unai-worker -m 0640 /etc/unai/secrets/api/${SECRET_NAME} /etc/unai/secrets/worker/${SECRET_NAME}
+UNAI_SECRETS_MOUNT=/etc/unai/secrets/api /usr/local/bin/pnpm secret:put ${TOKEN_NAME} < ${state}/github-token > /dev/null
+chown root:unai-api /etc/unai/secrets/api/${TOKEN_NAME}; chmod 0640 /etc/unai/secrets/api/${TOKEN_NAME}
+install -o root -g unai-worker -m 0640 /etc/unai/secrets/api/${TOKEN_NAME} /etc/unai/secrets/worker/${TOKEN_NAME}
 systemd-run --unit=rehearsal-github-double --property=Restart=no --property=NetworkNamespacePath=/run/netns/${NAMESPACE} /usr/local/bin/node ${tool}/github-double.mjs ${github}/leaf.pem ${github}/leaf.key ${tool}/github-issue-thread.json ${state}/github-token ${DOUBLE_ADDRESS}
 probe(){ test "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 --cacert /etc/unai/rehearsal/ca-bundle.pem https://api.github.com/rehearsal-probe)" = 404; }
 until_ok 30 probe`;
@@ -79,15 +84,16 @@ left=$((${WINDOW_MS} - $(date +%s%3N) % ${WINDOW_MS}))
 if [ "$left" -lt ${WINDOW_BUDGET_MS} ]; then sleep $((left / 1000 + 2)); fi
 seam session > ${state}/session-token
 grep -Eqx '[A-Za-z0-9_-]{43}' ${state}/session-token
-api_origin=$(envval web UNAI_API_ORIGIN); api_ca=$(envval web UNAI_API_CA_FILE); scope=$(envval worker UNAI_PROCESSING_OWNER_SCOPE_ID)
-test -n "$api_origin"; test -n "$api_ca"; test -n "$scope"
+api_origin=$(envval web UNAI_API_ORIGIN); api_ca=$(envval web UNAI_API_CA_FILE)
+${OWNER_SCOPE}
+test -n "$api_origin"; test -n "$api_ca"
 {
   printf 'cookie: __Host-unai.session=%s\n' "$(cat ${state}/session-token)"
   printf 'x-owner-scope-id: %s\nx-purpose: connector.manage\n' "$scope"
   printf 'x-correlation-id: %s\n' "$(cat /proc/sys/kernel/random/uuid)"
   printf 'idempotency-key: rehearsal-connector-%s\ncontent-type: application/json\n' "$(openssl rand -hex 8)"
 } > ${state}/connector-headers
-printf '%s' '{"connectorType":"GITHUB","externalAccountRef":"example-org/uai-reference","secretRef":"secret://mounted/${SECRET_NAME}","requestedCapabilities":[{"capabilityId":"github.read_issues","granted":true}]}' > ${state}/connector-body
+printf '{"connectorType":"GITHUB","externalAccountRef":"example-org/uai-reference","secretRef":"%s","requestedCapabilities":[{"capabilityId":"github.read_issues","granted":true}]}' "${TOKEN_HANDLE}" > ${state}/connector-body
 curl -sS --max-time 30 -o ${state}/connector-response -w '%{http_code}' --cacert "$api_ca" -H @${state}/connector-headers --data-binary @${state}/connector-body "$api_origin/v1/connectors" > ${state}/connector-status
 test "$(cat ${state}/connector-status)" = 201
 /usr/local/bin/node -e 'const fs=require("fs");const id=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).connectorId;if(!/^[0-9a-f-]{36}$/.test(id))process.exit(1);fs.writeFileSync(process.argv[2],id)' ${state}/connector-response ${state}/connector-id
@@ -125,6 +131,7 @@ export const leakScript=String.raw`
 umask 077
 needles=${state}/leak-needles capture=${state}/leak-journal dump=${state}/leak-database leaks=${state}/leaks
 trap 'rm -f "$needles" "$capture" "$dump" ${state}/record-copy.json' EXIT
+${OWNER_SCOPE}
 hits(){ local n status=0; n=$(grep -a -c "$@") || status=$?; case "$status:$n" in 0:[1-9]*|1:0) echo "$n";; *) return 2;; esac; }
 control(){ local n; n=$(hits -E "$2" "$capture"); echo "$1 $n" >> "$leaks"; test "$n" -ge 1; }
 search(){ local n; n=$(hits -F -f "$needles" "$2"); echo "$1 $n" >> "$leaks"; }
@@ -140,7 +147,7 @@ control cmdline '^_CMDLINE='
 search journal "$capture"
 search database "$dump"
 search record ${state}/record-copy.json
-grep -q -F 'secret://mounted/${SECRET_NAME}' "$dump"; grep -q '^{"format":"unai-deploy-rehearsal/1"' ${state}/record-copy.json`;
+grep -q -F "${TOKEN_HANDLE}" "$dump"; grep -q '^{"format":"unai-deploy-rehearsal/1"' ${state}/record-copy.json`;
 
 const CODE=/^[A-Z][A-Z0-9_]*(?::[A-Z][A-Z0-9_]*)?$/;
 /** On a refused sync, the job and connector state as status words, so the record says why. */
@@ -150,7 +157,6 @@ export function syncDiagnostic(row){
     syncError:word(row?.syncError),connectorStatus:word(row?.connectorStatus)};
 }
 async function sync(run){
-  (run.record.findings??=[]).push({...finding});
   run.record.unverified.push({layer:'GitHub provider',
     reason:'A recorded double in a transient host unit with its own network namespace, behind a rehearsal-only CA and hosts entry, answers the sync; no GitHub account or sidecar container.'});
   await run.command('docker',['cp',local('github-double.mjs'),`${run.container}:${tool}/github-double.mjs`]);
