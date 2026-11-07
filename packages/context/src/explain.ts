@@ -200,8 +200,12 @@ export async function explainProposition(tx: MemoryTransaction, input: {
 
   const readableEvidenceIds = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
     [input.ownerScopeId])).rows.map(row => row['id'] as string);
+  // PRD §21.2: only the deltas about this belief, newest first under the
+  // explanation's own cap (beliefExplanationSchema.ownerOverlayDeltas, max 200).
+  // With more than 200 the newest are listed; the packet path reports the cut.
   const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId,
-    knowledgeTime: input.readAt, readableEvidenceIds });
+    knowledgeTime: input.readAt, readableEvidenceIds, limit: 200,
+    relevantTo: { targetObjectIds: [input.propositionId, ...claimIds], attachedFrameInstanceIds: [frameInstanceId] } });
   const ownerOverlayDeltas = overlay.deltas.filter(delta =>
     (delta.target !== null && delta.target.objectType === 'proposition' && delta.target.objectId === input.propositionId)
     || (delta.target !== null && delta.target.objectType === 'claim' && claimIds.includes(delta.target.objectId))

@@ -185,12 +185,18 @@ export type PublicOverlayDelta = z.infer<typeof publicOverlayDeltaSchema>;
 /** The owner's overlay as one read: every delta at or after a watermark, plus the
  * targets a suppression, archive or deletion has removed from normal retrieval.
  * A reader that honours `suppressedTargets` honours CRT-RYW-02-B whichever device
- * asked. */
+ * asked.
+ *
+ * `isComplete` is false when the read stopped at its limit and matching deltas
+ * were left out (PRD §21.2). In a page read those are later ones: continue with
+ * `sinceSequence` = `ownerOverlayWatermark`. In a relevant read they are older
+ * ones: the newest relevant deltas are always the ones kept. */
 export const ownerOverlaySchema = z.strictObject({
   ownerOverlayWatermark: z.number().int().nonnegative(),
   deltas: z.array(publicOverlayDeltaSchema),
   suppressedTargets: z.array(targetObjectRefSchema),
   archivedTargets: z.array(targetObjectRefSchema),
   deletedTargets: z.array(targetObjectRefSchema),
+  isComplete: z.boolean(),
 });
 export type OwnerOverlay = z.infer<typeof ownerOverlaySchema>;

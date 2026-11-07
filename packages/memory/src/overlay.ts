@@ -270,6 +270,62 @@ async function independentVerification(
   };
 }
 
+/** The deltas a relevant read keeps: those named by id, those targeting a listed
+ * object, and those attached to a listed frame -- as of the read's knowledge time
+ * when it has one. Every list is optional, and an empty one matches nothing. */
+export interface OverlayRelevance {
+  readonly overlayDeltaIds?: readonly string[];
+  readonly targetObjectIds?: readonly string[];
+  readonly attachedFrameInstanceIds?: readonly string[];
+}
+
+type OverlayReadInput = {
+  ownerScopeId: string; sinceSequence?: number; limit?: number;
+  /** Broker reads additionally bind pending assertions and their verification
+   * to the request's knowledge time and source authorization. Public correction
+   * reads supply readableEvidenceIds and may omit knowledgeTime for the current
+   * owner view. Internal callers may omit both under their own authority. */
+  knowledgeTime?: Date; readableEvidenceIds?: readonly string[];
+  /** Read only the deltas relevant to one subject, newest first under `limit`. */
+  relevantTo?: OverlayRelevance;
+};
+
+/** The candidate rows, one more than `limit` so the caller can tell whether the
+ * read was cut. A page read takes them in allocation order from `since`; a
+ * relevant read takes the newest ones. The last arm reads an attachment as of the
+ * knowledge time: `attachOverlayDelta` coalesces, so a delta attached to a listed
+ * frame then may sit on another frame now. It comes last so the cheap arms
+ * decide first, and only when frames are listed: it costs one history lookup per
+ * row the other arms miss. The caller re-checks the historical attachment,
+ * because the current-attachment arm also admits a delta attached only now. */
+async function overlayCandidateRows(tx: MemoryTransaction, input: OverlayReadInput, since: number, limit: number) {
+  const relevant = input.relevantTo;
+  return (await tx.query(
+    `SELECT id,owner_sequence,delta_kind,lifecycle,raw_text,target_object_type,target_object_id,source_evidence_id,
+      attached_frame_instance_id,attached_belief_slot_id,candidate_entity_refs,candidate_frame_types,discourse_anchor,
+      created_at,contested_reason
+     FROM owner_overlay_deltas WHERE owner_scope_id=$1 AND owner_sequence>$2
+       AND ($4::timestamptz IS NULL OR created_at<=$4)
+       AND ($5::uuid[] IS NULL OR source_evidence_id=ANY($5::uuid[]))
+       AND (NOT $6::boolean OR id=ANY($7::uuid[]) OR target_object_id=ANY($8::uuid[])
+         OR attached_frame_instance_id=ANY($9::uuid[])
+         OR ($4::timestamptz IS NOT NULL AND cardinality($9::uuid[])>0
+           AND (unai_private.object_state_at(owner_scope_id,'owner_overlay_deltas',id,$4)
+             ->>'attached_frame_instance_id')::uuid=ANY($9::uuid[])))
+     ORDER BY owner_sequence ${relevant ? 'DESC' : 'ASC'} LIMIT $3`,
+    [input.ownerScopeId, since, limit + 1, input.knowledgeTime ?? null, input.readableEvidenceIds ?? null,
+      relevant !== undefined, [...(relevant?.overlayDeltaIds ?? [])], [...(relevant?.targetObjectIds ?? [])],
+      [...(relevant?.attachedFrameInstanceIds ?? [])]])).rows;
+}
+
+/** Whether a row, with its historical attachment applied, still matches. */
+function matchesRelevance(row: Record<string, unknown>, relevant: OverlayRelevance): boolean {
+  const attached = row['attached_frame_instance_id'] as string | null;
+  return (relevant.overlayDeltaIds ?? []).includes(row['id'] as string)
+    || (relevant.targetObjectIds ?? []).includes(row['target_object_id'] as string)
+    || (attached !== null && (relevant.attachedFrameInstanceIds ?? []).includes(attached));
+}
+
 /**
  * Read this owner's overlay (CRT-RYW-02-A, CRT-RYW-02-B).
  *
@@ -283,26 +339,23 @@ async function independentVerification(
  * Every returned delta says both things CRT-RYW-02-A asks an answer to
  * distinguish: that the owner asserted it, and what -- if anything -- verifies it
  * independently of the owner.
+ *
+ * PRD §21.2: a read stops at `limit` (default 500, at most 1000) and says so with
+ * `isComplete` false. A page read continues with `sinceSequence` =
+ * `ownerOverlayWatermark`. A relevant read (`relevantTo`) keeps the NEWEST
+ * relevant deltas, so a cut drops the oldest and never the owner's latest write;
+ * its `isComplete` is computed before the historical re-check, so it may report a
+ * cut that the re-check made moot and never misses one. Its watermark is the
+ * newest delta it returned, not the owner's newest: a reader that needs the
+ * owner's watermark takes it from a read that folds every delta.
  */
-export async function readOwnerOverlay(tx: MemoryTransaction, input: {
-  ownerScopeId: string; sinceSequence?: number; limit?: number;
-  /** Broker reads additionally bind pending assertions and their verification
-   * to the request's knowledge time and source authorization. Public correction
-   * reads supply readableEvidenceIds and may omit knowledgeTime for the current
-   * owner view. Internal callers may omit both under their own authority. */
-  knowledgeTime?: Date; readableEvidenceIds?: readonly string[];
-}): Promise<OwnerOverlay> {
+export async function readOwnerOverlay(tx: MemoryTransaction, input: OverlayReadInput): Promise<OwnerOverlay> {
   const since = input.sinceSequence ?? 0;
   const limit = Math.min(Math.max(input.limit ?? 500, 1), 1000);
-  const rows = (await tx.query(
-    `SELECT id,owner_sequence,delta_kind,lifecycle,raw_text,target_object_type,target_object_id,source_evidence_id,
-      attached_frame_instance_id,attached_belief_slot_id,candidate_entity_refs,candidate_frame_types,discourse_anchor,
-      created_at,contested_reason
-     FROM owner_overlay_deltas WHERE owner_scope_id=$1 AND owner_sequence>$2
-       AND ($4::timestamptz IS NULL OR created_at<=$4)
-       AND ($5::uuid[] IS NULL OR source_evidence_id=ANY($5::uuid[]))
-     ORDER BY owner_sequence LIMIT $3`,
-    [input.ownerScopeId, since, limit, input.knowledgeTime ?? null, input.readableEvidenceIds ?? null])).rows;
+  const candidates = await overlayCandidateRows(tx, input, since, limit);
+  const isComplete = candidates.length <= limit;
+  const kept = candidates.slice(0, limit);
+  const rows = input.relevantTo ? kept.reverse() : kept;
 
   const historical = input.knowledgeTime ? await readTemporalObjectStates(tx, { ownerScopeId: input.ownerScopeId,
     objectType: 'owner_overlay_deltas', objectIds: rows.map(row => row['id'] as string), knowledgeTime: input.knowledgeTime }) : null;
@@ -318,6 +371,7 @@ export async function readOwnerOverlay(tx: MemoryTransaction, input: {
       // be represented as part of a historical checkpoint.
       row['contested_reason'] = null;
     }
+    if (input.relevantTo && !matchesRelevance(row, input.relevantTo)) continue;
     // An opaque rationale is not itself sourced by the assertion evidence.
     if (input.readableEvidenceIds !== undefined) row['contested_reason'] = null;
     const sequence = Number(row['owner_sequence']);
@@ -350,6 +404,7 @@ export async function readOwnerOverlay(tx: MemoryTransaction, input: {
   return ownerOverlaySchema.parse({
     ownerOverlayWatermark: watermark, deltas,
     suppressedTargets: removed.suppressed, archivedTargets: removed.archived, deletedTargets: removed.deleted,
+    isComplete,
   });
 }
 

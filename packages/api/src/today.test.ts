@@ -1012,3 +1012,80 @@ it.each([
       certaintyLabel: expected === 'CONTESTED' ? 'CONTESTED' : 'CONFIRMED', decisionAffectingConflict: expected === 'CONTESTED' });
   } finally { await app.close(); }
 });
+
+// PRD §21.2: every later read sees every acknowledged owner write, however many
+// older ones the owner has. KEEP THIS THE LAST TEST IN THE FILE: it leaves more
+// than 800 overlay deltas on the shared fixture owner. Its own data purpose keeps
+// the Today packet to this one commitment, so the item cap cannot hide it.
+it('PRD §21.2: the newest owner delta reaches Today, Ask, explain, why and the overlay route past 500 older ones', async () => {
+  const purpose = 'TODAY_OVERLAY_BOUND';
+  const visible = await source('overlay-bound', 'CONVERSATION', 'The client asked to move the report to Friday.', [purpose]);
+  const target = await commitment({ action: 'send the overlay-bound report', due: at(6), createdAt: RECORDED, anchorId: visible.anchorId });
+  const olderDeltas = (from: number, to: number, attachedFrame: string | null) => admin.query(`INSERT INTO owner_overlay_deltas(id,
+      owner_scope_id,owner_sequence,source_evidence_id,raw_text,delta_kind,lifecycle,attached_frame_instance_id,created_at)
+    SELECT gen_random_uuid(),$1,n,$2,'Older note '||n,'USER_ASSERTION','WITHDRAWN',$5,$6 FROM generate_series($3::int,$4::int) AS n`,
+    [owner, visible.evidenceId, from, to, attachedFrame, RECORDED]);
+  // 600 readable deltas about nothing, then the newest, about the commitment.
+  await olderDeltas(1000, 1599, null);
+  const newest = uuidV7();
+  await admin.query(`INSERT INTO owner_overlay_deltas(id,owner_scope_id,owner_sequence,source_evidence_id,raw_text,delta_kind,
+    lifecycle,target_object_type,target_object_id,attached_frame_instance_id,created_at)
+    VALUES($1,$2,2000,$3,'Actually I will send it on Friday.','USER_ASSERTION','USER_ASSERTED','proposition',$4,$5,$6)`,
+    [newest, owner, visible.evidenceId, target.action.propositionId, target.id, RECORDED]);
+  await withOwnerTransaction(appPool, { actorId: actor, ownerScopeId: owner, purpose: 'memory.project', correlationId: randomUUID() }, tx =>
+    applyProjectionDelta(tx, { ownerScopeId: owner, projectionName: 'open_commitments_projection', asOf: NOW }));
+  const scoped = (surface: string, extra: Record<string, string> = {}) => headers(surface, { 'x-data-purpose': purpose, ...extra });
+  const overlayCut = { kind: 'RETRIEVAL_INCOMPLETE', objectType: 'owner_overlay_deltas', objectId: null, detail: 'OWNER_OVERLAY_BUDGET_REACHED' };
+  const ids = (deltas: Array<{ overlayDeltaId: string }>) => deltas.map(delta => delta.overlayDeltaId);
+  const app = api();
+  const ask = async () => {
+    const response = await app.inject({ method: 'POST', url: '/v1/ask',
+      headers: scoped('memory.read', { 'idempotency-key': randomBytes(16).toString('hex') }),
+      payload: { ownerScopeId: owner, question: 'What did I promise about the report?', purpose, worldTime: 'NOW',
+        knowledgeTime: 'LATEST', maximumSensitivity: 'PRIVATE', frameTypeHints: ['shared.commitment'] } });
+    expect(response.statusCode, response.body).toBe(200);
+    return (await admin.query('SELECT packet FROM context_packets WHERE id=$1', [response.json().packetId])).rows[0].packet as {
+      ownerOverlayDeltas: Array<{ overlayDeltaId: string }>; unknowns: unknown[] };
+  };
+  try {
+    const today = await app.inject({ method: 'GET', url: '/v1/today?timeZone=' + ZONE, headers: scoped('memory.read') });
+    expect(today.statusCode, today.body).toBe(200);
+    const briefing = todayBriefingSchema.parse(today.json());
+    expect(briefing.packetManifest.overlayDeltaIds).toContain(newest);
+    expect(itemFor(briefing, target.id)?.certaintyLabel).toBe('PENDING_OWNER_ASSERTION');
+    expect(itemFor(briefing, target.id)?.sourceRefs).toContainEqual({ objectType: 'owner_overlay_deltas', objectId: newest });
+
+    const asked = await ask();
+    expect(ids(asked.ownerOverlayDeltas)).toContain(newest);
+    expect(asked.unknowns).not.toContainEqual(overlayCut);
+
+    const explained = await app.inject({ method: 'GET',
+      url: '/v1/memory/propositions/' + target.action.propositionId + '/explain', headers: scoped('memory.inspect') });
+    expect(explained.statusCode, explained.body).toBe(200);
+    expect(ids(explained.json().ownerOverlayDeltas)).toContain(newest);
+
+    const why = await app.inject({ method: 'GET', url: '/v1/memory/why/owner_overlay_deltas/' + newest, headers: scoped('memory.inspect') });
+    expect(why.statusCode, why.body).toBe(200);
+    expect(whySourcesSchema.parse(why.json())).toMatchObject({ subject: { objectId: newest }, label: 'PENDING_OWNER_ASSERTION' });
+
+    // The overlay route pages: a full page says so, and the watermark continues.
+    const pages: Array<{ isComplete: boolean; ownerOverlayWatermark: number; deltas: Array<{ overlayDeltaId: string }> }> = [];
+    for (let since: number | null = null; pages.length < 5 && pages.at(-1)?.isComplete !== true; since = pages.at(-1)!.ownerOverlayWatermark) {
+      const page = await app.inject({ method: 'GET', url: '/v1/memory/overlay-deltas' + (since === null ? '' : '?sinceSequence=' + since),
+        headers: scoped('memory.correct') });
+      expect(page.statusCode, page.body).toBe(200);
+      pages.push(page.json());
+    }
+    expect([pages[0]!.isComplete, pages[0]!.deltas.length]).toEqual([false, 500]);
+    expect(pages.at(-1)!.isComplete).toBe(true);
+    expect(ids(pages.flatMap(page => page.deltas)).filter(id => id === newest)).toHaveLength(1);
+
+    // More relevant deltas than the packet holds: it keeps the newest 200 and
+    // says it left older ones out.
+    await olderDeltas(1600, 1800, target.id);
+    const cut = await ask();
+    expect(cut.ownerOverlayDeltas).toHaveLength(200);
+    expect(ids(cut.ownerOverlayDeltas)).toContain(newest);
+    expect(cut.unknowns).toContainEqual(overlayCut);
+  } finally { await app.close(); }
+}, 60_000);

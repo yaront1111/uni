@@ -281,9 +281,10 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
   // Projection caches must not reintroduce pending text that those policies hide.
   const readableEvidenceIds = (await tx.query('SELECT id FROM source_items WHERE owner_scope_id=$1',
     [input.ownerScopeId])).rows.map(row => row['id'] as string);
-  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId,
-    knowledgeTime: input.readAt, readableEvidenceIds });
+  // PRD §21.2: read only this thread's deltas, newest first under 200.
   const threadDeltaIds = new Set(deltaRows.map(row => row['id'] as string));
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId,
+    knowledgeTime: input.readAt, readableEvidenceIds, limit: 200, relevantTo: { overlayDeltaIds: [...threadDeltaIds] } });
   const authorizedOverlayDeltas = overlay.deltas.filter(delta => threadDeltaIds.has(delta.overlayDeltaId));
   const visibleDeltaIds = new Set(authorizedOverlayDeltas.map(delta => delta.overlayDeltaId));
   for (const row of deltaRows) {
@@ -300,6 +301,10 @@ export async function readMemoryThread(tx: MemoryTransaction, input: {
       kind: 'NO_ACCEPTED_VALUE', objectType: 'propositions', objectId: row['proposition_id'] as string,
       detail: row['assessment_status'] === 'CONTESTED' ? 'CONTESTED_BELIEF' : 'NO_ACCEPTED_ASSESSMENT',
     }));
+  if (!overlay.isComplete) {
+    openUncertainties.push(contextUnknownSchema.parse({ kind: 'RETRIEVAL_INCOMPLETE', objectType: 'owner_overlay_deltas',
+      objectId: null, detail: 'OWNER_OVERLAY_BUDGET_REACHED' }));
+  }
 
   // A frame membership does not authorize all of its participants. Roles need
   // readable supporting claims, and names need their own readable alias source.

@@ -359,7 +359,8 @@ async function whyProposition(tx: MemoryTransaction, input: { ownerScopeId: stri
 }
 
 async function whyOverlayDelta(tx: MemoryTransaction, input: { ownerScopeId: string; overlayDeltaId: string; readAt: Date }): Promise<WhySources> {
-  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt });
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: input.ownerScopeId, knowledgeTime: input.readAt,
+    limit: 1, relevantTo: { overlayDeltaIds: [input.overlayDeltaId] } });
   const delta = overlay.deltas.find(entry => entry.overlayDeltaId === input.overlayDeltaId);
   if (!delta) throw new ContextBrokerError('WHY_OBJECT_NOT_FOUND');
   // The owner's words are stored as evidence before anything else happens

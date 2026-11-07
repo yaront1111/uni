@@ -30,6 +30,8 @@ import { ingestOwnerStatement, type EvidenceObjects } from './evidence.js';
  */
 
 export const CORRECTION_PURPOSE = 'memory.correct';
+/** One page of GET /v1/memory/overlay-deltas (PRD §21.2). */
+const OWNER_OVERLAY_PAGE_SIZE = 500;
 
 type Work = (request: FastifyRequest, run: (tx: OwnerTransaction, sessionId: string) => Promise<unknown>) => Promise<unknown>;
 
@@ -333,7 +335,8 @@ export function registerCorrectionRoutes(app: FastifyInstance, work: Work, optio
   }));
 
   /** The owner's overlay, read by owner scope: the same rows whichever device
-   * asks (CRT-RYW-02-A, CRT-RYW-02-B). */
+   * asks (CRT-RYW-02-A, CRT-RYW-02-B). It pages (PRD §21.2): `isComplete` false
+   * means later deltas remain, read with `?sinceSequence=<ownerOverlayWatermark>`. */
   app.get<{ Querystring: { sinceSequence?: string } }>('/v1/memory/overlay-deltas', async (request, reply) =>
     guarded(request, reply, async () => {
       const since = request.query.sinceSequence;
@@ -345,7 +348,7 @@ export function registerCorrectionRoutes(app: FastifyInstance, work: Work, optio
           [tx.context.ownerScopeId])).rows.map(row => row['id'] as string);
         const answer = await readOwnerOverlay(tx, {
           ownerScopeId: tx.context.ownerScopeId, ...(since === undefined ? {} : { sinceSequence: Number(since) }),
-          readableEvidenceIds,
+          readableEvidenceIds, limit: OWNER_OVERLAY_PAGE_SIZE,
         });
         await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
           objects: answer.deltas.slice(0, 100).map(delta => ({

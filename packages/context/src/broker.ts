@@ -149,6 +149,9 @@ export interface EvidenceLabel {
 }
 
 const SENSITIVITY_ORDER = ['NORMAL', 'PRIVATE', 'RESTRICTED'] as const;
+/** The packet's own overlay cap: contextPacketSchema bounds
+ * `selectionReason.overlayDeltasApplied` at 200 (PRD §21.2). */
+const OWNER_OVERLAY_PACKET_LIMIT = 200;
 
 /**
  * The classification of the owner's own evidence, above the request ceiling.
@@ -732,13 +735,7 @@ async function assemble(
   }
 
   // Step 5: the owner's overlay, including the deltas that have no frame yet.
-  const overlay = await readOwnerOverlay(tx, { ownerScopeId: request.ownerScopeId, knowledgeTime, readableEvidenceIds });
-  const attachedToPacket = new Set(frameRows.filter(row => row['temporal_state'] !== null).map(row => row['id'] as string));
-  const relevant = overlay.deltas.filter(delta =>
-    (delta.attachedFrameInstanceId !== null && attachedToPacket.has(delta.attachedFrameInstanceId))
-    || (delta.target !== null && delta.target.objectType === 'proposition'
-      && [...currentBeliefs, ...historicalBeliefs, ...futureClaims].some(belief => belief.propositionId === delta.target!.objectId)));
-
+  //
   // PRD §21.4 and CRT-RYW-03-A: a delta in AWAITING_INSTANCE_RESOLUTION with no
   // attached frame is retrieved when the query intersects it through *any one* of
   // candidate entity, candidate memory thread, discourse anchor or candidate frame
@@ -756,6 +753,22 @@ async function assemble(
      ORDER BY owner_sequence`,
     [request.ownerScopeId, [...request.entityHints], [...request.worldlineHints],
       [...request.discourseAnchors], [...request.frameTypeHints], knowledgeTime])).rows;
+
+  // PRD §21.2: read only the deltas this packet is about -- attached to one of its
+  // frames, targeting one of its propositions, or one of the unattached ones above
+  // -- so the owner's total delta count never decides which writes a read sees.
+  // The read keeps the newest under the packet's own cap: `overlayDeltasApplied`
+  // is at most 200 (contextPacketSchema), so a packet with more relevant deltas
+  // failed its own parse. A cut is reported below, never silent; an unattached
+  // delta it cut loses its UNATTACHED_OWNER_ASSERTION unknown to that report.
+  const attachedToPacket = new Set(frameRows.filter(row => row['temporal_state'] !== null).map(row => row['id'] as string));
+  const packetPropositionIds = [...currentBeliefs, ...historicalBeliefs, ...futureClaims].map(belief => belief.propositionId);
+  const overlay = await readOwnerOverlay(tx, { ownerScopeId: request.ownerScopeId, knowledgeTime, readableEvidenceIds,
+    limit: OWNER_OVERLAY_PACKET_LIMIT, relevantTo: { attachedFrameInstanceIds: [...attachedToPacket],
+      targetObjectIds: packetPropositionIds, overlayDeltaIds: unattachedRows.map(row => row['id'] as string) } });
+  const relevant = overlay.deltas.filter(delta =>
+    (delta.attachedFrameInstanceId !== null && attachedToPacket.has(delta.attachedFrameInstanceId))
+    || (delta.target !== null && delta.target.objectType === 'proposition' && packetPropositionIds.includes(delta.target.objectId)));
   const eligibleOverlayIds = new Set(overlay.deltas.map(delta => delta.overlayDeltaId));
   const unattachedIds = new Set(unattachedRows.map(row => row['id'] as string).filter(id => eligibleOverlayIds.has(id)));
   const ownerOverlayDeltas = [...relevant, ...overlay.deltas.filter(delta => unattachedIds.has(delta.overlayDeltaId))]
@@ -766,6 +779,10 @@ async function assemble(
       kind: 'UNATTACHED_OWNER_ASSERTION', objectType: 'owner_overlay_deltas', objectId: id,
       detail: 'AWAITING_INSTANCE_RESOLUTION',
     }));
+  }
+  if (!overlay.isComplete) {
+    unknowns.push(contextUnknownSchema.parse({ kind: 'RETRIEVAL_INCOMPLETE', objectType: 'owner_overlay_deltas',
+      objectId: null, detail: 'OWNER_OVERLAY_BUDGET_REACHED' }));
   }
 
   // PRD §23.4: the deterministic selection over every slot of those frames. It is
