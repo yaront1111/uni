@@ -188,7 +188,7 @@ try {
     if (registryVersion !== null) await recordedRelease(await lintRegistryRepository(process.cwd()), registryVersion);
     const named = option('projection');
     const projections = !named || named === 'all' ? undefined
-      : [named as 'open_commitments_projection' | 'obligations_projection' | 'schedule_projection'];
+      : [named as 'open_commitments_projection' | 'obligations_projection' | 'schedule_projection' | 'decision_projection'];
     const { runProjectionReplay } = await import('@unai/capabilities');
     const { withOwnerTransaction } = await import('@unai/postgres');
     const correlationId = option('correlation-id') ?? randomUUID();

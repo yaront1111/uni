@@ -9,7 +9,7 @@ import {
   recordInstanceMatchCandidate, recordOverlayDelta, resolveBeliefSlot, resolveEntity, resolveEntityReference,
   resolveProposition,
 } from '@unai/memory';
-import { applyProjectionDelta, readProjectionRows } from '@unai/capabilities';
+import { applyDecisionProjection, applyProjectionDelta, canonicalizeDecision, readProjectionRows } from '@unai/capabilities';
 import type { ObligationProjectionRow } from '@unai/domain';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
@@ -234,12 +234,12 @@ it('[AC44.13] CRT-MEM-10-A: merging two obligation instances keeps both old ids 
       lineageKind: 'MERGED_INTO', transactionId: body.transactionId })]);
 
     // A projection-rebuild receipt per projection, each naming this merge.
-    expect(body.projectionRebuildReceipts).toHaveLength(3);
+    expect(body.projectionRebuildReceipts).toHaveLength(4);
     for (const receipt of body.projectionRebuildReceipts) {
       expect(receipt).toMatchObject({ trigger: 'MERGE', transactionId: body.transactionId, equalsIncremental: true });
       expect(receipt.projectionVersion).toMatch(UUID_V7);
     }
-    expect((await admin.query("SELECT count(*)::int n FROM projection_rebuild_receipts WHERE transaction_id=$1 AND trigger='MERGE'", [body.transactionId])).rows[0].n).toBe(3);
+    expect((await admin.query("SELECT count(*)::int n FROM projection_rebuild_receipts WHERE transaction_id=$1 AND trigger='MERGE'", [body.transactionId])).rows[0].n).toBe(4);
 
     // Both old ids stay resolvable, and resolve to the survivor.
     const resolved = Object.fromEntries(body.resolution.map((entry: { id: string }) => [entry.id, entry]));
@@ -289,6 +289,67 @@ it('[AC44.13] CRT-MEM-10-A: merging two obligation instances keeps both old ids 
       WHERE o.transaction_id=$1`, [body.transactionId])).rows;
     expect(operations).toEqual([{ id: body.memoryOperationId, operation_kind: 'MERGE', target_object_type: 'frame_instance',
       target_object_id: first.frameInstanceId, overlay_delta_id: null, source_type: 'CONVERSATION' }]);
+  } finally { await app.close(); }
+});
+
+it('a merge of two decision frames records a decision_projection receipt and removes the retired row; a retry records none', async () => {
+  const app = api();
+  try {
+    // ADR 0029 §4: the lineage rebuild replays decision_projection beside the three V0 projections.
+    const decide = () => write(tx => canonicalizeDecision(tx, {
+      ownerScopeId: owner, contextSpaceId, deciderEntityId: ownerEntityId, anchorFor: anchor,
+      statedAt: new Date('2026-03-02T09:00:00.000Z'), decision: { question: 'Which laptop?',
+        options: ['Keep the old one', 'Buy a new one'], userChoice: 'Keep the old one',
+        expectedResult: 'It lasts another year', reviewDate: '2027-03-01T00:00:00.000Z' },
+    }));
+    const d1 = (await decide()).decisionFrameInstanceId;
+    const d2 = (await decide()).decisionFrameInstanceId;
+    await as('memory.project', tx => applyDecisionProjection(tx, { ownerScopeId: owner, asOf: new Date() }));
+    const decisionRows = async () => (await admin.query(`SELECT decision_frame_instance_id id FROM decision_projection
+      WHERE owner_scope_id=$1 AND decision_frame_instance_id=ANY($2::uuid[]) ORDER BY 1`, [owner, [d1, d2]])).rows
+      .map((row: { id: string }) => row.id);
+    expect(await decisionRows()).toEqual([d1, d2].sort());
+
+    const request = headers();
+    const payload = { instanceIds: [d1, d2], reason: 'One decision, recorded twice' };
+    const merged = await app.inject({ method: 'POST', url: '/v1/memory/frame-instances/merge', headers: request, payload });
+    expect(merged.statusCode, merged.body).toBe(200);
+    const body = merged.json();
+    expect(body.survivorFrameInstanceId).toBe(d1);
+    expect(body.projectionRebuildReceipts).toHaveLength(4);
+    const decisionReceipt = body.projectionRebuildReceipts.find((receipt: { projectionName: string }) =>
+      receipt.projectionName === 'decision_projection');
+    expect(decisionReceipt).toMatchObject({ trigger: 'MERGE', transactionId: body.transactionId, equalsIncremental: true });
+    expect(decisionReceipt.detail).toMatchObject({ retiredRowsRemoved: 1 });
+    // The retired decision's row is gone; the survivor's remains.
+    expect(await decisionRows()).toEqual([d1]);
+
+    const recorded = async () => (await admin.query(`SELECT projection_name,count(*)::int n FROM projection_rebuild_receipts
+      WHERE owner_scope_id=$1 AND transaction_id=$2 GROUP BY projection_name ORDER BY projection_name`,
+    [owner, body.transactionId])).rows;
+    const fourReceipts = [{ projection_name: 'decision_projection', n: 1 }, { projection_name: 'obligations_projection', n: 1 },
+      { projection_name: 'open_commitments_projection', n: 1 }, { projection_name: 'schedule_projection', n: 1 }];
+    // A retry is answered from the record: the same body, and no second receipt.
+    const retry = await app.inject({ method: 'POST', url: '/v1/memory/frame-instances/merge',
+      headers: { ...request, 'x-correlation-id': randomUUID() }, payload });
+    expect(retry.statusCode, retry.body).toBe(200);
+    expect(retry.json()).toEqual(body);
+    expect(await recorded()).toEqual(fourReceipts);
+
+    // A transaction rebuilt before decision_projection joined the rebuild has three
+    // receipts: a retry adds only the missing decision receipt and reuses the rest.
+    await admin.query(`DELETE FROM projection_rebuild_receipts WHERE owner_scope_id=$1 AND transaction_id=$2
+      AND projection_name='decision_projection'`, [owner, body.transactionId]);
+    const upgraded = await app.inject({ method: 'POST', url: '/v1/memory/frame-instances/merge',
+      headers: { ...request, 'x-correlation-id': randomUUID() }, payload });
+    expect(upgraded.statusCode, upgraded.body).toBe(200);
+    const receipts = upgraded.json().projectionRebuildReceipts as Array<{ projectionName: string; projectionRebuildReceiptId: string }>;
+    expect(receipts.map(receipt => receipt.projectionName))
+      .toEqual(['open_commitments_projection', 'obligations_projection', 'schedule_projection', 'decision_projection']);
+    expect(receipts.slice(0, 3)).toEqual(body.projectionRebuildReceipts.slice(0, 3));
+    expect(receipts[3]).toMatchObject({ trigger: 'MERGE', transactionId: body.transactionId });
+    expect(receipts[3]!.projectionRebuildReceiptId).not.toBe(decisionReceipt.projectionRebuildReceiptId);
+    expect(await recorded()).toEqual(fourReceipts);
   } finally { await app.close(); }
 });
 
@@ -421,8 +482,10 @@ it('[AC44.14] CRT-MEM-10-B: splitting one combined obligation contests the claim
 
     // Projections were rebuilt: the parent's row is gone, each half has its own,
     // with its own claim and the parent's parties.
-    expect(body.projectionRebuildReceipts).toHaveLength(3);
+    expect(body.projectionRebuildReceipts).toHaveLength(4);
     for (const receipt of body.projectionRebuildReceipts) expect(receipt).toMatchObject({ trigger: 'SPLIT', transactionId: body.transactionId });
+    expect(body.projectionRebuildReceipts.filter((receipt: { projectionName: string }) => receipt.projectionName === 'decision_projection'))
+      .toEqual([expect.objectContaining({ trigger: 'SPLIT', transactionId: body.transactionId })]);
     const rows = await obligationRows();
     expect(rows.map(row => row.obligationFrameInstanceId)).not.toContain(combined.frameInstanceId);
     const concertRow = rows.find(row => row.obligationFrameInstanceId === children['concert'])!;
@@ -473,7 +536,7 @@ it('CRT-MEM-10-C: entity merge and entity split return lineage and rebuild recei
     expect(body).toMatchObject({ survivorEntityId: first, mergedEntityIds: [second] });
     expect(body.lineage).toEqual([expect.objectContaining({ objectType: 'entity', fromId: second, toId: first,
       lineageKind: 'MERGED_INTO', transactionId: body.transactionId })]);
-    expect(body.projectionRebuildReceipts).toHaveLength(3);
+    expect(body.projectionRebuildReceipts).toHaveLength(4);
     for (const receipt of body.projectionRebuildReceipts) expect(receipt).toMatchObject({ trigger: 'MERGE', transactionId: body.transactionId });
     expect(body.merges[0].aliases.map((alias: { aliasValue: string }) => alias.aliasValue)).toEqual(['daniel.two@example.test']);
     expect(body.merges[0].affectedFrameInstanceIds).toEqual([owed.frameInstanceId]);
@@ -505,7 +568,7 @@ it('CRT-MEM-10-C: entity merge and entity split return lineage and rebuild recei
     const result = split.json();
     expect(result.lineage.map((record: { fromId: string; lineageKind: string }) => [record.fromId, record.lineageKind]))
       .toEqual([[sam.entityId, 'SPLIT_INTO'], [sam.entityId, 'SPLIT_INTO']]);
-    expect(result.projectionRebuildReceipts).toHaveLength(3);
+    expect(result.projectionRebuildReceipts).toHaveLength(4);
     for (const receipt of result.projectionRebuildReceipts) expect(receipt).toMatchObject({ trigger: 'SPLIT', transactionId: result.transactionId });
     // The bare name could be either: it stays on the retired parent.
     expect(result.split.ambiguousAliases).toEqual([expect.objectContaining({ aliasValue: 'Sam', handling: 'RETAINED_ON_RETIRED_PARENT' })]);

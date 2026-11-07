@@ -3,7 +3,7 @@ import {
   PROJECTION_NAMES, commitmentProjectionRowSchema, obligationProjectionRowSchema, scheduleProjectionRowSchema,
   commitmentsProjectionViewSchema, obligationsProjectionViewSchema, scheduleProjectionViewSchema,
   projectionRebuildReceiptSchema, projectionHealthSchema, projectionNameSchema, rebuildTriggerSchema,
-  type CommitmentProjectionRow, type CommitmentsProjectionView, type Money, type ObligationProjectionRow,
+  recordedProjectionNameSchema, type CommitmentProjectionRow, type CommitmentsProjectionView, type Money, type ObligationProjectionRow,
   type ObligationsProjectionView, type PendingAssertion, type ProjectionHealth, type ProjectionName,
   type ProjectionRebuildReceipt, type RebuildTrigger, type ScheduleProjectionRow, type ScheduleProjectionView,
   type SourceStrength,
@@ -18,6 +18,7 @@ import {
   type CanonicalWatermarks, type OwnerDelta, type SlotValue,
 } from './canonical.js';
 import { COMMITMENT_FRAME_TYPE } from './commitments.js';
+import { applyDecisionProjection, DECISION_PROJECTION, pruneDecisionRows, replayDecisionProjection } from './decisions.js';
 import {
   ALLOCATION_FRAME_TYPE, DUE_TIME_PREDICATE, OBLIGATION_FRAME_TYPE, PRINCIPAL_PREDICATE, amountConflict,
   computeObligationArithmetic, readAllocations, type AllocationReading,
@@ -856,32 +857,45 @@ export interface LineageRebuildInput {
  * transaction retired are removed. Then a full replay of each projection is
  * compared with that state, and its receipt -- trigger MERGE or SPLIT, naming
  * the transaction -- records whether the two agreed. The comparison is
- * computed, never asserted.
+ * computed, never asserted. Four receipts: the three V0 projections, then
+ * `decision_projection` through its own reducer (ADR 0029 §4).
  *
  * Idempotent per transaction: a retried request finds the receipts already
- * recorded for this transaction and answers with them instead of rebuilding
- * twice, so the same request always answers the same receipts.
+ * recorded for this transaction and answers with them, in list order, instead
+ * of rebuilding twice, so the same request always answers the same receipts. A
+ * transaction rebuilt before a projection joined the list gains only that
+ * projection's receipt.
  */
 export async function rebuildProjectionsAfterLineageChange(tx: MemoryTransaction, input: LineageRebuildInput): Promise<ProjectionRebuildReceipt[]> {
   const trigger = rebuildTriggerSchema.parse(input.trigger);
   const recorded = (await tx.query(
     `SELECT * FROM projection_rebuild_receipts WHERE owner_scope_id=$1 AND transaction_id=$2 AND trigger=$3
      ORDER BY created_at,id`, [input.ownerScopeId, input.transactionId, trigger])).rows.map(toReceipt);
-  if (recorded.length >= PROJECTION_NAMES.length) return recorded;
+  // Receipts of one transaction share created_at, so list order, not the
+  // query's, reproduces the first answer.
+  const inListOrder = recordedProjectionNameSchema.options
+    .map(name => recorded.find(receipt => receipt.projectionName === name));
+  if (inListOrder.every(receipt => receipt !== undefined)) return inListOrder as ProjectionRebuildReceipt[];
 
   const affected = [...new Set(input.frameInstanceIds)].sort();
+  const detail = (incrementalRowsWritten: number, retiredRowsRemoved: number) =>
+    ({ affectedFrameInstanceIds: affected.slice(0, 64), incrementalRowsWritten, retiredRowsRemoved });
+  const replay = { ownerScopeId: input.ownerScopeId, asOf: input.asOf, trigger, transactionId: input.transactionId,
+    compareWithStored: true } as const;
   const receipts: ProjectionRebuildReceipt[] = [];
   for (const projectionName of PROJECTION_NAMES) {
     const existing = recorded.find(receipt => receipt.projectionName === projectionName);
     if (existing) { receipts.push(existing); continue; }
     const applied = await applyProjectionDelta(tx, { ownerScopeId: input.ownerScopeId, projectionName, asOf: input.asOf });
     const retired = await pruneRows(tx, input.ownerScopeId, projectionName, null);
-    receipts.push(await replayProjection(tx, {
-      ownerScopeId: input.ownerScopeId, projectionName, asOf: input.asOf, trigger,
-      transactionId: input.transactionId, compareWithStored: true,
-      detail: { affectedFrameInstanceIds: affected.slice(0, 64), incrementalRowsWritten: applied.rowsWritten,
-        retiredRowsRemoved: retired },
-    }));
+    receipts.push(await replayProjection(tx, { ...replay, projectionName, detail: detail(applied.rowsWritten, retired) }));
+  }
+  const decision = recorded.find(receipt => receipt.projectionName === DECISION_PROJECTION);
+  if (decision) receipts.push(decision);
+  else {
+    const applied = await applyDecisionProjection(tx, { ownerScopeId: input.ownerScopeId, asOf: input.asOf });
+    const retired = await pruneDecisionRows(tx, input.ownerScopeId, null);
+    receipts.push(await replayDecisionProjection(tx, { ...replay, detail: detail(applied.rowsWritten, retired) }));
   }
   return receipts;
 }

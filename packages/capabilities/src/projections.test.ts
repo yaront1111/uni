@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { lintRegistryCheckout } from '@unai/registry';
@@ -16,6 +17,7 @@ import {
   projectionRowContent, readCommitmentsProjection, readObligationsProjection, readProjectionHealth,
   readProjectionRows, readScheduleProjection, recordCommitmentCompletion, replayProjection, runProjectionReplay,
   REDUCER_VERSION, DECISION_REDUCER_VERSION, applyDecisionProjection, canonicalizeDecision,
+  DECISION_PROJECTION_PURPOSE, PROJECTION_PURPOSE,
 } from './index.js';
 
 /**
@@ -610,9 +612,16 @@ it('CRT-PRJ-02-A: a full replay equals the incrementally maintained projection o
 }, 30000);
 
 it('records a rebuild receipt the Projection health screen reads, with the computed comparison verdict', async () => {
-  const result = await reduce(tx => runProjectionReplay(tx, { ownerScopeId: owner, asOf: NOW, trigger: 'MANUAL_REPLAY' }));
+  const result = await reduce(async tx => {
+    // Decision rows carry the owner-global watermarks and nothing re-applies them
+    // per commit (ADR 0029 §4, point 5), so the CRT-PRJ-03-A row is stale after
+    // this file's later commits. Bring it current first: the comparison this test
+    // reads is the replay's, not the staleness of an earlier fixture.
+    await applyDecisionProjection(tx, { ownerScopeId: owner, asOf: NOW });
+    return runProjectionReplay(tx, { ownerScopeId: owner, asOf: NOW, trigger: 'MANUAL_REPLAY' });
+  });
   expect(result.receipts.map(receipt => receipt.projectionName).sort())
-    .toEqual(['obligations_projection', 'open_commitments_projection', 'schedule_projection']);
+    .toEqual(['decision_projection', 'obligations_projection', 'open_commitments_projection', 'schedule_projection']);
   expect(result.equalsIncremental).toBe(true);
 
   const health = await readProjection(tx => readProjectionHealth(tx, { ownerScopeId: owner, readAt: NOW }));
@@ -626,9 +635,22 @@ it('records a rebuild receipt the Projection health screen reads, with the compu
   const obligations = health.projections.find(projection => projection.projectionName === 'obligations_projection')!;
   expect(obligations.incompleteRowCount).toBeGreaterThanOrEqual(0);
   const receipts = health.receipts.filter(receipt => receipt.trigger === 'MANUAL_REPLAY');
-  expect(receipts.length).toBeGreaterThanOrEqual(3);
-  expect(receipts.every(receipt => receipt.reducerVersion === REDUCER_VERSION)).toBe(true);
+  expect(receipts.length).toBeGreaterThanOrEqual(4);
+  expect(receipts.filter(receipt => receipt.projectionName === 'decision_projection')).toHaveLength(1);
+  // Each receipt names the reducer that wrote it: the decision projection has its own.
+  for (const receipt of receipts) {
+    expect(receipt.reducerVersion, receipt.projectionName)
+      .toBe(receipt.projectionName === 'decision_projection' ? DECISION_REDUCER_VERSION : REDUCER_VERSION);
+  }
   expect(receipts.every(receipt => typeof receipt.equalsIncremental === 'boolean')).toBe(true);
+});
+
+it('decisions.ts evaluates no binding of projections.ts at load: its purpose is a literal pinned to the reducer purpose', () => {
+  // projections.ts and replay.ts import decisions.ts (ADR 0029 §4, point 4); a
+  // back-import evaluated at load would read a binding of a module still loading.
+  expect(DECISION_PROJECTION_PURPOSE).toBe(PROJECTION_PURPOSE);
+  const source = readFileSync(new URL('./decisions.ts', import.meta.url), 'utf8');
+  expect(source).not.toContain("'./projections.js'");
 });
 
 it('reads commitments and the schedule under the read purpose alone, and refuses the reducer purpose to canonical writes', async () => {

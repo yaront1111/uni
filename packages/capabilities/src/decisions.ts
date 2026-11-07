@@ -14,7 +14,6 @@ import {
   readSlotValues, readWatermarks, roleEntity, roleValue, selectSlotValue,
   type CanonicalWatermarks, type OwnerDelta, type SlotValue,
 } from './canonical.js';
-import { PROJECTION_PURPOSE } from './projections.js';
 
 /**
  * The decisions capability and `decision_projection` (PRD §7.4, §25.3, §44.9,
@@ -628,6 +627,22 @@ export async function applyDecisionProjection(tx: MemoryTransaction, input: {
 }
 
 /**
+ * Remove the decision rows of frames no longer projected: every row of a frame
+ * that is not ACTIVE (merged, split or erased), and, when `keep` is given, every
+ * row outside it. Same shape as `pruneRows` in projections.ts.
+ */
+export async function pruneDecisionRows(tx: MemoryTransaction, ownerScopeId: string,
+  keep: readonly string[] | null): Promise<number> {
+  const removed = await tx.query(
+    `DELETE FROM decision_projection p WHERE p.owner_scope_id=$1
+       AND (($2::uuid[] IS NOT NULL AND NOT (p.decision_frame_instance_id=ANY($2::uuid[])))
+         OR NOT EXISTS(SELECT 1 FROM frame_instances f
+           WHERE f.owner_scope_id=p.owner_scope_id AND f.id=p.decision_frame_instance_id AND f.lifecycle='ACTIVE'))`,
+    [ownerScopeId, keep === null ? null : [...keep]]);
+  return removed.rowCount ?? 0;
+}
+
+/**
  * Rebuild the whole decision projection from canonical memory and record the
  * receipt, with `equalsIncremental` computed by comparing row content with what
  * was stored before (PRD §25.4), or null when no comparison was requested.
@@ -640,11 +655,7 @@ export async function replayDecisionProjection(tx: MemoryTransaction, input: {
   const compare = input.compareWithStored ?? true;
   const before = compare ? await readDecisionRows(tx, input) : [];
   const applied = await applyDecisionProjection(tx, input);
-  const keep = applied.rows.map(row => row.decisionFrameInstanceId);
-  const pruned = (await tx.query(
-    `DELETE FROM decision_projection p WHERE p.owner_scope_id=$1 AND (NOT (p.decision_frame_instance_id=ANY($2::uuid[]))
-       OR NOT EXISTS(SELECT 1 FROM frame_instances f WHERE f.owner_scope_id=p.owner_scope_id
-         AND f.id=p.decision_frame_instance_id AND f.lifecycle='ACTIVE'))`, [input.ownerScopeId, keep])).rowCount ?? 0;
+  const pruned = await pruneDecisionRows(tx, input.ownerScopeId, applied.rows.map(row => row.decisionFrameInstanceId));
   const after = await readDecisionRows(tx, input);
   const equal = compare ? before.length === after.length
     && before.every((row, index) => decisionRowContent(row) === decisionRowContent(after[index]!)) : null;
@@ -694,5 +705,7 @@ export async function readDecisionProjection(tx: MemoryTransaction, input: { own
   });
 }
 
-/** The reducer's purpose, re-exported so a caller opens the rebuild under it. */
-export const DECISION_PROJECTION_PURPOSE = PROJECTION_PURPOSE;
+/** The reducer's purpose, so a caller opens the rebuild under it. It must equal
+ * PROJECTION_PURPOSE, but it is a literal: this module imports nothing from
+ * projections.ts, which imports it (ADR 0029 §4); projections.test.ts pins both. */
+export const DECISION_PROJECTION_PURPOSE = 'memory.project';

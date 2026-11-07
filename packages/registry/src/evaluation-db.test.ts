@@ -264,7 +264,15 @@ it('CRT-REG-02-A: uai registry projection-replay runs over TLS and reports the r
   const report = projectionReplayReportSchema.parse(JSON.parse(await readFile(reportPath, 'utf8')));
   expect(report).toMatchObject({ result: 'PASS', registryVersion: '0.1.0', equalsIncremental: true, ownerScopeId: owner });
   expect(report.receipts.map(receipt => receipt.projectionName).sort())
-    .toEqual(['obligations_projection', 'open_commitments_projection', 'schedule_projection']);
+    .toEqual(['decision_projection', 'obligations_projection', 'open_commitments_projection', 'schedule_projection']);
+  // The decision projection is accepted by name, and replayed alone (ADR 0029 §4).
+  const decisionPath = join(directory, 'replay-decision.json');
+  const decision = await cli(resolve('.'), ['registry', 'projection-replay', '--owner-scope', owner, '--actor', actor,
+    '--as-of', '2026-09-15T00:00:00.000Z', '--projection', 'decision_projection', '--report', decisionPath]);
+  expect(decision.status, decision.stderr).toBe(0);
+  const decisionReport = projectionReplayReportSchema.parse(JSON.parse(await readFile(decisionPath, 'utf8')));
+  expect(decisionReport.result).toBe('PASS');
+  expect(decisionReport.receipts.map(receipt => receipt.projectionName)).toEqual(['decision_projection']);
   // A release the repository has not recorded is refused before any replay.
   const unknown = await cli(resolve('.'), ['registry', 'projection-replay', '--owner-scope', owner, '--actor', actor, '--registry-version', '9.9.9']);
   expect(unknown.status).toBe(1);

@@ -135,8 +135,44 @@ The cascade in migration 0046 first deletes rows of affected decision frames and
 any row naming an erased object, so a failed replay cannot retain their text.
 A decision frame with no live slot value, no resolution naming it as source and
 no pending owner write projects no row: an erased decision leaves the workspace
-instead of leaving a blank row (PRD §30.7, §44.18). The replay CLI default and
-lineage rebuild remain the scope of task-e54441da.
+instead of leaving a blank row (PRD §30.7, §44.18).
+
+Amended 2026-11-07 (task-e54441da787b47ee8ffc39446aa7d4d5): the replay CLI and
+the merge/split rebuild replay `decision_projection` too (PRD §25.4, FR-081).
+
+1. `decision_projection` still stays out of `PROJECTION_NAMES`. The broker's
+   projection fragments, the per-projection rows of the Projection health
+   screen and the shadow evaluation keep the three V0 projections. The ordered
+   rebuild list is `@unai/domain`'s `recordedProjectionNameSchema.options`: the
+   three V0 names, then `decision_projection`. It is the same set the receipts'
+   `projection_name` CHECK admits.
+2. `runProjectionReplay` replays that whole list by default and dispatches
+   `decision_projection` to `replayDecisionProjection`. It is what
+   `uai registry projection-replay` and the migration-evidence report run.
+   `--projection decision_projection` replays the decision projection alone.
+3. `rebuildProjectionsAfterLineageChange` records a fourth receipt,
+   `decision_projection`, per MERGE or SPLIT transaction. The receipt carries
+   that trigger, that transaction id and a computed `equalsIncremental`. Its
+   `detail` holds `affectedFrameInstanceIds`, `incrementalRowsWritten` and
+   `retiredRowsRemoved`. It is written after every decision row is re-applied
+   and the rows of the decision frames the transaction retired are removed.
+   The rebuild stays idempotent per transaction: it answers from the record
+   only when every name in the list has a receipt. A transaction rebuilt before
+   this change therefore gets only its missing decision receipt on a retry, and
+   its V0 receipts are reused. Recorded receipts are answered in list order.
+4. Module graph: `decisions.ts` imports nothing from `projections.ts`.
+   `DECISION_PROJECTION_PURPOSE` is the literal `'memory.project'`, and a test
+   pins it equal to `PROJECTION_PURPOSE`. `projections.ts` and `replay.ts`
+   import `decisions.ts`, so no module evaluates a binding of a module that is
+   still loading.
+5. Comparison semantics: decision rows carry the owner-global watermarks
+   (`readWatermarks` in `packages/capabilities/src/canonical.ts`). Only four
+   paths re-apply them: the decision routes, the deletion replay, the lineage
+   rebuild and a replay. A replay after any later commit or owner write
+   therefore compares stale stored rows. `decision_projection` then reports
+   `equalsIncremental` false and the CLI answers `PROJECTION_REPLAY_DIVERGED`,
+   just as a V0 projection does while its incremental apply lags. The replay
+   leaves the rows current.
 
 ## 5. "Why did I make this decision?" is answered through the Context Broker
 
@@ -246,8 +282,8 @@ forwarded as the PATCH the API expects.
 ## 9. Not decided here
 
 - Automatic acceptance of a decision or a review (governed transaction).
-- Adding `decision_projection` to the broker's projection fragments, the lineage
-  rebuild and the replay CLI default (§4).
+- Adding `decision_projection` to the broker's projection fragments, and
+  re-applying decision rows on every commit (§4).
 - Spending-versus-goal contradictions: V0 has no required financial connector
   (design open decision), so the mentor reads calendar time only.
 - The weekly review's "decisions versus outcomes" section still reports

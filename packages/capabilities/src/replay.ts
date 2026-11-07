@@ -1,5 +1,6 @@
-import { PROJECTION_NAMES, type ProjectionName, type ProjectionRebuildReceipt, type RebuildTrigger } from '@unai/domain';
+import { recordedProjectionNameSchema, type ProjectionRebuildReceipt, type RebuildTrigger } from '@unai/domain';
 import type { MemoryTransaction } from '@unai/memory';
+import { DECISION_PROJECTION, replayDecisionProjection } from './decisions.js';
 import { replayProjection, REDUCER_VERSION } from './projections.js';
 
 /**
@@ -18,6 +19,10 @@ import { replayProjection, REDUCER_VERSION } from './projections.js';
  * -- which is exactly what CRT-PRJ-02-B asks for and what
  * `packages/capabilities/src/projections.test.ts` does.
  *
+ * By default it replays every recorded projection, in list order: the three V0
+ * projections, then `decision_projection` through its own reducer (ADR 0029 §4).
+ * Each receipt names the reducer version that wrote it.
+ *
  * `asOf` is an input, not the clock. Two replays of one pinned input set agree
  * only if they agree about what time it is when they decide whether a commitment
  * is overdue (PRD §25.4 "deterministic for a pinned input set").
@@ -25,7 +30,7 @@ import { replayProjection, REDUCER_VERSION } from './projections.js';
 
 export interface ProjectionReplayRequest {
   readonly ownerScopeId: string;
-  readonly projections?: readonly ProjectionName[];
+  readonly projections?: readonly ProjectionRebuildReceipt['projectionName'][];
   readonly asOf: Date;
   readonly trigger?: RebuildTrigger;
   readonly transactionId?: string | null;
@@ -46,15 +51,18 @@ export interface ProjectionReplayResult {
 export async function runProjectionReplay(
   tx: MemoryTransaction, request: ProjectionReplayRequest,
 ): Promise<ProjectionReplayResult> {
-  const projections = request.projections ?? PROJECTION_NAMES;
+  const projections = request.projections ?? recordedProjectionNameSchema.options;
   const receipts: ProjectionRebuildReceipt[] = [];
   for (const projectionName of projections) {
-    receipts.push(await replayProjection(tx, {
-      ownerScopeId: request.ownerScopeId, projectionName, asOf: request.asOf,
+    const input = {
+      ownerScopeId: request.ownerScopeId, asOf: request.asOf,
       trigger: request.trigger ?? 'MANUAL_REPLAY',
       transactionId: request.transactionId ?? null,
       compareWithStored: request.compareWithStored ?? true,
-    }));
+    } as const;
+    receipts.push(projectionName === DECISION_PROJECTION
+      ? await replayDecisionProjection(tx, input)
+      : await replayProjection(tx, { ...input, projectionName }));
   }
   const verdicts = receipts.map(receipt => receipt.equalsIncremental).filter((value): value is boolean => value !== null);
   return Object.freeze({

@@ -9,8 +9,8 @@ import {
   createFrameInstance, recordClaim, recordFrameInstanceRole, recordOverlayDelta, resolveBeliefSlot, resolveEntity,
   resolveProposition,
 } from '@unai/memory';
-import { applyProjectionDelta, canonicalizeCommitmentStatement, projectionRowContent, readProjectionRows,
-  runProjectionReplay } from './index.js';
+import { applyDecisionProjection, applyProjectionDelta, canonicalizeCommitmentStatement, canonicalizeDecision,
+  decisionRowContent, projectionRowContent, readDecisionRows, readProjectionRows, runProjectionReplay } from './index.js';
 
 /**
  * CRT-PRJ-02-B: dropping the projection tables and running the projection replay
@@ -183,6 +183,14 @@ async function seed(): Promise<void> {
   await statedValue({ frameInstanceId: eventId, predicateId: 'shared.event_occurrence.occurrence_time',
     modality: 'SCHEDULED', value: { start: '2026-03-10T09:00:00.000Z', end: '2026-03-10T10:00:00.000Z' } });
 
+  // A recorded decision, so the replay has to rebuild decision_projection too
+  // (ADR 0029 §4).
+  await write(tx => canonicalizeDecision(tx, {
+    ownerScopeId: owner, contextSpaceId: baseContextSpaceId, deciderEntityId: ownerEntityId, anchorFor: () => anchor(),
+    statedAt: NOW, decision: { question: 'Which laptop?', options: ['Keep the old one', 'Buy a new one'],
+      userChoice: 'Keep the old one', expectedResult: 'It lasts another year', reviewDate: '2027-03-01T00:00:00.000Z' },
+  }));
+
   // Applied by the reducer...
   await correct(tx => recordOverlayDelta(tx, {
     ownerScopeId: owner, deltaKind: 'USER_CORRECTION', rawText: 'Actually, it was ILS 55',
@@ -201,6 +209,7 @@ async function seed(): Promise<void> {
     for (const projectionName of ['open_commitments_projection', 'obligations_projection', 'schedule_projection'] as const) {
       await applyProjectionDelta(tx, { ownerScopeId: owner, projectionName, asOf: NOW });
     }
+    await applyDecisionProjection(tx, { ownerScopeId: owner, asOf: NOW });
   });
 }
 
@@ -217,6 +226,8 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // reproduce incompleteness and not only happy rows.
   expect(before['schedule_projection']!.some(row => !row.isComplete)).toBe(true);
   const versionsBefore = new Set(PROJECTIONS.flatMap(name => before[name]!.map(row => row.projectionVersion)));
+  const decisionsBefore = await reduce(tx => readDecisionRows(tx, { ownerScopeId: owner }));
+  expect(decisionsBefore).toHaveLength(1);
 
   // Drop them outright. Nothing of the projections survives, not the rows, not
   // the tables, not the receipts.
@@ -372,9 +383,11 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   const result = await reduce(tx => runProjectionReplay(tx, {
     ownerScopeId: owner, asOf: NOW, trigger: 'DROP_AND_REBUILD',
   }));
-  expect(result.receipts.map(receipt => receipt.projectionName).sort()).toEqual([...PROJECTIONS].sort());
+  expect(result.receipts.map(receipt => receipt.projectionName).sort())
+    .toEqual([...PROJECTIONS, 'decision_projection'].sort());
+  // Receipts come in list order: the three V0 projections, then the decisions.
   expect(result.receipts.map(receipt => receipt.rowsRebuilt))
-    .toEqual(PROJECTIONS.map(name => before[name]!.length));
+    .toEqual([...PROJECTIONS.map(name => before[name]!.length), decisionsBefore.length]);
 
   const after = await snapshot();
   for (const projectionName of PROJECTIONS) {
@@ -390,10 +403,18 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // The incomplete row came back incomplete, with the owner write that made it so.
   const schedule = after['schedule_projection']!.find(row => !row.isComplete)!;
   expect(schedule.pendingAssertions[0]).toMatchObject({ reason: 'DELTA_VALUE_UNPARSEABLE' });
+  // The decision row came back identical from canonical memory alone, written by
+  // a different run.
+  const decisionsAfter = await reduce(tx => readDecisionRows(tx, { ownerScopeId: owner }));
+  expect(decisionsAfter.map(decisionRowContent)).toEqual(decisionsBefore.map(decisionRowContent));
+  for (const row of decisionsAfter) {
+    expect(decisionsBefore.some(earlier => earlier.projectionVersion === row.projectionVersion)).toBe(false);
+  }
 
   // And the rebuild is on the record.
   const receipts = (await admin!.query('SELECT projection_name,trigger,rows_rebuilt,reducer_version FROM projection_rebuild_receipts WHERE owner_scope_id=$1 ORDER BY projection_name', [owner])).rows;
-  expect(receipts.map((row: { trigger: string }) => row.trigger)).toEqual(['DROP_AND_REBUILD', 'DROP_AND_REBUILD', 'DROP_AND_REBUILD']);
+  expect(receipts.map((row: { trigger: string }) => row.trigger))
+    .toEqual(['DROP_AND_REBUILD', 'DROP_AND_REBUILD', 'DROP_AND_REBUILD', 'DROP_AND_REBUILD']);
 });
 
 it('refuses privileged registry snapshot TRUNCATE with the exact production immutability trigger', async () => {
