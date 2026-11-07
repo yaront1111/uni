@@ -144,12 +144,16 @@ export function schedulerPasses(text){
   if(lines.some(line=>!exactly(line,['event',...names])||!names.every(name=>whole(line[name]))))invalid('SCHEDULER_LOG_INVALID');
   return lines.map(line=>Object.fromEntries(names.map(name=>[name,line[name]])));
 }
-/** In-host counts `<secret> <journal> <database> <record>`, one line per secret, in order; every count is 0. */
-export function leakVerdict(text,secrets){
+const LEAK_PROBE=['needles','owner-check','session-mint','cmdline','journal','database','record'];
+/** In-host lines `<name> <count>` in LEAK_PROBE order (scripts/rehearsal/sync.mjs leakScript). Without
+ * two needles and every positive control seen the probe proves nothing; then no match anywhere. */
+export function leakVerdict(text){
   const rows=String(text).split('\n').map(line=>line.trim()).filter(Boolean).map(line=>line.split(' '));
-  if(rows.length!==secrets.length||rows.some((row,index)=>row.length!==4||row[0]!==secrets[index]||
-    row.slice(1).some(value=>value!=='0')))invalid('SECRET_LEAKED');
-  return {secrets:secrets.length,journal:0,database:0,record:0};
+  const valid=rows.length===LEAK_PROBE.length&&rows.every((row,index)=>row.length===2&&row[0]===LEAK_PROBE[index]&&/^\d{1,9}$/.test(row[1]));
+  const counts=valid?Object.fromEntries(rows.map(([name,value])=>[name,Number(value)])):{};
+  if(!valid||counts.needles!==2||!(counts['owner-check']>0&&counts['session-mint']>0&&counts.cmdline>0))invalid('LEAK_PROBE_INVALID');
+  if(counts.journal||counts.database||counts.record)invalid('SECRET_LEAKED');
+  return {needles:2,controls:{ownerCheck:counts['owner-check'],sessionMint:counts['session-mint'],cmdline:counts.cmdline},journal:0,database:0,record:0};
 }
 const SYNC={jobs:1,status:'SUCCEEDED',scheduled:true,jobErrorClear:true,connectorType:'GITHUB',connectorStatus:'ACTIVE',
   cursorAdvanced:true,cursorPage:2,syncErrorClear:true,unauthorized:0};

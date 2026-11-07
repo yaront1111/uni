@@ -16,7 +16,7 @@ import {execute as untypedExecute,workingTreePaths as untypedPaths} from '../scr
 // @ts-expect-error Plain JavaScript operator tooling.
 import * as untypedChecks from '../scripts/lib/rehearsal-checks.mjs';
 // @ts-expect-error Plain JavaScript operator tooling.
-import {servicePhases as untypedServices,show as untypedShow} from '../scripts/rehearsal/services.mjs';
+import {servicePhases as untypedServices,show as untypedShow,prelude as untypedPrelude} from '../scripts/rehearsal/services.mjs';
 // @ts-expect-error Plain JavaScript operator tooling.
 import * as untypedSync from '../scripts/rehearsal/sync.mjs';
 // @ts-expect-error Plain JavaScript operator tooling.
@@ -409,6 +409,9 @@ describe('rehearsal 2/4 auth seam',()=>{
   it('holds no dollar or percent sign for systemd-run and reads no environment',()=>{
     expect(text).not.toMatch(/[$%]/);expect(text).not.toMatch(/process\s*\.\s*env/);
   });
+  it('names no relative specifier: lib/server.ts exists only in the installed web app',()=>{
+    expect(text).not.toMatch(/(?:\bfrom|\bimport\s*\()\s*['"]\.{1,2}\//);
+  });
   it.each([[[subject,'scope-id','actor-id'],'FOUND'],[[subject,'other-scope','actor-id'],'MISMATCH'],
     [[subject,'scope-id','other-actor'],'MISMATCH'],[['1','scope-id','actor-id'],'MISSING']])
   ('answers the owner check for %j with %s through the adapter',(values,word)=>{
@@ -516,8 +519,10 @@ describe('rehearsal 2/4 service phases',()=>{
 
 interface SyncChecks {
   doubleCounts(text:string):Record<string,number>; schedulerPasses(text:string):Array<Record<string,number>>;
-  leakVerdict(text:string,secrets:string[]):Record<string,number>;
+  leakVerdict(text:string):Record<string,unknown>;
 }
+const leakLines=(changes:Record<string,string>={})=>Object.entries({needles:'2','owner-check':'1','session-mint':'1',cmdline:'9',
+  journal:'0',database:'0',record:'0',...changes}).map(([name,value])=>`${name} ${value}`).join('\n');
 const syncChecks=untypedChecks as SyncChecks;
 interface Answer {route:string;status:number;authorized:boolean;body:unknown}
 const double=untypedDouble as {route(input:Record<string,unknown>):Answer;logLine(answer:Answer):string};
@@ -567,12 +572,99 @@ describe('rehearsal 2/4 sync helpers',()=>{
       '{"event":"connector.scheduler","enqueued":-1,"alreadyQueued":0,"skipped":0}'])
       expect(()=>syncChecks.schedulerPasses(bad)).toThrow('REHEARSAL_SCHEDULER_LOG_INVALID');
   });
-  it('passes only zero leak counts for every secret, in order',()=>{
-    const names=['github-token','session-token'];
-    expect(syncChecks.leakVerdict('github-token 0 0 0\nsession-token 0 0 0\n',names)).toEqual({secrets:2,journal:0,database:0,record:0});
-    for(const bad of ['github-token 0 0 1\nsession-token 0 0 0','github-token 0 0 0','session-token 0 0 0\ngithub-token 0 0 0',
-      'github-token 0 0\nsession-token 0 0 0','github-token 0 0 0\nsession-token 0 2 0'])
-      expect(()=>syncChecks.leakVerdict(bad,names)).toThrow('REHEARSAL_SECRET_LEAKED');
+  it('passes two needles, every control seen and zero matches, and tells a leak from a malformed probe',()=>{
+    expect(syncChecks.leakVerdict(`${leakLines()}\n`)).toEqual({needles:2,controls:{ownerCheck:1,sessionMint:1,cmdline:9},journal:0,database:0,record:0});
+    for(const name of ['journal','database','record'])
+      expect(()=>syncChecks.leakVerdict(leakLines({[name]:'3'}))).toThrow('REHEARSAL_SECRET_LEAKED');
+    const lines=leakLines().split('\n');
+    for(const bad of [leakLines({needles:'1'}),leakLines({'owner-check':'0'}),leakLines({'session-mint':'0'}),leakLines({cmdline:'0'}),
+      leakLines({journal:'x'}),leakLines({journal:'-1'}),leakLines({record:'0 0'}),lines.slice(0,-1).join('\n'),
+      [lines[1],lines[0],...lines.slice(2)].join('\n'),`${leakLines()}\nrecord 0`,''])
+      expect(()=>syncChecks.leakVerdict(bad)).toThrow('REHEARSAL_LEAK_PROBE_INVALID');
+  });
+});
+// The leak probe and the seam run as bash does in the host (`bash -euo pipefail -s`), with
+// journalctl, sudo and systemd-run replaced by shell functions. Linux only: the host's GNU tools (stat -c).
+describe.skipIf(process.platform!=='linux')('rehearsal 2/4 leak probe and seam words in bash',()=>{
+  const {leakScript}=untypedSync as {leakScript:string};
+  const githubToken='0123456789abcdef'.repeat(3),sessionToken=`${'Ab9_-'.repeat(8)}xyz`;
+  const entry=(...fields:string[])=>`__CURSOR=s=${fields.length}\n${fields.join('\n')}\n\n`;
+  const journal=[entry('_CMDLINE=/sbin/init','MESSAGE=Started run-u7.service - rehearsal-owner-check.'),
+    entry('_CMDLINE=/sbin/init',`MESSAGE=Started run-r${'0a'.repeat(16)}.service - rehearsal-session-mint.`),
+    entry('_CMDLINE=/usr/local/bin/node github-double.mjs /root/rehearsal/github-token','MESSAGE={"event":"github.double"}')].join('');
+  const connectorRow=(error='\\N')=>`COPY public.connectors (id, secret_ref, last_sync_error) FROM stdin;\nc1\tsecret://mounted/connectors-github\t${error}\n\\.\n`;
+  // journalctl -o export writes a value holding a newline or a control byte as name, LE64 length, bytes.
+  const binary=(name:string,value:string)=>{
+    const length=Buffer.alloc(8);length.writeBigUInt64LE(BigInt(Buffer.byteLength(value)));
+    return Buffer.concat([Buffer.from(`__CURSOR=s=9\n${name}\n`),length,Buffer.from(`${value}\n\n`)]);
+  };
+  function probe(files:Record<string,string|Buffer|null>={}){
+    const directory=mkdtempSync(join(tmpdir(),'unai-leak-')),path=(name:string)=>join(directory,name);
+    const contents:Record<string,string|Buffer|null>={'github-token':`${githubToken}\n`,'session-token':`${sessionToken}\n`,
+      'record-copy.json':'{"format":"unai-deploy-rehearsal/1"}',journal,dump:connectorRow(),...files};
+    for(const [name,value] of Object.entries(contents))if(value!==null)writeFileSync(path(name),value);
+    const stubs=`journalctl(){ echo "journalctl $*" >> ${path('calls')}; [ "$1" = --sync ] || cat ${path('journal')}; }
+sudo(){ echo "sudo $*" >> ${path('calls')}; cat ${path('dump')}; }`;
+    const result=spawnSync('bash',['-euo','pipefail','-s'],{input:`${stubs}\n${leakScript.replaceAll('/root/rehearsal',directory)}`,encoding:'utf8'});
+    const read=(name:string)=>existsSync(path(name))?readFileSync(path(name),'utf8'):null;
+    const outcome={status:result.status,leaks:read('leaks'),calls:read('calls'),
+      left:['leak-needles','leak-journal','leak-database','record-copy.json'].filter(name=>existsSync(path(name)))};
+    rmSync(directory,{recursive:true,force:true});
+    return outcome;
+  }
+  it('counts nothing in a clean capture that holds both seam units and _CMDLINE, then removes every copy',()=>{
+    const result=probe();
+    expect(result.status).toBe(0);
+    expect(result.leaks).toBe('needles 2\nowner-check 1\nsession-mint 1\ncmdline 3\njournal 0\ndatabase 0\nrecord 0\n');
+    expect(syncChecks.leakVerdict(result.leaks!)).toEqual({needles:2,controls:{ownerCheck:1,sessionMint:1,cmdline:3},journal:0,database:0,record:0});
+    expect(result.calls).toBe('journalctl --sync\njournalctl -o export --no-pager\nsudo -u postgres pg_dump -d unai --data-only\n');
+    expect(result.left).toEqual([]);
+  });
+  it.each([
+    ['a GitHub token in _CMDLINE','journal',{journal:journal+entry(`_CMDLINE=/usr/bin/curl -H authorization:${githubToken}`,'MESSAGE=x')}],
+    ['a session token in a binary field','journal',{journal:Buffer.concat([Buffer.from(journal),binary('MESSAGE',`cookie\n__Host-unai.session=${sessionToken}\0`)])}],
+    ['a GitHub token in the database','database',{dump:connectorRow(githubToken)}],
+    ['a session token in the record','record',{'record-copy.json':JSON.stringify({format:'unai-deploy-rehearsal/1',tail:sessionToken})}],
+    ['a session token read from a file with CRLF and padding','journal',{'session-token':` ${sessionToken}\r\n`,journal:journal+entry(`MESSAGE=${sessionToken}`)}],
+  ])('reports %s as a %s match',(_name,where,files)=>{
+    const result=probe(files);
+    expect(result.status).toBe(0);
+    expect(result.leaks).toMatch(new RegExp(`^${where} 1$`,'m'));
+    expect(()=>syncChecks.leakVerdict(result.leaks!)).toThrow('REHEARSAL_SECRET_LEAKED');
+    expect(result.left).toEqual([]);
+  });
+  it.each([
+    ['a missing token file',{'session-token':null},''],
+    ['a token of the wrong length',{'github-token':`${githubToken.slice(1)}\n`},''],
+    ['an empty token file, which would match every line',{'github-token':''},''],
+    ['a missing record copy (grep status 2)',{'record-copy.json':null},'database 0'],
+    ['a capture without the session mint Started line',{journal:journal.replace('rehearsal-session-mint','rehearsal-auth-seam')},'session-mint 0'],
+    ['an empty capture',{journal:''},'owner-check 0'],
+    ['a dump without this run\'s connector row',{dump:'COPY public.connectors (id, secret_ref, last_sync_error) FROM stdin;\n\\.\n'},'record 0'],
+    ['a record copy that is not the record',{'record-copy.json':'{"phases":[{"format":"unai-deploy-rehearsal/1"}]}'},'record 0'],
+  ])('fails the phase on %s',(_name,files,last)=>{
+    const result=probe(files);
+    expect(result.status).not.toBe(0);
+    expect((result.leaks??'').trim().split('\n').at(-1)).toBe(last);
+    expect(result.left).toEqual([]);
+  });
+  it('runs each seam mode as a unit with its own description and passes the values on stdin only',()=>{
+    const directory=mkdtempSync(join(tmpdir(),'unai-seam-words-')),path=(name:string)=>join(directory,name);
+    writeFileSync(path('web.env'),`NEXTAUTH_URL=https://rehearsal.invalid\nUNAI_WEB_TLS_CERT_FILE=${path('cert.pem')}\nUNAI_WEB_OWNER_GOOGLE_SUBJECT=${subject}\n`);
+    writeFileSync(path('worker.env'),'UNAI_PROCESSING_OWNER_SCOPE_ID=scope-id\nUNAI_PROCESSING_ACTOR_ID=actor-id\n');
+    writeFileSync(path('auth-seam.mjs'),'seam source');
+    const stub=`systemd-run(){ printf '%s\\n' "$@" -- >> ${path('argv')}; cat >> ${path('stdin')}; }`;
+    const text=(untypedPrelude as string).replaceAll('/etc/unai/',`${directory}/`).replaceAll('/usr/local/lib/unai-rehearsal/',`${directory}/`);
+    const result=spawnSync('bash',['-euo','pipefail','-s'],{input:`${stub}\n${text}\nseam check\nseam session\nseam delete || echo "refused $?"`,encoding:'utf8'});
+    const argv=readFileSync(path('argv'),'utf8').split(/^--$/m).map(part=>part.trim()).filter(Boolean).map(part=>part.split('\n'));
+    const stdin=readFileSync(path('stdin'),'utf8');
+    rmSync(directory,{recursive:true,force:true});
+    expect(result.stderr).toBe('');expect(result.status).toBe(0);expect(result.stdout).toBe('refused 2\n');
+    expect(argv).toHaveLength(2);
+    expect(argv.map(args=>args.filter(arg=>arg.startsWith('--description=')))).toEqual([['--description=rehearsal-owner-check'],['--description=rehearsal-session-mint']]);
+    expect(argv.map(args=>args.at(-1))).toEqual(['seam source','seam source']);
+    expect(stdin).toBe(`check\n${subject}\nscope-id\nactor-id\nsession\n${subject}\nscope-id\nactor-id\n`);
+    for(const args of argv)expect(args.join(' ')).not.toMatch(new RegExp(`${subject}|scope-id|actor-id`));
   });
 });
 describe('rehearsal 2/4 sync phase',()=>{
@@ -586,7 +678,7 @@ describe('rehearsal 2/4 sync phase',()=>{
     const {run,calls}=mockRun('sync',script=>script.includes('rehearsal-github-ca')?''
       :script.includes('seam session')?['@@connector-status','201','@@scheduler-lines',...(options.passes??[pass,pass]),
         '@@sync-row',JSON.stringify(options.row??row),'@@double-lines',lines].join('\n')
-      :`@@leaks\n${options.leaks??'github-token 0 0 0\nsession-token 0 0 0'}`);
+      :`@@leaks\n${options.leaks??leakLines()}`);
     const full=Object.assign(run,{record:record(),directory,command:async(file:string,args:string[])=>{
       commands.push([file,...args]);
       if(args[0]==='cp'&&String(args[1]).endsWith('record-copy.json'))copies.push(readFileSync(String(args[1]),'utf8'));
@@ -600,7 +692,7 @@ describe('rehearsal 2/4 sync phase',()=>{
     expect(run.phase.assertions).toEqual({jobs:1,status:'SUCCEEDED',scheduled:true,jobErrorClear:true,connectorType:'GITHUB',
       connectorStatus:'ACTIVE',cursorAdvanced:true,cursorPage:2,syncErrorClear:true,unauthorized:0,attempts:1,evidence:3,
       issuesServed:1,commentsServed:1,connector:{status:201},scheduler:{passes:2,firstPassEnqueued:1,restartKeptOneJob:true},
-      secretLeaks:{secrets:2,journal:0,database:0,record:0}});
+      secretLeaks:{needles:2,controls:{ownerCheck:1,sessionMint:1,cmdline:9},journal:0,database:0,record:0}});
     expect(commands.map(command=>command.slice(0,2).join(' '))).toEqual(['docker cp','docker cp','docker cp']);
     expect(commands[0]![2]).toMatch(/github-double\.mjs$/);expect(commands[1]![2]).toMatch(/github-issue-thread\.json$/);
     expect(copies).toHaveLength(1);expect(JSON.parse(copies[0]!).unverified.at(-1).layer).toBe('GitHub provider');
@@ -616,6 +708,11 @@ describe('rehearsal 2/4 sync phase',()=>{
     steps.push(trigger!.lastIndexOf('systemctl restart unai-worker.service'),at('row.sql > '));
     expect(steps.every((position,index)=>position>(index?steps[index-1]!:-1))).toBe(true);
     expect(leak).toContain('pg_dump -d unai --data-only');
+    const {leakScript}=untypedSync as {leakScript:string};
+    expect(leak!.endsWith(leakScript)).toBe(true);
+    expect(leakScript.indexOf('journalctl --sync')).toBeGreaterThan(-1);
+    expect(leakScript.indexOf('journalctl --sync')).toBeLessThan(leakScript.indexOf('journalctl -o export --no-pager'));
+    expect(leakScript).not.toMatch(/-o (?:cat|json)|\|\| true/);
     for(const {script,report} of calls){expect(script).not.toContain('${');expect(report).not.toContain('${');}
     shellSyntax(calls);
   });
@@ -645,6 +742,7 @@ describe('rehearsal 2/4 sync phase',()=>{
     await expect(sync(twice.run)).rejects.toThrow('REHEARSAL_SYNC_INVALID');
     expect((twice.run.phase.assertions as {diagnostic:{status:string}}).diagnostic.status).toBe('UNREADABLE');
     await expect(sync(syncRun({passes:[pass]}).run)).rejects.toThrow('REHEARSAL_SCHEDULER_LOG_INVALID');
-    await expect(sync(syncRun({leaks:'github-token 1 0 0\nsession-token 0 0 0'}).run)).rejects.toThrow('REHEARSAL_SECRET_LEAKED');
+    await expect(sync(syncRun({leaks:leakLines({journal:'1'})}).run)).rejects.toThrow('REHEARSAL_SECRET_LEAKED');
+    await expect(sync(syncRun({leaks:leakLines({'session-mint':'0'})}).run)).rejects.toThrow('REHEARSAL_LEAK_PROBE_INVALID');
   });
 });

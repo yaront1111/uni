@@ -6,7 +6,7 @@ import {writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {report,count,syncVerdict,doubleCounts,schedulerPasses,leakVerdict} from '../lib/rehearsal-checks.mjs';
-import {tool,state,active,prelude,show,journalTail} from './services.mjs';
+import {tool,state,active,prelude,show,journalTail,SEAM_WORDS} from './services.mjs';
 
 const fail=code=>{throw new Error(`REHEARSAL_${code}`);};
 const inside=(run,script,options)=>run.inside(`${active}\n${prelude}\n${script}`,options);
@@ -16,7 +16,6 @@ const github='/etc/unai/rehearsal/github';
 // a veth pair in 198.18.0.0/30 (RFC 2544 benchmarking space, never routed), and dies with the host.
 export const NAMESPACE='rehearsal-github',DOUBLE_ADDRESS='198.18.0.2';
 const local=name=>fileURLToPath(new URL(name,import.meta.url));
-export const SECRETS=['github-token','session-token'];
 // deploy/README.md names connector tokens connectors/<name>, but the shipped connectors.secret_ref
 // check (migration 0018) refuses the slash and the API answers 500, so this run uses a flat name.
 const SECRET_NAME='connectors-github';
@@ -116,19 +115,32 @@ until_ok 60 scheduled ${state}/sync-b.cursor
 sql ${state}/row.sql > ${state}/sync-row
 { journalctl -q -u rehearsal-github-double -o cat --no-pager | grep -F '"event":"github.double"' || true; } > ${state}/double-lines`;
 
-// (h) neither token in the whole journal, a data-only dump of the database, or the record so far.
+// (h) Neither token anywhere in the journal (every field of every entry, _CMDLINE included), a
+// data-only dump of the database, or the record so far. Both tokens go into one root-only needle
+// file. grep's status is read, never dropped: 1 is no match, 0 a match, anything else fails the
+// phase. Each seam unit's Started line and a _CMDLINE field must be in the same capture before
+// anything is counted, so an empty or partial capture cannot pass (leakVerdict reads the lines);
+// the dump must hold this run's connector row and the copy must be the record, or a zero proves nothing.
 export const leakScript=String.raw`
-grep -Eqx '[0-9a-f]{48}' ${state}/github-token
-grep -Eqx '[A-Za-z0-9_-]{43}' ${state}/session-token
-journalctl -q -o cat --no-pager > ${state}/journal-all
-sudo -u postgres pg_dump -d unai --data-only > ${state}/database-dump
-test -s ${state}/journal-all; test -s ${state}/database-dump; test -s ${state}/record-copy.json
-leak(){ local n; n=$(grep -cF -f "$1" "$2" || true); [ -n "$n" ] || n=0; printf '%s' "$n"; }
-: > ${state}/leaks
-for secret in ${SECRETS.join(' ')}; do
-  printf '%s %s %s %s\n' "$secret" "$(leak ${state}/$secret ${state}/journal-all)" "$(leak ${state}/$secret ${state}/database-dump)" "$(leak ${state}/$secret ${state}/record-copy.json)" >> ${state}/leaks
-done
-rm -f ${state}/journal-all ${state}/database-dump ${state}/record-copy.json`;
+umask 077
+needles=${state}/leak-needles capture=${state}/leak-journal dump=${state}/leak-database leaks=${state}/leaks
+trap 'rm -f "$needles" "$capture" "$dump" ${state}/record-copy.json' EXIT
+hits(){ local n status=0; n=$(grep -a -c "$@") || status=$?; case "$status:$n" in 0:[1-9]*|1:0) echo "$n";; *) return 2;; esac; }
+control(){ local n; n=$(hits -E "$2" "$capture"); echo "$1 $n" >> "$leaks"; test "$n" -ge 1; }
+search(){ local n; n=$(hits -F -f "$needles" "$2"); echo "$1 $n" >> "$leaks"; }
+{ tr -d '[:space:]' < ${state}/github-token; echo; tr -d '[:space:]' < ${state}/session-token; echo; } > "$needles"
+awk 'NR==1{ok=length($0)==48&&$0~/^[0-9a-f]+$/} NR==2{ok=ok&&length($0)==43&&$0~/^[A-Za-z0-9_-]+$/} END{if(!ok||NR!=2)exit 1;print "needles",NR}' "$needles" > "$leaks"
+journalctl --sync
+journalctl -o export --no-pager > "$capture"
+sudo -u postgres pg_dump -d unai --data-only > "$dump"
+for file in "$needles" "$capture" "$dump"; do test "$(stat -c %a "$file")" = 600; done
+control owner-check '^MESSAGE=Started [^ ]+ - ${SEAM_WORDS.check}\.$'
+control session-mint '^MESSAGE=Started [^ ]+ - ${SEAM_WORDS.session}\.$'
+control cmdline '^_CMDLINE='
+search journal "$capture"
+search database "$dump"
+search record ${state}/record-copy.json
+grep -q -F 'secret://mounted/${SECRET_NAME}' "$dump"; grep -q '^{"format":"unai-deploy-rehearsal/1"' ${state}/record-copy.json`;
 
 const CODE=/^[A-Z][A-Z0-9_]*(?::[A-Z][A-Z0-9_]*)?$/;
 /** On a refused sync, the job and connector state as status words, so the record says why. */
@@ -159,6 +171,6 @@ async function sync(run){
     await run.command('docker',['cp',copy,`${run.container}:${state}/record-copy.json`]);
   }finally{await rm(copy,{force:true});}
   const leaks=report(await inside(run,leakScript,{timeout:300000,report:show('leaks')}),['leaks']);
-  run.phase.assertions.secretLeaks=leakVerdict(leaks.leaks,SECRETS);
+  run.phase.assertions.secretLeaks=leakVerdict(leaks.leaks);
 }
 export const syncPhases={sync};

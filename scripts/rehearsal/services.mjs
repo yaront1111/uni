@@ -10,7 +10,10 @@ export const tool='/usr/local/lib/unai-rehearsal';
 export const state='/root/rehearsal';
 export const active='systemctl is-active --quiet unai-rehearsal-s3-evidence unai-rehearsal-s3-backup unai-rehearsal-s3-drill';
 const fail=code=>{throw new Error(`REHEARSAL_${code}`);};
-// Shell helpers. No `${` appears, so String.raw keeps the text verbatim.
+// Each seam mode runs as a transient unit with its own fixed description, so the sync phase's leak
+// probe can require both units' `Started <unit> - <word>.` lines in the journal it searches.
+export const SEAM_WORDS={check:'rehearsal-owner-check',session:'rehearsal-session-mint'};
+// Shell helpers. String.raw keeps every backslash; the seam words are the only interpolations.
 export const prelude=String.raw`
 envval(){ sed -n "s#^$2=##p" "/etc/unai/$1.env" | tail -n 1; }
 mark(){ rm -f "$1"; journalctl -q -n 1 -o cat --no-pager --cursor-file="$1" >/dev/null; test -s "$1"; }
@@ -26,11 +29,12 @@ web_cert=$(envval web UNAI_WEB_TLS_CERT_FILE)
 test -n "$web_host"; test -n "$web_cert"
 signin(){ curl -fsS --max-time 10 -o /dev/null --resolve "$web_host:443:127.0.0.1" --cacert "$web_cert" "https://$web_host/signin"; }
 seam(){
-  local subject scope actor
+  local word subject scope actor
+  case "$1" in check) word=${SEAM_WORDS.check};; session) word=${SEAM_WORDS.session};; *) return 2;; esac
   subject=$(envval web UNAI_WEB_OWNER_GOOGLE_SUBJECT); scope=$(envval worker UNAI_PROCESSING_OWNER_SCOPE_ID); actor=$(envval worker UNAI_PROCESSING_ACTOR_ID)
   printf '%s\n%s\n%s\n%s\n' "$1" "$subject" "$scope" "$actor" | systemd-run --wait --pipe --quiet --uid=unai-web --gid=unai-web \
     --working-directory=/opt/unai/current/apps/web --property=EnvironmentFile=/etc/unai/web.env --setenv=NODE_ENV=production \
-    --description=rehearsal-auth-seam /usr/local/bin/node --import tsx --input-type=module -e "$(cat /usr/local/lib/unai-rehearsal/auth-seam.mjs)"
+    --description="$word" /usr/local/bin/node --import tsx --input-type=module -e "$(cat /usr/local/lib/unai-rehearsal/auth-seam.mjs)"
 }
 `;
 const uuid='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
