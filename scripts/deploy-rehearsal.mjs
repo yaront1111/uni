@@ -1,9 +1,10 @@
 import {readFile,writeFile,rename,mkdir} from 'node:fs/promises';
 import {resolve} from 'node:path';
-import {parseArguments,IMPLEMENTED,validateRecord} from './lib/rehearsal-record.mjs';
+import {parseArguments,IMPLEMENTED,validateRecord,publicRecord} from './lib/rehearsal-record.mjs';
 
 const failed=code=>process.stderr.write(JSON.stringify({event:'rehearsal.failed',code})+'\n');
 async function writeRecord(path,record){
+  record=publicRecord(record);
   const violations=validateRecord(record);
   if(violations.length)throw new Error(violations[0]);
   await mkdir(resolve(path,'..'),{recursive:true});
@@ -24,8 +25,9 @@ async function run(options){
   const {servicePhases}=await import('./rehearsal/services.mjs');
   const {syncPhases}=await import('./rehearsal/sync.mjs');
   const {lifecyclePhases}=await import('./rehearsal/lifecycle.mjs');
+  const {observabilityPhases}=await import('./rehearsal/observability.mjs');
   const run=await createRun(options),interrupted=new AbortController();
-  Object.assign(run.phases,servicePhases,syncPhases,lifecyclePhases);
+  Object.assign(run.phases,servicePhases,syncPhases,lifecyclePhases,observabilityPhases);
   let signalCode=0,exitCode=0;
   const sigint=()=>{signalCode=130;interrupted.abort();};
   const sigterm=()=>{signalCode=143;interrupted.abort();};

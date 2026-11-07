@@ -63,7 +63,7 @@ describe('rehearsal record and arguments',()=>{
   });
   it('pins shared order and the implemented prefix',()=>{
     expect(lib.PHASES.join(' ')).toBe(`${first} ${later}`);
-    expect(lib.IMPLEMENTED.join(' ')).toBe(`${first} services probes smoke failed-start sync backup restore-drill upgrade-dry-run upgrade-rollback upgrade`);
+    expect(lib.IMPLEMENTED.join(' ')).toBe(`${first} ${later}`);
   });
   it.each(unsafe)('scrubs a sensitive string: %s',input=>{
     const output=lib.scrub(input,{forbidden});
@@ -119,7 +119,7 @@ describe('rehearsal record and arguments',()=>{
     expect(lib.validateRecord({...record(),phases:[{...phase(),status:'UNVERIFIED',note:'Not supported'}]})).toEqual([]);
   });
   it('parses flags and defaults',()=>{
-    expect(lib.parseArguments([])).toEqual({until:'preflights',keep:false});
+    expect(lib.parseArguments([])).toEqual({until:'browser',keep:false});
     expect(lib.parseArguments(['--record','r.json','--until','tls','--keep'])).toEqual({record:'r.json',until:'tls',keep:true});
     expect(lib.parseArguments(['--verify-record','r.json'])).toEqual({verifyRecord:'r.json'});
     expect(lib.parseArguments(['--help'])).toEqual({help:true});
@@ -130,7 +130,7 @@ describe('rehearsal record and arguments',()=>{
   });
   it('distinguishes unknown from unimplemented phases',()=>{
     expect(()=>lib.parseArguments(['--until','what'])).toThrow('REHEARSAL_PHASE_UNKNOWN');
-    expect(()=>lib.parseArguments(['--until','telemetry'])).toThrow('REHEARSAL_PHASE_UNIMPLEMENTED');
+    expect(lib.parseArguments(['--until','telemetry'])).toEqual({until:'telemetry',keep:false});
     expect(lib.parseArguments(['--until','upgrade']).until).toBe('upgrade');
     expect(lib.parseArguments(['--until','sync'])).toEqual({until:'sync',keep:false});
   });
@@ -1145,4 +1145,217 @@ it('attributes only completed timer archives separately from the upgrade backup'
   for(const [before,after] of [[2,1],[-1,1],[1,1.5],[Number.NaN,1]] as Array<[number,number]>){
     expect(()=>archiveChange(before,after,[])).toThrow('REHEARSAL_ARCHIVES_INVALID');
   }
+});
+
+interface Observation {
+  summarizeOtlp(lines:string[]):{services:string[];scopes:Record<string,{spans:number;points:number}>;nonUnaiScopes:number;nextScopes:number;httpTargetAttributes:number;invalidLines:number};
+  classifyCdp(messages:unknown[],loaderId:string):{status:number|null;csp:string;permissionsPolicy:string;cspEvents:number;cspConsole:number};
+  cspNonce(header:string):string|null;
+  permissionAllows(header:string,feature:string,origin:string):boolean;
+  noncedScripts(nonce:string|null,nonces:string[]):{scripts:number;nonced:number;all:boolean};
+}
+const observation=async():Promise<Observation>=>{
+  const path='../scripts/rehearsal/observe.mjs';
+  const result:unknown=await import(path).catch(()=>({}));
+  expect(result).toHaveProperty('summarizeOtlp');
+  return result as Observation;
+};
+const attr=(key:string,value:string)=>({key,value:{stringValue:value}});
+const otlp=(service:string,scope:string,metrics=false)=>({
+  [metrics?'resourceMetrics':'resourceSpans']:[{resource:{attributes:[attr('service.name',service)]},
+    [metrics?'scopeMetrics':'scopeSpans']:[{scope:{name:scope},...(metrics?{metrics:[{histogram:{dataPoints:[{attributes:[attr('http.target','PRIVATE')]}]}}]}:
+      {spans:[{attributes:[],events:[{attributes:[attr('http.target','PRIVATE')]}],links:[{attributes:[attr('safe','ok')]}]}]})}]}],
+});
+describe('rehearsal observation helpers',()=>{
+  it('counts exact scope spans and metric points without returning payloads',async()=>{
+    const m=await observation();
+    expect(m.summarizeOtlp([JSON.stringify(otlp('unai-api','unai.api')),JSON.stringify(otlp('unai-worker','unai.jobs',true))])).toEqual({
+      services:['unai-api','unai-worker'],scopes:{unai_api:{spans:1,points:0},unai_jobs:{spans:0,points:1}},
+      nonUnaiScopes:0,nextScopes:0,httpTargetAttributes:2,invalidLines:0});
+  });
+  it('flags foreign scopes and every nested target, counting malformed lines',async()=>{
+    const m=await observation();
+    const input=otlp('unai-web','next.js',true);
+    const result=m.summarizeOtlp([JSON.stringify(input),'not json','null','',JSON.stringify({bogus:[]})]);
+    expect(result).toEqual({services:['unai-web'],scopes:{},nonUnaiScopes:1,nextScopes:1,httpTargetAttributes:1,invalidLines:3});
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  });
+  it('does not disclose unknown service or scope strings as record keys',async()=>{
+    const m=await observation();
+    const result=m.summarizeOtlp([JSON.stringify(otlp('PRIVATE','unai.private.value'))]);
+    expect(result.services).toEqual([]);
+    expect(result.scopes).toEqual({});
+    expect(result.invalidLines).toBe(1);
+  });
+  it('takes only the matching main document response, never a subresource or old loader',async()=>{
+    const m=await observation();
+    const response=(loaderId:string,type:string,status:number)=>({method:'Network.responseReceived',params:{loaderId,type,response:{status,headers:{'Content-Security-Policy':"script-src 'nonce-match'",'Permissions-Policy':'microphone=(self)'}}}});
+    const result=m.classifyCdp([response('main','Document',200),response('main','Image',404),response('old','Document',302),
+      {method:'Runtime.bindingCalled',params:{name:'rehearsalCsp',payload:'script-src-elem'}},
+      {method:'Runtime.bindingCalled',params:{name:'unrelated',payload:'private'}},
+      {method:'Log.entryAdded',params:{entry:{text:'violates Content Security Policy'}}},
+      {method:'Runtime.consoleAPICalled',params:{args:[{value:'Content Security Policy refused'}]}},
+      {method:'Runtime.exceptionThrown',params:{exceptionDetails:{text:'Content Security Policy refused'}}},
+      {method:'Runtime.consoleAPICalled',params:{args:[{value:'unrelated error'}]}}],'main');
+    expect(result).toEqual({status:200,csp:"script-src 'nonce-match'",permissionsPolicy:'microphone=(self)',cspEvents:1,cspConsole:3});
+    expect(m.classifyCdp([response('main','Image',200)],'main').status).toBeNull();
+  });
+  it('requires a nonempty identical script nonce and a nonempty script set',async()=>{
+    const m=await observation();
+    expect(m.cspNonce("default-src 'self'; script-src 'nonce-match' 'strict-dynamic'")).toBe('match');
+    expect(m.cspNonce("script-src 'self'")).toBeNull();
+    expect(m.noncedScripts('match',['match','match'])).toEqual({scripts:2,nonced:2,all:true});
+    for(const nonces of [['match',''],['match','wrong'],[]])expect(m.noncedScripts('match',nonces).all).toBe(false);
+    expect(m.noncedScripts(null,[''])).toEqual({scripts:1,nonced:0,all:false});
+  });
+  it('recognizes explicit self policy and refuses absent, wildcard or foreign origins',async()=>{
+    const m=await observation(),origin='https://rehearsal.invalid';
+    expect(m.permissionAllows('camera=(), microphone=(self)','microphone',origin)).toBe(true);
+    expect(m.permissionAllows(`microphone=("${origin}")`,'microphone',origin)).toBe(true);
+    for(const h of ['', 'microphone=()', 'microphone=*','microphone=("https://foreign.invalid")'])expect(m.permissionAllows(h,'microphone',origin)).toBe(false);
+  });
+});
+
+interface Observability {
+  telemetryVerdict(value:Record<string,unknown>):Record<string,unknown>;
+  telemetryScript:string;
+}
+async function observability():Promise<Observability>{
+  const path='../scripts/rehearsal/observability.mjs';
+  const value:unknown=await import(path).catch(()=>({}));
+  expect(value).toHaveProperty('telemetryVerdict');return value as Observability;
+}
+const telemetryReceipt=()=>({services:['unai-api','unai-web','unai-worker'],scopes:{unai_api:{spans:1,points:1},unai_web:{spans:1,points:1},unai_postgres:{spans:1,points:1}},
+  nonUnaiScopes:0,nextScopes:0,httpTargetAttributes:0,invalidLines:0,missingServices:[],
+  installedByBundle:{versionMatches:true,configMatches:true,dropInPresent:true,active:true,loopbackOnly:true},metricExportMs:5000});
+describe('rehearsal telemetry phase',()=>{
+  it('requires fresh service receipts and the installed collector proof',async()=>{
+    const m=await observability(),receipt=telemetryReceipt();
+    expect(m.telemetryVerdict(receipt)).toEqual({...receipt,allUnaiPrefixed:true});
+    for(const key of Object.keys(receipt.installedByBundle))expect(()=>m.telemetryVerdict({...receipt,installedByBundle:{...receipt.installedByBundle,[key]:false}})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+    for(const key of ['nonUnaiScopes','nextScopes','httpTargetAttributes','invalidLines'])expect(()=>m.telemetryVerdict({...receipt,[key]:1})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+    for(const service of receipt.services){
+      expect(()=>m.telemetryVerdict({...receipt,services:receipt.services.filter(s=>s!==service)})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+      expect(()=>m.telemetryVerdict({...receipt,missingServices:[service]})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+    }
+    expect(()=>m.telemetryVerdict({...receipt,scopes:{}})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+    expect(()=>m.telemetryVerdict({...receipt,metricExportMs:60000})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+  });
+  it('restarts in readiness order and requires the shipped endpoint rather than installing a collector',async()=>{
+    const m=await observability();
+    let previous=-1;
+    for(const token of ['snapshot','systemctl restart unai-api','until_ok 120 ready 9101','systemctl restart unai-web','until_ok 120 signin','systemctl restart unai-worker','until_ok 120 ready 9102','401',' otlp ']){
+      const index=m.telemetryScript.indexOf(token,previous+1);expect(index).toBeGreaterThan(previous);previous=index;
+    }
+    expect(m.telemetryScript).toContain("grep -cx 'UNAI_OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318'");
+    expect(m.telemetryScript).toContain('UNAI_OTEL_METRIC_EXPORT_MS=5000');
+  });
+  it('never downloads, installs or rewrites the bundle collector from a rehearsal source',async()=>{
+    await observability();
+    const {readdirSync}=await import('node:fs');
+    const paths=['scripts/deploy-rehearsal.mjs','scripts/lib/rehearsal-record.mjs',...readdirSync('scripts/rehearsal').filter(p=>p.endsWith('.mjs')).map(p=>`scripts/rehearsal/${p}`)];
+    for(const path of paths){
+      const source=readFileSync(path,'utf8');
+      expect(source).not.toMatch(/(?:curl|wget)[^\n]*(?:otelcol|\.deb)/);
+      expect(source).not.toMatch(/\bdpkg\s+(?:-[^\n]*\s)?-i\b|apt(?:-get)?[^\n]*install[^\n]*otelcol/);
+      expect(source).not.toMatch(/(?:writeFile(?:Sync)?\s*\(|>\s*|tee\s+)['"]?\/etc\/otelcol-contrib/);
+    }
+  });
+});
+
+it('pins and verifies the browser before extraction without disabling certificate verification',async()=>{
+  const m=await observability() as Observability & {browserProvisionScript:string;CHROME_VERSION:string;CHROME_SHA256:string};
+  expect(m.CHROME_VERSION).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+  expect(m.CHROME_SHA256).toMatch(/^[a-f0-9]{64}$/);
+  const script=m.browserProvisionScript;
+  expect(script).toContain('curl -fsSL --proto =https --tlsv1.2');
+  expect(script.indexOf('sha256sum --check')).toBeLessThan(script.indexOf('unzip -q'));
+  expect(script).toContain('libnss3-tools');
+  expect(script).toContain("-t 'CP,,'");
+  expect(script).toContain('trap ');
+  expect(script).toContain('seam session >');
+  expect(script).toContain('chmod 0600');
+  expect(script).not.toMatch(/--ignore-certificate-errors|--ignore-certificate-errors-spki-list/);
+});
+
+const browserReceipt=()=>({chromeMajor:157,sha256Verified:true,certificateTrust:'nss',pages:Object.fromEntries(['signin','today','ask','talk'].map(name=>[name,
+  {status:200,cspEvents:0,cspConsole:0,scripts:4,nonced:4,allNonced:true,pathMatches:true,...(name==='talk'?{microphoneSelf:true,microphonePermission:'prompt'}:{})}])),detectorControl:{status:404,cspEvents:1,cspConsole:1}});
+it('refuses every failed browser fact and a dead detector, keeping controls separate',async()=>{
+  const m=await observability() as Observability & {browserVerdict(value:unknown):unknown};
+  const value=browserReceipt();
+  expect(typeof m.browserVerdict).toBe('function');expect(m.browserVerdict(value)).toEqual(value);
+  for(const name of ['signin','today','ask','talk'])for(const [key,bad] of [['status',302],['cspEvents',1],['cspConsole',1],['allNonced',false],['pathMatches',false],['scripts',0],['nonced',3]] as const){
+    expect(()=>m.browserVerdict({...value,pages:{...value.pages,[name]:{...value.pages[name],[key]:bad}}})).toThrow('REHEARSAL_BROWSER_INVALID');
+  }
+  for(const bad of [{microphoneSelf:false},{microphonePermission:'unknown'}])expect(()=>m.browserVerdict({...value,pages:{...value.pages,talk:{...value.pages.talk,...bad}}})).toThrow('REHEARSAL_BROWSER_INVALID');
+  expect(()=>m.browserVerdict({...value,detectorControl:{status:404,cspEvents:0,cspConsole:0}})).toThrow('REHEARSAL_BROWSER_INVALID');
+  expect(()=>m.browserVerdict({...value,sha256Verified:false})).toThrow('REHEARSAL_BROWSER_INVALID');
+  const r=record();r.phases=[{...phase('browser'),assertions:value}];expect(lib.validateRecord(r)).toEqual([]);
+});
+
+it('never treats an empty OTLP batch as a fresh service receipt',async()=>{
+  const m=await observation();
+  const value={resourceSpans:[{resource:{attributes:[attr('service.name','unai-web')]},scopeSpans:[{scope:{name:'unai.web'},spans:[]}]}]};
+  const result=m.summarizeOtlp([JSON.stringify(value)]);
+  expect(result.services).toEqual([]);expect(result.invalidLines).toBe(1);
+});
+it('rejects vacuous metric receipts and missing detector counters',async()=>{
+  const m=await observability() as Observability & {browserVerdict(value:unknown):unknown};
+  for(const scopes of [{unai_api:{spans:0,points:0}},{unai_api:{spans:1,points:0}},{next_js:{spans:1,points:1}}]){
+    expect(()=>m.telemetryVerdict({...telemetryReceipt(),scopes})).toThrow('REHEARSAL_TELEMETRY_INVALID');
+  }
+  for(const control of [{status:404,cspEvents:1},{status:404,cspEvents:-1,cspConsole:3},{status:404,cspEvents:NaN,cspConsole:1}]){
+    expect(()=>m.browserVerdict({...browserReceipt(),detectorControl:control})).toThrow('REHEARSAL_BROWSER_INVALID');
+  }
+});
+
+it('does not accept a missing checksum command just because extraction has a later index',async()=>{
+  const m=await observability() as Observability & {browserProvisionScript:string};
+  expect(m.browserProvisionScript.indexOf('sha256sum --check --status')).toBeGreaterThan(0);
+});
+it('counts target attributes at every OTLP container and metric point kind',async()=>{
+  const m=await observation();
+  const attributes=[attr('http.target','PRIVATE')];
+  const lines=[{resourceSpans:[{resource:{attributes:[attr('service.name','unai-api'),...attributes]},scopeSpans:[{scope:{name:'unai.api',attributes},spans:[{attributes,events:[{attributes}],links:[{attributes}]}]}]}]},
+    {resourceMetrics:[{resource:{attributes:[attr('service.name','unai-worker'),...attributes]},scopeMetrics:[{scope:{name:'unai.jobs',attributes},metrics:
+      ['gauge','sum','histogram','exponentialHistogram','summary'].map(type=>({[type]:{dataPoints:[{attributes}]}}))}]}]}];
+  expect(m.summarizeOtlp(lines.map(x=>JSON.stringify(x)))).toEqual({services:['unai-api','unai-worker'],
+    scopes:{unai_api:{spans:1,points:0},unai_jobs:{spans:0,points:5}},nonUnaiScopes:0,nextScopes:0,httpTargetAttributes:12,invalidLines:0});
+});
+
+it.skipIf(process.platform!=='linux')('reaps a signal-exited browser and removes its profile on refusal',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'unai-browser-exit-'));
+  try{
+    const binary=join(dir,'chrome');writeFileSync(binary,'#!/bin/sh\nkill -KILL $$\n',{mode:0o700});
+    const run=spawnSync(process.execPath,['scripts/rehearsal/observe.mjs','browser',binary,dir,join(dir,'token'),'https://rehearsal.invalid'],{encoding:'utf8',timeout:4000});
+    expect(run.status).toBe(1);expect(run.stdout).toBe('');expect(run.stderr).toBe('REHEARSAL_BROWSER_START_FAILED\n');
+    expect(existsSync(join(dir,'token'))).toBe(false);
+    const listing=spawnSync('find',[dir,'-mindepth','1','-type','d'],{encoding:'utf8'});expect(listing.stdout).toBe('');
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+it('returns stable observation failure codes without raw provider errors',()=>{
+  const run=spawnSync(process.execPath,['scripts/rehearsal/observe.mjs','unknown'],{encoding:'utf8'});
+  expect(run.status).toBe(1);expect(run.stdout).toBe('');expect(run.stderr).toBe('REHEARSAL_OBSERVATION_ARGUMENTS_INVALID\n');
+});
+
+it('redacts inherited diagnostic URL literals, owner ids, cookies and nonces without changing phase facts',()=>{
+  const sanitize=(untyped as Library & {publicRecord(value:unknown):unknown}).publicRecord;
+  expect(typeof sanitize).toBe('function');
+  const r=record(),id='12345678-1234-4321-8123-123456789012';
+  r.phases=[{...phase('telemetry'),assertions:telemetryReceipt(),commands:[{...command(),tail:`https://uai.rehearsal.invalid/today ${id} __Host-unai.session=SENTINEL 'nonce-SENTINEL1234567890'`}]}];
+  r.unverified=[{layer:'certificate',reason:'uai.rehearsal.invalid https://\\('}];
+  const result=sanitize(r) as Record<string,unknown>,text=JSON.stringify(result);
+  for(const token of ['https://','uai.rehearsal.invalid',id,'SENTINEL'])expect(text).not.toContain(token);
+  expect(result.sourceCommit).toBe(r.sourceCommit);
+  expect((result.phases as Array<{assertions:unknown}>)[0]?.assertions).toEqual(telemetryReceipt());
+  expect(lib.validateRecord(result)).toEqual([]);
+  expect(JSON.stringify(r)).toContain('SENTINEL');
+});
+
+it('reads the collector version from the actual readonly bundle declaration',async()=>{
+  const m=await observation() as Observation & {collectorVersion(source:string):string|null};
+  expect(typeof m.collectorVersion).toBe('function');
+  expect(m.collectorVersion(readFileSync('deploy/install.sh','utf8'))).toBe('0.164.0');
+  expect(m.collectorVersion('readonly OTELCOL_VERSION=wrong')).toBeNull();
 });

@@ -1,7 +1,7 @@
 // Pure record contract. Rehearsal extensions append implementations, not phase names.
 export const PHASES=Object.freeze(('host install-dry-run install tls postgres object-store secrets migrate publish owner preflights '+
   'services probes smoke failed-start sync backup restore-drill upgrade-dry-run upgrade-rollback upgrade telemetry browser').split(' '));
-export const IMPLEMENTED=Object.freeze(PHASES.slice(0,21));
+export const IMPLEMENTED=PHASES;
 const invalid=code=>{throw new Error(`REHEARSAL_${code}`);};
 
 export function requirePreflight(name,text){
@@ -37,7 +37,7 @@ export function parseArguments(argv){
   if(parsed.help||parsed.verifyRecord)return parsed;
   if(parsed.until&&!PHASES.includes(parsed.until))invalid('PHASE_UNKNOWN');
   if(parsed.until&&!IMPLEMENTED.includes(parsed.until))invalid('PHASE_UNIMPLEMENTED');
-  return {until:'preflights',keep:false,...parsed};
+  return {until:PHASES.at(-1),keep:false,...parsed};
 }
 
 export function scrub(text,{forbidden=[]}={}){
@@ -60,6 +60,19 @@ export function scrub(text,{forbidden=[]}={}){
 }
 
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+// Keep the phase/schema facts intact while removing even synthetic identifying
+// literals from inherited diagnostic strings at the final publication boundary.
+export function publicRecord(value){
+  if(typeof value==='string')return value
+    .replace(/(?:https?|wss?):\/\/[^\s"'`<>\\)]*/gi,'[REDACTED]')
+    .replace(/uai\.rehearsal\.invalid/g,'[REDACTED]')
+    .replace(/\b[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\b/gi,'[REDACTED]')
+    .replace(/__Host-unai\.session=[^\s;"']+/g,'[REDACTED]')
+    .replace(/'nonce-[A-Za-z0-9+/_=-]+'/g,"'nonce-[REDACTED]'");
+  if(Array.isArray(value))return value.map(publicRecord);
+  if(object(value))return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,publicRecord(item)]));
+  return value;
+}
 const string=value=>typeof value==='string'&&value.trim().length>0;
 const integer=value=>Number.isSafeInteger(value);
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -72,7 +85,7 @@ const exit=value=>value===null||(integer(value)&&value>=0&&value<=255);
 // Phase assertions hold numbers, booleans and status words only. Every word needs a
 // letter outside a-f, so no id, token, hostname, path or hex value fits.
 const WORD=/^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*(?::[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)?|[a-z]+(?:[_-][a-z]+)*)$/;
-const KEY=/^[a-z][A-Za-z]*(?:_[a-z]+)*$/;
+const KEY=/^(?:[a-z][A-Za-z]*(?:_[a-z]+)*|sha256Verified)$/;
 const word=value=>value.length<=96&&/[g-zG-Z]/.test(value);
 function assertion(value,depth){
   if(value===null||typeof value==='boolean')return true;
