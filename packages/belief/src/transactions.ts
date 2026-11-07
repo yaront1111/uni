@@ -1,10 +1,11 @@
 import {traceStage} from '@unai/observability';
 import {
-  proposeBeliefTransactionSchema, validationReportSchema, commitReceiptSchema, admissionModeSchema,
+  proposeBeliefTransactionSchema, validationReportSchema, commitReceiptSchema, admissionModeSchema, transitionContractSetSchema,
   type AdmissionMode, type BeliefOperation, type CommitReceipt, type ObjectRef, type PolicyVerdict,
-  type ProposeBeliefTransaction, type ValidationReport,
+  type ProposeBeliefTransaction, type ValidationReport, type TransitionContract,
 } from '@unai/domain';
-import { createBeliefSlot, createProposition, indexClaimEmbeddings, recordClaim, recordFrameInstanceRole } from '@unai/memory';
+import { createBeliefSlot, createProposition, indexClaimEmbeddings, recordClaim, recordFrameInstanceRole,
+  MemoryStoreError, validateTransition, recordResolutionAssertion } from '@unai/memory';
 import { contestDeltasConflictingWithClaims } from './delta-conflicts.js';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { admittedAssessmentStatus, selectAdmissionMode, type AdmissionCandidate } from './admission.js';
@@ -186,6 +187,7 @@ function operationReferences(operation: BeliefOperation): ObjectRef[] {
     case 'SUPPRESS': case 'ARCHIVE': case 'DELETE': return [operation.target];
     case 'MERGE': return [operation.target, operation.survivor];
     case 'SPLIT': return [operation.target];
+    case 'RESOLVE': return [operation.sourceFrameInstance, ...(operation.targetFrameInstance ? [operation.targetFrameInstance] : []), operation.claim];
     case 'CREATE_FRAME_INSTANCE': return [];
   }
 }
@@ -240,6 +242,27 @@ async function resolvePropositionContracts(
 async function contractPresent(tx: BeliefTransactionStore, releaseId: string, contractId: string, kind: 'FRAME' | 'PREDICATE'): Promise<boolean> {
   const row = (await tx.query('SELECT unai_private.registry_contract_present($1,$2,$3) AS present', [releaseId, contractId, kind])).rows[0];
   return row?.['present'] === true;
+}
+
+async function readTransitionContracts(tx: BeliefTransactionStore, releaseId: string): Promise<TransitionContract[]> {
+  const row = (await tx.query('SELECT unai_private.registry_release_transition_contracts($1) AS contracts', [releaseId])).rows[0];
+  return transitionContractSetSchema.parse(row?.['contracts'] ?? []);
+}
+
+async function resolutionFrameType(
+  tx: BeliefTransactionStore, ownerScopeId: string, operations: readonly BeliefOperation[], ref: ObjectRef,
+  end: 'SOURCE' | 'TARGET', lock = false,
+): Promise<{ frameTypeId: string } | { refusal: string }> {
+  if (isPendingRef(ref)) {
+    const pending = operations.find(op => op.kind === 'CREATE_FRAME_INSTANCE' && op.operationRef === ref);
+    return pending?.kind === 'CREATE_FRAME_INSTANCE' ? { frameTypeId: pending.frameTypeId }
+      : { refusal: `RESOLUTION_${end}_FRAME_NOT_FOUND` };
+  }
+  const row = (await tx.query('SELECT frame_type_id,lifecycle FROM frame_instances WHERE owner_scope_id=$1 AND id=$2' +
+    (lock ? ' FOR SHARE' : ''), [ownerScopeId, ref])).rows[0];
+  if (!row) return { refusal: `RESOLUTION_${end}_FRAME_NOT_FOUND` };
+  if (row['lifecycle'] !== 'ACTIVE') return { refusal: `RESOLUTION_${end}_FRAME_NOT_ACTIVE` };
+  return { frameTypeId: row['frame_type_id'] as string };
 }
 
 /** The contracts one proposition, slot or instance reference sits under that the
@@ -301,7 +324,8 @@ async function unregisteredTouches(
       case 'SUPPRESS': case 'ARCHIVE': case 'DELETE':
         if (operation.targetObjectType === 'proposition') { propositionRef = operation.target; contracts = await ofProposition(operation.target); }
         break;
-      case 'QUALIFY': case 'MERGE': case 'SPLIT': break;
+      // RESOLVE touches no slot or proposition; its pinned transition is checked below.
+      case 'QUALIFY': case 'MERGE': case 'SPLIT': case 'RESOLVE': break;
     }
     if (contracts.length > 0) touches.set(order, { propositionRef, contracts: [...new Set(contracts)].sort() });
   }
@@ -422,6 +446,24 @@ async function anchoredInAssistantEvidence(
   return row?.['actor_type'] === 'ASSISTANT';
 }
 
+async function resolutionClaimOrigin(
+  tx: BeliefTransactionStore, ownerScopeId: string, earlier: readonly BeliefOperation[], ref: ObjectRef,
+  assistantClaimRefs: ReadonlySet<string>,
+): Promise<string | undefined> {
+  // The assistant check answers false for invisible evidence. As for support,
+  // first require readable provenance, or an invisible assistant can pose as an owner.
+  if (isPendingRef(ref)) {
+    const pending = earlier.find(op => op.kind === 'ADD_CLAIM' && op.operationRef === ref);
+    if (pending?.kind !== 'ADD_CLAIM') return undefined;
+    await originForAnchor(tx, ownerScopeId, pending.sourceAnchorId, pending.assertedByEntityId ?? null);
+    return assistantClaimRefs.has(ref) ? ASSISTANT_EVIDENCE_ORIGIN : pending.claimOrigin;
+  }
+  const origin = (await tx.query('SELECT claim_origin FROM claims WHERE owner_scope_id=$1 AND id=$2', [ownerScopeId, ref])).rows[0]?.['claim_origin'];
+  if (typeof origin !== 'string') return undefined;
+  await originForClaim(tx, ownerScopeId, ref);
+  return await anchoredInAssistantEvidence(tx, ownerScopeId, { claimId: ref }) ? ASSISTANT_EVIDENCE_ORIGIN : origin;
+}
+
 /** The independence groups a proposition already rests on. A derivation is as
  * independent as its own support and never more (PRD §15.4). */
 async function storedGroups(tx: BeliefTransactionStore, ownerScopeId: string, propositionId: string): Promise<string[]> {
@@ -536,6 +578,43 @@ async function buildValidationReport(
     const existing = groupsByProposition.get(key);
     if (existing) existing.push(group); else groupsByProposition.set(key, [group]);
   }
+  // 3b. Outcomes (PRD §16.2-§16.4, §34.5 rule 5).
+  const resolutionRefusals: string[] = [];
+  let modelAuthoredOutcome = false;
+  const transitionContracts = operations.some(op => op.kind === 'RESOLVE')
+    ? await readTransitionContracts(tx, transaction.registryReleaseId) : [];
+  for (const [order, operation] of operations.entries()) {
+    if (operation.kind !== 'RESOLVE') continue;
+    const earlier = operations.slice(0, order);
+    const source = await resolutionFrameType(tx, request.ownerScopeId, earlier, operation.sourceFrameInstance, 'SOURCE');
+    const target = operation.targetFrameInstance
+      ? await resolutionFrameType(tx, request.ownerScopeId, earlier, operation.targetFrameInstance, 'TARGET') : null;
+    if ('refusal' in source) resolutionRefusals.push(source.refusal);
+    if (target && 'refusal' in target) resolutionRefusals.push(target.refusal);
+    if (operation.targetFrameInstance === operation.sourceFrameInstance) resolutionRefusals.push('RESOLUTION_TARGET_IS_SOURCE');
+    let origin: string | undefined;
+    try {
+      origin = await resolutionClaimOrigin(tx, request.ownerScopeId, earlier, operation.claim, assistantClaimRefs);
+      if (!origin) resolutionRefusals.push('RESOLUTION_CLAIM_NOT_FOUND');
+      else if (!isPendingRef(operation.claim)) claimOrigins.push(origin);
+    } catch (error) {
+      if (!(error instanceof BeliefTransactionError) || error.message !== 'BELIEF_SUPPORT_ORIGIN_UNREADABLE') throw error;
+      resolutionRefusals.push('RESOLUTION_CLAIM_EVIDENCE_UNREADABLE');
+    }
+    if (origin && MODEL_ORIGINS.has(origin)) modelAuthoredOutcome = true;
+    if (!(await tx.query('SELECT 1 FROM entities WHERE owner_scope_id=$1 AND id=$2',
+      [request.ownerScopeId, operation.assertedByEntityId])).rows[0]) resolutionRefusals.push('RESOLUTION_ASSERTER_NOT_FOUND');
+    if ('frameTypeId' in source && (!target || 'frameTypeId' in target)) {
+      try {
+        validateTransition({ transitionContractId: operation.transitionContractId, transitionContracts, linkKind: 'RESOLVES',
+          sourceFrameTypeId: source.frameTypeId, targetFrameTypeId: target?.frameTypeId ?? null, outcomeCode: operation.outcomeCode });
+      } catch (error) {
+        if (!(error instanceof MemoryStoreError)) throw error;
+        resolutionRefusals.push(error.message);
+      }
+    }
+  }
+  warnings.push(...resolutionRefusals);
   // Support already stored for a proposition this transaction touches counts too.
   for (const key of [...groupsByProposition.keys()]) {
     if (!isPendingRef(key)) groupsByProposition.set(key, [...groupsByProposition.get(key)!, ...await storedGroups(tx, request.ownerScopeId, key)]);
@@ -551,7 +630,8 @@ async function buildValidationReport(
   const modelOrConnectorAuthored = claimOrigins.length > 0 && claimOrigins.every(origin => MODEL_ORIGINS.has(origin));
   const candidate: AdmissionCandidate = {
     memoryWorthiness: 'SEMANTIC', predicateRegistered, identityResolved,
-    sourceAuthoritative: !modelOrConnectorAuthored, materialConflict,
+    // ponytail: connector/document/third-party authority stays transaction-level until task-3558ae04.
+    sourceAuthoritative: !modelOrConnectorAuthored && !modelAuthoredOutcome, materialConflict,
     errorConsequence: transaction.risk, reversible: true, audited: true, blocksCurrentAnswer: false,
   };
   const admission = selectAdmissionMode(candidate);
@@ -563,7 +643,8 @@ async function buildValidationReport(
     sensitivity: request.maximumSensitivity, evidenceRefs: transaction.sourceEvidenceIds, risk: transaction.risk,
     proposedChanges: {
       transactionKind: transaction.transactionKind, operationKinds: operations.map(op => op.kind),
-      setsAcceptedAssessment: accepted.length > 0, modelOrConnectorAuthored, identityResolved,
+      setsAcceptedAssessment: accepted.length > 0 || (admission.mode === 'AUTO_ACCEPT' && operations.some(op => op.kind === 'RESOLVE')),
+      modelOrConnectorAuthored, identityResolved,
     },
   };
   const policy = await ports.evaluateMemoryWrite(policyRequest);
@@ -571,7 +652,7 @@ async function buildValidationReport(
   const admitted = admittedAssessmentStatus(admission.mode);
   if (assistantSupport) warnings.push('ASSISTANT_EVIDENCE_IS_NOT_SUPPORT');
   const decision: ValidationReport['decision'] =
-    unregistered.length > 0 || unregisteredUses.length > 0 || warnings.includes('CONTRACT_UNRESOLVABLE') ? 'REJECTED'
+    unregistered.length > 0 || unregisteredUses.length > 0 || resolutionRefusals.length > 0 || warnings.includes('CONTRACT_UNRESOLVABLE') ? 'REJECTED'
       : assistantSupport ? 'REJECTED'
       : circularSupport.length > 0 ? 'REJECTED'
         : policy.outcome === 'DENY' ? 'REJECTED'
@@ -625,6 +706,8 @@ interface CommitContext {
   tx: BeliefTransactionStore;
   request: GovernorRequest;
   transaction: StoredTransaction;
+  admissionMode: AdmissionMode;
+  transitionContracts: readonly TransitionContract[] | null;
   refs: Map<string, string>;
   createdObjects: { operationOrder: number; objectType: string; objectId: string }[];
   assessments: StoredAssessment[];
@@ -731,6 +814,34 @@ async function applyOperation(context: CommitContext, order: number, operation: 
         [id, owner, propositionId, claimId, supportingPropositionId, operation.supportKind, group, context.transaction.id]);
       context.touchedPropositions.add(propositionId);
       return record('belief_support', id);
+    }
+    case 'RESOLVE': {
+      const sourceFrameInstanceId = resolveRef(context, operation.sourceFrameInstance);
+      const targetFrameInstanceId = operation.targetFrameInstance ? resolveRef(context, operation.targetFrameInstance) : null;
+      // Hold lifecycle stable through insertion, not merely at the earlier validation read.
+      const source = await resolutionFrameType(context.tx, owner, [], sourceFrameInstanceId, 'SOURCE', true);
+      const target = targetFrameInstanceId ? await resolutionFrameType(context.tx, owner, [], targetFrameInstanceId, 'TARGET', true) : null;
+      if ('refusal' in source) throw new BeliefTransactionError(source.refusal, { operationKind: 'RESOLVE' });
+      if (target && 'refusal' in target) throw new BeliefTransactionError(target.refusal, { operationKind: 'RESOLVE' });
+      context.transitionContracts ??= await readTransitionContracts(context.tx, context.transaction.registryReleaseId);
+      const lifecycle = context.admissionMode === 'AUTO_ACCEPT' ? 'ACCEPTED' : 'PROPOSED';
+      try {
+        const result = await recordResolutionAssertion(context.tx, {
+          ownerScopeId: owner, sourceFrameInstanceId, sourceFrameTypeId: source.frameTypeId,
+          targetFrameInstanceId, targetFrameTypeId: target?.frameTypeId ?? null,
+          claimId: resolveRef(context, operation.claim), outcomeCode: operation.outcomeCode,
+          effectiveAt: new Date(operation.effectiveAt), assertedByEntityId: operation.assertedByEntityId,
+          transitionContractId: operation.transitionContractId, lifecycle, creationTransactionId: context.transaction.id,
+          transitionContracts: context.transitionContracts,
+        });
+        record('resolution_assertions', result.resolutionAssertionId);
+        record('memory_links', result.resolutionLinkId);
+        return { objectType: 'resolution_assertions', objectId: result.resolutionAssertionId,
+          resolutionLinkId: result.resolutionLinkId, lifecycle };
+      } catch (error) {
+        if (error instanceof MemoryStoreError) throw new BeliefTransactionError(error.message, { operationKind: 'RESOLVE' });
+        throw error;
+      }
     }
     case 'SET_BELIEF_ASSESSMENT': {
       const propositionId = resolveRef(context, operation.proposition);
@@ -901,6 +1012,7 @@ async function commitBeliefTransactionImpl(
 
     const context: CommitContext = {
       tx, request, transaction, refs: new Map(), createdObjects: [], assessments: [], touchedPropositions: new Set(),
+      admissionMode: settled.report.admissionMode, transitionContracts: null,
     };
     for (const stored of await readOperations(tx, request.ownerScopeId, input.transactionId)) {
       const result = await applyOperation(context, stored.order, stored.payload as unknown as BeliefOperation);

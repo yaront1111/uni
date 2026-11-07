@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { outcomeCodeSchema } from './outcomes.js';
 
 /** The write governor's vocabularies and record shapes (PRD §19, §29.3, §33.7, §33.9).
  *
@@ -44,7 +45,7 @@ export type AssessmentStatus = z.infer<typeof assessmentStatusSchema>;
 export const supportKindSchema = z.enum(['DIRECT_ASSERTION','CORROBORATION','DERIVATION','QUOTED_RESTATEMENT','MODEL_SUMMARY','STRUCTURED_OBSERVATION','USER_CONFIRMATION']);
 export const independenceGroupSchema = z.string().regex(/^[a-z0-9][a-z0-9_.:-]{0,127}$/);
 
-export const beliefOperationKindSchema = z.enum(['CREATE_FRAME_INSTANCE','CREATE_SLOT','CREATE_PROPOSITION','ADD_CLAIM','ADD_SUPPORT','SET_BELIEF_ASSESSMENT','DERIVE','QUALIFY','MERGE','SPLIT','SUPPRESS','ARCHIVE','DELETE']);
+export const beliefOperationKindSchema = z.enum(['CREATE_FRAME_INSTANCE','CREATE_SLOT','CREATE_PROPOSITION','ADD_CLAIM','ADD_SUPPORT','SET_BELIEF_ASSESSMENT','DERIVE','QUALIFY','MERGE','SPLIT','SUPPRESS','ARCHIVE','DELETE','RESOLVE']);
 
 const roleFill = z.strictObject({
   roleId: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
@@ -107,6 +108,11 @@ export const beliefOperationSchema = z.discriminatedUnion('kind', [
     claimAssignments: z.array(z.strictObject({ claimId: z.uuid(), partition: partitionKey })).max(256).optional(),
     aliasAssignments: z.array(z.strictObject({ aliasId: z.uuid(), partition: partitionKey })).max(256).optional(),
     reason: z.string().trim().min(1).max(2048).optional() }),
+  // PRD §16.2-§16.4 and §18.7: an outcome is a separate record.
+  // claim names an earlier ADD_CLAIM (#ref; CANDIDATE without a proposition) or an existing claim id.
+  z.strictObject({ kind: z.literal('RESOLVE'), sourceFrameInstance: objectRefSchema,
+    targetFrameInstance: objectRefSchema.optional(), claim: objectRefSchema, outcomeCode: outcomeCodeSchema,
+    transitionContractId: registryId, assertedByEntityId: z.uuid(), effectiveAt: z.iso.datetime() }),
 ]);
 export type BeliefOperation = z.infer<typeof beliefOperationSchema>;
 

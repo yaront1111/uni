@@ -350,6 +350,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
   // Migration 0045 drops nothing here: authorized_owner_id() is CREATE OR REPLACE and re-applies over itself,
   // because the pre-0016 tables keep policies that call it; its rewrite then finds only the policies this
   // replay recreated in the old has_owner_access shape (ADR 0046).
+  // Migration 0047 also re-applies over itself: its CHECK and reader replace themselves.
   await admin!.query('DELETE FROM unai_migrations.applied WHERE name>=$1', ['0016_typed_projections.sql']);
   const applied = await runMigrations(admin!, resolve('migrations'));
   expect(applied).toEqual(['0016_typed_projections.sql', '0017_context_broker_and_memory_threads.sql',
@@ -362,7 +363,7 @@ it('CRT-PRJ-02-B: dropping the projection tables and running the projection repl
     '0035_shared_attention_counts.sql', '0036_conversations.sql', '0037_conversation_answer_provenance.sql', '0038_owner_voice_settings.sql',
     '0039_conversation_presented_answer.sql', '0040_omi_source_type.sql', '0041_probe_release_reader.sql',
     '0042_document_upload_grant_read.sql', '0043_auth_revoke_session_no_key_update.sql', '0044_auth_session_lock_order.sql',
-    '0045_owner_access_once_per_statement.sql', '0046_decision_and_mentor_erasure.sql']);
+    '0045_owner_access_once_per_statement.sql', '0046_decision_and_mentor_erasure.sql', '0047_governed_resolve_operation.sql']);
   expect((await admin!.query('SELECT count(*)::int n FROM obligations_projection')).rows[0].n).toBe(0);
 
   // The projection replay tool -- the same function `uai registry
