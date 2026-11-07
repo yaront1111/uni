@@ -24,3 +24,4 @@ export { planExtraction, uploadDocument, searchDocuments,
   type ExtractionPlan, type ExtractionTriggers, type ExtractionEnqueue, type DocumentUploadOptions }
   from './documents.js';
 export { buildPluginContextBundle, type PluginBundleRequest } from './bundle.js';
+export { connectorCredentialHandle, isConnectorCredentialHandle } from './credentials.js';

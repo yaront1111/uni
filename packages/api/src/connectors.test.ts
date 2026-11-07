@@ -12,6 +12,8 @@ import { requireCapability, listGrants } from '@unai/connectors';
 import { createConnectorRuntime } from './connectors.js';
 import { hasSyncClient, type ConnectorRouteOptions } from './connectors.js';
 import { connectorTypeSchema } from '@unai/domain';
+import { connectorCredentialHandle, isConnectorCredentialHandle } from '@unai/connectors';
+import { credentialHandleVectors } from '../../connectors/src/testing/credential-handles.js';
 
 /**
  * The required V0 connectors, their capability grants and their lifecycle, over
@@ -978,4 +980,54 @@ it('the production runtime declares exactly the connector types createConnectorC
   });
   expect(connectorTypeSchema.options.filter(hasSyncClient)).toEqual(polled);
   expect([...polled].sort()).toEqual(['GITHUB', 'GMAIL', 'GOOGLE_CALENDAR', 'OMI']);
+});
+
+it('ADR 0013 namespace: POST /v1/connectors stores an owner-namespaced handle and a flat legacy one; the secret_ref CHECK still refuses malformed names', async () => {
+  // A handle outside the owner namespace. Still stored here; slice 5/6 (task-097d9f22)
+  // turns this 201 into 403 CONNECTOR_SECRET_REF_OUT_OF_SCOPE.
+  const LEGACY_HANDLE = 'secret://mounted/gmail#refresh';
+  const h = await harness();
+  try {
+    const handle = connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' });
+    expect(handle).toBe(`secret://mounted/connectors/${h.ownerScopeId}/gmail#refresh`);
+    const requestedCapabilities = [{ capabilityId: 'gmail.read_metadata', granted: true }];
+    const namespaced = await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'namespaced@example.test', secretRef: handle, requestedCapabilities,
+    });
+    expect(namespaced.statusCode).toBe(201);
+    expect(namespaced.json().status).toBe('ACTIVE');
+    expect(namespaced.body).not.toContain('secret://');
+    const legacy = await connect(h, {
+      connectorType: 'GMAIL', externalAccountRef: 'legacy@example.test', secretRef: LEGACY_HANDLE, requestedCapabilities,
+    });
+    expect(legacy.statusCode).toBe(201);
+    expect(legacy.body).not.toContain('secret://');
+    const namespacedId = namespaced.json().connectorId as string;
+    const stored = (await admin.query('SELECT id,secret_ref FROM connectors WHERE owner_scope_id=$1', [h.ownerScopeId])).rows;
+    expect(Object.fromEntries(stored.map(row => [row.id, row.secret_ref])))
+      .toEqual({ [namespacedId]: handle, [legacy.json().connectorId]: LEGACY_HANDLE });
+    expect(isConnectorCredentialHandle(stored.find(row => row.id === namespacedId)?.secret_ref, h.ownerScopeId)).toBe(true);
+
+    // The CHECK alone: replica mode skips every trigger on connectors, never a CHECK.
+    const vectors = credentialHandleVectors(h.ownerScopeId, randomUUID());
+    expect(vectors.filter(vector => !vector.storable).map(vector => vector.title)).toEqual(expect.arrayContaining(
+      ['empty segment', 'dot segment', "dot-dot segment into another owner's namespace"]));
+    const client = await admin.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL session_replication_role = replica');
+      for (const vector of vectors) {
+        await client.query('SAVEPOINT v');
+        const update = client.query('UPDATE connectors SET secret_ref=$1 WHERE id=$2', [vector.handle, namespacedId]);
+        if (vector.storable) expect((await update).rowCount, vector.title).toBe(1);
+        else await expect(update, vector.title).rejects.toMatchObject({ code: '23514', constraint: 'connectors_secret_ref_check' });
+        await client.query('ROLLBACK TO SAVEPOINT v');
+      }
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  } finally {
+    await h.close();
+  }
 });

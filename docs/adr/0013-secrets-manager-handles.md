@@ -53,4 +53,81 @@ lifecycle. The design places `secret_ref` on the `connectors` entity. That node
 can resolve a `secret_ref` through this same manager, and nothing here presumes
 its design. The check that no secret reaches a log or a prompt, CRT-SEC-05-A, is
 likewise another node's: the sealed plan binds it to
-`accessibility-audit-trail-and-security-test-suite`.
+`accessibility-audit-trail-and-security-test-suite`. Which handles a connector
+may name is settled by the amendment below.
+
+## Amendment 2026-11-07: the connector-credential namespace (task-745f1c219aa54d7393f626702266082f)
+
+**Threat.** PRD section 31 lists "unauthorized connector token use", and
+section 30.5 requires connector credentials to sit in a secrets manager. Until
+this amendment a connector's `secret_ref` could name any handle at all. A sync
+or a token revocation would then resolve, and send to Google, GitHub or Omi, a
+runtime credential such as `secret://mounted/api-database-url` or another
+owner's connector token.
+
+**Namespace rule and handle shape.** A connector credential handle is
+`secret://<provider>/connectors/<ownerScopeId>/<label>[#<field>]`.
+
+- `<ownerScopeId>` is the owner scope's UUID in lowercase canonical form,
+  exactly as PostgreSQL prints a `uuid`. The handle's segment is compared
+  exactly and never case-folded: the mounted provider is case-sensitive on
+  Linux, the database can compare against
+  `'connectors/' || owner_scope_id::text || '/'`, and a cache key cannot fork
+  on case.
+- `<label>` is one or more name segments under the `@unai/secrets` grammar.
+  Any provider and an optional `#<field>` are allowed.
+- The rule is code in `@unai/connectors`, not in `@unai/secrets`:
+  `packages/connectors/src/credentials.ts` exports `connectorCredentialHandle`,
+  which builds a handle, and `isConnectorCredentialHandle`, which decides
+  membership. `@unai/secrets` owns only the handle grammar and must not own
+  connector credentials (`packages/secrets/CLAUDE.md`).
+
+**Mount layout.** The file is `<mount>/connectors/<ownerScopeId>/<label>` in
+both the api and the worker mount, under ADR 0043 D6's rules: one mount per
+process, directories root:unai-<process> 0750, files 0640. This supersedes
+D6's `secret://mounted/connectors/<name>` row for connector tokens. Slice 4/6
+moves the runbook and the deploy rehearsal; the epic's final docs sweep
+updates the D6 table.
+
+**Runtime credentials never live under `connectors/`.** Every D6 runtime handle
+sits outside it: the database URLs, the sign-in secrets, the Google connector
+OAuth client `google-connector-client` and the model key. The namespace and
+the runtime handles are therefore disjoint, and a prefix decides membership.
+
+**What the database admits now.** Migration 0048 replaces the
+`connectors.secret_ref` CHECK, keeping its name `connectors_secret_ref_check`.
+The new check accepts every value the 0018 check accepted, plus every handle
+`@unai/secrets` parses (`/`-separated names of up to 256 characters, a field of
+up to 64). It still refuses an empty, `.` or `..` segment, a leading or
+trailing `/`, and whitespace. It binds no owner: that is layer 2 below.
+
+**Four enforcement layers, added by later slices.** Each refusal carries only
+its code, never the handle, the owner scope or database text.
+
+1. Create-time refusal. `createConnector`, and so `POST /v1/connectors`,
+   refuses a non-null `secretRef` outside the caller's namespace with
+   `CONNECTOR_SECRET_REF_OUT_OF_SCOPE` (403) before any query. The refusal is
+   audited like the other connector refusals.
+2. A database trigger `BEFORE INSERT OR UPDATE OF secret_ref` on `connectors`.
+   It refuses a new non-null value outside `connectors/<owner_scope_id>/`, and
+   its SQL agrees with `isConnectorCredentialHandle` over one shared vector
+   list. It is a trigger and not a CHECK, so unrelated updates of a legacy row
+   (status, cursor, `last_sync_error`) keep working.
+3. A connector-only resolver bound to the caller's owner scope. Every provider
+   client (Gmail, Calendar, GitHub, Omi) and the token revoker use it, and it
+   refuses an out-of-namespace handle before any secret is read.
+4. The Google access-token cache is keyed by owner scope plus handle, so an
+   access token minted for one owner's handle never serves another.
+
+**Why the handle is not bound to the connector id.** The credential is
+provisioned (`pnpm connect:google`, `pnpm secret:put`) before the connector row
+and its id exist. The owner scope is already known at provisioning, and it is
+the isolation boundary every row policy enforces. Within one owner, which
+connector uses which of the owner's credentials is the owner's own consent
+decision under `connector.manage`.
+
+**Legacy rule.** A stored handle outside the namespace is never resolved. A
+sync refuses it with `CONNECTOR_SECRET_REF_OUT_OF_SCOPE`. A disconnect
+completes without resolving or sending it and reports
+`CONNECTOR_REVOCATION_MANUAL_REQUIRED`, so the operator revokes that token at
+the provider by hand. No migration rewrites stored handles.
