@@ -1,5 +1,6 @@
 import {expect,it} from 'vitest';
 import * as domain from './index.js';
+import {DEFECT_RECORD_FUTURE_SKEW_MS,DEFECT_RECORD_MAX_AGE_MS} from './operations.js';
 
 const ids=['backup','restore','deletion','registry-migration','projection-rebuild','connector-revocation'];
 const HEAD='a'.repeat(40),C='c'.repeat(40),D='d'.repeat(40);
@@ -25,7 +26,7 @@ function ready(){return {
   adr:{inventoryReviewedAt:'2026-09-19T14:00:00.000Z',initialPaths:['docs/adr/0001-reference-stack.md'],
     entries:[{path:'docs/adr/0001-reference-stack.md',title:'Reference stack',date:'2026-09-14'}],
     deviations:[{requirement:'PRD MUST example',adrPath:'docs/adr/0001-reference-stack.md',implementedAt:'2026-09-15T00:00:00.000Z'}]},
-  defects:{reviewedAt:'2026-09-19T14:00:00.000Z',items:[]},
+  defects:{reviewedAt:'2026-09-19T14:00:00.000Z',source:'MOE_BOARD_BUG_ROWS',rowsScanned:3,items:[]},
   ci:{branch:'main',defaultBranch:'main',commit:HEAD,runRef:'https://example.invalid/actions/runs/1',
     stages:['lint','unit','property','registry-lint','registry-contract','connector-integration','security','corpus','end-to-end'].map(name=>({name,result:'PASS'}))},
   localPolicy:{result:'PASS',dependencyAuditRef:'test-results/operations/dependencies.json',e2eRef:'test-results/acceptance/vitest.json'},
@@ -176,4 +177,43 @@ it('PRD-54.3-REGISTRY-TAGS passes only when every recorded version is PRESENT',(
   const shallow=ready();shallow.registryTags={failure:'REGISTRY_HISTORY_SHALLOW',tags:[]};expect(gate(shallow,TAGS)).toBe(false);
   const coded=ready();coded.registryTags.failure='REGISTRY_TAGS_UNAVAILABLE';expect(gate(coded,TAGS)).toBe(false);
   const unknown=ready();unknown.registryTags.tags[0]!.status='UNKNOWN';expect(()=>evaluate(unknown)).toThrow();
+});
+
+// ADR 0049: the defect record is a board export, at most 24 h old against the
+// report's own checkedAt and at most 5 min ahead of it.
+const DEFECTS='CRT-OPS-03-A';
+const CHECKED=Date.parse(ready().checkedAt);
+const board={reviewedAt:'2026-09-19T14:00:00.000Z',source:'MOE_BOARD_BUG_ROWS',rowsScanned:3,items:[] as unknown[]};
+const withDefects=(defects:Record<string,unknown>)=>({...ready(),defects});
+/** A board export reviewed `age` ms before checkedAt (negative: after it). */
+const reviewed=(age:number)=>withDefects({...board,reviewedAt:new Date(CHECKED-age).toISOString()});
+const item=(priority:string,category:string,status:string)=>({id:'task-'+'1'.repeat(32),priority,category,status,detail:'a board defect'});
+it('CRT-OPS-03-A passes a board export up to 24 h old and up to 5 min in the future, and nothing beyond',()=>{
+  expect(DEFECT_RECORD_MAX_AGE_MS).toBe(24*60*60*1000);expect(DEFECT_RECORD_FUTURE_SKEW_MS).toBe(5*60*1000);
+  expect(gate(reviewed(0),DEFECTS)).toBe(true);
+  expect(gate(reviewed(DEFECT_RECORD_MAX_AGE_MS),DEFECTS)).toBe(true);
+  expect(gate(reviewed(DEFECT_RECORD_MAX_AGE_MS+1),DEFECTS)).toBe(false);
+  expect(gate(reviewed(-DEFECT_RECORD_FUTURE_SKEW_MS),DEFECTS)).toBe(true);
+  expect(gate(reviewed(-DEFECT_RECORD_FUTURE_SKEW_MS-1),DEFECTS)).toBe(false);
+});
+it('CRT-OPS-03-A refuses a hand-written record: no source, nothing scanned, or the 2026-09-19 snapshot shape',()=>{
+  const {source:_source,...noSource}=board;const {rowsScanned:_rows,...noRows}=board;
+  expect(gate(withDefects(noSource),DEFECTS)).toBe(false);
+  expect(gate(withDefects(noRows),DEFECTS)).toBe(false);
+  expect(gate(withDefects({...board,rowsScanned:0}),DEFECTS)).toBe(false);
+  expect(gate(withDefects({...board,reviewedAt:null}),DEFECTS)).toBe(false);
+  // Exactly the shape release-input.json carried until ADR 0049, here even fresh.
+  expect(gate(withDefects({reviewedAt:board.reviewedAt,items:[]}),DEFECTS)).toBe(false);
+  expect(gate(withDefects({reviewedAt:'2026-09-19T16:08:01.816Z',items:[]}),DEFECTS)).toBe(false);
+  for(const change of [{source:'GITHUB_ISSUES'},{rowsScanned:-1},{rowsScanned:1.5},{extra:true}])
+    expect(()=>evaluate(withDefects({...board,...change}))).toThrow();
+});
+it('CRT-OPS-03-A blocks an open P0 or P1 correctness or security item in a fresh export, and nothing else',()=>{
+  const at=(...items:unknown[])=>gate(withDefects({...board,items}),DEFECTS);
+  expect(at(item('P1','CORRECTNESS','OPEN'))).toBe(false);
+  expect(at(item('P0','SECURITY','OPEN'))).toBe(false);
+  expect(at(item('P2','CORRECTNESS','OPEN'),item('P0','SECURITY','OPEN'))).toBe(false);
+  expect(at(item('P2','CORRECTNESS','OPEN'))).toBe(true);
+  expect(at(item('P3','SECURITY','OPEN'))).toBe(true);
+  expect(at(item('P1','CORRECTNESS','CLOSED'))).toBe(true);
 });

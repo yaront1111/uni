@@ -23,6 +23,10 @@ const LIVE_REQUIRED_CASES=[{criterion:'CRT-CON-02-A',connector:'GMAIL'},{criteri
   {criterion:'CRT-CON-04-A',connector:'GITHUB'},{criterion:'ADR-0041-LIVE-A',connector:'OMI'}] as const;
 /** Revocation runs only when the owner allows it, so it may be skipped but never failed. */
 const LIVE_OPT_IN_CASE='CRT-CON-06-A';
+/** ADR 0049: a defect record older than this before the report's checkedAt is stale. */
+export const DEFECT_RECORD_MAX_AGE_MS=24*60*60*1000;
+/** ADR 0049: clock skew allowed between the exporting machine and the checker. */
+export const DEFECT_RECORD_FUTURE_SKEW_MS=5*60*1000;
 const execution=z.object({executedAt:instant,environment:z.literal('TEST'),evidenceRef:text,testNames:z.array(text).min(1).max(200)}).strict();
 export const operationsReportSchema=z.object({
   format:z.literal('unai-operations/1'),checkedAt:instant,sourceCommit:commit,workspaceClean:z.boolean(),
@@ -32,7 +36,8 @@ export const operationsReportSchema=z.object({
   adr:z.object({inventoryReviewedAt:instant.nullable(),initialPaths:z.array(text).min(1).max(100),
     entries:z.array(z.object({path:z.string().regex(/^docs\/adr\/[a-zA-Z0-9_-]+\.md$/),title:text,date:z.string().date()}).strict()).max(1000),
     deviations:z.array(z.object({requirement:text,adrPath:text,implementedAt:instant}).strict()).max(1000)}).strict(),
-  defects:z.object({reviewedAt:instant.nullable(),items:z.array(z.object({id:text,priority:z.enum(['P0','P1','P2','P3']),
+  // source and rowsScanned are optional so older reports still parse; CRT-OPS-03-A requires both (ADR 0049).
+  defects:z.object({reviewedAt:instant.nullable(),source:z.literal('MOE_BOARD_BUG_ROWS').optional(),rowsScanned:count.optional(),items:z.array(z.object({id:text,priority:z.enum(['P0','P1','P2','P3']),
     category:z.enum(['CORRECTNESS','SECURITY','OTHER']),status:z.enum(['OPEN','CLOSED']),detail:text}).strict()).max(1000)}).strict(),
   ci:z.object({branch:text,defaultBranch:text,commit,runRef:z.string().url(),
     stages:z.array(z.object({name:z.enum(V0_CI_STAGES),result}).strict()).max(9)}).strict().nullable(),
@@ -67,7 +72,7 @@ export function evaluateV0Release(report:OperationsReport):Array<{criterion:stri
       &&adr.initialPaths.every(path=>adrPaths.has(path))&&adr.deviations.every(d=>{
         const entry=adr.entries.find(a=>a.path===d.adrPath);return entry!==undefined&&entry.date<d.implementedAt.slice(0,10);
       })},
-    {criterion:'CRT-OPS-03-A',passed:defects.reviewedAt!==null&&!defects.items.some(d=>d.status==='OPEN'
+    {criterion:'CRT-OPS-03-A',passed:defectRecordCurrent(defects,report.checkedAt)&&!defects.items.some(d=>d.status==='OPEN'
       &&(d.priority==='P0'||d.priority==='P1')&&(d.category==='CORRECTNESS'||d.category==='SECURITY'))},
     {criterion:'CRT-QA-01-A',passed:report.workspaceClean&&ci!==null&&ci.branch===ci.defaultBranch&&accepted(ci.commit)
       &&V0_CI_STAGES.every(name=>ci.stages.filter(s=>s.name===name).length===1&&ci.stages.find(s=>s.name===name)!.result==='PASS')},
@@ -78,6 +83,13 @@ export function evaluateV0Release(report:OperationsReport):Array<{criterion:stri
     {criterion:'PRD-54.3-REGISTRY-TAGS',passed:registryTags.failure===null&&registryTags.tags.length>0
       &&registryTags.tags.every(tag=>tag.status==='PRESENT')},
   ];
+}
+
+/** ADR 0049: only a board export that scanned rows counts, measured against the report's own clock. */
+function defectRecordCurrent(defects:OperationsReport['defects'],checkedAt:string):boolean{
+  if(defects.reviewedAt===null||defects.source!=='MOE_BOARD_BUG_ROWS'||(defects.rowsScanned??0)<=0)return false;
+  const age=Date.parse(checkedAt)-Date.parse(defects.reviewedAt);
+  return age>=-DEFECT_RECORD_FUTURE_SKEW_MS&&age<=DEFECT_RECORD_MAX_AGE_MS;
 }
 
 /** A skipped, pending or absent required case is never a pass, and totals must count the cases. */

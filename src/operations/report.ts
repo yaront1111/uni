@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {readFile,readdir,mkdir,writeFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {RUNBOOK_IDS,operationsReportSchema,evaluateV0Release} from '../../packages/domain/src/index.js';
+import {gatherDefectRecord} from './defects.js';
 import {procedureExecution,localEndToEndPassed,recoveryEvidence,readLiveConnectorRecord,recordCommitEvidence,type TestReport} from './evidence.js';
 // The test harness is plain JavaScript and shares this exact source fingerprint.
 // @ts-expect-error JavaScript harness module has no declaration file.
@@ -60,8 +61,10 @@ async function main(){
     const body=await readFile('docs/adr/'+file,'utf8');const date=body.match(/^Date:\s*(\d{4}-\d{2}-\d{2})/m)?.[1];
     if(date)entries.push({path:'docs/adr/'+file,title:body.split('\n')[0]!.replace(/^#\s*/,''),date});
   }
+  // One instant: the defect record's freshness is judged against this report's checkedAt (ADR 0049).
+  const now=new Date();
   const report=operationsReportSchema.parse({
-    format:'unai-operations/1',checkedAt:new Date().toISOString(),sourceCommit:current.sourceCommit,workspaceClean:status.stdout.trim()==='',
+    format:'unai-operations/1',checkedAt:now.toISOString(),sourceCommit:current.sourceCommit,workspaceClean:status.stdout.trim()==='',
     procedures:await Promise.all(RUNBOOK_IDS.map(async id=>({id,title:id.replaceAll('-',' '),body:await readFile('docs/operations/'+id+'.md','utf8'),
       execution:suiteVerified?((id==='backup'||id==='restore')?recovery?.execution??null:procedureExecution(id,tests,completedAt)):null}))),
     restore:recovery?.restore??inputs.restore,
@@ -69,7 +72,7 @@ async function main(){
       'docs/adr/0003-device-owner-boundary.md','docs/adr/0004-migration-ledger.md','docs/adr/0005-object-storage-encryption.md',
       'docs/adr/0006-transaction-commit-receipt.md','docs/adr/0007-storage-response-lifecycle.md','docs/adr/0008-authentication-and-responsive-web.md','docs/adr/0009-definer-role.md'],
       entries,deviations:inputs.deviations},
-    defects:inputs.defects,ci:inputs.ci,
+    defects:await gatherDefectRecord('.',inputs.defects,now),ci:inputs.ci,
     localPolicy:{result:policyVerified?'PASS':'UNVERIFIED',dependencyAuditRef:policyVerified?'test-results/operations/dependencies.json':null,
       e2eRef:policyVerified?'test-results/acceptance/vitest.json':null},
     ...await ownerGates(inputs,current.sourceCommit),

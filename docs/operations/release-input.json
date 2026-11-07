@@ -17,10 +17,6 @@
       "implementedAt": "2026-09-14T18:40:54.000Z"
     }
   ],
-  "defects": {
-    "reviewedAt": "2026-09-19T16:08:01.816Z",
-    "items": []
-  },
   "ci": null,
   "restore": {
     "result": "UNVERIFIED",
