@@ -6,6 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { assertDatabaseEncryptionAtRest, createDatabasePool, runMigrations, withOwnerTransaction } from '@unai/postgres';
 import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
+import { connectorCredentialHandle } from '@unai/connectors';
 import { createPlatformApi, routePurpose } from './platform.js';
 import { createEvidenceObjects, type EvidenceObjects } from './evidence.js';
 
@@ -175,7 +176,7 @@ it('CRT-SEC-08-A: no public API response exposes a raw object key', async () => 
       payload: { ownerScopeId: o.owner, sourceType: 'DOCUMENT', connectorId: null, externalId: 'note:' + randomUUID(), actorRef: { type: 'USER', id: o.actor },
         occurredAt: null, content: { text: 'A second note' }, sensitivity: 'PRIVATE', allowedPurposes: ['PERSONAL_ASSISTANCE'], idempotencyKey: ingestKey } }));
     const connector = keep('POST /v1/connectors', await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#access_token',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.owner, 'gmail', { field: 'access_token' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }] } }));
     const connectorId = connector.json().connectorId as string;
     keep('POST /v1/export', await app.inject({ method: 'POST', url: '/v1/export', headers: headers(o, 'data.export'), payload: { includeRawEvidence: true } }));

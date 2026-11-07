@@ -144,7 +144,7 @@ it('CRT-CON-07-A/02-A: capabilities are granted one row at a time and a write sc
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: false }],
     });
@@ -205,7 +205,7 @@ it('CRT-CON-02-A: the Gmail connector ingests threads and a partial grant stores
   try {
     const thread = await fixture('gmail-thread');
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }],
     });
     const connectorId = created.json().connectorId;
@@ -233,7 +233,7 @@ it('CRT-CON-03-A: the Calendar connector stores start, end and recurrence from t
     const event = await fixture('google-calendar-recurring-event');
     const created = await connect(h, {
       connectorType: 'GOOGLE_CALENDAR', externalAccountRef: 'owner@example.test',
-      secretRef: 'secret://mounted/calendar#refresh',
+      secretRef: connectorCredentialHandle(h.ownerScopeId, 'calendar', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'calendar.read', granted: true }],
     });
     const connectorId = created.json().connectorId;
@@ -265,7 +265,7 @@ it('CRT-CON-04-A: a burst of commits and CI webhooks on one pull request is one 
     const burst = await fixture('github-pull-request-burst');
     const created = await connect(h, {
       connectorType: 'GITHUB', externalAccountRef: 'example-org/uai-reference',
-      secretRef: 'secret://mounted/github#token',
+      secretRef: connectorCredentialHandle(h.ownerScopeId, 'github', { field: 'token' }),
       requestedCapabilities: [{ capabilityId: 'github.read_pull_requests', granted: true },
         { capabilityId: 'github.read_issues', granted: true }],
     });
@@ -333,7 +333,7 @@ it('CRT-CON-06-A: a second sync resumes from the stored cursor, redelivery adds 
   try {
     const thread = await fixture('gmail-thread');
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -365,7 +365,7 @@ it('CRT-CON-06-A: a second sync resumes from the stored cursor, redelivery adds 
       ingestionStopped: true, retainedEvidence: 'RETAINED',
       retainedEvidenceOptions: ['KEEP_EVIDENCE', 'REQUEST_DELETION'],
     });
-    expect(h.revocations).toEqual([{ connectorType: 'GMAIL', secretRef: 'secret://mounted/gmail#refresh' }]);
+    expect(h.revocations).toEqual([{ connectorType: 'GMAIL', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }) }]);
     const row = (await admin.query('SELECT status,secret_ref,disconnected_at,last_cursor FROM connectors WHERE id=$1', [connectorId])).rows[0];
     expect(row).toMatchObject({ status: 'DISCONNECTED', secret_ref: null, last_cursor: null });
     expect(row.disconnected_at).not.toBeNull();
@@ -407,7 +407,7 @@ it('a Gmail thread that fails to parse is refused by name; the rest of the page 
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -439,7 +439,7 @@ it('an ingest failure that is not a parse refusal still fails the run and leaves
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -465,7 +465,7 @@ it('a Gmail thread whose header values carry U+0000, or whose From is long, is s
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -506,7 +506,7 @@ it('a Gmail thread whose header values, label ids or message id carry a lone sur
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -567,7 +567,7 @@ it('a sync with no granted capability is refused and the failure is recorded on 
   try {
     const created = await connect(h, {
       connectorType: 'GITHUB', externalAccountRef: 'example-org/uai-reference',
-      secretRef: 'secret://mounted/github#token', requestedCapabilities: [],
+      secretRef: connectorCredentialHandle(h.ownerScopeId, 'github', { field: 'token' }), requestedCapabilities: [],
     });
     const connectorId = created.json().connectorId;
     expect(created.json().status).toBe('PENDING_AUTHORIZATION');
@@ -674,7 +674,7 @@ it('lists connected sources with their status, granted capabilities and stored c
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }],
     });
     const connectorId = created.json().connectorId;
@@ -697,7 +697,7 @@ it('lists connected sources with their status, granted capabilities and stored c
       .toEqual([['gmail.read_content', 'MEDIUM'], ['gmail.read_metadata', 'LOW'], ['gmail.search', 'LOW']]);
     // A second connection of the same account is refused rather than duplicated.
     const again = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [],
     });
     expect(again.statusCode).toBe(409);
@@ -725,7 +725,7 @@ it('CRT-CON-02-A/06-A: the manifest default floors stored sensitivity, and a fai
   const h = await harness();
   try {
     const created = await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'floor@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'floor@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
         { capabilityId: 'gmail.read_content', granted: true }],
     });
@@ -955,7 +955,7 @@ it('a DOCUMENT or CONVERSATION sync is refused by name and records nothing, so e
 
     // A pollable type keeps today's order: the evidence context is declared first.
     const gmail = (await connect(h, {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }],
     })).json().connectorId as string;
     const noContext = await h.app.inject({

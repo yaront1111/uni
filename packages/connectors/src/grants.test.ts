@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { disconnectResultSchema } from '@unai/domain';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import type { SecretsManager } from '@unai/secrets';
+import { connectorCredentialHandle } from './credentials.js';
 import { createConnector, disconnectConnector, markTokenRevoked } from './grants.js';
 import { createTokenRevoker } from './providers.js';
 
@@ -32,7 +33,7 @@ afterAll(async () => { await appPool.end(); await admin.end(); });
 
 function connect(connectorType: 'OMI' | 'GMAIL' | 'GITHUB', capabilityId: string, externalAccountRef: string = randomUUID()) {
   return as('connector.manage', tx => createConnector(tx, {
-    connectorType, externalAccountRef, secretRef: `secret://mounted/${connectorType.toLowerCase()}#key`,
+    connectorType, externalAccountRef, secretRef: connectorCredentialHandle(owner, connectorType.toLowerCase(), { field: 'key' }),
     requestedCapabilities: [{ capabilityId, granted: true }],
   }));
 }
@@ -82,7 +83,7 @@ describe('disconnectConnector (ADR 0041 D8)', () => {
     await expect(as('connector.manage', tx => disconnectConnector(tx, connectorId, async () => ({ revoked: false }))))
       .rejects.toThrow('CONNECTOR_REVOCATION_FAILED');
     const row = (await admin.query('SELECT status,secret_ref,disconnected_at FROM connectors WHERE id=$1', [connectorId])).rows[0];
-    expect(row).toEqual({ status: 'ACTIVE', secret_ref: 'secret://mounted/github#key', disconnected_at: null });
+    expect(row).toEqual({ status: 'ACTIVE', secret_ref: connectorCredentialHandle(owner, 'github', { field: 'key' }), disconnected_at: null });
     const grant = (await admin.query(
       'SELECT granted,revoked_at FROM connector_capability_grants WHERE connector_id=$1 AND capability_id=$2',
       [connectorId, 'github.read_issues'])).rows[0];
@@ -94,7 +95,7 @@ describe('disconnectConnector (ADR 0041 D8)', () => {
     await expect(as('connector.manage', tx => disconnectConnector(tx, connectorId)))
       .rejects.toThrow('CONNECTOR_REVOCATION_UNAVAILABLE');
     const row = (await admin.query('SELECT status,secret_ref FROM connectors WHERE id=$1', [connectorId])).rows[0];
-    expect(row).toEqual({ status: 'ACTIVE', secret_ref: 'secret://mounted/omi#key' });
+    expect(row).toEqual({ status: 'ACTIVE', secret_ref: connectorCredentialHandle(owner, 'omi', { field: 'key' }) });
   });
 
   it('successful provider revocation takes precedence over a contradictory manual flag', async () => {

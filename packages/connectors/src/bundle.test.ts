@@ -5,6 +5,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { runMigrations, withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { uuidV7 } from '../../../src/kernel/identities.js';
 import { buildPluginContextBundle } from './bundle.js';
+import { connectorCredentialHandle } from './credentials.js';
 import { createConnector } from './grants.js';
 
 /**
@@ -108,7 +109,7 @@ beforeAll(async () => {
   });
 
   connectorId = (await as('connector.manage', tx => createConnector(tx, {
-    connectorType: 'GMAIL', externalAccountRef: 'work@example.test', secretRef: 'secret://mounted/gmail#refresh',
+    connectorType: 'GMAIL', externalAccountRef: 'work@example.test', secretRef: connectorCredentialHandle(owner, 'gmail', { field: 'refresh' }),
     requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true },
       { capabilityId: 'gmail.read_content', granted: true }],
   }))).connectorId;

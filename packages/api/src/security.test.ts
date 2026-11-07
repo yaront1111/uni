@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -11,7 +11,7 @@ import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { createMountedSecretsProvider, createSecretsManager } from '@unai/secrets';
 import { createModelGateway, MODEL_PURPOSES, type ModelProvider, type ModelProviderRequest } from '@unai/model';
 import { runExtraction, type ExtractionTransactionRunner } from '@unai/extraction';
-import { buildPluginContextBundle } from '@unai/connectors';
+import { buildPluginContextBundle, connectorCredentialHandle } from '@unai/connectors';
 import {
   decisionProjectionViewSchema, decisionReviewResultSchema, deletionReceiptSchema, exportBundleSchema,
   goalSchema, mentorViewSchema, recordDecisionResultSchema, type RecordDecision, type TransitionContract,
@@ -545,7 +545,8 @@ it('[AC44.19] CRT-SEC-04-A and CRT-SEC-10-A malicious email instructions: a sync
   const google = { accessToken: 'ya29.' + randomBytes(24).toString('base64url'),
     refreshToken: '1//' + randomBytes(24).toString('base64url'),
     clientId: 'connector-client.apps.example.test', clientSecret: 'GOCSPX-' + randomBytes(18).toString('base64url') };
-  await writeFile(join(secrets, 'gmail'), JSON.stringify({ refresh_token: google.refreshToken }));
+  await mkdir(join(secrets, 'connectors', o.owner), { recursive: true });
+  await writeFile(join(secrets, 'connectors', o.owner, 'gmail'), JSON.stringify({ refresh_token: google.refreshToken }));
   await writeFile(join(secrets, 'google-connector-client'), JSON.stringify({ client_id: google.clientId, client_secret: google.clientSecret }));
   const api0 = api(o, { secretsRoot: secrets, phraser: obeyingPhraser(financial) });
   const { app } = api0;
@@ -554,7 +555,7 @@ it('[AC44.19] CRT-SEC-04-A and CRT-SEC-10-A malicious email instructions: a sync
   const provider = gmailProvider([emailThread('thread-injection', body)], google);
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh_token',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }, { capabilityId: 'gmail.read_content', granted: true }] } });
     expect(connected.statusCode, connected.body).toBe(201);
     const connectorId = connected.json().connectorId as string;
@@ -678,7 +679,8 @@ it('CRT-SEC-04-A and CRT-SEC-10-A malicious Omi transcript instructions: a synce
   const financial = await financialContext(o);
   const secrets = await mkdtemp(join(tmpdir(), 'unai-security-secrets-'));
   // ADR 0041 D6: a developer key generated per run, reachable only through its handle.
-  await writeFile(join(secrets, 'omi-key'), 'omi_dev_' + randomBytes(24).toString('hex') + '\n');
+  await mkdir(join(secrets, 'connectors', o.owner), { recursive: true });
+  await writeFile(join(secrets, 'connectors', o.owner, 'omi-key'), 'omi_dev_' + randomBytes(24).toString('hex') + '\n');
   const api0 = api(o, { secretsRoot: secrets, phraser: obeyingPhraser(financial) });
   const { app } = api0;
   const conversation = JSON.parse(await readFile(resolve('fixtures/sources/omi-conversation.json'), 'utf8')) as {
@@ -692,7 +694,7 @@ it('CRT-SEC-04-A and CRT-SEC-10-A malicious Omi transcript instructions: a synce
   const provider = omiProvider([conversation]);
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-      connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/omi-key',
+      connectorType: 'OMI', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.owner, 'omi-key'),
       requestedCapabilities: [{ capabilityId: 'omi.read_conversations', granted: true }] } });
     expect(connected.statusCode, connected.body).toBe(201);
     const connectorId = connected.json().connectorId as string;
@@ -789,7 +791,8 @@ it('CRT-SEC-05-A and CRT-SEC-10-A secret redaction: no OAuth token or other conf
   const clientSecret = 'GOCSPX-' + randomBytes(18).toString('base64url');
   const secrets = await mkdtemp(join(tmpdir(), 'unai-security-secrets-'));
   const clientId = 'connector-client.apps.example.test';
-  await writeFile(join(secrets, 'gmail'), JSON.stringify({ refresh_token: refreshToken }));
+  await mkdir(join(secrets, 'connectors', o.owner), { recursive: true });
+  await writeFile(join(secrets, 'connectors', o.owner, 'gmail'), JSON.stringify({ refresh_token: refreshToken }));
   await writeFile(join(secrets, 'google-connector-client'), JSON.stringify({ client_id: clientId, client_secret: clientSecret }));
   const configured = [accessToken, refreshToken, clientSecret, o.token];
   const api0 = api(o, { secretsRoot: secrets, phraser: quotingPhraser() });
@@ -801,7 +804,7 @@ it('CRT-SEC-05-A and CRT-SEC-10-A secret redaction: no OAuth token or other conf
   try {
     const { value: connectorId, lines } = await capturingLogs(async () => {
       const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-        connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh_token',
+        connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }),
         requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }, { capabilityId: 'gmail.read_content', granted: true }] } });
       expect(connected.statusCode, connected.body).toBe(201);
       const id = connected.json().connectorId as string;
@@ -853,7 +856,7 @@ it('CRT-SEC-05-A and CRT-SEC-10-A secret redaction: no OAuth token or other conf
     for (const bytes of stored.values()) persisted.push(Buffer.from(bytes).toString('utf8'));
     for (const secret of configured.slice(0, 3)) expect(persisted.join('\n')).not.toContain(secret);
     // The connector row holds only the handle.
-    expect((await admin.query('SELECT secret_ref FROM connectors WHERE id=$1', [connectorId])).rows[0].secret_ref).toBe('secret://mounted/gmail#refresh_token');
+    expect((await admin.query('SELECT secret_ref FROM connectors WHERE id=$1', [connectorId])).rows[0].secret_ref).toBe(connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }));
   } finally { await app.close(); await rm(secrets, { recursive: true, force: true }); }
 });
 
@@ -1083,7 +1086,7 @@ it('CRT-SEC-10-A plugin least privilege: a plugin operation gets only its capabi
   const { app } = api(o);
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-      connectorType: 'GMAIL', externalAccountRef: 'work@example.test', secretRef: 'secret://mounted/gmail#access_token',
+      connectorType: 'GMAIL', externalAccountRef: 'work@example.test', secretRef: connectorCredentialHandle(o.owner, 'gmail', { field: 'access_token' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }, { capabilityId: 'gmail.read_content', granted: true }] } });
     expect(connected.statusCode, connected.body).toBe(201);
     const connectorId = connected.json().connectorId as string;
@@ -1197,7 +1200,7 @@ it('CRT-SEC-05-A: the Google connector OAuth client is configured only as a whol
   globalThis.fetch = async (...args) => { requests.push(args); return Response.json({}); };
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh_token',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }] } });
     expect(connected.statusCode, connected.body).toBe(201);
     const id = connected.json().connectorId as string;
@@ -1218,7 +1221,8 @@ it.each([
 ] as const)('Google token endpoint %s %s: the sync route revokes only the owner grant', async (status, error, state, http, code) => {
   const o = await newOwner('google-token-failure');
   const secrets = await mkdtemp(join(tmpdir(), 'unai-security-secrets-'));
-  await writeFile(join(secrets, 'gmail'), JSON.stringify({ refresh_token: 'refresh-test-only' }));
+  await mkdir(join(secrets, 'connectors', o.owner), { recursive: true });
+  await writeFile(join(secrets, 'connectors', o.owner, 'gmail'), JSON.stringify({ refresh_token: 'refresh-test-only' }));
   await writeFile(join(secrets, 'google-connector-client'), JSON.stringify({ client_id: 'client-test-only', client_secret: 'client-secret-test-only' }));
   const { app } = api(o, { secretsRoot: secrets });
   const original = globalThis.fetch;
@@ -1229,7 +1233,7 @@ it.each([
   };
   try {
     const connected = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'), payload: {
-      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: 'secret://mounted/gmail#refresh_token',
+      connectorType: 'GMAIL', externalAccountRef: 'owner@example.test', secretRef: connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }),
       requestedCapabilities: [{ capabilityId: 'gmail.read_metadata', granted: true }] } });
     expect(connected.statusCode).toBe(201);
     const id = connected.json().connectorId as string;
@@ -1240,6 +1244,6 @@ it.each([
     expect(synced.body).not.toContain('PRIVATE_PROVIDER_TEXT');
     expect(urls).toEqual(['https://oauth2.googleapis.com/token']);
     expect((await admin.query('SELECT status,secret_ref,last_sync_error FROM connectors WHERE id=$1', [id])).rows[0])
-      .toEqual({ status: state, secret_ref: state === 'TOKEN_REVOKED' ? null : 'secret://mounted/gmail#refresh_token', last_sync_error: code });
+      .toEqual({ status: state, secret_ref: state === 'TOKEN_REVOKED' ? null : connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' }), last_sync_error: code });
   } finally { globalThis.fetch = original; await app.close(); await rm(secrets, { recursive: true, force: true }); }
 });
