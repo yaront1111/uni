@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { SecretsManager } from '@unai/secrets';
 import { connectorCursorSchema, type ConnectorCursor } from '@unai/domain';
 import { ConnectorError } from './manifests.js';
+import { isConnectorCredentialHandle } from './credentials.js';
 
 /**
  * The provider side of a connector: the read-only HTTPS clients, behind one port.
@@ -44,6 +45,22 @@ export interface ConnectorClient {
 const GMAIL = 'https://gmail.googleapis.com/gmail/v1';
 const CALENDAR = 'https://www.googleapis.com/calendar/v3';
 const GITHUB = 'https://api.github.com';
+
+/**
+ * The connector-only resolver (ADR 0013, amendment 2026-11-07, layer 3): the
+ * deployment's manager narrowed to one owner's `connectors/<ownerScopeId>/`
+ * namespace. A runtime credential, another owner's handle or a non-canonical
+ * owner segment is refused with the bare code before the manager is asked, so
+ * nothing is read and the error carries no handle, owner scope or value.
+ */
+export function createConnectorSecrets(secrets: SecretsManager, ownerScopeId: string): SecretsManager {
+  return {
+    async resolve(handle) {
+      if (!isConnectorCredentialHandle(handle, ownerScopeId)) throw new ConnectorError('CONNECTOR_SECRET_REF_OUT_OF_SCOPE');
+      return secrets.resolve(handle);
+    },
+  };
+}
 
 /**
  * The one door to a provider. A native rejection must never reach a caller:
@@ -111,24 +128,48 @@ async function exchangeGoogleToken(refreshToken: string, client: GoogleOAuthClie
   return parsed.data;
 }
 
-/** Cache belongs to this runtime, never the module: two mounts can use the same handle. */
-export function createGoogleAccessTokens(secrets: SecretsManager, client: GoogleOAuthClientConfig | null): GoogleAccessTokens {
-  const cache = new Map<string, { token: string; expiresAt: number }>();
+export interface GoogleAccessTokenCache {
+  /** The owner's view of the runtime cache, resolving refresh handles through `secrets`. */
+  forOwner(ownerScopeId: string, secrets: SecretsManager): GoogleAccessTokens;
+}
+
+/**
+ * The runtime's Google access-token cache (ADR 0013, amendment 2026-11-07, layer
+ * 4). One map per runtime, never per module, since two mounts can use the same
+ * handle. It is keyed by owner scope, NUL, then handle, and a handle outside the
+ * caller's namespace is refused before the map is read or evicted, so one owner
+ * can never be handed a token another owner's refresh credential bought. The
+ * key is never logged.
+ */
+export function createGoogleAccessTokenCache(
+  client: GoogleOAuthClientConfig | null,
+  cache: Map<string, { token: string; expiresAt: number }> = new Map(),
+): GoogleAccessTokenCache {
   return {
-    async accessToken(secretRef, refresh) {
-      if (client === null) throw new ConnectorError('CONNECTOR_OAUTH_CLIENT_MISSING');
-      if (refresh) cache.delete(secretRef);
-      const cached = cache.get(secretRef);
-      if (cached && Date.now() < cached.expiresAt) return cached.token;
-      cache.delete(secretRef);
-      const result = await exchangeGoogleToken(await secrets.resolve(secretRef), client);
-      if (result.expires_in > 60) cache.set(secretRef, {
-        token: result.access_token, expiresAt: Date.now() + (result.expires_in - 60) * 1000,
-      });
-      return result.access_token;
-    },
+    forOwner: (ownerScopeId, secrets) => ({
+      async accessToken(secretRef, refresh) {
+        if (client === null) throw new ConnectorError('CONNECTOR_OAUTH_CLIENT_MISSING');
+        if (!isConnectorCredentialHandle(secretRef, ownerScopeId)) throw new ConnectorError('CONNECTOR_SECRET_REF_OUT_OF_SCOPE');
+        const key = ownerScopeId + '\u0000' + secretRef;
+        if (refresh) cache.delete(key);
+        const cached = cache.get(key);
+        if (cached && Date.now() < cached.expiresAt) return cached.token;
+        cache.delete(key);
+        const result = await exchangeGoogleToken(await secrets.resolve(secretRef), client);
+        if (result.expires_in > 60) cache.set(key, {
+          token: result.access_token, expiresAt: Date.now() + (result.expires_in - 60) * 1000,
+        });
+        return result.access_token;
+      },
+    }),
   };
 }
+
+/** A Google client built without the runtime's cache behaves as one with no OAuth
+ * client configured: its first request fails before any secret is resolved. */
+const NO_OAUTH_CLIENT: GoogleAccessTokens = {
+  async accessToken() { throw new ConnectorError('CONNECTOR_OAUTH_CLIENT_MISSING'); },
+};
 
 /** 403 is never revocation: Google and GitHub also use it for rate limits and missing scope. */
 export function credentialRevoked(error: unknown): boolean {
@@ -424,8 +465,8 @@ export function createConnectorClient(
 ): ConnectorClient {
   if (secretRef === null) throw new ConnectorError('CONNECTOR_CREDENTIAL_MISSING', { connectorType });
   switch (connectorType) {
-    case 'GMAIL': return createGmailClient(google ?? createGoogleAccessTokens(secrets, null), secretRef);
-    case 'GOOGLE_CALENDAR': return createGoogleCalendarClient(google ?? createGoogleAccessTokens(secrets, null), secretRef);
+    case 'GMAIL': return createGmailClient(google ?? NO_OAUTH_CLIENT, secretRef);
+    case 'GOOGLE_CALENDAR': return createGoogleCalendarClient(google ?? NO_OAUTH_CLIENT, secretRef);
     case 'GITHUB': return createGithubClient(secrets, secretRef);
     case 'OMI': return createOmiClient(secrets, secretRef);
     default: throw new ConnectorError('CONNECTOR_CLIENT_UNSUPPORTED', { connectorType });

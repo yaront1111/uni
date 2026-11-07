@@ -1407,3 +1407,71 @@ it('PRD §31 and CRT-SEC-10-A unauthorized connector token use: the route and th
     expect(await row()).toMatchObject({ status: 'TOKEN_REVOKED', secret_ref: null });
   } finally { await client.query('ROLLBACK'); client.release(); await app.close(); }
 });
+
+it('CRT-SEC-05-A and CRT-SEC-10-A unauthorized connector token use: a legacy connector whose stored handle names a runtime credential cannot sync, and disconnects with the manual notice, without that credential ever being resolved or sent', async () => {
+  const o = await newOwner('legacy-runtime-handle');
+  const mount = await mkdtemp(join(tmpdir(), 'unai-security-secrets-'));
+  const marker = 'runtime-credential-' + randomBytes(16).toString('hex');
+  await writeFile(join(mount, 'api-database-url'), marker);
+  // The OAuth client is configured, so a refusal cannot be the missing-client one.
+  await writeFile(join(mount, 'google-connector-client'), JSON.stringify({
+    client_id: 'connector-client.apps.example.test', client_secret: 'GOCSPX-' + randomBytes(18).toString('base64url') }));
+  const mounted = createSecretsManager({ mounted: createMountedSecretsProvider(mount) });
+  // The handle is real: the mount serves it. Compared, never printed.
+  expect(await mounted.resolve(RUNTIME_HANDLE) === marker).toBe(true);
+  const resolved: string[] = [];
+  const { app } = api(o, { secrets: { async resolve(handle) { resolved.push(handle); return mounted.resolve(handle); } } });
+  const original = globalThis.fetch;
+  const requests: unknown[] = [];
+  globalThis.fetch = async (...args) => { requests.push(args); return Response.json({}); };
+  const client = await admin.connect();
+  try {
+    // A row stored before the namespace existed: connected in the owner's namespace,
+    // then moved to the runtime handle in replica mode, which skips every trigger.
+    const created = await app.inject({ method: 'POST', url: '/v1/connectors', headers: headers(o, 'connector.manage'),
+      payload: gmailConnect(connectorCredentialHandle(o.owner, 'gmail', { field: 'refresh_token' })) });
+    expect(created.statusCode, created.body).toBe(201);
+    const id = created.json().connectorId as string;
+    await client.query('BEGIN');
+    await client.query('SET LOCAL session_replication_role = replica');
+    await client.query('UPDATE connectors SET secret_ref=$1 WHERE id=$2', [RUNTIME_HANDLE, id]);
+    await client.query('COMMIT');
+    const row = async () => (await admin.query('SELECT status,secret_ref,last_sync_error FROM connectors WHERE id=$1', [id])).rows[0];
+    expect(await row()).toEqual({ status: 'ACTIVE', secret_ref: RUNTIME_HANDLE, last_sync_error: null });
+
+    const sync = evidenceHeaders(o, 'connector.sync'), manage = headers(o, 'connector.manage');
+    const { value: seen, lines } = await capturingLogs(async () => {
+      const synced = await app.inject({ method: 'POST', url: '/v1/connectors/' + id + '/sync', headers: sync,
+        payload: { allowedPurposes: [ASSISTANCE] } });
+      const afterSync = await row();
+      const disconnected = await app.inject({ method: 'POST', url: '/v1/connectors/' + id + '/disconnect', headers: manage, payload: {} });
+      return { synced, afterSync, disconnected };
+    });
+    // Layer 3 at the sync route: refused by name before a client is built, recorded as the bare code.
+    expect(seen.synced.statusCode).toBe(403);
+    expect(seen.synced.json()).toEqual({ code: OUT_OF_SCOPE, correlationId: sync['x-correlation-id'], connectorType: 'GMAIL' });
+    expect(seen.afterSync).toEqual({ status: 'SYNC_FAILED', secret_ref: RUNTIME_HANDLE, last_sync_error: OUT_OF_SCOPE });
+    // The ADR 0013 legacy rule at the disconnect route: it completes, and reports manual revocation.
+    expect(seen.disconnected.statusCode, seen.disconnected.body).toBe(200);
+    expect(seen.disconnected.json()).toEqual({ connectorId: id, status: 'DISCONNECTED', tokensRevokedAtProvider: false,
+      providerRevocationNotice: 'CONNECTOR_REVOCATION_MANUAL_REQUIRED', secretReferenceDestroyed: true, ingestionStopped: true,
+      capabilitiesRevoked: ['gmail.read_metadata'], retainedEvidence: 'RETAINED', retainedEvidenceOptions: ['KEEP_EVIDENCE', 'REQUEST_DELETION'] });
+    expect(await row()).toEqual({ status: 'DISCONNECTED', secret_ref: null, last_sync_error: null });
+    // Nothing was read from the mount, and nothing was sent: no token exchange, no Gmail call, no revocation.
+    expect(resolved).toEqual([]);
+    expect(requests).toEqual([]);
+    expect(await auditRows(sync['x-correlation-id'])).toEqual([
+      { purpose: 'connector.sync', policy_decision: 'DENY', result: 'REFUSED', objects_and_fields_accessed: [] }]);
+    expect(await auditRows(manage['x-correlation-id'])).toEqual([{ purpose: 'connector.manage', policy_decision: 'ALLOW', result: 'SUCCESS',
+      objects_and_fields_accessed: [{ type: 'connectors', id, fields: ['status', 'secret_ref', 'disconnected_at', 'last_cursor'] }] }]);
+    // Neither the credential nor its handle is in a response, any of the owner's audit rows, or a log line.
+    const audits = JSON.stringify((await admin.query('SELECT * FROM audit_events WHERE owner_scope_id=$1', [o.owner])).rows);
+    const surfaces = { sync: seen.synced.body, disconnect: seen.disconnected.body, audit: audits, logs: lines.join('\n') };
+    for (const [where, text] of Object.entries(surfaces)) {
+      for (const secret of [RUNTIME_HANDLE, 'api-database-url', marker]) expect(text.includes(secret), where).toBe(false);
+    }
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined); client.release();
+    globalThis.fetch = original; await app.close(); await rm(mount, { recursive: true, force: true });
+  }
+});

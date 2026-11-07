@@ -349,9 +349,12 @@ export async function markTokenRevoked(tx: ConnectorTransaction, connectorId: st
 }
 
 /** What a disconnect asks the provider to do. The default adapter revokes over
- * HTTPS or explicitly reports manual revocation (ADR 0041 D8); no handle means no call. */
-export type TokenRevoker = (input: { readonly connectorType: string; readonly secretRef: string })
-  => Promise<{ readonly revoked: boolean; readonly manualRevocationRequired?: boolean }>;
+ * HTTPS or explicitly reports manual revocation (ADR 0041 D8); no handle means no call.
+ * `ownerScopeId` is the disconnecting transaction's, so the runtime can refuse a
+ * handle outside that owner's connector namespace (ADR 0013) without resolving it. */
+export type TokenRevoker = (input: {
+  readonly connectorType: string; readonly ownerScopeId: string; readonly secretRef: string;
+}) => Promise<{ readonly revoked: boolean; readonly manualRevocationRequired?: boolean }>;
 
 /**
  * Disconnect: revoke the tokens at the provider, destroy the credential handle,
@@ -380,7 +383,8 @@ export async function disconnectConnector(
   let revoked = false, manual = false;
   if (connector.secretRef !== null) {
     if (!revoke) throw new ConnectorError('CONNECTOR_REVOCATION_UNAVAILABLE', { connectorId });
-    const answer = await revoke({ connectorType: connector.connectorType, secretRef: connector.secretRef });
+    const answer = await revoke({
+      connectorType: connector.connectorType, ownerScopeId: tx.context.ownerScopeId, secretRef: connector.secretRef });
     if (answer.revoked) revoked = true;
     else if (answer.manualRevocationRequired === true) manual = true;
     else throw new ConnectorError('CONNECTOR_REVOCATION_FAILED', { connectorId });

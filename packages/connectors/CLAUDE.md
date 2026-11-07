@@ -44,10 +44,16 @@ grants and the connector lifecycle. Report: `docs/connectors.md`; decisions:
   lead a caller to `markTokenRevoked`, as `packages/api/src/connectors.ts` and
   `connector-sync-job.ts` do.
 - Gmail and Google Calendar clients need the runtime's `GoogleAccessTokens`
-  (`createGoogleAccessTokens` over the `UNAI_GOOGLE_CONNECTOR_CLIENT` client),
-  which exchange the stored refresh token for an access token. Called without
-  one, or with no OAuth client configured, `createConnectorClient` still builds
-  the client, but its first request fails `CONNECTOR_OAUTH_CLIENT_MISSING`.
+  (`createGoogleAccessTokenCache` over the `UNAI_GOOGLE_CONNECTOR_CLIENT` client,
+  then `.forOwner(ownerScopeId, secrets)`; one map keyed by owner scope plus
+  handle), which exchange the stored refresh token for an access token. Called
+  without one, or with no OAuth client configured, `createConnectorClient` still
+  builds the client, but its first request fails `CONNECTOR_OAUTH_CLIENT_MISSING`.
+- A connector credential is resolved only through `createConnectorSecrets(secrets,
+  ownerScopeId)` (ADR 0013, amendment 2026-11-07): a handle outside
+  `connectors/<ownerScopeId>/` is refused `CONNECTOR_SECRET_REF_OUT_OF_SCOPE`
+  before anything is read. The API's `createConnectorRuntime` binds it per call;
+  never hand a client or `createTokenRevoker` the deployment's raw manager.
 - The `SourceIngest` port may throw `SourcePayloadInvalid` only before it writes
   anything. `runConnectorSync` turns that one error into a per-item
   `SOURCE_PAYLOAD_INVALID` refusal and continues in the same open transaction;

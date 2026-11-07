@@ -12,6 +12,7 @@ import {
 import type { EvidenceObjects } from './evidence.js';
 import {
   CONNECTOR_SYNC_JOB_KIND, TERMINAL_CONNECTOR_SYNC_ERROR_CODES, createConnectorSyncRuntime, enqueueConnectorSync,
+  type ConnectorSyncRuntimeOptions,
 } from './connector-sync-job.js';
 import { createConnectorRuntime } from './connectors.js';
 
@@ -68,7 +69,7 @@ async function owner() {
 }
 type Owner = Awaited<ReturnType<typeof owner>>;
 
-function runtime(o: Owner, client: ConnectorClient) {
+function runtime(o: Owner, client: ConnectorClient | ConnectorSyncRuntimeOptions['connectorClient']) {
   const objects = new Map<string, Uint8Array>();
   const evidenceObjects: EvidenceObjects = {
     encryptionKeyRef: 'kms:test-double',
@@ -78,7 +79,7 @@ function runtime(o: Owner, client: ConnectorClient) {
   return createConnectorSyncRuntime({
     appPool, ownerScopeId: o.ownerScopeId, actorId: o.actorId, dataPurpose: 'PERSONAL_ASSISTANCE',
     maximumSensitivity: 'RESTRICTED', workerId: 'connector-sync-test-' + randomUUID(), evidenceObjects,
-    connectorClient: () => client,
+    connectorClient: typeof client === 'function' ? client : () => client,
   });
 }
 
@@ -199,10 +200,12 @@ it('ADR 0041 D7: an Omi 429 with Retry-After dead-letters the connector.sync job
     return replies.shift()?.() ?? new Response(null, { status: 500 });
   });
   try {
-    const client = createConnectorRuntime({
+    const production = createConnectorRuntime({
       async resolve(ref) { if (ref !== handle) throw new Error('SECRET_NOT_FOUND'); return key; },
-    }, {}).connectorClient({ connectorType: 'OMI', secretRef: handle });
-    const sync = runtime(o, client);
+    }, {});
+    // The job builds the client with its own owner scope (ADR 0013): any other
+    // owner would refuse this handle, and the run would never reach Omi.
+    const sync = runtime(o, input => production.connectorClient(input));
     const logs = captureLogs();
     const limited = await enqueue(o, { connectorId: omiId, window: '2026-11-06T10' });
     expect(await sync.runOnce()).toMatchObject({ claimed: true, job: {

@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -8,7 +8,7 @@ import { postgresAdapter, SESSION_COOKIE } from '@unai/auth';
 import { createPlatformApi } from './platform.js';
 import type { EvidenceObjects } from './evidence.js';
 import type { ConnectorClient, ConnectorFetch } from '@unai/connectors';
-import { requireCapability, listGrants } from '@unai/connectors';
+import { ConnectorError, requireCapability, listGrants } from '@unai/connectors';
 import { createConnectorRuntime } from './connectors.js';
 import { hasSyncClient, type ConnectorRouteOptions } from './connectors.js';
 import { connectorTypeSchema } from '@unai/domain';
@@ -65,7 +65,7 @@ interface Harness {
   headers(purpose: string, extra?: Record<string, string>): Record<string, string>;
   pages: { value: readonly (readonly unknown[])[] };
   fetches: ConnectorFetch[];
-  revocations: { connectorType: string; secretRef: string }[];
+  revocations: { connectorType: string; secretRef: string; ownerScopeId: string }[];
   revokeAnswer: { revoked: boolean };
   objects: Map<string, Uint8Array>;
   failObjectWrites: { value: boolean };
@@ -90,7 +90,7 @@ async function harness(connectors?: ConnectorRouteOptions): Promise<Harness> {
   };
   const pages: { value: readonly (readonly unknown[])[] } = { value: [[]] };
   const fetches: ConnectorFetch[] = [];
-  const revocations: { connectorType: string; secretRef: string }[] = [];
+  const revocations: { connectorType: string; secretRef: string; ownerScopeId: string }[] = [];
   const revokeAnswer = { revoked: true };
   const app = createPlatformApi({
     authPool: admin, appPool, evidenceObjects, registryReleaseId: randomUUID(),
@@ -365,7 +365,10 @@ it('CRT-CON-06-A: a second sync resumes from the stored cursor, redelivery adds 
       ingestionStopped: true, retainedEvidence: 'RETAINED',
       retainedEvidenceOptions: ['KEEP_EVIDENCE', 'REQUEST_DELETION'],
     });
-    expect(h.revocations).toEqual([{ connectorType: 'GMAIL', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }) }]);
+    expect(h.revocations).toEqual([{
+      connectorType: 'GMAIL', secretRef: connectorCredentialHandle(h.ownerScopeId, 'gmail', { field: 'refresh' }),
+      ownerScopeId: h.ownerScopeId,
+    }]);
     const row = (await admin.query('SELECT status,secret_ref,disconnected_at,last_cursor FROM connectors WHERE id=$1', [connectorId])).rows[0];
     expect(row).toMatchObject({ status: 'DISCONNECTED', secret_ref: null, last_cursor: null });
     expect(row.disconnected_at).not.toBeNull();
@@ -873,8 +876,10 @@ it('CRT-CON-05-A: an upload naming its DOCUMENT connector is stored against it o
 it('CRT-CON-06-A: the production runtime builds a read-only client per provider and a revoker', () => {
   const resolved: string[] = [];
   const runtime = createConnectorRuntime({ async resolve(handle) { resolved.push(handle); return 'token'; } });
+  const ownerScopeId = randomUUID();
   for (const connectorType of ['GMAIL', 'GOOGLE_CALENDAR', 'GITHUB']) {
-    const client = runtime.connectorClient({ connectorType, secretRef: 'secret://mounted/' + connectorType + '#token' });
+    const secretRef = connectorCredentialHandle(ownerScopeId, connectorType.toLowerCase(), { field: 'token' });
+    const client = runtime.connectorClient({ connectorType, ownerScopeId, secretRef });
     expect(typeof client.fetchPage).toBe('function');
   }
   // Building a client must not touch the secrets manager: the handle is resolved
@@ -883,12 +888,59 @@ it('CRT-CON-06-A: the production runtime builds a read-only client per provider 
   expect(typeof runtime.revokeTokens).toBe('function');
   // A connector with no stored credential cannot be synced, and a first-party
   // type has no provider to poll at all.
-  expect(() => runtime.connectorClient({ connectorType: 'GMAIL', secretRef: null }))
+  expect(() => runtime.connectorClient({ connectorType: 'GMAIL', ownerScopeId, secretRef: null }))
     .toThrow('CONNECTOR_CREDENTIAL_MISSING');
   for (const connectorType of ['CONVERSATION', 'DOCUMENT']) {
-    expect(() => runtime.connectorClient({ connectorType, secretRef: 'secret://mounted/x#t' }))
+    const secretRef = connectorCredentialHandle(ownerScopeId, 'x', { field: 't' });
+    expect(() => runtime.connectorClient({ connectorType, ownerScopeId, secretRef }))
       .toThrow('CONNECTOR_CLIENT_UNSUPPORTED');
   }
+});
+
+/**
+ * ADR 0013 layer 3 at the production composition: every client the runtime
+ * builds, and its revoker, resolve only the calling owner's connector handles. A
+ * runtime credential or another owner's handle is refused before any secret read
+ * or provider request: a client is never built, and a revocation is answered
+ * manual (the ADR 0013 legacy rule), so a disconnect still completes.
+ */
+it('ADR 0013 layer 3: the production runtime resolves only the calling owner\'s connector handles, in every client and the revoker', async () => {
+  const resolved: string[] = [];
+  const requests: string[] = [];
+  const runtime = createConnectorRuntime({ async resolve(handle) { resolved.push(handle); return 'connector-token-test-only'; } }, {});
+  const ownerScopeId = randomUUID();
+  const foreign = ['secret://mounted/api-database-url', connectorCredentialHandle(randomUUID(), 'gmail', { field: 'refresh' }),
+    connectorCredentialHandle(ownerScopeId, 'gmail', { field: 'refresh' }).replace(ownerScopeId, ownerScopeId.toUpperCase())];
+  vi.stubGlobal('fetch', async (url: string) => { requests.push(String(url)); return new Response(null, { status: 204 }); });
+  try {
+    for (const secretRef of foreign) {
+      for (const connectorType of ['GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'OMI']) {
+        let refusal: unknown = null;
+        try { runtime.connectorClient({ connectorType, ownerScopeId, secretRef }); } catch (error) { refusal = error; }
+        expect(refusal).toBeInstanceOf(ConnectorError);
+        expect({ code: (refusal as ConnectorError).message, detail: (refusal as ConnectorError).detail })
+          .toEqual({ code: 'CONNECTOR_SECRET_REF_OUT_OF_SCOPE', detail: { connectorType } });
+      }
+      for (const connectorType of ['GMAIL', 'GOOGLE_CALENDAR', 'GITHUB', 'OMI']) {
+        await expect(runtime.revokeTokens({ connectorType, ownerScopeId, secretRef }))
+          .resolves.toEqual({ revoked: false, manualRevocationRequired: true });
+      }
+    }
+    expect(resolved).toEqual([]);
+    expect(requests).toEqual([]);
+
+    // An Omi key of the owner's own is still manual and still never resolved (ADR 0041 D8).
+    const omi = connectorCredentialHandle(ownerScopeId, 'omi', { field: 'key' });
+    await expect(runtime.revokeTokens({ connectorType: 'OMI', ownerScopeId, secretRef: omi }))
+      .resolves.toEqual({ revoked: false, manualRevocationRequired: true });
+    expect(resolved).toEqual([]);
+    // The owner's own GitHub handle is resolved once and reaches its provider.
+    const own = connectorCredentialHandle(ownerScopeId, 'github', { field: 'token' });
+    await expect(runtime.revokeTokens({ connectorType: 'GITHUB', ownerScopeId, secretRef: own }))
+      .resolves.toEqual({ revoked: true });
+    expect(resolved).toEqual([own]);
+    expect(requests).toEqual(['https://api.github.com/installation/token']);
+  } finally { vi.unstubAllGlobals(); }
 });
 
 /**
@@ -971,8 +1023,10 @@ it('a DOCUMENT or CONVERSATION sync is refused by name and records nothing, so e
 it('the production runtime declares exactly the connector types createConnectorClient can poll', () => {
   const runtime = createConnectorRuntime({ async resolve() { return 'x'; } });
   expect(runtime.hasSyncClient).toBe(hasSyncClient);
+  const ownerScopeId = randomUUID();
+  const secretRef = connectorCredentialHandle(ownerScopeId, 'x', { field: 't' });
   const polled = connectorTypeSchema.options.filter(connectorType => {
-    try { runtime.connectorClient({ connectorType, secretRef: 'secret://mounted/x#t' }); return true; }
+    try { runtime.connectorClient({ connectorType, ownerScopeId, secretRef }); return true; }
     catch (error) {
       if (error instanceof Error && error.message === 'CONNECTOR_CLIENT_UNSUPPORTED') return false;
       throw error;

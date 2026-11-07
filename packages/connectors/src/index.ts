@@ -17,9 +17,10 @@ export { CONNECTOR_READ_PURPOSE, CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOS
   hasCapability, setCapabilityGrants, readConnector, listConnectors, markTokenRevoked, disconnectConnector,
   type ConnectorTransaction, type TokenRevoker } from './grants.js';
 export { prepareForCapabilities, runConnectorSync, recordSyncFailure, LIFECYCLE_REFUSALS, type SourceIngest } from './sync.js';
-export { createGmailClient, createGoogleCalendarClient, createGithubClient, createConnectorClient,
-  createGoogleAccessTokens, credentialRevoked, type GoogleAccessTokens, type GoogleOAuthClientConfig,
-  createTokenRevoker, type ConnectorClient, type ConnectorPage, type ConnectorFetch } from './providers.js';
+export { createGmailClient, createGoogleCalendarClient, createGithubClient, createConnectorClient, createConnectorSecrets,
+  createGoogleAccessTokenCache, credentialRevoked, type GoogleAccessTokenCache, type GoogleAccessTokens,
+  type GoogleOAuthClientConfig, createTokenRevoker, type ConnectorClient, type ConnectorPage, type ConnectorFetch,
+} from './providers.js';
 export { planExtraction, uploadDocument, searchDocuments,
   type ExtractionPlan, type ExtractionTriggers, type ExtractionEnqueue, type DocumentUploadOptions }
   from './documents.js';

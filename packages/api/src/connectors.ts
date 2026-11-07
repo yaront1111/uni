@@ -6,7 +6,8 @@ import {
 } from '@unai/domain';
 import {
   CONNECTOR_MANAGE_PURPOSE, CONNECTOR_READ_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError,
-  ceilingAdmits, credentialRevoked, createConnector, createConnectorClient, createGoogleAccessTokens, createTokenRevoker, disconnectConnector,
+  ceilingAdmits, credentialRevoked, createConnector, createConnectorClient, createConnectorSecrets, createGoogleAccessTokenCache,
+  createTokenRevoker, disconnectConnector, isConnectorCredentialHandle,
   listConnectors, listGrants, manifestFor, markTokenRevoked, readConnector, recordSyncFailure, runConnectorSync,
   searchDocuments, setCapabilityGrants, storedSensitivity, uploadDocument,
   type ConnectorClient, type GoogleOAuthClientConfig, type SourceIngest, type StoredSensitivity, type TokenRevoker,
@@ -67,12 +68,19 @@ const REFUSAL_STATUS = new Map<string, number>([
   ['CONNECTOR_REQUEST_INVALID', 400],
 ]);
 
+/** What a provider client is built from: the connector's type and stored handle,
+ * and the owner scope of the transaction or job reading that row, never a header. */
+export interface ConnectorClientInput {
+  readonly connectorType: string;
+  readonly ownerScopeId: string;
+  readonly secretRef: string | null;
+}
+
 export interface ConnectorRouteOptions {
   readonly evidenceObjects?: EvidenceObjects;
   /** Builds the read-only provider client for one connector. The production
    * composition builds a real HTTPS client from the connector's secret handle. */
-  readonly connectorClient?: (input: { readonly connectorType: string; readonly secretRef: string | null })
-    => Promise<ConnectorClient> | ConnectorClient;
+  readonly connectorClient?: (input: ConnectorClientInput) => Promise<ConnectorClient> | ConnectorClient;
   readonly revokeTokens?: TokenRevoker;
   /** The connector types `connectorClient` can poll. A sync of any other type is
    * refused `CONNECTOR_CLIENT_UNSUPPORTED` before the evidence context, the
@@ -110,16 +118,26 @@ export interface ConnectorRouteOptions {
 export function createConnectorRuntime(
   secrets: SecretsManager, env: Readonly<Record<string, string | undefined>> = process.env,
 ): {
-  readonly connectorClient: (input: { readonly connectorType: string; readonly secretRef: string | null })
-    => ConnectorClient;
+  readonly connectorClient: (input: ConnectorClientInput) => ConnectorClient;
   readonly revokeTokens: TokenRevoker;
   readonly hasSyncClient: (connectorType: string) => boolean;
 } {
-  const client = googleOAuthClient(secrets, env.UNAI_GOOGLE_CONNECTOR_CLIENT);
-  const tokens = createGoogleAccessTokens(secrets, client);
+  // ADR 0013 (amendment 2026-11-07): a client and the revoker see only the calling
+  // owner's connector handles. The raw manager reaches nothing but the OAuth client.
+  const google = createGoogleAccessTokenCache(googleOAuthClient(secrets, env.UNAI_GOOGLE_CONNECTOR_CLIENT));
   return {
-    connectorClient: input => createConnectorClient(input.connectorType, secrets, input.secretRef, tokens),
-    revokeTokens: createTokenRevoker(secrets),
+    connectorClient: input => {
+      if (input.secretRef !== null && !isConnectorCredentialHandle(input.secretRef, input.ownerScopeId)) {
+        throw new ConnectorError('CONNECTOR_SECRET_REF_OUT_OF_SCOPE', { connectorType: input.connectorType });
+      }
+      const owned = createConnectorSecrets(secrets, input.ownerScopeId);
+      return createConnectorClient(input.connectorType, owned, input.secretRef, google.forOwner(input.ownerScopeId, owned));
+    },
+    // A legacy handle outside the caller's namespace is never resolved: the
+    // disconnect completes and reports manual revocation, and nothing is sent.
+    revokeTokens: input => isConnectorCredentialHandle(input.secretRef, input.ownerScopeId)
+      ? createTokenRevoker(createConnectorSecrets(secrets, input.ownerScopeId))(input)
+      : Promise.resolve({ revoked: false, manualRevocationRequired: true }),
     hasSyncClient,
   };
 }
@@ -289,6 +307,7 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
         assertCeilingAdmitsFloor(connector.connector_type as string, authority.maximum, parsed.data.sensitivity, sensitivityFloor);
         const client = await options.connectorClient!({
           connectorType: connector.connector_type as string,
+          ownerScopeId: tx.context.ownerScopeId,
           secretRef: (connector.secret_ref as string | null) ?? null,
         });
         const result = await runConnectorSync(tx, {

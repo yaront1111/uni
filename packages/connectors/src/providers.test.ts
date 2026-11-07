@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SecretsManager } from '@unai/secrets';
 import { ConnectorError, manifestFor } from './manifests.js';
+import { connectorCredentialHandle } from './credentials.js';
+import { credentialHandleVectors } from './testing/credential-handles.js';
 import * as googleProviders from './providers.js';
-import { createConnectorClient, createOmiClient, createTokenRevoker, type ConnectorFetch } from './providers.js';
+import {
+  createConnectorClient, createConnectorSecrets, createOmiClient, createTokenRevoker, type ConnectorFetch,
+  type GoogleOAuthClientConfig,
+} from './providers.js';
 
 /**
  * The read-only Omi client (ADR 0041 D2 and D7). No network: `fetch` is stubbed,
@@ -393,11 +398,66 @@ describe('createTokenRevoker (ADR 0023, ADR 0041 D8)', () => {
   });
 });
 
+// The connector-credential namespace (ADR 0013, amendment 2026-11-07). Owner ids
+// are invented, in the lowercase canonical form PostgreSQL prints.
+const OWNER = '018f5a2e-7c41-7b3a-9d2e-4f6a8b0c1d2e';
+const OTHER_OWNER = '018f5a2e-7c41-7b3a-9d2e-4f6a8b0c1d2f';
+const RUNTIME_HANDLE = 'secret://mounted/api-database-url';
+
+function recordingManager(value = KEY) {
+  const resolved: string[] = [];
+  const manager: SecretsManager = { async resolve(handle) { resolved.push(handle); return value; } };
+  return { manager, resolved };
+}
+
+describe('createConnectorSecrets: the connector-only resolver (ADR 0013, layer 3)', () => {
+  it.each([
+    ['a runtime credential handle', RUNTIME_HANDLE],
+    ["another owner's handle", `secret://mounted/connectors/${OTHER_OWNER}/gmail#refresh`],
+    ["the owner's own handle with an uppercase owner segment", `secret://mounted/connectors/${OWNER.toUpperCase()}/gmail#refresh`],
+  ])('refuses %s with the bare code before reading anything', async (_title, handle) => {
+    const { manager, resolved } = recordingManager();
+    const error = await failure(createConnectorSecrets(manager, OWNER).resolve(handle));
+    expect(error.message).toBe('CONNECTOR_SECRET_REF_OUT_OF_SCOPE');
+    expect(error.detail).toEqual({});
+    expect(resolved).toEqual([]);
+    const everything = [error.message, JSON.stringify(error.detail), error.stack ?? ''].join('\n');
+    for (const leak of [handle, OWNER, OTHER_OWNER, OWNER.toUpperCase(), KEY]) expect(everything).not.toContain(leak);
+  });
+
+  it.each([undefined, 'refresh'])("resolves the owner's own handle once, unchanged (field %s)", async field => {
+    const handle = connectorCredentialHandle(OWNER, 'gmail', { field });
+    const { manager, resolved } = recordingManager();
+    await expect(createConnectorSecrets(manager, OWNER).resolve(handle)).resolves.toBe(KEY);
+    expect(resolved).toEqual([handle]);
+  });
+
+  it('resolves exactly the shared vectors isConnectorCredentialHandle accepts, and reads nothing for the rest', async () => {
+    const vectors = credentialHandleVectors(OWNER, OTHER_OWNER);
+    const verdicts: { title: string; verdict: string; reads: string[] }[] = [];
+    for (const vector of vectors) {
+      const { manager, resolved } = recordingManager();
+      const verdict = await createConnectorSecrets(manager, OWNER).resolve(vector.handle)
+        .then(() => 'RESOLVED', (error: unknown) => error instanceof ConnectorError ? error.message : 'NOT_A_CONNECTOR_ERROR');
+      verdicts.push({ title: vector.title, verdict, reads: resolved });
+    }
+    // One table, so a disagreement names its vector (vitest drops titles inside loops).
+    expect(verdicts).toEqual(vectors.map(vector => ({
+      title: vector.title,
+      verdict: vector.accepted ? 'RESOLVED' : 'CONNECTOR_SECRET_REF_OUT_OF_SCOPE',
+      reads: vector.accepted ? [vector.handle] : [],
+    })));
+  });
+});
+
 // Google credentials are invented sentinels, never live credentials.
-const REF = 'secret://mounted/gmail#refresh_token';
+const REF = connectorCredentialHandle(OWNER, 'gmail', { field: 'refresh_token' });
+const OTHER_REF = connectorCredentialHandle(OTHER_OWNER, 'gmail', { field: 'refresh_token' });
 const REFRESH = '1//REFRESH_TEST_ONLY';
+const OTHER_REFRESH = '1//OTHER_OWNER_REFRESH_TEST_ONLY';
 const ACCESS = 'ya29.ACCESS_TEST_ONLY';
 const ACCESS2 = 'ya29.SECOND_TEST_ONLY';
+const ACCESS3 = 'ya29.THIRD_TEST_ONLY';
 const CLIENT_ID = 'connector-client.apps.example.test';
 const CLIENT_SECRET = 'GOCSPX-CLIENT_TEST_ONLY';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -405,15 +465,16 @@ const googleRequest: ConnectorFetch = {
   cursor: null, capabilities: ['gmail.read_content'], externalAccountRef: 'me', limit: 2,
 };
 const issued = (access_token = ACCESS, expires_in = 3599) => ({ body: { access_token, expires_in } });
+const oauthClient: GoogleOAuthClientConfig = {
+  resolve: async () => ({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
+};
 
 function googleSource() {
   const resolved: string[] = [];
   const manager: SecretsManager = { resolve: async ref => { resolved.push(ref); return REFRESH; } };
   // This assertion makes the pre-implementation RED a missing-behavior failure.
-  expect(googleProviders.createGoogleAccessTokens).toBeTypeOf('function');
-  const tokens = googleProviders.createGoogleAccessTokens(manager, {
-    resolve: async () => ({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
-  });
+  expect(googleProviders.createGoogleAccessTokenCache).toBeTypeOf('function');
+  const tokens = googleProviders.createGoogleAccessTokenCache(oauthClient).forOwner(OWNER, manager);
   return { tokens, resolved, manager };
 }
 function googleCalls(calls: Recorded[]) { return calls.filter(call => call.url !== TOKEN_URL); }
@@ -424,7 +485,9 @@ async function googleFailure(run: Promise<unknown>, code: string, detail: Record
   expect(error.detail).toEqual(detail);
   expect(error.cause).toBeUndefined();
   const everything = [error.message, JSON.stringify(error.detail), error.stack].join('\n');
-  for (const secret of [REFRESH, ACCESS, ACCESS2, CLIENT_SECRET, SENTINEL]) expect(everything).not.toContain(secret);
+  for (const secret of [REFRESH, OTHER_REFRESH, ACCESS, ACCESS2, ACCESS3, CLIENT_SECRET, SENTINEL]) {
+    expect(everything).not.toContain(secret);
+  }
   return error;
 }
 
@@ -594,8 +657,61 @@ describe('Google refresh exchange (ADR 0043 D6)', () => {
     const one = googleSource().tokens, two = googleSource().tokens;
     expect(await one.accessToken(REF, false)).toBe(ACCESS);
     expect(await two.accessToken(REF, false)).toBe(ACCESS2);
-    expect(await one.accessToken('secret://mounted/calendar', false)).toBe(ACCESS2);
+    expect(await one.accessToken(connectorCredentialHandle(OWNER, 'calendar'), false)).toBe(ACCESS2);
     expect(tokenCalls(calls)).toHaveLength(3);
+  });
+
+  it('keys one runtime map by owner scope plus handle, and never hands one owner another owner\'s token', async () => {
+    const calls = stubFetch(issued(ACCESS), issued(ACCESS2), issued(ACCESS3));
+    const cache = new Map<string, { token: string; expiresAt: number }>();
+    const runtime = googleProviders.createGoogleAccessTokenCache(oauthClient, cache);
+    const a = recordingManager(REFRESH), b = recordingManager(OTHER_REFRESH);
+    const ownerA = runtime.forOwner(OWNER, a.manager), ownerB = runtime.forOwner(OTHER_OWNER, b.manager);
+    expect(await ownerA.accessToken(REF, false)).toBe(ACCESS);
+    expect(await ownerA.accessToken(REF, false)).toBe(ACCESS);
+    expect(tokenCalls(calls)).toHaveLength(1);
+    // Owner B naming A's handle, cached or forced, is refused before the cache is read or evicted.
+    for (const refresh of [false, true]) {
+      const error = await googleFailure(ownerB.accessToken(REF, refresh), 'CONNECTOR_SECRET_REF_OUT_OF_SCOPE');
+      for (const leak of [REF, OWNER, OTHER_OWNER]) expect(error.stack ?? '').not.toContain(leak);
+    }
+    expect(b.resolved).toEqual([]);
+    expect(await ownerB.accessToken(OTHER_REF, false)).toBe(ACCESS2);
+    expect(tokenCalls(calls)).toHaveLength(2);
+    expect(new URLSearchParams(String(tokenCalls(calls)[1]?.init.body)).get('refresh_token')).toBe(OTHER_REFRESH);
+    expect([...cache.keys()]).toEqual([OWNER + '\u0000' + REF, OTHER_OWNER + '\u0000' + OTHER_REF]);
+    // A forced refresh evicts only the caller's key: B's next call is still a cache hit.
+    expect(await ownerA.accessToken(REF, true)).toBe(ACCESS3);
+    expect(await ownerB.accessToken(OTHER_REF, false)).toBe(ACCESS2);
+    expect(tokenCalls(calls)).toHaveLength(3);
+    expect(a.resolved).toEqual([REF, REF]);
+    expect(b.resolved).toEqual([OTHER_REF]);
+    expect([...cache.keys()]).toEqual([OTHER_OWNER + '\u0000' + OTHER_REF, OWNER + '\u0000' + REF]);
+  });
+
+  it.each([
+    ['a runtime credential handle', RUNTIME_HANDLE],
+    ["another owner's handle", OTHER_REF],
+    ["the owner's own handle with an uppercase owner segment", REF.replace(OWNER, OWNER.toUpperCase())],
+  ])('refuses %s before any secret read, exchange or cache entry', async (_title, handle) => {
+    const calls = stubFetch();
+    const cache = new Map<string, { token: string; expiresAt: number }>();
+    const { manager, resolved } = recordingManager(REFRESH);
+    await googleFailure(googleProviders.createGoogleAccessTokenCache(oauthClient, cache)
+      .forOwner(OWNER, manager).accessToken(handle, false), 'CONNECTOR_SECRET_REF_OUT_OF_SCOPE');
+    expect(resolved).toEqual([]); expect(calls).toEqual([]); expect(cache.size).toBe(0);
+  });
+
+  it('a missing OAuth client is still answered first, even for a foreign handle', async () => {
+    const calls = stubFetch();
+    const { manager, resolved } = recordingManager(REFRESH);
+    await googleFailure(googleProviders.createGoogleAccessTokenCache(null).forOwner(OWNER, manager)
+      .accessToken(RUNTIME_HANDLE, false), 'CONNECTOR_OAUTH_CLIENT_MISSING');
+    expect(resolved).toEqual([]); expect(calls).toEqual([]);
+  });
+
+  it('no export still offers a cache keyed by handle alone', () => {
+    expect(Object.keys(googleProviders)).not.toContain('createGoogleAccessTokens');
   });
 
   it.each([

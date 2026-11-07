@@ -12,7 +12,7 @@ import {
   type ConnectorClient, type SourceIngest,
 } from '@unai/connectors';
 import { readSensitivityFloor } from '@unai/control';
-import { hasSyncClient } from './connectors.js';
+import { hasSyncClient, type ConnectorClientInput } from './connectors.js';
 import { importSource, type EvidenceObjects } from './evidence.js';
 
 /**
@@ -68,7 +68,7 @@ export interface ConnectorSyncRuntimeOptions {
   readonly maximumSensitivity: Sensitivity;
   readonly workerId: string;
   readonly evidenceObjects: EvidenceObjects;
-  readonly connectorClient: (input: { readonly connectorType: string; readonly secretRef: string | null })
+  readonly connectorClient: (input: ConnectorClientInput)
     => ConnectorClient | Promise<ConnectorClient>;
   readonly leaseSeconds?: number;
 }
@@ -110,7 +110,8 @@ async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, 
     if (!ceilingAdmits(options.maximumSensitivity, storedSensitivity(manifestFor(connectorType), request.sensitivity, sensitivityFloor))) {
       throw new ConnectorError('CONNECTOR_SENSITIVITY_CEILING_TOO_LOW');
     }
-    const client = await options.connectorClient({ connectorType, secretRef: (connector.secret_ref as string | null) ?? null });
+    const client = await options.connectorClient({
+      connectorType, ownerScopeId: options.ownerScopeId, secretRef: (connector.secret_ref as string | null) ?? null });
     const result = await runConnectorSync(tx, { connectorId: payload.connectorId, request, client, ingest, sensitivityFloor });
     await tx.audit({ policyDecision: 'ALLOW', codeVersion: '0.1.0', result: 'SUCCESS',
       objects: [{ type: 'connectors', id: payload.connectorId, fields: ['last_cursor', 'cursor_updated_at'] },
