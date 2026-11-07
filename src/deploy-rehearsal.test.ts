@@ -757,6 +757,7 @@ interface Lifecycle {
   followsOrder(events:UnitEvent[],expected:UnitEvent[]):{ok:boolean;observed:UnitEvent[]};
   neverStopped(events:UnitEvent[],unit:string):boolean;
   peakOf(samples:number[]):{peak:number;samples:number};
+  version(value:string):Version;
   registryTarget(input:{pinned:string;recorded:string[];published:string[];tagged:string[];bases:Record<string,string>}):
     {from:Version;to:Version;direction:string}|{unverified:string};
   d12Steps(text:string):string[];
@@ -773,6 +774,8 @@ const d11:UnitEvent[]=[{unit:'unai-worker',event:'stopped'},{unit:'unai-api',eve
 const backupLine=JSON.stringify({event:'backup.completed',bytes:123,objects:3,quiescence:'systemd',archive:'private.tar.enc',sha256:'f'.repeat(64)});
 const drillLine=JSON.stringify({event:'restore.drill.completed',verdict:'PASS',restore:{tables:10,objects:3},probes:{reads:2},drill:'PRIVATE'});
 const jsonLines=(values:unknown[])=>values.map(value=>JSON.stringify(value)).join('\n');
+const patched=(line:string,patch:Record<string,unknown>)=>JSON.stringify({...JSON.parse(line) as Record<string,unknown>,...patch});
+type Case=[string,Record<string,unknown>];
 describe('rehearsal lifecycle pure evidence',()=>{
   it('pins D11 journal order and drops private fields and spoofed events',()=>{
     const rows=d11.map(row=>row.event==='completed'?{_SYSTEMD_UNIT:row.unit+'.service',MESSAGE:backupLine}:
@@ -784,12 +787,31 @@ describe('rehearsal lifecycle pure evidence',()=>{
     expect(lifecycle.neverStopped(result,'unai-web')).toBe(true);
     expect(lifecycle.neverStopped(result,'unai-api')).toBe(false);
   });
+  it('takes stop and start events only from PID 1 and completion only from the backup unit itself',()=>{
+    const spoofs=[{_PID:'99',_SYSTEMD_UNIT:'unai-worker.service',UNIT:'unai-worker.service',MESSAGE_ID:journalIds.stopped},
+      {_PID:'1',_SYSTEMD_UNIT:'init.scope',UNIT:'unai-backup.service',MESSAGE:backupLine},
+      {_PID:'42',_SYSTEMD_UNIT:'unai-worker.service',MESSAGE:backupLine},
+      {_PID:'7',_SYSTEMD_UNIT:'unai-backup.service',MESSAGE:JSON.stringify({event:'backup.failed',code:'BACKUP_FAILED'})},
+      {_PID:'7',_SYSTEMD_UNIT:'unai-backup.service',MESSAGE:'(node) warning'}];
+    for(const spoof of spoofs)expect(lifecycle.systemdEvents(JSON.stringify(spoof),['unai-worker','unai-api','unai-backup'])).toEqual([]);
+  });
+  it('counts stopping as a stop and matches each ordered step on both unit and event',()=>{
+    for(const event of ['stopping','stopped'])expect(lifecycle.neverStopped([{unit:'unai-web',event}],'unai-web')).toBe(false);
+    expect(lifecycle.neverStopped([{unit:'unai-web',event:'started'},{unit:'unai-api',event:'stopped'}],'unai-web')).toBe(true);
+    expect(lifecycle.followsOrder([{unit:'unai-worker',event:'started'},...d11.slice(1)],d11).ok).toBe(false);
+    expect(lifecycle.followsOrder(d11.slice(0,4),d11)).toEqual({ok:false,observed:d11.slice(0,4)});
+  });
   it.each([[d11[1]!,d11[0]!,...d11.slice(2)],[...d11.slice(0,2),d11[3]!,d11[2]!,d11[4]!]].map(events=>({events})))('rejects reordered D11 %#',({events})=>{
     expect(lifecycle.followsOrder(events,d11)?.ok).toBe(false);
   });
   it('samples finite nonnegative integers, requiring at least one',()=>{
     expect(lifecycle.peakOf([0,2,6,3])).toEqual({peak:6,samples:4});
     for(const samples of [[],[NaN],[1.1],[-1]])expect(()=>lifecycle.peakOf(samples)).toThrow('REHEARSAL_SAMPLES_INVALID');
+    expect(()=>lifecycle.peakOf(null as unknown as number[])).toThrow('REHEARSAL_SAMPLES_INVALID');
+  });
+  it('encodes versions as safe integers and refuses any other shape',()=>{
+    expect(lifecycle.version('11.0.8')).toEqual({major:11,minor:0,patch:8});
+    for(const value of ['0.1','v0.1.0','0.1.0-rc1','99999999999999999999.0.0'])expect(()=>lifecycle.version(value)).toThrow('REHEARSAL_VERSION_INVALID');
   });
   it('picks the newest safe registry tag in either direction',()=>{
     const input={pinned:'0.1.0',recorded:['0.1.0','0.2.0','0.3.0'],published:['0.1.0'],tagged:['0.1.0','0.2.0','0.3.0'],bases:{}};
@@ -798,6 +820,9 @@ describe('rehearsal lifecycle pure evidence',()=>{
     expect(lifecycle.registryTarget({...input,pinned:'0.3.0'})).toEqual({from:version(3),to:version(2),direction:'backward'});
     expect(lifecycle.registryTarget({...input,bases:{'0.3.0':'0.2.0'}})).toEqual({from:version(1),to:version(2),direction:'forward'});
     expect(lifecycle.registryTarget({...input,tagged:[]})).toEqual({unverified:'REGISTRY_TARGET_UNAVAILABLE'});
+    expect(lifecycle.registryTarget({...input,bases:{'0.3.0':'0.1.0'}})).toEqual({from:version(1),to:version(3),direction:'forward'});
+    expect(lifecycle.registryTarget({...input,published:['0.1.0','0.3.0'],bases:{'0.3.0':'0.2.0'}})).toEqual({from:version(1),to:version(3),direction:'forward'});
+    expect(()=>lifecycle.registryTarget({...input,pinned:'latest',tagged:[]})).toThrow('REHEARSAL_VERSION_INVALID');
   });
   it('keeps only D12 titles and summary counts, refuses empty probe evidence',()=>{
     expect(lifecycle.d12Steps('private\n== D12 step 0: timers\n== D12 step 1: fetch\n')).toEqual(['timers','fetch']);
@@ -805,6 +830,16 @@ describe('rehearsal lifecycle pure evidence',()=>{
     expect(lifecycle.drillSummary(drillLine)).toEqual({verdict:'PASS',tables:10,objects:3,probeReads:2});
     expect(()=>lifecycle.drillSummary(drillLine.replace('"reads":2','"reads":0'))).toThrow('REHEARSAL_DRILL_INVALID');
     expect(()=>lifecycle.backupSummary('{}')).toThrow('REHEARSAL_BACKUP_INVALID');
+    expect(()=>lifecycle.d12Steps('== D12 step 0: timers\n== D12 step 2: fetch\n')).toThrow('REHEARSAL_UPGRADE_STEPS_INVALID');
+  });
+  it.each<Case>([['another event',{event:'backup.failed'}],['an empty archive',{bytes:0}],['fractional bytes',{bytes:1.5}],
+    ['negative objects',{objects:-1}],['assumed quiescence',{quiescence:'assumed'}],['no quiescence',{quiescence:'none'}]])('refuses a backup summary with %s',(_,patch)=>{
+    expect(()=>lifecycle.backupSummary(patched(backupLine,patch))).toThrow('REHEARSAL_BACKUP_INVALID');
+  });
+  it.each<Case>([['another event',{event:'restore.drill.failed'}],['verdict FAIL',{verdict:'FAIL'}],
+    ['negative tables',{restore:{tables:-1,objects:3}}],['fractional objects',{restore:{tables:10,objects:0.5}}],
+    ['no probe reads',{probes:{}}]])('refuses a drill summary with %s',(_,patch)=>{
+    expect(()=>lifecycle.drillSummary(patched(drillLine,patch))).toThrow('REHEARSAL_DRILL_INVALID');
   });
   it('classifies observed invocations without exposing argv or stdout',()=>{
     const rows=[{argv:['--unit=unai-upgrade-backup','--uid=unai-backup','--property=EnvironmentFile=/etc/unai/backup.env'],exit:1,stdout:''},
@@ -813,6 +848,30 @@ describe('rehearsal lifecycle pure evidence',()=>{
       {argv:['--uid=unai-web','server.ts','--check'],exit:0,stdout:'noise\n'+JSON.stringify({check:'api',status:'warn',code:'API_UNREACHABLE',secret:'PRIVATE'})}];
     expect(lifecycle.classifyObserved(jsonLines(rows))).toEqual({transientBackup:{user:'unai-backup',environmentFile:true,exit:1},
       migrate:{user:'root',home:true,exit:0},publish:{user:'root',home:true,exit:0},checks:{web:{exit:0,lines:[{check:'api',status:'warn',code:'API_UNREACHABLE'}]}}});
+  });
+  it('records a missing HOME or backup environment file instead of assuming it, and ignores unrelated runs',()=>{
+    const rows=[{argv:['--unit=unai-upgrade-backup','--uid=unai-backup','--property=EnvironmentFile=/etc/unai/api.env'],exit:0,stdout:''},
+      {argv:['/usr/local/bin/pnpm','db:migrate'],exit:0,stdout:''},
+      {argv:['--setenv=HOME=/home/unai','/usr/local/bin/pnpm','uai','registry','publish'],exit:0,stdout:''},
+      {argv:['--uid=unai-api','/usr/bin/true'],exit:0,stdout:''}];
+    expect(lifecycle.classifyObserved(jsonLines(rows))).toStrictEqual({transientBackup:{user:'unai-backup',environmentFile:false,exit:0},
+      migrate:{user:'root',home:false,exit:0},publish:{user:'root',home:false,exit:0},checks:{}});
+  });
+  const checkRun=(row:Record<string,unknown>)=>({argv:['--uid=unai-api','--check'],exit:0,stdout:JSON.stringify(row)});
+  it.each<[string,unknown[]]>([['argv that is not a list',[{argv:'--check',exit:0}]],['a non-string argument',[{argv:[1],exit:0}]],
+    ['a negative exit',[{argv:[],exit:-1}]],['an exit above 255',[{argv:[],exit:256}]],
+    ['an unknown service user',[{argv:['--unit=unai-upgrade-backup','--uid=nobody'],exit:0}]],
+    ['a --check run as root',[{argv:['--check'],exit:0,stdout:''}]],
+    ['a second web --check',[{argv:['--uid=unai-web','--check'],exit:0,stdout:''},{argv:['--uid=unai-web','--check'],exit:0,stdout:''}]],
+    ['a second migrate',[{argv:['db:migrate'],exit:0},{argv:['db:migrate'],exit:0}]],
+    ['an uppercase check name',[checkRun({check:'API',status:'ok',code:'OK'})]],
+    ['an unknown check status',[checkRun({check:'api',status:'maybe',code:'OK'})]],
+    ['raw text as a check code',[checkRun({check:'api',status:'fail',code:'connect ECONNREFUSED'})]]])('refuses an observation with %s',(_,rows)=>{
+    expect(()=>lifecycle.classifyObserved(jsonLines(rows))).toThrow('REHEARSAL_OBSERVED_INVALID');
+  });
+  it.each([{real:'systemd-run',log:'/run/observed'},{real:'/usr/bin/systemd-run',log:'/run/$(id)'},
+    {real:'/usr/bin/systemd run',log:'/run/observed'}])('refuses an observer path that is relative or not plain %#',paths=>{
+    expect(()=>lifecycle.observerScript(paths)).toThrow('REHEARSAL_OBSERVER_PATH_INVALID');
   });
   it.skipIf(process.platform!=='linux')('observer preserves argv stdout and exit, only retains checks',()=>{
     const dir=mkdtempSync(join(tmpdir(),'observer-')),real=join(dir,'real'),log=join(dir,'log'),observer=join(dir,'observer');
@@ -842,6 +901,14 @@ describe('rehearsal backup proof',()=>{
   it.each(['archives','sidecars','encrypted','sizeMatches','headerValid'])('refuses a failed archive observation %s',key=>{
     expect(()=>backupVerdict(d11,{bytes:123,objects:3,quiescence:'systemd'},{...inventory,[key]:false})).toThrow('REHEARSAL_BACKUP_INVALID');
   });
+  it.each<[string,UnitEvent[]]>([['the API stopped before the worker',[d11[1]!,d11[0]!,...d11.slice(2)]],['no worker restart',d11.slice(0,4)],
+    ['the web stopping',[...d11.slice(0,2),{unit:'unai-web',event:'stopping'},...d11.slice(2)]],
+    ['the web stopped',[...d11.slice(0,2),{unit:'unai-web',event:'stopped'},...d11.slice(2)]]])('refuses a backup with %s',(_,events)=>{
+    expect(()=>backupVerdict(events,{bytes:123,objects:3,quiescence:'systemd'},inventory)).toThrow('REHEARSAL_BACKUP_INVALID');
+  });
+  it.each([{archives:2},{archives:0},{sidecars:1},{sidecars:3}])('refuses anything but one archive and two sidecars %#',override=>{
+    expect(()=>backupVerdict(d11,{bytes:123,objects:3,quiescence:'systemd'},{...inventory,...override})).toThrow('REHEARSAL_BACKUP_INVALID');
+  });
 });
 
 // @ts-expect-error Plain JavaScript operator tooling.
@@ -852,9 +919,15 @@ describe('rehearsal restore drill proof',()=>{
   it('records a measured over-limit finding signal without hiding a passing restore',()=>{
     expect(drillVerdict(good)).toMatchObject({verdict:'PASS',migratorPeak:6,migratorLimit:5,overLimit:true,samples:4,intervalMs:100,user:'root'});
   });
-  it.each([{user:'unai-backup'},{capability:''},{protect:'full'},{databases:1},{roles:1},{failed:true},{limit:NaN}])('fails on invalid or missing drill evidence %#',override=>{
+  it.each([{user:'unai-backup'},{capability:''},{protect:'full'},{databases:1},{roles:1},{failed:true},{limit:NaN},
+    {databases:undefined},{roles:undefined},{failed:undefined}])('fails on invalid or missing drill evidence %#',override=>{
     expect(()=>drillVerdict({...good,...override})).toThrow('REHEARSAL_DRILL_INVALID');
   });
+  it('raises the over-limit signal only above the limit, which admits exactly limit connections',()=>{
+    expect(drillVerdict({...good,samples:[0,5],limit:5})).toMatchObject({migratorPeak:5,migratorLimit:5,overLimit:false});
+    expect(drillVerdict({...good,samples:[0,4],limit:5})).toMatchObject({migratorPeak:4,overLimit:false});
+  });
+  it('accepts systemd reporting the root user by name',()=>expect(drillVerdict({...good,user:'root'})).toMatchObject({user:'root'}));
 });
 
 // @ts-expect-error Plain JavaScript operator tooling.
@@ -889,6 +962,16 @@ describe('rehearsal real rollback proof',()=>{
     expect(()=>rollbackVerdict({...input,text:'rollback incomplete\n'+input.text})).toThrow('REHEARSAL_ROLLBACK_INVALID');
     expect(()=>rollbackVerdict({...input,observed:{transientBackup:{user:'unai-backup',environmentFile:true,exit:0}}})).toThrow('REHEARSAL_ROLLBACK_INVALID');
   });
+  const backup={user:'unai-backup',environmentFile:true,exit:1};
+  it.each<Case>([['a zero exit',{exit:0}],['a usage exit',{exit:2}],
+    ['another final code',{text:input.text.replace(/UPGRADE_BACKUP_FAILED$/,'UPGRADE_MIGRATE_FAILED')}],
+    ['the API started after the worker',{events:[d11[0]!,d11[1]!,d11[4]!,d11[3]!]}],['no restart',{events:d11.slice(0,2)}],
+    ['a transient backup run as root',{observed:{transientBackup:{...backup,user:'root'}}}],
+    ['a transient backup without backup.env',{observed:{transientBackup:{...backup,environmentFile:false}}}],
+    ['a non-numeric transient exit',{observed:{transientBackup:{...backup,exit:'1'}}}],
+    ['no transient backup observed',{observed:{transientBackup:null}}]])('rejects a rollback with %s',(_,override)=>{
+    expect(()=>rollbackVerdict({...input,...override})).toThrow('REHEARSAL_ROLLBACK_INVALID');
+  });
 });
 
 // @ts-expect-error Plain JavaScript operator tooling.
@@ -917,6 +1000,34 @@ describe('rehearsal real upgrade proof',()=>{
   it.each([{archiveDelta:0},{offlineVersion:'11.0.9'},{signin:302},{exit:1},{observed:{...observed,publish:null}},
     {observed:{...observed,migrate:{user:'root',home:false,exit:0}}}])('refuses incomplete upgrade %#',override=>{
     expect(()=>upgradeVerdict({...input,...override})).toThrow('REHEARSAL_UPGRADE_INVALID');
+  });
+  const events=(...pairs:Array<[string,string]>)=>pairs.map(([unit,event])=>({unit,event}));
+  const web=(lines:unknown[])=>({observed:{...observed,checks:{...observed.checks,web:{exit:0,lines}}}});
+  const transient=(patch:Record<string,unknown>)=>({observed:{...observed,transientBackup:{...observed.transientBackup,...patch}}});
+  it.each<Case>([
+    ['a STOPPED message despite exit 0',{text:input.text+'STOPPED (ADR 0043 D12): step 7 failed after migrations began; current was not swapped back.\n'}],
+    ['no upgraded line',{text:input.text.replace('upgraded rehearsal-a -> rehearsal-b','')}],
+    ['a missing D12 step',{text:input.text.replace('== D12 step 9: start\n','')}],
+    ['the worker started before the API',{events:events(['unai-worker','started'],['unai-api','started'],['unai-web','stopped'],['unai-web','started'])}],
+    ['no web restart',{events:events(['unai-api','started'],['unai-worker','started'])}],
+    ['a second archive',{archiveDelta:2}],
+    ['a transient backup run as root',transient({user:'root'})],
+    ['a transient backup without backup.env',transient({environmentFile:false})],
+    ['a failed transient backup',transient({exit:1})],
+    ['migrate as a service user',{observed:{...observed,migrate:{user:'unai-api',home:true,exit:0}}}],
+    ['a failed migrate',{observed:{...observed,migrate:{user:'root',home:true,exit:1}}}],
+    ['publish without HOME',{observed:{...observed,publish:{user:'root',home:false,exit:0}}}],
+    ...(['api','web','worker'] as const).map((name):Case=>[`a failed ${name} --check`,
+      {observed:{...observed,checks:{...observed.checks,[name]:{...observed.checks[name],exit:1}}}}]),
+    ['no worker --check',{observed:{...observed,checks:{api:observed.checks.api,web:observed.checks.web}}}],
+    ['the web API check ok while the API is stopped',web([{check:'api',status:'ok',code:'OK'}])],
+    ['the web API check warning another code',web([{check:'api',status:'warn',code:'API_TLS_FAILED'}])],
+    ['the web API check failing',web([{check:'api',status:'fail',code:'API_UNREACHABLE'}])],
+    ['the warning on another web check',web([{check:'auth',status:'warn',code:'API_UNREACHABLE'}])]])('refuses an upgrade with %s',(_,override)=>{
+    expect(()=>upgradeVerdict({...input,...override})).toThrow('REHEARSAL_UPGRADE_INVALID');
+  });
+  it('accepts no publish when the registry re-pin is UNVERIFIED',()=>{
+    expect(upgradeVerdict({...input,publishExpected:false,observed:{...observed,publish:null}})).toMatchObject({exit:0,publish:null});
   });
 });
 
@@ -958,6 +1069,8 @@ it('finds the completed oneshot invocation in the cursor-scoped journal after sy
   expect(drillInvocation(JSON.stringify(row))).toBe('a'.repeat(32));
   expect(()=>drillInvocation('')).toThrow('REHEARSAL_DRILL_INVALID');
   expect(()=>drillInvocation(jsonLines([row,{...row,_SYSTEMD_INVOCATION_ID:'b'.repeat(32)}]))).toThrow('REHEARSAL_DRILL_INVALID');
+  expect(()=>drillInvocation(JSON.stringify({...row,_SYSTEMD_INVOCATION_ID:'z'.repeat(32)}))).toThrow('REHEARSAL_DRILL_INVALID');
+  expect(drillInvocation(jsonLines([row,{...row,_SYSTEMD_UNIT:'unai-backup.service',_SYSTEMD_INVOCATION_ID:'b'.repeat(32)}]))).toBe('a'.repeat(32));
 });
 
 it('puts the executable observer outside the noexec run tmpfs',()=>{
@@ -982,4 +1095,8 @@ const archiveChange=untypedArchiveChange as (before:number,after:number,events:U
 it('attributes only completed timer archives separately from the upgrade backup',()=>{
   expect(archiveChange(1,3,[{unit:'unai-backup',event:'completed'}])).toEqual({archiveIncrease:2,timerArchives:1,archiveDelta:1});
   expect(archiveChange(1,2,[{unit:'unai-backup',event:'starting'}])).toEqual({archiveIncrease:1,timerArchives:0,archiveDelta:1});
+  expect(archiveChange(1,2,[{unit:'unai-restore-drill',event:'completed'}])).toEqual({archiveIncrease:1,timerArchives:0,archiveDelta:1});
+  for(const [before,after] of [[2,1],[-1,1],[1,1.5],[Number.NaN,1]] as Array<[number,number]>){
+    expect(()=>archiveChange(before,after,[])).toThrow('REHEARSAL_ARCHIVES_INVALID');
+  }
 });
