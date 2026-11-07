@@ -24,7 +24,10 @@ export async function requestDocumentProcessing(tx: OwnerTransaction, sourceItem
 
 /** Dispatch is idempotent across crashes between queue insertion and ledger update.
  * IDs, source time and the release pin form the immutable payload; no clock tick or
- * request correlation changes its identity on a retry. */
+ * request correlation changes its identity on a retry. An item that already has a
+ * job gets that job back, whatever pin dispatched it: the worker decides the
+ * release its stages run under (ADR 0048 D1), and a dead-lettered job still waits
+ * for the explicit operator retry (D2). */
 export async function enqueueEvidenceProcessing(options: {
   appPool: Pool; context: RequestContext; evidenceId: string; registryReleaseId: string;
 }): Promise<{ jobId: string }> {
@@ -32,7 +35,6 @@ export async function enqueueEvidenceProcessing(options: {
     const row = (await tx.query('SELECT * FROM evidence_processing WHERE owner_scope_id=$1 AND source_item_id=$2 FOR UPDATE',
       [tx.context.ownerScopeId, options.evidenceId])).rows[0];
     if (!row) throw new Error('PROCESSING_INTENT_REQUIRED');
-    if (row.registry_release_id !== null && row.registry_release_id !== options.registryReleaseId) throw new Error('PROCESSING_RELEASE_MISMATCH');
     if (row.job_id !== null) return { jobId: row.job_id as string };
     const job = await enqueueJob(tx, { jobKind: EXTRACTION_JOB_KIND,
       idempotencyKey: processingKey(options.evidenceId, options.registryReleaseId), maxAttempts: 3,

@@ -15,6 +15,8 @@ export interface ProcessingRuntimeOptions {
   appPool: Pool;
   ownerScopeId: string;
   actorId: string;
+  /** The pinned release. New and not-yet-extracted work runs under it; an item
+   * with stage output finishes under its ledger release (ADR 0048 D1). */
   registryReleaseId: string;
   provider: ModelProvider;
   dataPurpose: string;
@@ -49,7 +51,6 @@ export function createProcessingRuntime(options: ProcessingRuntimeOptions) {
   async function handle(job: ClaimedJob): Promise<void> {
     const payload = extractionJobPayloadSchema.parse(job.payload);
     if (payload.ownerScopeId !== options.ownerScopeId || job.ownerScopeId !== options.ownerScopeId) throw new Error('PROCESSING_OWNER_MISMATCH');
-    if (payload.registryReleaseId !== options.registryReleaseId) throw new Error('PROCESSING_RELEASE_MISMATCH');
     if (payload.dataPurpose !== options.dataPurpose) throw new Error('PROCESSING_PURPOSE_REFUSED');
     const ceiling = ranks[options.maximumSensitivity] < ranks[payload.maximumSensitivity] ? options.maximumSensitivity : payload.maximumSensitivity;
     const runner = <T,>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) =>
@@ -79,14 +80,16 @@ export function createProcessingRuntime(options: ProcessingRuntimeOptions) {
           [options.ownerScopeId, payload.sourceItemId]));
         return;
       }
+      // A job queued under an earlier pin runs, never strands (ADR 0048 D1).
+      const release = await stageRelease(runner, options.ownerScopeId, payload.sourceItemId, row, options.registryReleaseId);
       const gateway = createModelGateway({ provider: options.provider,
         recordCall: run => withOwnerTransaction(options.appPool, context('model.call', payload.correlationId), run) });
       if (row.status === 'PENDING') {
         const result = await runExtraction({ runner, gateway, request: {
-          ownerScopeId: options.ownerScopeId, sourceItemId: payload.sourceItemId, registryReleaseId: options.registryReleaseId,
+          ownerScopeId: options.ownerScopeId, sourceItemId: payload.sourceItemId, registryReleaseId: release,
           correlationId: payload.correlationId, dataPurpose: payload.dataPurpose, maximumSensitivity: ceiling,
           referenceInstant: row.reference_instant as Date | null, timeZone: row.time_zone as string | null,
-          runKind: row.run_kind as 'FULL'|'TARGETED', attempt: job.attemptCount, processingKey: processingKey(payload.sourceItemId, options.registryReleaseId),
+          runKind: row.run_kind as 'FULL'|'TARGETED', attempt: job.attemptCount, processingKey: processingKey(payload.sourceItemId, release),
         } });
         await options.onCheckpoint?.('EXTRACTED');
         await runner('memory.extract', tx => tx.query(`UPDATE evidence_processing SET status='EXTRACTED',extraction_run_id=$3,
@@ -104,7 +107,7 @@ export function createProcessingRuntime(options: ProcessingRuntimeOptions) {
       if (row.status === 'EXTRACTED') {
         await runner('memory.canonicalize', async tx => {
           const canonical = await canonicalizeProcessingClaims(tx, { sourceItemId: payload.sourceItemId,
-            extractionRunId: row.extraction_run_id as string, registryReleaseId: options.registryReleaseId,
+            extractionRunId: row.extraction_run_id as string, registryReleaseId: release,
             referenceInstant: row.reference_instant as Date | null, timeZone: row.time_zone as string | null });
           await tx.query(`UPDATE evidence_processing SET status='CANONICALIZED',canonicalized=$3,
             unresolved_claims=unresolved_claims+$4 WHERE owner_scope_id=$1 AND source_item_id=$2`,
@@ -124,8 +127,8 @@ export function createProcessingRuntime(options: ProcessingRuntimeOptions) {
             { kind: 'SET_BELIEF_ASSESSMENT' as const, proposition: assertion.propositionId, assessmentStatus: 'PROVISIONAL' as const,
               ...(assertion.validFrom ? { validFrom: assertion.validFrom } : {}), decisionReason: { code: 'GROUNDED_EXTRACTION_REQUIRES_CONFIRMATION' } },
           ]);
-          const key = processingKey(payload.sourceItemId, options.registryReleaseId);
-          const proposed = await proposeBeliefTransaction(runner, request, { registryReleaseId: options.registryReleaseId,
+          const key = processingKey(payload.sourceItemId, release);
+          const proposed = await proposeBeliefTransaction(runner, request, { registryReleaseId: release,
             transactionKind: 'CANONICALIZE', risk: 'LOW', idempotencyKey: key, sourceEvidenceIds: [payload.sourceItemId], operations });
           transactionId = proposed.transactionId;
           if (proposed.status !== 'COMMITTED') {
@@ -178,6 +181,30 @@ export function createProcessingRuntime(options: ProcessingRuntimeOptions) {
         terminalErrorCodes: TERMINAL_EXTRACTION_ERROR_CODES, handler: handle });
     },
   };
+}
+
+type StageRunner = <T>(purpose: string, run: (tx: OwnerTransaction) => Promise<T>) => Promise<T>;
+
+/** ADR 0048 D1: the release an item's stages run under. A PENDING item with no
+ * succeeded run under its dispatch release moves to the pin; an item with stage
+ * output keeps its ledger release, so one item never mixes releases. Callers hold
+ * the item's advisory lock. */
+async function stageRelease(runner: StageRunner, ownerScopeId: string, sourceItemId: string,
+  row: Record<string, unknown>, pinned: string): Promise<string> {
+  const dispatched = row.registry_release_id as string | null;
+  if (dispatched === null || dispatched === pinned) return pinned;
+  if (row.status !== 'PENDING') return dispatched;
+  return runner('memory.extract', async tx => {
+    // The same predicate as runExtraction's reuse of a succeeded run.
+    const extracted = await tx.query(`SELECT 1 FROM extraction_runs WHERE owner_scope_id=$1 AND source_item_id=$2
+      AND processing_key=$3 AND registry_release_id=$4 AND status='SUCCEEDED' LIMIT 1`,
+    [ownerScopeId, sourceItemId, processingKey(sourceItemId, dispatched), dispatched]);
+    if (extracted.rows.length > 0) return dispatched;
+    const moved = await tx.query(`UPDATE evidence_processing SET registry_release_id=$3
+      WHERE owner_scope_id=$1 AND source_item_id=$2 AND status='PENDING'`, [ownerScopeId, sourceItemId, pinned]);
+    if (moved.rowCount !== 1) throw new Error('PROCESSING_INTENT_REQUIRED');
+    return pinned;
+  });
 }
 
 async function declare(tx: OwnerTransaction, purpose: string, sensitivity: string): Promise<void> {

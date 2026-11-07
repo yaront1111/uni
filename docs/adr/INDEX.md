@@ -54,5 +54,6 @@ See [historical inventory](0035-historical-deviation-inventory.md) for the revie
 | [0045-session-liveness-at-commit.md](0045-session-liveness-at-commit.md) | 2026-11-05 |
 | [0046-owner-access-once-per-statement.md](0046-owner-access-once-per-statement.md) | 2026-11-06 |
 | [0047-unresolved-candidate-claims-on-the-source-page.md](0047-unresolved-candidate-claims-on-the-source-page.md) | 2026-11-06 |
+| [0048-registry-pin-changes-queued-extraction-and-existing-memory.md](0048-registry-pin-changes-queued-extraction-and-existing-memory.md) | 2026-11-06 |
 
 The two existing 0033 records retain their qualified filenames so historical references remain valid. New work uses 0036 onward.

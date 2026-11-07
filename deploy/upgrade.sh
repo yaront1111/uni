@@ -4,6 +4,8 @@
 # start. Before migrate undo the upgrade; afterwards restore or fix forward.
 # UNAI_DEPLOY_ROOT and UNAI_UPGRADE_DRY_RUN_FAIL_AT=0-9 are dry-run-only seams.
 # Dry runs print actions without executing them. Errors: one UPPER_SNAKE line.
+# A --registry-version re-pin needs no queue drain: the worker runs evidence.extract
+# jobs queued or retried under the previous pin (ADR 0048; deploy/README.md, Upgrade).
 set -euo pipefail
 umask 022
 

@@ -626,6 +626,16 @@ sudo bash deploy/upgrade.sh '<tag>' --dry-run
 - `--dry-run` prints commands without executing or writing them. It validates
   installed files, not the unfetched release, database, credentials or readiness.
 
+**Queued extraction across a re-pin** ([ADR 0048](../docs/adr/0048-registry-pin-changes-queued-extraction-and-existing-memory.md)).
+A `--registry-version` re-pin needs no queue drain. After the swap the worker
+processes every `evidence.extract` job that was queued, retrying or interrupted
+under the previous pin. An item not yet extracted runs under the new pin. An item
+already part-way through (extracted, canonicalized or governed) finishes under the
+release it began with. Dead letters still wait for your retry on the Jobs screen
+(`/ops/jobs`). A retried one completes under the new pin, including any job an
+earlier release dead-lettered with `PROCESSING_RELEASE_MISMATCH`. Existing memory
+keeps the release it was extracted under: a re-pin re-extracts and rewrites nothing.
+
 The script first stops previously active `unai-backup.timer` and
 `unai-restore-drill.timer`, then refuses an active/activating backup or drill.
 Stopping a timer does not stop its running service. D12 then runs in this order:
