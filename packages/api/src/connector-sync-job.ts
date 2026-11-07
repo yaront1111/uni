@@ -8,7 +8,7 @@ import { withOwnerTransaction, type OwnerTransaction } from '@unai/postgres';
 import { enqueueJob, runJobAttempt, type JobAttempt } from '@unai/jobs';
 import {
   CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError, LIFECYCLE_REFUSALS, ceilingAdmits, credentialRevoked,
-  manifestFor, markTokenRevoked, recordSyncFailure, runConnectorSync, storedSensitivity,
+  ingestionStopped, manifestFor, markTokenRevoked, recordSyncFailure, runConnectorSync, storedSensitivity,
   type ConnectorClient, type SourceIngest,
 } from '@unai/connectors';
 import { readSensitivityFloor } from '@unai/control';
@@ -90,7 +90,7 @@ async function sync(options: ConnectorSyncRuntimeOptions, ingest: SourceIngest, 
     const connector = (await tx.query('SELECT connector_type,secret_ref,status FROM connectors WHERE id=$1 AND owner_scope_id=$2',
       [payload.connectorId, options.ownerScopeId])).rows[0];
     if (!connector) throw new ConnectorError('CONNECTOR_NOT_FOUND', { connectorId: payload.connectorId });
-    if (connector.status !== 'ACTIVE' && connector.status !== 'SYNC_FAILED') {
+    if (ingestionStopped(connector.status as string)) {
       await tx.audit({ policyDecision: 'DENY', codeVersion: '0.1.0', result: 'REFUSED',
         objects: [{ type: 'connectors', id: payload.connectorId, fields: ['status'] }] });
       return 'CONNECTOR_INGESTION_STOPPED';

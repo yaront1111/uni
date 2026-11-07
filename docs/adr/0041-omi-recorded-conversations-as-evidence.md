@@ -703,6 +703,35 @@ body (FR-104).
 - Any other non-2xx → `CONNECTOR_PROVIDER_UNAVAILABLE {status}`.
 - Unparseable JSON or a non-array body → `CONNECTOR_PROVIDER_RESPONSE_INVALID`.
 
+**Every client (added 2026-11-07, task-81921e9be4ee40ca824253e6cdbf75c9).** The
+mapping above is now the one mapping for every provider client's resource
+requests: `providerFailure` in `packages/connectors/src/http.ts`, used by Omi's
+list and by the Gmail, Google Calendar and GitHub GETs (`getJson`). That changes
+two things for those three clients:
+
+- An unread error body is now cancelled, so only the status and `Retry-After`
+  survive (FR-104). Before, it was left unconsumed.
+- A 429 is now `CONNECTOR_RATE_LIMITED {status: 429, retryAfterSeconds}`. Before,
+  it was `CONNECTOR_PROVIDER_UNAVAILABLE {status: 429}`. The sync route therefore
+  answers 429 with `retryAfterSeconds` instead of 502, and the web names the
+  wait. The `connector.sync` job dead-letters the attempt (the terminal code
+  below) instead of re-running the whole sync at the worker's next poll, inside
+  the provider's limit. The retry is the scheduler's next window, at least 5
+  minutes for these types (`MINIMUM_INTERVAL_BY_TYPE`,
+  `packages/api/src/connector-sync-scheduler.ts`).
+
+Why: a 429 is the provider's explicit rate-limit answer (RFC 6585), so "provider
+unavailable" misnames it, and both Google and GitHub ask clients to back off after
+one. Unchanged on purpose: the Google token exchange keeps its own mapping,
+because it reads its body for `invalid_grant`, and its 401 `invalid_client` and
+its 429 are deployment or OAuth-client failures, `CONNECTOR_PROVIDER_UNAVAILABLE`
+and never a revocation (providers.test.ts T6). A 403 stays
+`CONNECTOR_TOKEN_REVOKED {status: 403}` and never revokes (`credentialRevoked`),
+although Google and GitHub also answer some rate limits with 403: telling them
+apart needs the body or GitHub's `x-ratelimit-*` headers, and neither is read.
+The token revoker still keeps only the status; it now cancels the body it never
+reads.
+
 **Rate limits.** The client never sleeps and never retries: a rate-limited run
 fails at once.
 

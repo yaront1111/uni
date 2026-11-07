@@ -7,7 +7,7 @@ import {
 import {
   CONNECTOR_MANAGE_PURPOSE, CONNECTOR_READ_PURPOSE, CONNECTOR_SYNC_PURPOSE, ConnectorError,
   ceilingAdmits, credentialRevoked, createConnector, createConnectorClient, createConnectorSecrets, createGoogleAccessTokenCache,
-  createTokenRevoker, disconnectConnector, isConnectorCredentialHandle,
+  createTokenRevoker, disconnectConnector, ingestionStopped, isConnectorCredentialHandle,
   listConnectors, listGrants, manifestFor, markTokenRevoked, readConnector, recordSyncFailure, runConnectorSync,
   searchDocuments, setCapabilityGrants, storedSensitivity, uploadDocument,
   type ConnectorClient, type GoogleOAuthClientConfig, type SourceIngest, type StoredSensitivity, type TokenRevoker,
@@ -297,7 +297,7 @@ export function registerConnectorRoutes(app: FastifyInstance, work: Work, option
         // Stopped connectors must resolve no secret and send no provider request.
         // Revoked/disconnected rows have no handle; building their client first
         // would mask this refusal with CONNECTOR_CREDENTIAL_MISSING.
-        if (connector.status !== 'ACTIVE' && connector.status !== 'SYNC_FAILED') {
+        if (ingestionStopped(connector.status as string)) {
           throw new ConnectorError('CONNECTOR_INGESTION_STOPPED',
             { connectorId: request.params.id, status: connector.status as string });
         }

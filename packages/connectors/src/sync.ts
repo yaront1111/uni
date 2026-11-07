@@ -172,6 +172,21 @@ function connectorStopped(error: unknown): boolean {
     || (error.message === 'CONNECTOR_INGESTION_STOPPED' && 'code' in error && error.code === '55000'));
 }
 
+/**
+ * Whether a connector's status refuses a sync with `CONNECTOR_INGESTION_STOPPED`
+ * (ADR 0023 §8): every status but ACTIVE and SYNC_FAILED, the retryable one, so
+ * PENDING_AUTHORIZATION, TOKEN_REVOKED and DISCONNECTED. The sync route and the
+ * `connector.sync` job ask it before building a client, because a revoked or
+ * disconnected row holds no credential handle. Deliberately not used by:
+ * `requireCapability`, which refuses only DISCONNECTED and TOKEN_REVOKED so a
+ * PENDING_AUTHORIZATION refusal still names the missing capability; the commit
+ * point below, which needs exactly ACTIVE because the run already cleared
+ * SYNC_FAILED; and the scheduler's SCHEDULED_STATUSES, a filter, not a refusal.
+ */
+export function ingestionStopped(status: string): boolean {
+  return status !== 'ACTIVE' && status !== 'SYNC_FAILED';
+}
+
 export async function runConnectorSync(tx: ConnectorTransaction, input: {
   readonly connectorId: string;
   readonly request: SyncRequest;
@@ -200,7 +215,7 @@ export async function runConnectorSync(tx: ConnectorTransaction, input: {
       `UPDATE connectors SET status='ACTIVE',last_sync_error=NULL,updated_at=now()
        WHERE id=$1 AND owner_scope_id=$2 AND status='SYNC_FAILED'`,
       [input.connectorId, tx.context.ownerScopeId]);
-  } else if (connector.status !== 'ACTIVE') {
+  } else if (ingestionStopped(connector.status)) {
     throw new ConnectorError('CONNECTOR_INGESTION_STOPPED',
       { connectorId: input.connectorId, status: connector.status });
   }

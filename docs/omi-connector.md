@@ -48,9 +48,9 @@ Delivering tasks, in landing order:
   anchors by `segmentIndex`, then by character start.
 - **The manifest, the client and the D8 revoker branch.** `connector.omi`
   (`packages/connectors/src/manifests.ts:190-203`) and `omiGet`
-  (`providers.ts:335-356`). The revoker returns
+  (`omi.ts:73-83`). The revoker returns
   `{revoked: false, manualRevocationRequired: true}` for OMI before any request
-  (`providers.ts:442`).
+  (`providers.ts:241`).
 - **The web labels** for OMI on the Connected sources and Permissions screens
   (`apps/web/components/Connectors.tsx`).
 - **The scheduler interval.** The production scheduler syncs OMI at most every
@@ -71,28 +71,28 @@ as follows.
 The sync route answers:
 
 - **200** when the run succeeds. A run stops after the page whose
-  `exhausted: true` closes a window (D7 rule 5; `providers.ts:416`,
-  `sync.ts:263`).
-- **429 `CONNECTOR_RATE_LIMITED`** with `retryAfterSeconds` (`connectors.ts:57`).
+  `exhausted: true` closes a window (D7 rule 5; `omi.ts:143`,
+  `sync.ts:278`).
+- **429 `CONNECTOR_RATE_LIMITED`** with `retryAfterSeconds` (`connectors.ts:59`).
   - The connector is recorded `SYNC_FAILED`, and the next sync resumes from the
     stored cursor.
   - A 429 in the middle of a run rolls back the pages that run read earlier
     (`omi-pipeline.test.ts` case 3).
 - **409 `CONNECTOR_CURSOR_INVALID`**. A `BACKFILL` run ignores the stored cursor
-  and recovers (`sync.ts:212-213`).
+  and recovers (`sync.ts:227-228`).
 - **409 `CONNECTOR_TOKEN_REVOKED`** on a provider 401. This holds for every
   connector type (owner decision of 2026-11-03). A 403 maps to the same code but
-  is not treated as a revocation (`credentialRevoked`, `providers.ts:134-136`),
+  is not treated as a revocation (`credentialRevoked`, `providers.ts:85-87`),
   so the connector stays `SYNC_FAILED`.
 - **409 `CONNECTOR_INGESTION_STOPPED`** for a stopped connector, before any
-  client is built (`connectors.ts:281`).
+  client is built (`connectors.ts:300`).
 - **403 `CONNECTOR_SENSITIVITY_CEILING_TOO_LOW`** when the request's ceiling is
   below the PRIVATE floor.
 
 ## Stored sensitivity
 
 - PRIVATE is a floor (D6). A request may raise it but never lower it, and a
-  request asking for NORMAL still stores PRIVATE (`sync.ts:214-216`;
+  request asking for NORMAL still stores PRIVATE (`sync.ts:229-231`;
   `omi-connector.test.ts` case 8). Only the owner's explicit setting replaces the
   floor.
 - Speech by anyone other than the owner is third-party data (PRD §30.8). It stays
@@ -103,13 +103,13 @@ The sync route answers:
 | Decision | Code path | Proving test |
 |---|---|---|
 | D1: connector and source type OMI | `@unai/domain` enums; `manifests.ts:192` | `packages/domain/src/sources.test.ts`; `manifests.test.ts` |
-| D2: one completed conversation; read-only | `omiGet` GET only (`providers.ts:337`); no write capability in the manifest | `omi-connector.test.ts` cases 2 and 9; `omi-pipeline.test.ts`; the security case |
+| D2: one completed conversation; read-only | `omiGet` GET only (`omi.ts:75`); no write capability in the manifest | `omi-connector.test.ts` cases 2 and 9; `omi-pipeline.test.ts`; the security case |
 | D3: two items per conversation | `sources.ts:660-723` | `sources.test.ts`; `omi-connector.test.ts` case 2; `omi-pipeline.test.ts` case 1 |
 | D4: speaker roles, Tier-0 text, size bound | `omiSpeakerRole` (`sources.ts:648-655`); `triage.ts:163-190`; over-bound routing (`triage.ts:263-268`) | `packages/extraction/src/triage.test.ts`; `runs.test.ts`; `omi-pipeline.test.ts` case 2 |
 | D5: TRANSCRIPT_SEGMENT anchor and migration 0040 | `sources.ts:692-697`; `migrations/0040_omi_source_type.sql` | `packages/postgres/src/omi-constraints.test.ts`; `omi-pipeline.test.ts` case 1 |
 | D6: manifest, PRIVATE floor, HIGH capability | `manifests.ts:190-203`; `grants.ts` | `manifests.test.ts`; `grants.test.ts`; `omi-connector.test.ts` cases 1 and 8 |
-| D7: cursor, paging, rate limits | `providers.ts:276-420`; `sync.ts:263`; `connector-sync-job.ts:165` | `packages/connectors/src/providers.test.ts`; `omi-connector.test.ts` cases 3-6; `omi-pipeline.test.ts` case 3; `connector-sync-job.test.ts` |
-| D8: disconnect without provider revocation | `providers.ts:442`; `grants.ts:390-391` | `omi-connector.test.ts` case 7; `omi-pipeline.test.ts` case 4 |
+| D7: cursor, paging, rate limits | `omi.ts:8-147`; `sync.ts:278`; `connector-sync-job.ts:166` | `packages/connectors/src/providers.test.ts`; `omi-connector.test.ts` cases 3-6; `omi-pipeline.test.ts` case 3; `connector-sync-job.test.ts` |
+| D8: disconnect without provider revocation | `providers.ts:241`; `grants.ts:390-391` | `omi-connector.test.ts` case 7; `omi-pipeline.test.ts` case 4 |
 | D9: provenance limits | anchors point into text only; `originalText` kept (`sources.ts:661-665`) | `sources.test.ts` |
 | D10: deferred items | not built; see the non-claims below | `connector-sync-race.test.ts` covers the lifecycle races that were built |
 
@@ -223,10 +223,10 @@ ADR 0041 and ADR 0042. FIXED-HERE rows land in this task's completion commit.
 | # | Finding | Evidence | Disposition |
 |---|---|---|---|
 | 1 | Content, metadata and anchor keys agree across ADR D3/D5, the parser, triage and the OMI anchor sort. | `sources.ts:660-698`; `triage.ts:163-190`; `runs.ts:117-123` | NOT-A-DEFECT (clean). Pinned by `omi-pipeline.test.ts` case 1: reversing the sort fails it. |
-| 2 | `CONNECTOR_RATE_LIMITED` is the same code in the client, the route (429 with `retryAfterSeconds`), the job and the UI. | `providers.ts:343-347`; `connectors.ts:57`; `connector-sync-job.ts:151-156`; `Connectors.tsx:51`, `:158` | NOT-A-DEFECT (clean). Pinned by `omi-pipeline.test.ts` case 3. The generic refusal sentence was FILED as task-8d5a5184, which landed in 53992cf: `refusalText` (`Connectors.tsx:62-71`) now names the wait. |
-| 3 | The sync job retries a 429 on the next worker poll, ignoring `retryAfterSeconds`: FAILED jobs are re-claimable with no time gate. | `connector-sync-job.ts:156`, `:194`; `packages/jobs/src/index.ts:65-67` | FILED task-9e3a6eba (MEDIUM), which fixed it: `TERMINAL_CONNECTOR_SYNC_ERROR_CODES` (`connector-sync-job.ts:165`) dead-letters the job on the first 429, and the scheduler's next window is the next sync (ADR 0041 D7). Pinned by `connector-sync-job.test.ts`. |
+| 2 | `CONNECTOR_RATE_LIMITED` is the same code in the client, the route (429 with `retryAfterSeconds`), the job and the UI. | `http.ts:39-44`; `connectors.ts:59`; `connector-sync-job.ts:152-157`; `Connectors.tsx:51`, `:158` | NOT-A-DEFECT (clean). Pinned by `omi-pipeline.test.ts` case 3. The generic refusal sentence was FILED as task-8d5a5184, which landed in 53992cf: `refusalText` (`Connectors.tsx:62-71`) now names the wait. |
+| 3 | The sync job retries a 429 on the next worker poll, ignoring `retryAfterSeconds`: FAILED jobs are re-claimable with no time gate. | `connector-sync-job.ts:157`, `:195`; `packages/jobs/src/index.ts:65-67` | FILED task-9e3a6eba (MEDIUM), which fixed it: `TERMINAL_CONNECTOR_SYNC_ERROR_CODES` (`connector-sync-job.ts:166`) dead-letters the job on the first 429, and the scheduler's next window is the next sync (ADR 0041 D7). Pinned by `connector-sync-job.test.ts`. |
 | 4 | Migration 0040 applies in sequence. The epic only adds migrations (0040-0043). | `git diff --name-status d9bdc8d~1 HEAD -- migrations/`; `projection-replay.test.ts` expects 0040 in order | NOT-A-DEFECT (clean). The gate log's migration list is in Verification. |
-| 5 | Duplication: the stopped-status predicate is copied in the route and the job. Google's `getJson` neither cancels an unread error body nor maps 429. `providers.ts` is 467 lines. | `connectors.ts:281`; `connector-sync-job.ts:93`; `providers.ts:62-75` | FILED task-81921e9b (LOW) |
+| 5 | Duplication: the stopped-status predicate is copied in the route and the job. Google's `getJson` neither cancels an unread error body nor maps 429. `providers.ts` is 467 lines. | `connectors.ts:300`; `connector-sync-job.ts:93`; `http.ts:35-63` | FIXED by task-81921e9b (LOW). `ingestionStopped` (`sync.ts:186`) is the one stopped-status predicate: the route (`connectors.ts:300`), the job (`connector-sync-job.ts:93`) and `runConnectorSync` (`sync.ts:218`) call it. `providerFailure` (`http.ts:35`) is the one failure mapping, used by `getJson` (`http.ts:59`; Gmail, Calendar, GitHub) and by `omiGet` (`omi.ts:77`). Those three clients now cancel an unread error body and map 429 to `CONNECTOR_RATE_LIMITED` (ADR 0041 D7, 2026-11-07 addition), and the token revoker cancels the bodies it never reads. The Omi client is `omi.ts`, the Google token exchange and cache are `google-tokens.ts`, and `providers.ts` is 268 lines. Pinned by `http.test.ts`. |
 | 6 | Combination error paths were untested: a 429 during a multi-page sync, and disconnect while `SYNC_FAILED`. | — | FIXED-HERE: `omi-pipeline.test.ts` cases 3 and 4 |
 | 7 | Test stages missed `omi-connector.test.ts` and `connector-sync-race.test.ts` (connector-integration) and had no Omi end-to-end entry. | `scripts/test-stages.mjs` | FIXED-HERE: `scripts/test-stages.mjs` |
 | 8 | `docs/connectors.md` said a disconnect revokes tokens, which is false for OMI. | `docs/connectors.md` | FIXED-HERE: `docs/connectors.md` |
@@ -234,11 +234,11 @@ ADR 0041 and ADR 0042. FIXED-HERE rows land in this task's completion commit.
 | 10 | No memory read surface shows an unresolved Omi claim; the inspector answers 404. | `omi-pipeline.test.ts` cases 1-2; `Evidence.test.ts`; `Accessibility.test.ts` Sources | FIXED by task-e11c766b (API, ADR 0047) and task-732c9d9a (Source page). |
 | 11 | D4's generic labels ("Speaker 2", "Unknown speaker") reach the extractor as participants. | `triage.ts:179-181` (labels added as participants) | NOT-A-DEFECT: D4 by design, and a precondition for D10(d) |
 | 12 | Two Traps bullets proposed in comment-c8706bb6 | — | Rerouted to the class-wide RLS fix (comment-31805c9f on task-eb3f68fb). They are not Omi docs. |
-| 13 | task-53f1a1c1 QA note (a): `settle()` audits a `CONNECTOR_CAPABILITY_NOT_GRANTED` refusal as FAILURE, naming fields it never wrote, and retries it. | `connector-sync-job.ts:137-142` (was `:136-141`); `sync.ts:306`, `:325` (was `:304`, `:322`) | FIXED by task-ac002da1 (LOW). `settle()` classifies from the exported `LIFECYCLE_REFUSALS`: a `CONNECTOR_CAPABILITY_NOT_GRANTED` or `CONNECTOR_INGESTION_STOPPED` refusal now completes the job on that attempt (no retry) with one `DENY`/`REFUSED` audit row that names the connector and no field, and leaves the connectors row as the committed change left it. A mid-run stop gains that row too (it had none). Pinned by the `connector-sync-job.test.ts` cases "a CONNECTOR_CAPABILITY_NOT_GRANTED / CONNECTOR_INGESTION_STOPPED refusal in the middle of a run completes the job without a retry and audits one REFUSED row". |
-| 14 | task-53f1a1c1 QA note (b): a `SYNC_FAILED` connector keeps its old `last_sync_error` once every grant is revoked. | `sync.ts:306-315` | NOT-A-DEFECT: `recordSyncFailure`'s documented contract (a lifecycle refusal records nothing) |
-| 15 | Read-only rail: Omi requests are GET only, and `WRITE_SCOPE_PATTERNS` is unchanged across the epic. | `providers.ts:337`, `:442`; `manifests.ts:35` | NOT-A-DEFECT (clean). Pinned by `omi-connector.test.ts` case 9 and the security case. |
+| 13 | task-53f1a1c1 QA note (a): `settle()` audits a `CONNECTOR_CAPABILITY_NOT_GRANTED` refusal as FAILURE, naming fields it never wrote, and retries it. | `connector-sync-job.ts:138-143` (was `:136-141`); `sync.ts:321`, `:340` (was `:304`, `:322`) | FIXED by task-ac002da1 (LOW). `settle()` classifies from the exported `LIFECYCLE_REFUSALS`: a `CONNECTOR_CAPABILITY_NOT_GRANTED` or `CONNECTOR_INGESTION_STOPPED` refusal now completes the job on that attempt (no retry) with one `DENY`/`REFUSED` audit row that names the connector and no field, and leaves the connectors row as the committed change left it. A mid-run stop gains that row too (it had none). Pinned by the `connector-sync-job.test.ts` cases "a CONNECTOR_CAPABILITY_NOT_GRANTED / CONNECTOR_INGESTION_STOPPED refusal in the middle of a run completes the job without a retry and audits one REFUSED row". |
+| 14 | task-53f1a1c1 QA note (b): a `SYNC_FAILED` connector keeps its old `last_sync_error` once every grant is revoked. | `sync.ts:321-330` | NOT-A-DEFECT: `recordSyncFailure`'s documented contract (a lifecycle refusal records nothing) |
+| 15 | Read-only rail: Omi requests are GET only, and `WRITE_SCOPE_PATTERNS` is unchanged across the epic. | `omi.ts:75`; `providers.ts:241`; `manifests.ts:35` | NOT-A-DEFECT (clean). Pinned by `omi-connector.test.ts` case 9 and the security case. |
 | 16 | Key literals: `omi_dev_` appears only in two synthetic markers. This task adds none; its keys are generated at run time. | `deploy/deploy.test.ts:162` (suffix `synthetic`); `packages/connectors/src/providers.test.ts:12` (suffix `TESTKEY_never_real`) | NOT-A-DEFECT: synthetic, QA-approved |
-| 17 | Provider error bodies are cancelled unread, keeping only status and `Retry-After` (FR-104). | `providers.ts:339-349` | NOT-A-DEFECT (clean). Pinned by `omi-pipeline.test.ts` case 3 (no body marker in the response). |
+| 17 | Provider error bodies are cancelled unread, keeping only status and `Retry-After` (FR-104). | `http.ts:35-46` | NOT-A-DEFECT (clean). Pinned by `omi-pipeline.test.ts` case 3 (no body marker in the response). |
 | 18 | The parser and triage stay pure. | `sources.ts:1` imports only zod; `triage.ts:1-2` imports only `@unai/domain` | NOT-A-DEFECT (clean). Guarded by `src/architecture.test.ts`. |
 
 ## Verification

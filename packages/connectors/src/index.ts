@@ -16,7 +16,8 @@ export { CONNECTOR_READ_PURPOSE, CONNECTOR_MANAGE_PURPOSE, CONNECTOR_SYNC_PURPOS
   createConnector, assertReadOnly, loadConnector, listGrants, grantedCapabilities, requireCapability,
   hasCapability, setCapabilityGrants, readConnector, listConnectors, markTokenRevoked, disconnectConnector,
   type ConnectorTransaction, type TokenRevoker } from './grants.js';
-export { prepareForCapabilities, runConnectorSync, recordSyncFailure, LIFECYCLE_REFUSALS, type SourceIngest } from './sync.js';
+export { prepareForCapabilities, runConnectorSync, recordSyncFailure, LIFECYCLE_REFUSALS, ingestionStopped,
+  type SourceIngest } from './sync.js';
 export { createGmailClient, createGoogleCalendarClient, createGithubClient, createConnectorClient, createConnectorSecrets,
   createGoogleAccessTokenCache, credentialRevoked, type GoogleAccessTokenCache, type GoogleAccessTokens,
   type GoogleOAuthClientConfig, createTokenRevoker, type ConnectorClient, type ConnectorPage, type ConnectorFetch,
