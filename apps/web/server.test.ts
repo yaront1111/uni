@@ -1,7 +1,7 @@
 import {spawn,spawnSync,type ChildProcess} from 'node:child_process';
 import {existsSync,readdirSync,readFileSync,statSync} from 'node:fs';
 import {mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
-import {createServer,request,type IncomingHttpHeaders,type IncomingMessage,type Server} from 'node:http';
+import {createServer,request,type IncomingHttpHeaders,type IncomingMessage,type RequestListener,type Server} from 'node:http';
 import {request as secureRequest} from 'node:https';
 import {createServer as createNetServer,Socket,type AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -9,6 +9,7 @@ import {createServer as createTlsServer,type Server as TlsServer} from 'node:tls
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {startTelemetry,type Telemetry} from '@unai/observability/telemetry';
 import {createRequestListener,securityHeaders} from './lib/security-headers';
 import {googleClientId,ownerGoogleSubject} from './lib/server';
 
@@ -116,6 +117,139 @@ describe('the request listener',()=>{
     expect(reply.body).toBe('Service unavailable');
     expect(reply.headers).toMatchObject(FIXED_HEADERS);
   });
+});
+
+/** A plain-HTTP server on 127.0.0.1 for a listener under test. */
+async function listen(listener:RequestListener):Promise<Server>{
+  const server=createServer(listener);
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  return server;
+}
+const portOf=(server:Server)=>(server.address() as AddressInfo).port;
+const close=(server:Server)=>new Promise<void>(resolve=>server.close(()=>resolve()));
+type OtlpAttribute={key:string;value:{stringValue?:string;intValue?:number|string}};
+type OtlpSpan={name:string;attributes:OtlpAttribute[];status?:{code?:number}};
+type OtlpMetric={name:string;unit?:string;histogram?:{dataPoints:{attributes:OtlpAttribute[];count:number|string}[]}};
+type OtlpResource={resource:{attributes:OtlpAttribute[]};scopeSpans?:{scope:{name:string};spans:OtlpSpan[]}[];
+  scopeMetrics?:{scope:{name:string};metrics:OtlpMetric[]}[]};
+type Received={url:string;method:string;body:string};
+const valuesOf=(list:OtlpAttribute[])=>Object.fromEntries(list.map(a=>[a.key,a.value.stringValue??Number(a.value.intValue)]));
+const SPAN_KEYS=['http.response.status_code','unai.code_version','unai.result'];
+/** An in-process OTLP/HTTP JSON receiver, as in packages/observability/src/telemetry.test.ts. */
+async function collector(){
+  const received:Received[]=[];
+  const server=await listen((req,res)=>{
+    let body='';req.setEncoding('utf8');req.on('data',(chunk:string)=>{body+=chunk;});
+    req.on('end',()=>{received.push({url:req.url??'',method:req.method??'',body});res.writeHead(200,{'content-type':'application/json'});res.end('{}');});
+  });
+  return {server,received,endpoint:`http://127.0.0.1:${portOf(server)}`};
+}
+/** Every exported resource in the bodies posted to `path`, in arrival order. */
+const resourcesOf=(received:Received[],path:'/v1/traces'|'/v1/metrics')=>received.filter(r=>r.url===path).flatMap(r=>{
+  const body=JSON.parse(r.body) as {resourceSpans?:OtlpResource[];resourceMetrics?:OtlpResource[]};
+  return body.resourceSpans??body.resourceMetrics??[];
+});
+
+describe('response telemetry',()=>{
+  const HOST='web.test:8443',origin=new URL(`https://${HOST}`);
+  const gate=async(req:IncomingMessage)=>req.url==='/limited'?{refused:true as const,retryAfterSeconds:7}:{refused:false as const};
+  const servers:Server[]=[];
+  afterAll(async()=>{await Promise.all(servers.map(close));});
+
+  it('records every response exactly once, with numbers and a boolean only: 200, 421, 429, 500 and an abort',async()=>{
+    let entered=()=>{};const hanging=new Promise<void>(resolve=>{entered=resolve;});
+    const record=vi.fn<(statusCode:number,durationMs:number,finished:boolean)=>void>();
+    const server=await listen(createRequestListener({origin,dev:false,gate,record,handle:async(req,res)=>{
+      if(req.url==='/fail')throw new Error('HANDLER_FAILED');
+      if(req.url==='/hang'){entered();return;}
+      res.end('ok');
+    }}));
+    servers.push(server);const port=portOf(server);
+    for(const [index,[status,path,host]] of ([[200,'/',HOST],[421,'/','evil.test'],[429,'/limited',HOST],[500,'/fail',HOST]] as const).entries()){
+      expect((await get(port,path,{host})).status).toBe(status);
+      await vi.waitFor(()=>expect(record).toHaveBeenCalledTimes(index+1));
+    }
+    expect(record.mock.calls.map(([status,,finished])=>[status,finished])).toEqual([[200,true],[421,true],[429,true],[500,true]]);
+    // A client that disconnects first is recorded once, as not finished, with Node's default status.
+    const aborted=request({host:'127.0.0.1',port,path:'/hang',headers:{host:HOST}});
+    aborted.on('error',()=>{});aborted.end();
+    await hanging;aborted.destroy();
+    await vi.waitFor(()=>expect(record).toHaveBeenCalledTimes(5));
+    expect([record.mock.calls[4]?.[0],record.mock.calls[4]?.[2]]).toEqual([200,false]);
+    await new Promise(resolve=>setImmediate(resolve));
+    expect(record).toHaveBeenCalledTimes(5);
+    for(const call of record.mock.calls){
+      expect(call.map(value=>typeof value)).toEqual(['number','number','boolean']);
+      expect(Number.isFinite(call[1])&&call[1]>=0,`duration ${call[1]}`).toBe(true);
+    }
+  });
+
+  it('serves unchanged responses when the recorder throws',async()=>{
+    const record=vi.fn(()=>{throw new Error('RECORD_FAILED');});
+    const server=await listen(createRequestListener({origin,dev:false,gate,record,handle:async(req,res)=>{
+      if(req.url==='/fail')throw new Error('HANDLER_FAILED');
+      res.end('ok');
+    }}));
+    servers.push(server);
+    const reply=await get(portOf(server),'/',{host:HOST});
+    expect(reply.status).toBe(200);expect(reply.body).toBe('ok');
+    expect(reply.headers).toMatchObject(FIXED_HEADERS);
+    expect(reply.headers['content-security-policy']).toBe(policyFor(nonceOf(reply.headers['content-security-policy'])));
+    const failed=await get(portOf(server),'/fail',{host:HOST});
+    expect(failed.status).toBe(500);expect(failed.body).toBe('Service unavailable');
+    await vi.waitFor(()=>expect(record).toHaveBeenCalledTimes(2));
+  });
+
+  it('exports only scope unai.web under unai-web: one web.response span (ERROR from 500) and one unai.web.duration point per response, no request data',async()=>{
+    const otlp=await collector();let telemetry:Telemetry|undefined;
+    try{
+      telemetry=await startTelemetry({serviceName:'unai-web',version:'0.1.0',
+        env:{UNAI_OTEL_EXPORTER_OTLP_ENDPOINT:otlp.endpoint,UNAI_DEPLOYMENT_ENVIRONMENT:'test'}});
+      expect(telemetry.enabled).toBe(true);
+      // Loaded only now, as server.ts does: a histogram created before the SDK started is a no-op forever.
+      vi.resetModules();const {recordWebResponse}=await import('@unai/observability/web');
+      let recorded=0;
+      const server=await listen(createRequestListener({origin,dev:false,gate,handle:async(req,res)=>{
+        if(req.url==='/fail')throw new Error('HANDLER_FAILED');
+        res.end('ok');
+      },record:(...args)=>{recordWebResponse(...args);recorded++;}}));
+      servers.push(server);const port=portOf(server);
+      expect((await get(port,'/private-path?q=secret-query',{host:HOST,cookie:'__Host-unai.session=secret-cookie','user-agent':'secret-agent'})).status).toBe(200);
+      expect((await get(port,'/private-path',{host:'evil.test'})).status).toBe(421);
+      expect((await get(port,'/limited',{host:HOST})).status).toBe(429);
+      expect((await get(port,'/fail',{host:HOST})).status).toBe(500);
+      await vi.waitFor(()=>expect(recorded).toBe(4));
+      await telemetry.shutdown();
+      expect(otlp.received.map(r=>r.url)).toEqual(expect.arrayContaining(['/v1/traces','/v1/metrics']));
+      for(const r of otlp.received)expect(r.method).toBe('POST');
+      const traces=resourcesOf(otlp.received,'/v1/traces'),meters=resourcesOf(otlp.received,'/v1/metrics');
+      for(const resource of [...traces,...meters])expect(valuesOf(resource.resource.attributes)).toEqual({'service.name':'unai-web',
+        'service.version':'0.1.0','deployment.environment':'test','deployment.environment.name':'test'});
+      const scopeSpans=traces.flatMap(r=>r.scopeSpans??[]),scopeMetrics=meters.flatMap(r=>r.scopeMetrics??[]);
+      expect([...new Set([...scopeSpans,...scopeMetrics].map(group=>group.scope.name))]).toEqual(['unai.web']);
+      const spans=scopeSpans.flatMap(group=>group.spans);
+      expect(spans.map(span=>span.name)).toEqual(['web.response','web.response','web.response','web.response']);
+      for(const span of spans)expect(span.attributes.map(a=>a.key).sort()).toEqual(SPAN_KEYS);
+      // Status codes: 1 is OK, 2 is ERROR, which starts at 500.
+      const statusOf=(span:OtlpSpan)=>Number(valuesOf(span.attributes)['http.response.status_code']);
+      expect([...spans].sort((a,b)=>statusOf(a)-statusOf(b)).map(span=>({...valuesOf(span.attributes),status:span.status?.code}))).toEqual([
+        {'http.response.status_code':200,'unai.code_version':'0.1.0','unai.result':'SUCCESS',status:1},
+        {'http.response.status_code':421,'unai.code_version':'0.1.0','unai.result':'REFUSED',status:1},
+        {'http.response.status_code':429,'unai.code_version':'0.1.0','unai.result':'REFUSED',status:1},
+        {'http.response.status_code':500,'unai.code_version':'0.1.0','unai.result':'REFUSED',status:2},
+      ]);
+      expect([...new Set(scopeMetrics.flatMap(group=>group.metrics.map(m=>m.name)))]).toEqual(['unai.web.duration']);
+      // Cumulative temporality: the last export holds every point.
+      const final=meters.at(-1)?.scopeMetrics?.flatMap(group=>group.metrics)??[];
+      expect(final.map(m=>[m.name,m.unit])).toEqual([['unai.web.duration','ms']]);
+      const points=final[0]?.histogram?.dataPoints??[];
+      for(const point of points)expect(point.attributes.map(a=>a.key)).toEqual(['statusCode']);
+      expect(points.map(point=>valuesOf(point.attributes).statusCode).sort()).toEqual([200,421,429,500]);
+      expect(points.reduce((sum,point)=>sum+Number(point.count),0)).toBe(4);
+      const bodies=otlp.received.map(r=>r.body).join('');
+      for(const text of ['private-path','secret-query','secret-cookie','secret-agent','web.test','evil.test','__Host-unai'])expect(bodies).not.toContain(text);
+    }finally{await telemetry?.shutdown();await close(otlp.server);}
+  },180000);
 });
 
 describe('the policy',()=>{
@@ -260,51 +394,61 @@ function freshBuild():boolean{
 const fresh=freshBuild();
 if(!fresh&&process.env.UNAI_WEB_REQUIRE_BUILD==='1')it('has a fresh production build to test',()=>{throw new Error('WEB_BUILD_MISSING_OR_STALE');});
 
+/** A throwaway certificate for 127.0.0.1 and a free port in `directory`, then
+ * server.ts in one process (tsx's loader, not its CLI, which runs the server in
+ * a child that a kill on Windows would orphan), started the way `pnpm start:web`
+ * is, plus `extra` environment. Resolves once /signin answers. */
+async function startWeb(directory:string,extra:Record<string,string>={}){
+  const keyPath=join(directory,'key.pem'),certPath=join(directory,'cert.pem');
+  const openssl=process.platform==='win32'?'C:/Program Files/Git/usr/bin/openssl.exe':'openssl';
+  const generated=spawnSync(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-days','1',
+    '-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1','-keyout',keyPath,'-out',certPath],{encoding:'utf8'});
+  expect(generated.status,generated.stderr).toBe(0);
+  const cert=readFileSync(certPath);
+  const port=await new Promise<number>((resolve,reject)=>{
+    const probe=createNetServer().once('error',reject).listen(0,'127.0.0.1',()=>{const {port:free}=probe.address() as AddressInfo;probe.close(()=>resolve(free));});
+  });
+  const child=spawn(process.execPath,['--import',pathToFileURL(join(WEB,'../../node_modules/tsx/dist/loader.mjs')).href,'server.ts'],{cwd:WEB,
+    env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,NODE_ENV:'production',NEXT_TELEMETRY_DISABLED:'1',
+      NEXTAUTH_URL:`https://127.0.0.1:${port}`,UNAI_WEB_TLS_KEY_FILE:keyPath,UNAI_WEB_TLS_CERT_FILE:certPath,...extra}});
+  let output='';
+  child.stdout?.on('data',chunk=>{output+=chunk;});child.stderr?.on('data',chunk=>{output+=chunk;});
+  // Next's production start loads from source through tsx; on a slow or busy
+  // disk (a WSL /mnt checkout beside the other web suites) it takes minutes.
+  for(const deadline=Date.now()+180000;;){
+    if(child.exitCode!==null||child.signalCode!==null)throw new Error(`WEB_SERVER_EXITED ${child.exitCode??child.signalCode}\n${output}`);
+    try{await get(port,'/signin',{host:`127.0.0.1:${port}`},cert);return {port,cert,child};}
+    catch{if(Date.now()>deadline){await stopWeb(child);throw new Error(`WEB_SERVER_NOT_READY\n${output}`);}}
+    await new Promise(resolve=>setTimeout(resolve,250));
+  }
+}
+async function stopWeb(child:ChildProcess|undefined){
+  if(child&&child.exitCode===null&&child.signalCode===null){
+    const exited=new Promise(resolve=>child.once('exit',resolve));
+    child.kill('SIGTERM');
+    const timer=setTimeout(()=>child.kill('SIGKILL'),10000);
+    await exited;clearTimeout(timer);
+  }
+}
+const expectHeaders=(reply:Reply)=>{
+  expect(reply.headers).toMatchObject(FIXED_HEADERS);
+  const nonce=nonceOf(reply.headers['content-security-policy']);
+  expect(reply.headers['content-security-policy']).toBe(policyFor(nonce));
+  expect(nonce).toMatch(NONCE);
+  return nonce;
+};
+
 describe.skipIf(!fresh)('the production server (skipped without a fresh build: run pnpm build)',{timeout:120000},()=>{
-  let directory='',cert=Buffer.alloc(0),port=0,child:ChildProcess|undefined,output='';
+  let directory='',cert=Buffer.alloc(0),port=0,child:ChildProcess|undefined;
   const fetch=(path:string)=>get(port,path,{host:`127.0.0.1:${port}`},cert);
   beforeAll(async()=>{
     directory=await mkdtemp(join(tmpdir(),'unai-web-tls-'));
-    const keyPath=join(directory,'key.pem'),certPath=join(directory,'cert.pem');
-    const openssl=process.platform==='win32'?'C:/Program Files/Git/usr/bin/openssl.exe':'openssl';
-    const generated=spawnSync(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-days','1',
-      '-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1','-keyout',keyPath,'-out',certPath],{encoding:'utf8'});
-    expect(generated.status,generated.stderr).toBe(0);
-    cert=readFileSync(certPath);
-    port=await new Promise<number>((resolve,reject)=>{
-      const probe=createNetServer().once('error',reject).listen(0,'127.0.0.1',()=>{const {port:free}=probe.address() as AddressInfo;probe.close(()=>resolve(free));});
-    });
-    // One process (tsx's loader, not its CLI, which runs the server in a child
-    // that a kill on Windows would orphan), started the way `pnpm start:web` is.
-    child=spawn(process.execPath,['--import',pathToFileURL(join(WEB,'../../node_modules/tsx/dist/loader.mjs')).href,'server.ts'],{cwd:WEB,
-      env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,TEMP:process.env.TEMP,NODE_ENV:'production',NEXT_TELEMETRY_DISABLED:'1',
-        NEXTAUTH_URL:`https://127.0.0.1:${port}`,UNAI_WEB_TLS_KEY_FILE:keyPath,UNAI_WEB_TLS_CERT_FILE:certPath}});
-    child.stdout?.on('data',chunk=>{output+=chunk;});child.stderr?.on('data',chunk=>{output+=chunk;});
-    // Next's production start loads from source through tsx; on a slow or busy
-    // disk (a WSL /mnt checkout beside the other web suites) it takes minutes.
-    for(const deadline=Date.now()+180000;;){
-      if(child.exitCode!==null||child.signalCode!==null)throw new Error(`WEB_SERVER_EXITED ${child.exitCode??child.signalCode}\n${output}`);
-      try{await fetch('/signin');return;}catch{if(Date.now()>deadline)throw new Error(`WEB_SERVER_NOT_READY\n${output}`);}
-      await new Promise(resolve=>setTimeout(resolve,250));
-    }
+    ({port,cert,child}=await startWeb(directory));
   },240000);
   afterAll(async()=>{
-    if(child&&child.exitCode===null&&child.signalCode===null){
-      const exited=new Promise(resolve=>child?.once('exit',resolve));
-      child.kill('SIGTERM');
-      const timer=setTimeout(()=>child?.kill('SIGKILL'),10000);
-      await exited;clearTimeout(timer);
-    }
+    await stopWeb(child);
     if(directory)await rm(directory,{recursive:true,force:true});
   },30000);
-
-  const expectHeaders=(reply:Reply)=>{
-    expect(reply.headers).toMatchObject(FIXED_HEADERS);
-    const nonce=nonceOf(reply.headers['content-security-policy']);
-    expect(reply.headers['content-security-policy']).toBe(policyFor(nonce));
-    expect(nonce).toMatch(NONCE);
-    return nonce;
-  };
 
   it('enforces the policy with a fresh nonce on / and /signin',async()=>{
     const root=await fetch('/');
@@ -343,5 +487,34 @@ describe.skipIf(!fresh)('the production server (skipped without a fresh build: r
     const reply=await fetch('/no-such-page');
     expect(reply.status).toBe(404);
     expectHeaders(reply);
+  });
+});
+
+describe.skipIf(!fresh)('the production server with telemetry enabled (skipped without a fresh build: run pnpm build)',{timeout:120000},()=>{
+  let directory='',cert=Buffer.alloc(0),port=0,child:ChildProcess|undefined,otlp:Awaited<ReturnType<typeof collector>>|undefined;
+  beforeAll(async()=>{
+    directory=await mkdtemp(join(tmpdir(),'unai-web-otel-'));otlp=await collector();
+    ({port,cert,child}=await startWeb(directory,{UNAI_OTEL_EXPORTER_OTLP_ENDPOINT:otlp.endpoint,UNAI_OTEL_METRIC_EXPORT_MS:'1000'}));
+  },240000);
+  afterAll(async()=>{
+    await stopWeb(child);
+    if(otlp)await close(otlp.server);
+    if(directory)await rm(directory,{recursive:true,force:true});
+  },30000);
+
+  it('serves the same responses and exports unai-web response telemetry with no request data',async()=>{
+    const reply=await get(port,'/signin',{host:`127.0.0.1:${port}`},cert);
+    expect(reply.status).toBe(200);expectHeaders(reply);
+    const received=otlp?.received??[];
+    const spans=()=>resourcesOf(received,'/v1/traces').flatMap(r=>r.scopeSpans??[]).flatMap(group=>group.spans).filter(span=>span.name==='web.response');
+    const metrics=()=>resourcesOf(received,'/v1/metrics').flatMap(r=>r.scopeMetrics??[]).flatMap(group=>group.metrics.map(m=>m.name));
+    // Spans leave in batches about every 5 s, metrics every second; OTEL_* tuning variables are refused.
+    await vi.waitFor(()=>{expect(spans().length).toBeGreaterThan(0);expect(metrics()).toContain('unai.web.duration');},{timeout:30000,interval:250});
+    const resources=[...resourcesOf(received,'/v1/traces'),...resourcesOf(received,'/v1/metrics')];
+    for(const resource of resources)expect(valuesOf(resource.resource.attributes)['service.name']).toBe('unai-web');
+    for(const group of resources.flatMap(r=>[...r.scopeSpans??[],...r.scopeMetrics??[]]))expect(group.scope.name).toMatch(/^unai\./);
+    for(const span of spans())expect(span.attributes.map(a=>a.key).sort()).toEqual(SPAN_KEYS);
+    const bodies=received.map(r=>r.body).join('');
+    expect(bodies).not.toContain('signin');expect(bodies).not.toContain(`127.0.0.1:${port}`);
   });
 });

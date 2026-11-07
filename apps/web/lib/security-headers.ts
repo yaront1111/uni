@@ -29,10 +29,24 @@ export function securityHeaders(nonce:string,dev:boolean):Record<string,string>{
  * its own wins), and the nonce handed to `pages/_document.tsx` as the
  * `x-nonce` request header, overwriting whatever the client sent. `gate`
  * (`lib/session-gate.ts`) runs last, before handle(): a refusal answers 429
- * with Retry-After and never reaches Next. */
-export function createRequestListener({origin,dev,handle,gate}:{origin:URL;dev:boolean;handle:(req:IncomingMessage,res:ServerResponse)=>Promise<void>;
-  gate?:(req:IncomingMessage)=>Promise<{refused:false}|{refused:true;retryAfterSeconds:number}>}){
+ * with Retry-After and never reaches Next. `record` (`recordWebResponse` from
+ * `@unai/observability/web`, given only when telemetry is enabled) is called
+ * exactly once per response, on its finish or close event, so the 421, the
+ * 429, Next's responses and the 500 fallback all count. It receives numbers and
+ * a boolean only, never req, res, the URL or a header; a throwing recorder never
+ * changes a response. */
+export function createRequestListener({origin,dev,handle,gate,record}:{origin:URL;dev:boolean;handle:(req:IncomingMessage,res:ServerResponse)=>Promise<void>;
+  gate?:(req:IncomingMessage)=>Promise<{refused:false}|{refused:true;retryAfterSeconds:number}>;
+  record?:(statusCode:number,durationMs:number,finished:boolean)=>void}){
   return (req:IncomingMessage,res:ServerResponse):void=>{
+    if(record){
+      const started=performance.now();let recorded=false;
+      const done=()=>{
+        if(recorded)return;recorded=true;
+        try{record(res.statusCode,performance.now()-started,res.writableFinished);}catch{/* Recording never fails a response. */}
+      };
+      res.once('finish',done);res.once('close',done);
+    }
     const nonce=randomBytes(16).toString('base64');
     for(const [name,value] of Object.entries(securityHeaders(nonce,dev)))res.setHeader(name,value);
     if(req.headers.host!==origin.host){res.writeHead(421);res.end();return;}

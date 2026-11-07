@@ -54,7 +54,7 @@ try {
   }else{
   const authFailuresPerMinute=authFailureLimit();
   const {default:next}=await import('next');
-  const {createRequestListener}=await import('./lib/security-headers');
+  const {createRequestListener}=await import('./lib/security-headers'),record=telemetry.enabled?(await import('@unai/observability/web')).recordWebResponse:undefined;
   const {createSessionGate}=await import('./lib/session-gate');
   const {resolveSession}=await import('@unai/auth');
   const origin=bareOrigin(required('NEXTAUTH_URL'),'WEB_TLS_CONFIG_INVALID');
@@ -65,7 +65,7 @@ try {
   const handle=app.getRequestHandler();
   // The listener's lookup uses the same process-wide auth pool as identity() and next-auth.
   const gate=createSessionGate({authFailuresPerMinute,lookup:async token=>(await resolveSession(await authPool(),token))!==null});
-  const server=createServer({...tls,minVersion:'TLSv1.2'},createRequestListener({origin,dev,handle,gate}));
+  const server=createServer({...tls,minVersion:'TLSv1.2'},createRequestListener({origin,dev,handle,gate,record}));
   await new Promise<void>((resolve,reject)=>{
     server.once('error',reject);
     server.listen(Number(origin.port||443),process.env.UNAI_WEB_BIND??'127.0.0.1',()=>{
